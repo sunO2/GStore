@@ -388,7 +388,8 @@ void main() {
       // 稳定：额外帧不回弹。
       await tester.pump();
       expect(_urlDisplay('https://api.example/p?a=33&b=22'), findsOneWidget);
-      expect(_paramRowCount(tester), 2);
+      // T13：提交末行（b）后自动追加一个空行，故为 3 行；空名行不入 URL。
+      expect(_paramRowCount(tester), 3);
       expect(tester.takeException(), isNull);
     });
 

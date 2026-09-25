@@ -190,10 +190,52 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   _KvRow _newRow({String name = '', String value = '', bool enabled = true}) {
-    final row = _KvRow(name: name, value: value, enabled: enabled);
+    final row = _KvRow(
+      id: generateDebugId('kv'),
+      name: name,
+      value: value,
+      enabled: enabled,
+    );
     _bindDirty(row.nameCtrl);
     _bindDirty(row.valueCtrl);
     return row;
+  }
+
+  /// 提交某行（行内 done / 弹层完成）后的统一处理：
+  /// - 参数行回写 URL；
+  /// - 若提交的是**最后一个非空行**，追加一个空行便于继续录入。
+  void _onRowCommitted(_KvRow row, String keyPrefix) {
+    final rows = _rowsOf(keyPrefix);
+    final isLast = rows.isNotEmpty && identical(rows.last, row);
+    final hasContent = row.nameCtrl.text.trim().isNotEmpty ||
+        row.valueCtrl.text.trim().isNotEmpty;
+    setState(() {
+      _dirty = true;
+      if (isLast && hasContent) rows.add(_newRow());
+    });
+    if (keyPrefix == 'request-editor-param') _syncUrlFromParams();
+  }
+
+  /// 行从列表移除后，等首帧重建（TextField 已卸载）再释放其 controller，
+  /// 避免「controller used after dispose」。
+  void _disposeRowsAfterFrame(List<_KvRow> rows) {
+    if (rows.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final row in rows) {
+        row.dispose();
+      }
+    });
+  }
+
+  /// 删除一行：先出列表并重建，再延迟释放 controller；参数行回写 URL。
+  void _removeRow(String keyPrefix, _KvRow row) {
+    final isParams = keyPrefix == 'request-editor-param';
+    setState(() {
+      _rowsOf(keyPrefix).remove(row);
+      _dirty = true;
+    });
+    _disposeRowsAfterFrame(<_KvRow>[row]);
+    if (isParams) _syncUrlFromParams();
   }
 
   RequestDebugFacade get _facade => widget.facade;
@@ -210,25 +252,32 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
           ))
       .toList();
 
-  /// 用 [params] 重建参数行：按序复用已有行（原地改写 controller 文本），
-  /// 不足则新建，多余则释放。复用避免行 key 抖动与焦点丢失。
+  /// 用 [params] 重建参数行：按稳定 id 复用已有行（同名参数优先复用其行对象，
+  /// 从而保留 controller / 焦点），不足则新建，多余则延迟释放。
   void _applyParamRows(List<DebugQueryParam> params) {
-    for (var i = 0; i < params.length; i++) {
-      final param = params[i];
-      if (i < _params.length) {
-        final row = _params[i];
-        row.nameCtrl.text = param.name;
-        row.valueCtrl.text = param.value;
-        row.enabled = param.enabled;
-      } else {
-        _params.add(
-          _newRow(name: param.name, value: param.value, enabled: param.enabled),
-        );
+    final used = <String>{};
+    final next = <_KvRow>[];
+    for (final param in params) {
+      _KvRow? row;
+      for (final candidate in _params) {
+        if (!used.contains(candidate.id) &&
+            candidate.nameCtrl.text.trim() == param.name) {
+          row = candidate;
+          break;
+        }
       }
+      row ??= _newRow();
+      used.add(row.id);
+      row.nameCtrl.text = param.name;
+      row.valueCtrl.text = param.value;
+      row.enabled = param.enabled;
+      next.add(row);
     }
-    while (_params.length > params.length) {
-      _params.removeLast().dispose();
-    }
+    final removed = _params.where((row) => !next.contains(row)).toList();
+    _params
+      ..clear()
+      ..addAll(next);
+    _disposeRowsAfterFrame(removed);
   }
 
   /// 参数 → URL（提交驱动）：把参数行重建为显示 URL，保留 path 与 `#fragment`。
@@ -896,28 +945,81 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     bool allowDisable = false,
   }) {
     final isParams = keyPrefix == 'request-editor-param';
-    return ListView(
+    return ReorderableListView(
       padding: AppSpacing.allLG,
+      buildDefaultDragHandles: false,
+      header: _buildKvHeader(allowDisable: allowDisable),
+      onReorderItem: (oldIndex, newIndex) {
+        setState(() {
+          // `onReorderItem` 已为「移除 oldIndex」调整 newIndex。
+          final row = rows.removeAt(oldIndex);
+          rows.insert(newIndex, row);
+          _dirty = true;
+        });
+        if (isParams) _syncUrlFromParams();
+      },
+      footer: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.sm,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              TextButton.icon(
+                key: addKey,
+                onPressed: () {
+                  setState(() {
+                    rows.add(_newRow());
+                    _dirty = true;
+                  });
+                  if (isParams) _syncUrlFromParams();
+                },
+                icon: const Icon(TablerIcons.plus),
+                label: Text(addLabel),
+              ),
+              TextButton.icon(
+                key: const Key('request-editor-kv-bulk'),
+                onPressed: () => _openBulkEdit(keyPrefix),
+                icon: const Icon(TablerIcons.list_check),
+                label: const Text('批量编辑'),
+              ),
+            ],
+          ),
+        ],
+      ),
       children: [
         for (var i = 0; i < rows.length; i++)
-          _buildKvRow(rows[i], keyPrefix, nameHint, allowDisable, i),
-        const SizedBox(height: AppSpacing.sm),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            key: addKey,
-            onPressed: () {
-              setState(() {
-                rows.add(_newRow());
-                _dirty = true;
-              });
-              if (isParams) _syncUrlFromParams();
-            },
-            icon: const Icon(TablerIcons.plus),
-            label: Text(addLabel),
+          _buildKvRow(
+            rows[i],
+            keyPrefix,
+            nameHint,
+            allowDisable,
+            i,
+            key: ValueKey<String>('$keyPrefix-row-${rows[i].id}'),
           ),
-        ),
       ],
+    );
+  }
+
+  /// 键 / 值 表头（与数据行各列对齐）。
+  Widget _buildKvHeader({required bool allowDisable}) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    return Padding(
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        children: [
+          if (allowDisable) const SizedBox(width: 48),
+          Expanded(flex: 2, child: Text('键', style: style)),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(flex: 3, child: Text('值', style: style)),
+          const SizedBox(width: 40),
+          const SizedBox(width: 40),
+        ],
+      ),
     );
   }
 
@@ -926,13 +1028,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     String keyPrefix,
     String nameHint,
     bool allowDisable,
-    int index,
-  ) {
-    // 参数行的「提交」触发 URL 回写；头 / Cookie 与 URL 无关。
-    final onCommitted = keyPrefix == 'request-editor-param'
-        ? (String _) => _syncUrlFromParams()
-        : null;
+    int index, {
+    Key? key,
+  }) {
+    // 参数行的「提交」触发 URL 回写；头 / Cookie 与 URL 无关（但仍自动追加）。
+    void onCommitted(String _) => _onRowCommitted(row, keyPrefix);
     return Padding(
+      key: key,
       padding: AppSpacing.onlyVerticalXS,
       child: Row(
         children: [
@@ -979,18 +1081,26 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               ),
             ),
           ),
+          // 显式拖拽手柄：buildDefaultDragHandles:false 下唯一拖拽入口；
+          // 按下即先移除焦点，规避聚焦 TextField 参与拖拽时的 LeaderLayer 断言。
+          SizedBox(
+            width: 40,
+            height: 40,
+            child: Listener(
+              key: Key('$keyPrefix-drag-$index'),
+              onPointerDown: (_) =>
+                  FocusManager.instance.primaryFocus?.unfocus(),
+              child: ReorderableDragStartListener(
+                index: index,
+                child: const Icon(TablerIcons.grip_vertical),
+              ),
+            ),
+          ),
           IconButton(
+            key: Key('$keyPrefix-delete-$index'),
             tooltip: '删除',
             icon: const Icon(TablerIcons.trash),
-            onPressed: () {
-              final wasParams = keyPrefix == 'request-editor-param';
-              setState(() {
-                row.dispose();
-                _rowsOf(keyPrefix).remove(row);
-                _dirty = true;
-              });
-              if (wasParams) _syncUrlFromParams();
-            },
+            onPressed: () => _removeRow(keyPrefix, row),
           ),
         ],
       ),
@@ -1006,6 +1116,25 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       default:
         return _params;
     }
+  }
+
+  /// 打开批量编辑弹层；导入成功后把解析出的行追加到对应列表。
+  ///
+  /// 非法行由弹层就地反馈（`request-editor-kv-bulk-error`），**不**改动既有行。
+  Future<void> _openBulkEdit(String keyPrefix) async {
+    final parsed = await AppSheet.showCustom<List<_KvDraft>>(
+      context: context,
+      builder: (_) => const _KvBulkEditSheet(),
+    );
+    if (parsed == null || parsed.isEmpty || !mounted) return;
+    final rows = _rowsOf(keyPrefix);
+    setState(() {
+      for (final draft in parsed) {
+        rows.add(_newRow(name: draft.name, value: draft.value));
+      }
+      _dirty = true;
+    });
+    if (keyPrefix == 'request-editor-param') _syncUrlFromParams();
   }
 
   Widget _buildBodyEditor(BuildContext context) {
@@ -1242,9 +1371,16 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
 /// 键值编辑行（参数 / 头 / Cookie 共用）。
 class _KvRow {
-  _KvRow({String name = '', String value = '', this.enabled = true})
-      : nameCtrl = TextEditingController(text: name),
+  _KvRow({
+    required this.id,
+    String name = '',
+    String value = '',
+    this.enabled = true,
+  })  : nameCtrl = TextEditingController(text: name),
         valueCtrl = TextEditingController(text: value);
+
+  /// 稳定唯一 id：列表重排 / 协调时按它复用行对象（保留 controller 与焦点）。
+  final String id;
 
   final TextEditingController nameCtrl;
   final TextEditingController valueCtrl;
@@ -1258,4 +1394,118 @@ class _KvRow {
     nameCtrl.dispose();
     valueCtrl.dispose();
   }
+}
+
+/// 批量编辑解析出的单行草稿。
+class _KvDraft {
+  const _KvDraft(this.name, this.value);
+
+  final String name;
+  final String value;
+}
+
+/// 批量编辑弹层：多行 `key: value` / `key=value` → 行列表。
+///
+/// 内容自带 controller 生命周期，故用独立 StatefulWidget（弹层退场动画结束后
+/// 才随 route 释放，避免提前 dispose 被退场帧引用）。
+class _KvBulkEditSheet extends StatefulWidget {
+  const _KvBulkEditSheet();
+
+  @override
+  State<_KvBulkEditSheet> createState() => _KvBulkEditSheetState();
+}
+
+class _KvBulkEditSheetState extends State<_KvBulkEditSheet> {
+  final TextEditingController _input = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final parsed = _parseKvLines(_input.text);
+    if (parsed == null) {
+      setState(() => _error = '存在无法解析的行，请使用 key: value 或 key=value');
+      return;
+    }
+    Navigator.of(context).pop(parsed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppSheetScaffold(
+      title: '批量编辑',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('request-editor-kv-bulk-input'),
+            controller: _input,
+            minLines: 5,
+            maxLines: null,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'key: value\nkey2=value2',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+          ),
+          if (_error != null)
+            Padding(
+              padding: AppSpacing.onlyTopXS,
+              child: Text(
+                _error!,
+                key: const Key('request-editor-kv-bulk-error'),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('request-editor-kv-bulk-cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('request-editor-kv-bulk-confirm'),
+          onPressed: _confirm,
+          child: const Text('导入'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 解析多行键值文本；任一非空行缺少 `:` / `=` 分隔或键为空时返回 `null`。
+List<_KvDraft>? _parseKvLines(String text) {
+  final result = <_KvDraft>[];
+  for (final raw in text.split('\n')) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final index = _firstKvSeparator(line);
+    if (index == null) return null;
+    final name = line.substring(0, index).trim();
+    if (name.isEmpty) return null;
+    result.add(_KvDraft(name, line.substring(index + 1).trim()));
+  }
+  return result;
+}
+
+/// 行内第一个 `:` 或 `=` 的位置；都没有返回 `null`。
+int? _firstKvSeparator(String line) {
+  final colon = line.indexOf(':');
+  final equals = line.indexOf('=');
+  if (colon < 0) return equals < 0 ? null : equals;
+  if (equals < 0) return colon;
+  return colon < equals ? colon : equals;
 }
