@@ -120,6 +120,7 @@ CaptureDetail _detail({
   int durationMs = 100,
   bool truncated = false,
   bool mitmFailed = false,
+  String failureReason = '',
   List<CaptureWsFrame> wsFrames = const <CaptureWsFrame>[],
 }) {
   return CaptureDetail(
@@ -144,6 +145,7 @@ CaptureDetail _detail({
     durationMs: durationMs,
     truncated: truncated,
     mitmFailed: mitmFailed,
+    failureReason: failureReason,
     wsFrames: wsFrames,
   );
 }
@@ -249,19 +251,62 @@ void main() {
     }
   });
 
-  testWidgets('未解密（mitmFailed）显示提示 + 流级信息', (tester) async {
+  testWidgets('上游失败（mitmFailed）显示提示条 + 照常展示已解密请求', (tester) async {
     await tester.pumpWidget(_host(ProxyCaptureDetailPage(
       recordId: 7,
       flow: _flow(),
       facade: _FakeDetailFacade(
-        detail: _detail(mitmFailed: true, reqBody: const <int>[]),
+        detail: _detail(
+          mitmFailed: true,
+          statusCode: 0,
+          failureReason: 'dial via DIRECT exceeded the 12s deadline',
+          reqBody: const <int>[],
+        ),
       ),
     )));
     await _settleLoad(tester);
-    expect(find.byKey(const Key('detail_undecrypted')), findsOneWidget);
-    expect(find.text('未解密'), findsOneWidget);
-    expect(find.text('10.0.0.5:52344'), findsOneWidget); // 流级 src
-    expect(find.text('com.example.app'), findsOneWidget); // 流级包名
+    // 提示条命中，且带失败原因。
+    expect(find.byKey(const Key('detail_mitm_failed')), findsOneWidget);
+    expect(find.text('已拦截·上游连接失败'), findsOneWidget);
+    expect(
+      find.text('dial via DIRECT exceeded the 12s deadline'),
+      findsOneWidget,
+    );
+    // 不再整页「未解密」。
+    expect(find.byKey(const Key('detail_undecrypted')), findsNothing);
+    expect(find.text('未解密'), findsNothing);
+    // 请求段仍可见已解密的 method / URL（无请求体优雅降级）。
+    await _tapSegment(tester, 'request');
+    expect(find.text('GET'), findsOneWidget);
+    expect(find.text('https://example.com/api/data'), findsOneWidget);
+    expect(find.text('（空）'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('上游失败且 failureReason 为空：仍显示提示条与请求段，不崩', (tester) async {
+    await tester.pumpWidget(_host(ProxyCaptureDetailPage(
+      recordId: 7,
+      flow: _flow(),
+      facade: _FakeDetailFacade(
+        detail: _detail(mitmFailed: true, statusCode: 0),
+      ),
+    )));
+    await _settleLoad(tester);
+    expect(find.byKey(const Key('detail_mitm_failed')), findsOneWidget);
+    expect(find.text('已拦截·上游连接失败'), findsOneWidget);
+    await _tapSegment(tester, 'request');
+    expect(find.text('GET'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('未失败详情：不显示任何失败 / 未解密提示条', (tester) async {
+    await tester.pumpWidget(_host(ProxyCaptureDetailPage(
+      recordId: 7,
+      facade: _FakeDetailFacade(detail: _detail()),
+    )));
+    await _settleLoad(tester);
+    expect(find.byKey(const Key('detail_mitm_failed')), findsNothing);
+    expect(find.byKey(const Key('detail_undecrypted')), findsNothing);
   });
 
   testWidgets('captures.detail 未命中（NOT_FOUND）降级为未解密', (tester) async {

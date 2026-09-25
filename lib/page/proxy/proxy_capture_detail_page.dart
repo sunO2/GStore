@@ -207,8 +207,13 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
     }
   }
 
-  /// 无 HTTP 详情（未解密）判定：记录未命中，或 MITM 失败。
-  bool get _flowOnly => _detail == null || _detail!.mitmFailed;
+  /// 记录未命中（`captures.detail` `PROXY_CAPTURE_NOT_FOUND`）：纯流级
+  /// 「未解密」兜底（无任何 HTTP 详情）。
+  bool get _notFound => _detail == null;
+
+  /// MITM 上游失败：capture 已落库且 method / URL / 请求头**已解密**，
+  /// 仅上游拨号失败；据此显示提示条并照常渲染分段内容。
+  bool get _mitmFailed => _detail != null && _detail!.mitmFailed;
 
   @override
   Widget build(BuildContext context) {
@@ -278,8 +283,10 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (_flowOnly)
+                if (_notFound)
                   _UndecryptedNotice(detail: _detail, flow: widget.flow),
+                if (_mitmFailed)
+                  _MitmFailedNotice(reason: _detail!.failureReason),
                 _buildSegment(context),
               ],
             ),
@@ -489,6 +496,74 @@ class _UndecryptedNotice extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.sm),
           _FlowOnlyFields(detail: detail, flow: flow),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== 上游失败提示 ====================
+
+/// MITM 上游连接失败时的顶部提示条。
+///
+/// 与 [_UndecryptedNotice] 区分：这条 flow 的请求**已解密**（method / URL /
+/// 请求头均已落库），只是上游拨号失败，因此提示条之后照常渲染分段内容；
+/// `reason` 非空时以较小第二行附上失败原因。
+class _MitmFailedNotice extends StatelessWidget {
+  const _MitmFailedNotice({required this.reason});
+
+  /// `CaptureDetail.failureReason`（未失败 / 缺省为空串）。
+  final String reason;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final trimmed = reason.trim();
+    return Container(
+      key: const Key('detail_mitm_failed'),
+      margin: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.sm,
+        AppSpacing.lg,
+        0,
+      ),
+      padding: AppSpacing.horizontalMD_verticalSM,
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                TablerIcons.shield_lock,
+                size: AppTypography.iconMD,
+                color: scheme.onErrorContainer,
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  '已拦截·上游连接失败',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: scheme.onErrorContainer,
+                    fontWeight: AppTypography.weightSemiBold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (trimmed.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              trimmed,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onErrorContainer,
+              ),
+            ),
+          ],
         ],
       ),
     );
