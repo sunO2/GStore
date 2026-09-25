@@ -1032,6 +1032,12 @@ envelope (`core.*`, `stats.*`, `conn.*`) and module events.
 | `uploadBytes` / `downloadBytes` | u64 | flow byte counters |
 | `closeReason` | string | `"open"` / `"closed"` / `"stale"` |
 
+**MITM flows.** Flows decrypted by the capture MITM path also appear in this
+timeline as synthetic `requests` records. Their `rule` / `rulePayload` /
+`outbound` may be empty strings (no rule engine ran for them), which the UI
+renders as 「未匹配」. Such a synthetic record still occupies one slot of the
+`requests` ring and triggers exactly one UID attribution.
+
 `RequestPage`:
 ```json
 { "records": [RequestRecord], "nextCursor": 0, "firstCursor": 0,
@@ -1342,8 +1348,8 @@ MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / �
 | field | type | notes |
 |---|---|---|
 | `recordId` | u64 | **captures' own** monotonic sequence; ring + DB primary key; the `captures.detail` key and the `cursor` |
-| `requestRecordId` | u64 | foreign key to the owning flow's `requests.*` `recordId`; the **only** join key. `0` = no flow record (short-lived cross-tick flow) — the capture **stands alone** and is never dropped. One non-zero value may map to **multiple** captures (keep-alive / h2 mux) |
-| `connId` | string | meow connection id; may repeat; reference only (never a join key) |
+| `requestRecordId` | u64 | foreign key to the owning flow's `requests.*` `recordId`; the **only** join key. MITM-decrypted flows also produce a `requests` record and carry a non-zero id here. `0` = no flow record (short-lived flow crossing a tick boundary) — the capture **stands alone** and is never dropped. One non-zero value may map to **multiple** captures (keep-alive / h2 mux) |
+| `connId` | string | connection id; may repeat; reference only (never a join key). Meow flows carry a meow UUID; MITM flows use the synthetic `tun-{src}->{dst}` id instead |
 | `host` | string | authority as seen; IPv6 is bracketed (`[2001:db8::1]`) |
 | `method` / `scheme` | string | request method / scheme |
 | `url` | string | clipped to `CAPTURE_URL_MAX_BYTES`; Dart derives `path` from it (no separate `path` field) |
