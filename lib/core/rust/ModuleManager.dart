@@ -361,30 +361,35 @@ class RustModuleManager {
   Future<void> _subscribeEvents() async {
     final bridge = await EventBridge.newInstance();
     _eventBridge = bridge;
-    bridge.eventsStream().listen((event) {
-      _moduleEventHandler?.call(event);
-      if (!_eventController.isClosed) {
-        _eventController.add(event);
-      }
-      // 上行接入统一事件总线
-      AppEventBus.instance.publish(AppEvent(
-        type: AppEventTypes.rustEvent,
-        source: AppEventSource.rust,
-        data: {
-          'eventType': event.eventType,
-          'moduleId': event.moduleId.toString(),
-          'instanceId': event.instanceId.toString(),
-          'data': base64Encode(event.data),
-        },
-      ));
-      appLog.debug(
-          '[ModuleEvent] ${event.eventType} module=${event.moduleId} instance=${event.instanceId}');
-    });
+    bridge.eventsStream().listen(handleModuleEvent);
 
     // 下行：统一总线中标记 downlink 的事件 → 广播给所有已加载 Rust 模块
     AppEventBus.instance.registerDownlinkSink((evt) {
       unawaited(broadcastEvent(evt));
     });
+  }
+
+  /// 处理一条模块上行事件：转发给注册的处理器 + 广播流 + 接入统一事件总线。
+  ///
+  /// **禁止**在此处按事件逐条打 debug 日志：`proxy.stats` / `proxy.request`
+  /// 等事件按秒级高频推送，逐条日志会迅速刷屏，把真正有用的日志挤出日志列表。
+  @visibleForTesting
+  void handleModuleEvent(ModuleEvent event) {
+    _moduleEventHandler?.call(event);
+    if (!_eventController.isClosed) {
+      _eventController.add(event);
+    }
+    // 上行接入统一事件总线
+    AppEventBus.instance.publish(AppEvent(
+      type: AppEventTypes.rustEvent,
+      source: AppEventSource.rust,
+      data: {
+        'eventType': event.eventType,
+        'moduleId': event.moduleId.toString(),
+        'instanceId': event.instanceId.toString(),
+        'data': base64Encode(event.data),
+      },
+    ));
   }
 
   /// 应用事件下行：广播给所有已加载 Rust 模块（模块经 ABI `on_event` 订阅）

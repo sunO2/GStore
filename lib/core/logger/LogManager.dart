@@ -98,10 +98,13 @@ class LogManager {
     return const JsonEncoder.withIndent('  ').convert(jsonList);
   }
 
-  /// 导出日志为文本
-  String exportToText() {
+  /// 导出日志为文本。
+  ///
+  /// [entries] 显式指定要导出的日志集合（如日志页当前过滤后的结果）；
+  /// 缺省（`null`）导出全部日志，保持向后兼容。
+  String exportToText({Iterable<LogEntry>? entries}) {
     final buffer = StringBuffer();
-    for (var log in logs) {
+    for (final log in entries ?? logs) {
       buffer.writeln(log.toFormattedString());
     }
     return buffer.toString();

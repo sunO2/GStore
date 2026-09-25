@@ -174,9 +174,19 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
     );
   }
 
+  /// 当前是否有生效的过滤（级别筛选或内容关键字）。
+  bool _hasActiveFilter() {
+    final active =
+        ref.read(logViewerFilterProvider) != LogLevel.all ||
+            ref.read(logViewerContentFilterProvider).trim().isNotEmpty;
+    return active;
+  }
+
   /// 「更多」底部弹层：下载日志 / target 过滤
   Future<void> _showMoreActions() async {
     final keyword = ref.read(logViewerContentFilterProvider).trim();
+    final filteredCount = ref.read(filteredLogsProvider).length;
+    final hasFilter = _hasActiveFilter();
     final action = await AppDialogs.showBottomSheet<String>(
       title: '更多',
       children: [
@@ -185,7 +195,9 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
           child: ListTile(
             leading: const Icon(TablerIcons.file_download),
             title: const Text('下载日志'),
-            subtitle: Text('导出当前 ${LogManager.instance.logs.length} 条日志'),
+            subtitle: Text(hasFilter
+                ? '导出当前 $filteredCount 条日志（已应用过滤）'
+                : '导出当前 $filteredCount 条日志'),
             onTap: () => AppDialogs.popSheet<String?>('download'),
           ),
         ),
@@ -218,19 +230,22 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
   }
 
   /// 真实导出日志：系统保存对话框落地为 .txt 文件（与备份导出同机制）。
+  ///
+  /// 导出**当前过滤后的日志**（`filteredLogsProvider`），有过滤时在提示中标注。
   Future<void> _exportLogs() async {
-    final logs = LogManager.instance.logs;
+    final logs = ref.read(filteredLogsProvider);
     if (logs.isEmpty) {
       AppDialogs.showSnackbar('当前没有可导出的日志', title: '导出日志');
       return;
     }
+    final hasFilter = _hasActiveFilter();
 
     final timestamp = DateTime.now()
         .toIso8601String()
         .replaceAll(':', '-')
         .split('.')[0];
     final fileName = 'gstore_log_$timestamp.txt';
-    final content = LogManager.instance.exportToText();
+    final content = LogManager.instance.exportToText(entries: logs);
 
     String? outputPath;
     try {
@@ -253,8 +268,9 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
       return;
     }
 
-    appLog.info('LogViewer: 日志已导出 - $outputPath（${logs.length} 条）');
-    AppDialogs.showSuccess('已导出 ${logs.length} 条日志到：$outputPath');
+    final filterSuffix = hasFilter ? '（已应用过滤）' : '';
+    appLog.info('LogViewer: 日志已导出 - $outputPath（${logs.length} 条）$filterSuffix');
+    AppDialogs.showSuccess('已导出 ${logs.length} 条$filterSuffix日志到：$outputPath');
   }
 
   /// target 过滤输入弹层（app bottom sheet 风格；空输入 = 清除过滤）
