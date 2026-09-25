@@ -2150,7 +2150,10 @@ impl ExchangeCapture {
 
     fn mark_failed(&self, reason: &str) {
         self.failed.store(true, Ordering::Release);
-        crate::log_message(2, &format!("proxy.mitm: http capture failed: {reason}"));
+        // A cancellation is the client/connection aborting, not a capture defect;
+        // keep it at debug so real failures are not drowned out.
+        let level = if is_cancellation_reason(reason) { 0 } else { 2 };
+        crate::log_message(level, &format!("proxy.mitm: http capture failed: {reason}"));
     }
 
     fn side_done(&self, side: Side) {
@@ -2218,6 +2221,14 @@ impl ExchangeCapture {
         };
         self.sink.on_capture(record);
     }
+}
+
+/// True when a capture failure reason is hyper's cancellation (the client or the
+/// upstream connection aborted), which is expected during normal closes and is
+/// not a capture defect worth a warning.
+fn is_cancellation_reason(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("canceled") || lower.contains("cancelled")
 }
 
 /// Streaming body wrapper that forwards every frame **unchanged** while also
@@ -2439,6 +2450,17 @@ impl UpstreamClient {
             }
         }
     }
+
+    /// Whether the origin has closed this connection (`Connection: close`, idle
+    /// close, or the connection task ending). A closed sender rejects the next
+    /// request with hyper's `Kind::Canceled`, so the bridge re-dials instead of
+    /// reusing it.
+    async fn is_closed(&self) -> bool {
+        match self {
+            UpstreamClient::H1 { sender, .. } => sender.lock().await.is_closed(),
+            UpstreamClient::H2(sender) => sender.is_closed(),
+        }
+    }
 }
 
 /// An established upstream HTTP client plus the wire protocol its TLS ALPN
@@ -2549,7 +2571,7 @@ struct BridgeState {
     started_at_ms: u64,
     client_proto: HttpProtocol,
     rule_source: Arc<dyn CaptureRuleSource>,
-    upstream: tokio::sync::OnceCell<EstablishedUpstream>,
+    upstream: AsyncMutex<Option<Arc<EstablishedUpstream>>>,
     dialer: Option<Arc<dyn UpstreamDialer>>,
     last_method: std::sync::Mutex<Option<String>>,
 }
@@ -2565,20 +2587,27 @@ impl BridgeState {
             Arc::clone(&self.sink)
         }
     }
-    /// Resolve the upstream client, dialing through the tunnel on first use. A
-    /// `kind:"local"` rewrite never reaches here, so it opens no socket.
-    async fn upstream_client(&self) -> Result<&EstablishedUpstream, MitmFailure> {
-        self.upstream
-            .get_or_try_init(|| async {
-                match &self.dialer {
-                    Some(dialer) => dialer.dial().await,
-                    None => Err(MitmFailure::new(
-                        MitmStage::UpstreamDial,
-                        "bridge has no upstream",
-                    )),
-                }
-            })
-            .await
+    /// Resolve the upstream client, dialing through the tunnel on first use and
+    /// re-dialing whenever the cached connection has been closed by the origin
+    /// (`Connection: close`, idle close). A `kind:"local"` rewrite never reaches
+    /// here, so it opens no socket. The liveness check runs before the caller
+    /// consumes the request body, so a stale connection never costs it.
+    async fn upstream_client(&self) -> Result<Arc<EstablishedUpstream>, MitmFailure> {
+        let mut cached = self.upstream.lock().await;
+        if let Some(current) = cached.as_ref() {
+            if !current.client.is_closed().await {
+                return Ok(Arc::clone(current));
+            }
+        }
+        let Some(dialer) = self.dialer.as_ref() else {
+            return Err(MitmFailure::new(
+                MitmStage::UpstreamDial,
+                "bridge has no upstream",
+            ));
+        };
+        let fresh = Arc::new(dialer.dial().await?);
+        *cached = Some(Arc::clone(&fresh));
+        Ok(fresh)
     }
 
     async fn handle(&self, req: Request<Incoming>) -> Response<BridgeBody> {
@@ -3272,12 +3301,17 @@ where
     let upstream_client = UpstreamClient::establish(upstream, upstream_proto)
         .await
         .map_err(|e| MitmFailure::new(MitmStage::UpstreamHttp, e))?;
-    let cell = tokio::sync::OnceCell::new();
-    let _ = cell.set(EstablishedUpstream {
-        client: upstream_client,
-        proto: upstream_proto,
-    });
-    serve_client(client, client_proto, ctx, Some(cell), None).await
+    serve_client(
+        client,
+        client_proto,
+        ctx,
+        Some(EstablishedUpstream {
+            client: upstream_client,
+            proto: upstream_proto,
+        }),
+        None,
+    )
+    .await
 }
 
 /// Bridge a terminated client TLS connection whose upstream is dialed lazily on
@@ -3298,7 +3332,7 @@ async fn serve_client<S>(
     client: TlsStream<S>,
     client_proto: HttpProtocol,
     ctx: BridgeContext,
-    upstream: Option<tokio::sync::OnceCell<EstablishedUpstream>>,
+    upstream: Option<EstablishedUpstream>,
     dialer: Option<Arc<dyn UpstreamDialer>>,
 ) -> Result<(), MitmFailure>
 where
@@ -3317,7 +3351,7 @@ where
         started_at_ms: ctx.started_at_ms,
         client_proto,
         rule_source: ctx.rule_source,
-        upstream: upstream.unwrap_or_else(tokio::sync::OnceCell::new),
+        upstream: AsyncMutex::new(upstream.map(Arc::new)),
         dialer,
         last_method: std::sync::Mutex::new(None),
     });
@@ -3364,8 +3398,13 @@ fn client_http_failure(
         Some(method) => failure.with_method(method),
         None => failure,
     };
-    match state.upstream.get() {
-        Some(upstream) => failure.with_upstream_proto(upstream.proto),
+    let upstream_proto = state
+        .upstream
+        .try_lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|upstream| upstream.proto));
+    match upstream_proto {
+        Some(proto) => failure.with_upstream_proto(proto),
         None => failure,
     }
 }
@@ -3894,6 +3933,61 @@ mod mitm_http_tests {
         addr
     }
 
+    /// Origin fixture that accepts **any number of connections** and answers each
+    /// with exactly one `Connection: close` response (body `{prefix}{n}` for the
+    /// 1-based connection index), then closes. The listener keeps accepting so a
+    /// re-dial reaches a fresh connection. Used to prove the bridge re-dials when
+    /// its cached upstream sender has been closed by the origin.
+    async fn start_closing_fixture(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        prefix: &'static str,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        tokio::spawn(async move {
+            let config = ca.server_config(&host).unwrap();
+            let mut seq = 0u64;
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                seq += 1;
+                let n = seq;
+                let config = Arc::clone(&config);
+                tokio::spawn(async move {
+                    let Ok(mut tls) = TlsAcceptor::from(config).accept(tcp).await else {
+                        return;
+                    };
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 1024];
+                    loop {
+                        match tls.read(&mut tmp).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(k) => {
+                                buf.extend_from_slice(&tmp[..k]);
+                                if header_end(&buf).is_some() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let body = format!("{prefix}{n}");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = tls.write_all(response.as_bytes()).await;
+                    let _ = tls.flush().await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        addr
+    }
+
     /// Send several requests sequentially over ONE client TLS connection and
     /// return each response, so a keep-alive regression cannot be hidden by a
     /// fresh connection per request.
@@ -3939,6 +4033,10 @@ mod mitm_http_tests {
                 headers,
                 body,
             });
+            // Let an origin that closed after this response propagate its FIN to
+            // the bridge's cached upstream sender, so the next request exercises
+            // the reuse-vs-re-dial decision deterministically (D11a).
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         out
     }
@@ -4690,6 +4788,44 @@ mod mitm_http_tests {
     }
 
     #[test]
+    fn mitm_rewrite_local_repeated_requests_open_zero_upstream_sockets() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-local-repeat");
+            let host = "flow.test";
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "local",
+                "https://flow.test/local",
+                Some(200),
+                Some("content-type: text/plain"),
+                Some("local-body"),
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-local-repeat", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward = closed_forward().await;
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), 443);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1_keepalive(&ca, addr, host, &["/local", "/local"]).await;
+            assert_eq!(out.len(), 2, "both local requests must complete");
+            for o in &out {
+                assert_eq!(o.status, 200);
+                assert_eq!(o.body, b"local-body");
+            }
+            assert!(
+                proxy.recorded().is_empty(),
+                "a local rewrite must open ZERO upstream sockets on every request (saw {:?})",
+                proxy.recorded()
+            );
+            assert_eq!(source.hit_count("r1"), 2, "each request matches the local rule");
+        });
+    }
+
+    #[test]
     fn mitm_rewrite_replace_overrides_gzip_response_with_plaintext() {
         let rt = crate::bounded_runtime().expect("bounded_runtime");
         rt.block_on(async {
@@ -4800,6 +4936,47 @@ mod mitm_http_tests {
                 "the second keep-alive request must reuse the upstream h1 connection (not 502)"
             );
             assert_eq!(out[1].body, b"second-ok");
+        });
+    }
+
+    /// Device defect 6 (D11a): an origin that closes the cached upstream after
+    /// the first response must not poison the bridge for the next request on the
+    /// SAME client TLS connection. The bridge must re-dial and serve `resp-2`
+    /// from a fresh origin connection — never a 502 from hyper's `Kind::Canceled`.
+    #[test]
+    fn mitm_http_re_dials_closed_upstream_on_same_client_connection() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("redial");
+            let host = "flow.test";
+            let upstream = start_closing_fixture(Arc::clone(&ca), host, "resp-").await;
+            let upstream_port = upstream.port();
+
+            let (_rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-redial", 0).with_sink(sink);
+            let forward: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), upstream_port);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1_keepalive(&ca, addr, host, &["/one", "/two"]).await;
+            assert_eq!(out.len(), 2, "both requests on ONE client connection must complete");
+            assert_eq!(out[0].status, 200, "the first request must succeed");
+            assert_eq!(out[0].body, b"resp-1");
+            assert_ne!(
+                out[1].status, 502,
+                "reusing the closed upstream must not surface as a 502 Canceled"
+            );
+            assert_eq!(out[1].status, 200, "the second request must re-dial and succeed");
+            assert_eq!(
+                out[1].body, b"resp-2",
+                "the second response must come from a fresh origin connection"
+            );
+            assert_eq!(
+                proxy.recorded(),
+                vec!["flow.test".to_string(), "flow.test".to_string()],
+                "the closed cached upstream must be re-dialed exactly once"
+            );
         });
     }
 
