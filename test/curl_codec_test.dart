@@ -1,6 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/request_debug/curl_codec.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
+import 'package:gstore/core/request_debug/query_codec.dart';
+
+DebugQueryParam _q(String name, String value, [bool enabled = true]) =>
+    DebugQueryParam(name: name, value: value, enabled: enabled);
 
 /// cURL 导入 / 导出编解码纯函数测试（plan todo 27）。
 ///
@@ -270,6 +274,66 @@ void main() {
 
     test('multipart', () {
       roundTrip("curl 'https://x.test/u' -F 'file=a.txt' -F 'n=1'");
+    });
+  });
+
+  // plan todo 2：导出 URL 按名合并查询（覆盖而非追加）+ fragment 顺序。
+  group('effectiveUrl（合并覆盖 + fragment 顺序）', () {
+    DebugRequest req(String url, List<DebugQueryParam> query) => DebugRequest(
+          id: 'r',
+          name: 'n',
+          method: 'GET',
+          url: url,
+          query: query,
+        );
+
+    test('同名查询键覆盖 URL 已有键（非追加）', () {
+      expect(
+        effectiveUrl(req('https://x/p?a=1', [_q('a', '2')])),
+        'https://x/p?a=2',
+      );
+    });
+
+    test('覆盖可扩展为同名的多个值', () {
+      expect(
+        effectiveUrl(req('https://x/p?a=1', [_q('a', '2'), _q('a', '3')])),
+        'https://x/p?a=2&a=3',
+      );
+    });
+
+    test('无查询参数时保留 URL 原查询', () {
+      expect(
+        effectiveUrl(req('https://x/p?a=1', const [])),
+        'https://x/p?a=1',
+      );
+    });
+
+    test('无值键保留', () {
+      expect(
+        effectiveUrl(req('https://x/p?flag', const [])),
+        'https://x/p?flag',
+      );
+    });
+
+    test('查询串位于 fragment 之前', () {
+      final out = effectiveUrl(req('https://x/p#frag', [_q('a', '2')]));
+      expect(out, 'https://x/p?a=2#frag');
+      expect(out.contains('#frag?a=2'), isFalse,
+          reason: 'fragment 之后绝不能出现查询串');
+    });
+
+    test('禁用的覆盖参数被忽略', () {
+      expect(
+        effectiveUrl(req('https://x/p?a=1', [_q('a', '2', false)])),
+        'https://x/p?a=1',
+      );
+    });
+
+    test('buildUri 同样把查询串放在 fragment 之前', () {
+      expect(
+        buildUri('http://x/p#f', [_q('a', '2')]).toString(),
+        'http://x/p?a=2#f',
+      );
     });
   });
 }

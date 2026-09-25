@@ -15,6 +15,7 @@ library;
 import 'dart:convert';
 
 import 'debug_models.dart';
+import 'query_codec.dart';
 
 /// cURL 解析结果：成功携带 [request]，失败携带 [error]。
 ///
@@ -448,17 +449,16 @@ String toCurl(DebugRequest req) {
 }
 
 /// 合并启用的查询参数到 URL（用于导出）。
+///
+/// 复用 [parseUrlQuery] / [mergeParams] / [rebuildUrl]：同名参数**覆盖** URL
+/// 原有值（而非追加），并保证查询串位于 `#fragment` **之前**。绝不在此处
+/// 重新实现百分号编码。
 String effectiveUrl(DebugRequest req) {
-  final enabled = req.query.where((q) => q.enabled && q.name.isNotEmpty);
-  if (enabled.isEmpty) return req.url;
-  final qs = enabled
-      .map((q) => q.value.isEmpty
-          ? Uri.encodeQueryComponent(q.name)
-          : '${Uri.encodeQueryComponent(q.name)}='
-              '${Uri.encodeQueryComponent(q.value)}')
-      .join('&');
-  if (req.url.contains('?')) return '${req.url}&$qs';
-  return '${req.url}?$qs';
+  final parsed = parseUrlQuery(req.url);
+  final enabled =
+      req.query.where((q) => q.enabled && q.name.isNotEmpty).toList();
+  final merged = mergeParams(parsed.params, enabled);
+  return rebuildUrl(parsed.base, parsed.fragment, merged);
 }
 
 /// POSIX 风格单引号转义：`'` → `'\''`。

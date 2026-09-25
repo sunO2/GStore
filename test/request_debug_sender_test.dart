@@ -12,7 +12,10 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/request_debug/debug_cookie_jar.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
+import 'package:gstore/core/request_debug/debug_response.dart';
 import 'package:gstore/core/request_debug/debug_sender.dart';
+import 'package:gstore/core/request_debug/request_debug_facade.dart';
+import 'package:gstore/core/request_debug/request_debug_store.dart';
 
 /// 服务端实际收到的一次请求（用于防「假绿」的服务端断言）。
 class _Recorded {
@@ -299,6 +302,125 @@ void main() {
       expect(own, isNot(contains('leak=1')));
       expect(sender.cookieJar.cookieHeaderFor('example.com'), isEmpty,
           reason: '无关 host 不得被响应注入 cookie');
+    });
+  });
+
+  // plan todo 2：URL 查询与参数行按名合并（覆盖而非追加）。
+  group('DebugSender query merge (override)', () {
+    Future<_Fixture> startFixture() =>
+        _Fixture.start((request, recorded) async {
+          request.response.statusCode = HttpStatus.ok;
+          request.response.write('ok');
+          await request.response.close();
+        });
+
+    test('overrides a duplicate query key from the URL', () async {
+      final fixture = await startFixture();
+      addTearDown(fixture.close);
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/echo?a=1',
+        query: const <DebugQueryParam>[DebugQueryParam(name: 'a', value: '2')],
+      );
+
+      expect(response.error, isNull);
+      expect(fixture.recorded.single.query, 'a=2',
+          reason: '同名查询键必须覆盖而非追加（绝不能是 a=1&a=2）');
+    });
+
+    test('an override may expand to multiple values for the same key',
+        () async {
+      final fixture = await startFixture();
+      addTearDown(fixture.close);
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/echo?a=1',
+        query: const <DebugQueryParam>[
+          DebugQueryParam(name: 'a', value: '2'),
+          DebugQueryParam(name: 'a', value: '3'),
+        ],
+      );
+
+      expect(fixture.recorded.single.query, 'a=2&a=3');
+    });
+
+    test('keeps URL-only query keys when there is no override', () async {
+      final fixture = await startFixture();
+      addTearDown(fixture.close);
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      await sender.send(method: 'GET', url: '${fixture.origin}/echo?a=1');
+
+      expect(fixture.recorded.single.query, 'a=1');
+    });
+
+    test('preserves a valueless query key', () async {
+      final fixture = await startFixture();
+      addTearDown(fixture.close);
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      await sender.send(method: 'GET', url: '${fixture.origin}/echo?flag');
+
+      expect(fixture.recorded.single.query, 'flag');
+    });
+
+    test('placeholder URL with no active env returns a response, never throws',
+        () async {
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: '{{host}}/p?a=1',
+        timeout: const Duration(seconds: 2),
+      );
+
+      expect(response, isA<DebugResponse>());
+      expect(response.error, isNotNull,
+          reason: '未解析占位符不是合法绝对 URL，必须结构化失败而非抛');
+    });
+  });
+
+  // plan todo 2：门面端到端（单个请求合并后的查询到达服务端）。
+  group('DefaultRequestDebugFacade end-to-end query merge', () {
+    test('records the merged query on the server (no duplicate)', () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write('ok');
+        await request.response.close();
+      });
+      addTearDown(fixture.close);
+
+      final facade = DefaultRequestDebugFacade(
+        store: RequestDebugStore(),
+        sender: DebugSender(),
+      );
+      addTearDown(facade.sender.close);
+
+      final request = DebugRequest(
+        id: 'r-e2e',
+        name: 'e2e',
+        method: 'GET',
+        url: '${fixture.origin}/p',
+        query: const <DebugQueryParam>[DebugQueryParam(name: 'a', value: '2')],
+      );
+
+      final response = await facade.send(
+        method: request.method,
+        url: request.url,
+        query: request.query,
+      );
+
+      expect(response.error, isNull);
+      expect(fixture.recorded.single.query, 'a=2');
     });
   });
 }

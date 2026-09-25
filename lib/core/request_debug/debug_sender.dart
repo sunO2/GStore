@@ -20,6 +20,7 @@ import 'package:http/io_client.dart';
 import 'debug_cookie_jar.dart';
 import 'debug_models.dart';
 import 'debug_response.dart';
+import 'query_codec.dart';
 
 /// 使用 `package:http`（`IOClient`）的请求调试发送器。
 class DebugSender {
@@ -145,29 +146,13 @@ class DebugSender {
     return response;
   }
 
-  /// 把 URL 与启用的查询参数合并为最终 [Uri]（保留 URL 原有查询）。
-  static Uri _buildUri(String url, List<DebugQueryParam> query) {
-    final base = Uri.parse(url);
-    final enabled =
-        query.where((p) => p.enabled && p.name.isNotEmpty).toList();
-    if (enabled.isEmpty) return base;
-
-    final merged = <String, dynamic>{};
-    base.queryParametersAll.forEach((key, values) {
-      merged[key] = List<String>.from(values);
-    });
-    for (final param in enabled) {
-      final existing = merged[param.name];
-      if (existing is List<String>) {
-        existing.add(param.value);
-      } else if (existing is String) {
-        merged[param.name] = <String>[existing, param.value];
-      } else {
-        merged[param.name] = <String>[param.value];
-      }
-    }
-    return base.replace(queryParameters: merged);
-  }
+  /// 把 URL 与启用的查询参数合并为最终 [Uri]（同名参数**覆盖** URL 原值）。
+  ///
+  /// 委托给 `query_codec.buildUri`：手动解析/重建，避免 `+` 被误判为空格，
+  /// 并把查询串放在 `#fragment` 之前；未解析的 `{{var}}` 由 `Uri` 百分号编码
+  /// （与既有行为一致，不抛）。
+  static Uri _buildUri(String url, List<DebugQueryParam> query) =>
+      buildUri(url, query);
 
   /// 读取响应流，最多 [maxBodyBytes] 字节（超出即停止读取）。
   static Future<List<int>> _readBounded(Stream<List<int>> stream) async {
