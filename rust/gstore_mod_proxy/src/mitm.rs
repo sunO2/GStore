@@ -41,6 +41,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use rcgen::{
@@ -534,6 +535,37 @@ impl ResolvesServerCert for SniCertResolver {
 /// Signal the dispatch layer records when [`MitmTls::Failed`] is returned.
 pub(crate) const MITM_FAILED_SIGNAL: &str = "mitmFailed";
 
+/// Ceiling on the in-TUN **client** TLS handshake. A silent or stalled client
+/// must not pin an in-flight slot indefinitely.
+pub(crate) const CLIENT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Ceiling on the **upstream** TLS handshake after the TCP dial succeeded.
+pub(crate) const UPSTREAM_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Ceiling on the upstream hyper HTTP/1.1 or HTTP/2 handshake.
+pub(crate) const UPSTREAM_HTTP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Whole-session deadline in milliseconds (default 10 minutes). Reclaims the
+/// in-flight slot even when a later stage (an idle HTTP connection, a stalled
+/// body) never completes. The detached WS pump is excluded: it holds no slot
+/// after the 101 upgrade.
+pub(crate) const MITM_SESSION_DEADLINE_MS: u64 = 10 * 60 * 1000;
+
+static SESSION_DEADLINE_MS: AtomicU64 = AtomicU64::new(MITM_SESSION_DEADLINE_MS);
+
+/// The whole-session deadline in effect. Production uses
+/// [`MITM_SESSION_DEADLINE_MS`]; tests shorten it to exercise the deadline path.
+pub(crate) fn session_deadline() -> Duration {
+    Duration::from_millis(SESSION_DEADLINE_MS.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+pub(crate) fn set_session_deadline_for_tests(ms: u64) {
+    SESSION_DEADLINE_MS.store(ms, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_session_deadline_for_tests() {
+    SESSION_DEADLINE_MS.store(MITM_SESSION_DEADLINE_MS, Ordering::Relaxed);
+}
+
 /// Why the MITM acceptor could not terminate TLS.
 #[derive(Debug)]
 pub(crate) enum MitmTlsError {
@@ -599,14 +631,22 @@ where
         Ok(config) => config,
         Err(e) => return MitmTls::Failed(MitmTlsError::Config(e.to_string())),
     };
-    match TlsAcceptor::from(config).accept(stream).await {
-        Ok(mut tls) => {
+    match tokio::time::timeout(
+        CLIENT_TLS_HANDSHAKE_TIMEOUT,
+        TlsAcceptor::from(config).accept(stream),
+    )
+    .await
+    {
+        Ok(Ok(mut tls)) => {
             tls.get_mut()
                 .1
                 .set_buffer_limit(Some(RUSTLS_BUFFER_LIMIT_BYTES));
             MitmTls::Terminated(tls)
         }
-        Err(e) => MitmTls::Failed(MitmTlsError::Handshake(e.to_string())),
+        Ok(Err(e)) => MitmTls::Failed(MitmTlsError::Handshake(e.to_string())),
+        Err(_) => MitmTls::Failed(MitmTlsError::Handshake(
+            "client tls handshake timed out".to_string(),
+        )),
     }
 }
 
@@ -1142,7 +1182,7 @@ pub(crate) async fn dial_upstream(
             metadata.dst_ip,
         ),
     );
-    match adapter.dial_tcp(&metadata).await {
+    match meow_common::with_dial_timeout(adapter.name(), adapter.dial_tcp(&metadata)).await {
         Ok(conn) => Ok(conn),
         Err(e) => {
             let error = UpstreamError::dial(e);
@@ -1238,10 +1278,13 @@ pub(crate) async fn connect_upstream_tls(
     }
     let sni = ServerName::try_from(name.to_string())
         .map_err(|e| UpstreamError::invalid(format!("invalid upstream SNI '{name}': {e}")))?;
-    let mut tls = TlsConnector::from(client_config)
-        .connect(sni, conn)
-        .await
-        .map_err(UpstreamError::tls)?;
+    let mut tls = tokio::time::timeout(
+        UPSTREAM_TLS_HANDSHAKE_TIMEOUT,
+        TlsConnector::from(client_config).connect(sni, conn),
+    )
+    .await
+    .map_err(|_| UpstreamError::tls("upstream tls handshake timed out"))?
+    .map_err(UpstreamError::tls)?;
     tls.get_mut()
         .1
         .set_buffer_limit(Some(RUSTLS_BUFFER_LIMIT_BYTES));
@@ -2215,10 +2258,13 @@ impl UpstreamClient {
             HttpProtocol::H1 => {
                 let mut builder = client_http1::Builder::new();
                 builder.max_buf_size(H1_MAX_BUF_SIZE);
-                let (sender, conn) = builder
-                    .handshake::<_, UpstreamBody>(io)
-                    .await
-                    .map_err(|e| format!("upstream h1 handshake: {e}"))?;
+                let (sender, conn) = tokio::time::timeout(
+                    UPSTREAM_HTTP_HANDSHAKE_TIMEOUT,
+                    builder.handshake::<_, UpstreamBody>(io),
+                )
+                .await
+                .map_err(|_| "upstream h1 handshake timed out".to_string())?
+                .map_err(|e| format!("upstream h1 handshake: {e}"))?;
                 tokio::spawn(async move {
                     let _ = conn.with_upgrades().await;
                 });
@@ -2230,10 +2276,13 @@ impl UpstreamClient {
             HttpProtocol::H2 => {
                 let mut builder = client_http2::Builder::new(TokioExecutor::new());
                 configure_h2_client(&mut builder);
-                let (sender, conn) = builder
-                    .handshake::<_, UpstreamBody>(io)
-                    .await
-                    .map_err(|e| format!("upstream h2 handshake: {e}"))?;
+                let (sender, conn) = tokio::time::timeout(
+                    UPSTREAM_HTTP_HANDSHAKE_TIMEOUT,
+                    builder.handshake::<_, UpstreamBody>(io),
+                )
+                .await
+                .map_err(|_| "upstream h2 handshake timed out".to_string())?
+                .map_err(|e| format!("upstream h2 handshake: {e}"))?;
                 tokio::spawn(async move {
                     let _ = conn.await;
                 });
@@ -5552,6 +5601,8 @@ mod mitm_upstream_tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsAcceptor;
 
+    use crate::TEST_SERIAL as SERIAL;
+
     /// A local TLS fixture that accepts one connection, completes the handshake
     /// with the CA's leaf for `host`, and then drops. Returns the bound port and
     /// the server task (awaited so a handshake panic would surface).
@@ -6034,6 +6085,280 @@ mod mitm_upstream_tests {
             assert_eq!(err.status(), 502);
             assert_eq!(err.code(), ERR_CAPTURE_UPSTREAM_FAILED);
             assert_eq!(err.kind(), "dial");
+        });
+    }
+
+    /// Client TLS config trusting the test CA, negotiating h1.
+    fn client_tls_config(ca: &CertificateAuthority) -> Arc<ClientConfig> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.der().clone()).expect("trust test CA");
+        let mut config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("protocol versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Arc::new(config)
+    }
+
+    /// A production [`TunnelUpstreamDialer`] over `inner`, pointed at
+    /// `host:port`, trusting the test CA. Its dials go through
+    /// `dial_upstream`, so the dial and TLS ceilings apply.
+    fn production_dialer_for(
+        inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+        host: &str,
+        port: u16,
+        ca: &CertificateAuthority,
+    ) -> Arc<dyn UpstreamDialer> {
+        let target = UpstreamTarget::new(host, port).with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        Arc::new(TunnelUpstreamDialer::new(
+            inner,
+            target,
+            UpstreamTlsConfig::with_roots(trusted_roots(ca)),
+        ))
+    }
+
+    /// Drive one HTTP/1.1 request over a fresh client TLS connection and return
+    /// the response status; the connection is closed before returning.
+    async fn send_h1_request(
+        ca: &CertificateAuthority,
+        client_io: tokio::io::DuplexStream,
+        host: &str,
+        path: &str,
+    ) -> u16 {
+        let tls = TlsConnector::from(client_tls_config(ca))
+            .connect(ServerName::try_from(host.to_string()).unwrap(), client_io)
+            .await
+            .expect("client TLS handshake");
+        let (mut sender, conn) = client_http1::Builder::new()
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .expect("client h1 handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(HOST, host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(request).await.expect("response");
+        let status = response.status().as_u16();
+        drop(response);
+        drop(sender);
+        status
+    }
+
+    async fn wait_inflight_zero(what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while inflight_count() != 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            inflight_count(),
+            0,
+            "{what} must release the in-flight slot"
+        );
+    }
+
+    /// A `ProxyAdapter` whose `dial_tcp` never resolves: `dial_upstream`'s own
+    /// timeout must cut it, so a hung outbound cannot pin a session slot.
+    struct HangingProxy {
+        health: ProxyHealth,
+    }
+
+    fn hanging_proxy() -> Arc<dyn Proxy> {
+        Arc::new(HangingProxy {
+            health: ProxyHealth::new(),
+        })
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyAdapter for HangingProxy {
+        fn name(&self) -> &str {
+            "HANG"
+        }
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Direct
+        }
+        fn addr(&self) -> &str {
+            ""
+        }
+        fn support_udp(&self) -> bool {
+            false
+        }
+        async fn dial_tcp(&self, _metadata: &Metadata) -> meow_common::Result<Box<dyn ProxyConn>> {
+            std::future::pending().await
+        }
+        async fn dial_udp(
+            &self,
+            _metadata: &Metadata,
+        ) -> meow_common::Result<Box<dyn ProxyPacketConn>> {
+            Err(meow_common::MeowError::NotSupported("hanging".into()))
+        }
+        fn health(&self) -> &ProxyHealth {
+            &self.health
+        }
+    }
+
+    impl Proxy for HangingProxy {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn alive_for_url(&self, _url: &str) -> bool {
+            true
+        }
+        fn last_delay(&self) -> u16 {
+            0
+        }
+        fn last_delay_for_url(&self, _url: &str) -> u16 {
+            0
+        }
+        fn delay_history(&self) -> Vec<DelayHistory> {
+            Vec::new()
+        }
+    }
+
+    /// Restores the production session deadline even if the test panics.
+    struct DeadlineReset;
+
+    impl Drop for DeadlineReset {
+        fn drop(&mut self) {
+            reset_session_deadline_for_tests();
+        }
+    }
+
+    /// A client that opens the TLS connection and then sends nothing must not
+    /// pin its slot: the 10 s client-TLS ceiling ends the session.
+    #[test]
+    fn stalled_client_tls_handshake_releases_slot() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            reset_gate_counters_for_tests();
+            let ca = Arc::new(
+                CertificateAuthority::generate(temp_dir("stall-client").to_str().unwrap())
+                    .expect("ca"),
+            );
+            install_ca(Arc::clone(&ca));
+            let inner = tunnel_with(&["DOMAIN,flow.test,DIRECT"], Vec::new());
+            let dialer = production_dialer_for(inner, "flow.test", 443, &ca);
+
+            let (client, server) = tokio::io::duplex(4096);
+            let ctx = BridgeContext::new("flow.test", "stall-client", 0);
+            crate::dispatch::begin_mitm(server, Some("flow.test"), dialer, ctx)
+                .expect("session must start");
+            assert_eq!(inflight_count(), 1);
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            assert_eq!(
+                inflight_count(),
+                0,
+                "a stalled client handshake must release the slot after its ceiling"
+            );
+            drop(client);
+            clear_ca();
+        });
+    }
+
+    /// An outbound whose dial never completes must be cut by the 5 s dial
+    /// ceiling, and the session must release its slot.
+    #[test]
+    fn hung_upstream_dial_releases_slot() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            reset_gate_counters_for_tests();
+            let ca = Arc::new(
+                CertificateAuthority::generate(temp_dir("hang-dial").to_str().unwrap())
+                    .expect("ca"),
+            );
+            install_ca(Arc::clone(&ca));
+            let inner = tunnel_with(&["DOMAIN,flow.test,HANG"], vec![("HANG", hanging_proxy())]);
+            let dialer = production_dialer_for(inner, "flow.test", 443, &ca);
+
+            let (client_io, server_io) = tokio::io::duplex(1 << 16);
+            let ctx = BridgeContext::new("flow.test", "hang-dial", 0);
+            crate::dispatch::begin_mitm(server_io, Some("flow.test"), dialer, ctx)
+                .expect("session must start");
+            let status = send_h1_request(&ca, client_io, "flow.test", "/hang").await;
+            assert_eq!(status, 502, "a hung dial must degrade to a structured 502");
+            wait_inflight_zero("the timed-out dial").await;
+            clear_ca();
+        });
+    }
+
+    /// An upstream that completes the TCP dial but never speaks TLS must be cut
+    /// by the 10 s upstream-TLS ceiling, and the session must release its slot.
+    #[test]
+    fn stalled_upstream_tls_handshake_releases_slot() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            reset_gate_counters_for_tests();
+            let ca = Arc::new(
+                CertificateAuthority::generate(temp_dir("stall-upstream").to_str().unwrap())
+                    .expect("ca"),
+            );
+            install_ca(Arc::clone(&ca));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let _held = listener.accept().await;
+                std::future::pending::<()>().await;
+            });
+            let inner = tunnel_with(&["DOMAIN,flow.test,DIRECT"], Vec::new());
+            let dialer = production_dialer_for(inner, "flow.test", port, &ca);
+
+            let (client_io, server_io) = tokio::io::duplex(1 << 16);
+            let ctx = BridgeContext::new("flow.test", "stall-upstream", 0);
+            crate::dispatch::begin_mitm(server_io, Some("flow.test"), dialer, ctx)
+                .expect("session must start");
+            let status = send_h1_request(&ca, client_io, "flow.test", "/stall").await;
+            assert_eq!(
+                status, 502,
+                "a stalled upstream TLS handshake must yield a 502"
+            );
+            wait_inflight_zero("the timed-out upstream TLS handshake").await;
+            clear_ca();
+        });
+    }
+
+    /// An idle but fully-handshaken session has no per-stage timeout left; only
+    /// the whole-session deadline can reclaim its slot.
+    #[test]
+    fn session_deadline_releases_slot() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            reset_gate_counters_for_tests();
+            let _deadline = DeadlineReset;
+            set_session_deadline_for_tests(500);
+            let ca = Arc::new(
+                CertificateAuthority::generate(temp_dir("deadline").to_str().unwrap())
+                    .expect("ca"),
+            );
+            install_ca(Arc::clone(&ca));
+            let inner = tunnel_with(&["DOMAIN,flow.test,DIRECT"], Vec::new());
+            let dialer = production_dialer_for(inner, "flow.test", 443, &ca);
+
+            let (client_io, server_io) = tokio::io::duplex(1 << 16);
+            let ctx = BridgeContext::new("flow.test", "deadline", 0);
+            crate::dispatch::begin_mitm(server_io, Some("flow.test"), dialer, ctx)
+                .expect("session must start");
+            let _tls = TlsConnector::from(client_tls_config(&ca))
+                .connect(ServerName::try_from("flow.test").unwrap(), client_io)
+                .await
+                .expect("client TLS handshake");
+            assert_eq!(inflight_count(), 1);
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            assert_eq!(
+                inflight_count(),
+                0,
+                "the whole-session deadline must release the slot"
+            );
+            clear_ca();
         });
     }
 }

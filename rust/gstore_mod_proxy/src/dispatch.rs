@@ -273,17 +273,33 @@ where
     spawn_isolated(async move {
         // The guard releases the slot when the session ends, panic included.
         let _guard = guard;
-        if let MitmStreamOutcome::Failed(e) =
-            mitigate(stream, ca, host.clone(), observer, dialer, ctx).await
+        match tokio::time::timeout(
+            mitm::session_deadline(),
+            mitigate(stream, ca, host.clone(), observer, dialer, ctx),
+        )
+        .await
         {
-            crate::log_message(
-                2,
-                &format!(
-                    "proxy.mitm: session failed stage={} host={host}: {}",
-                    e.stage().as_str(),
-                    e.message(),
-                ),
-            );
+            Ok(MitmStreamOutcome::Terminated) => {}
+            Ok(MitmStreamOutcome::Failed(e)) => {
+                crate::log_message(
+                    2,
+                    &format!(
+                        "proxy.mitm: session failed stage={} host={host}: {}",
+                        e.stage().as_str(),
+                        e.message(),
+                    ),
+                );
+            }
+            Err(_) => {
+                mitm::record_mitm_failed("session deadline exceeded");
+                crate::log_message(
+                    2,
+                    &format!(
+                        "proxy.mitm: session failed stage=session_deadline host={host}: \
+                         session deadline exceeded"
+                    ),
+                );
+            }
         }
     });
     Ok(())
