@@ -30,6 +30,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(test))]
 use std::sync::{Mutex, OnceLock};
 
 use gstore_contract::error::{ModuleError, StatusCode};
@@ -175,36 +176,64 @@ static NEXT_CAPTURE_UID_ID: AtomicU64 = AtomicU64::new(CAPTURE_UID_ID_BASE);
 
 /// Bounded registry of in-flight capture UID lookups (`recordId → reply`). Full
 /// means the lookup fails safe (`Unknown`) rather than growing or queueing.
+#[cfg(not(test))]
 static CAPTURE_UID_PENDING: OnceLock<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>>> =
     OnceLock::new();
 
-fn capture_uid_pending() -> &'static Mutex<HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>> {
-    CAPTURE_UID_PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+/// Run `f` against the live capture-UID registry. Production has exactly one
+/// process-global registry; tests get a per-thread one (see below).
+#[cfg(not(test))]
+fn with_capture_uid_pending<R>(
+    f: impl FnOnce(&mut HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>) -> R,
+) -> R {
+    let mut guard = CAPTURE_UID_PENDING
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
+}
+
+// Tests use a per-thread registry, mirroring TEST_STORE: request-only tests
+// never race the shipping instance, and — unlike the request store — a sibling
+// test that calls reset_for_tests **without** holding TEST_SERIAL (e.g. the
+// `captures` module) can no longer clear this thread's in-flight slots. That
+// race used to turn a saturated registry's fail-safe `Unknown` into a spurious
+// emit (the load-sensitive CI flake).
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_UID_PENDING_TLS: std::cell::RefCell<
+        HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>,
+    > = std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+fn with_capture_uid_pending<R>(
+    f: impl FnOnce(&mut HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>) -> R,
+) -> R {
+    CAPTURE_UID_PENDING_TLS.with(|m| f(&mut m.borrow_mut()))
 }
 
 /// Reserve a correlation id and its reply channel, or `None` when the bounded
 /// registry is full. The id travels with the query and the host returns it
 /// unchanged.
 pub(crate) fn register_capture_uid() -> Option<(u64, tokio::sync::oneshot::Receiver<UidAnswer>)> {
-    let mut guard = capture_uid_pending()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if guard.len() >= crate::limits::CAPTURE_UID_INFLIGHT_CAP {
-        return None;
-    }
-    let record_id = NEXT_CAPTURE_UID_ID.fetch_add(1, Ordering::SeqCst);
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    guard.insert(record_id, tx);
-    Some((record_id, rx))
+    with_capture_uid_pending(|guard| {
+        if guard.len() >= crate::limits::CAPTURE_UID_INFLIGHT_CAP {
+            return None;
+        }
+        let record_id = NEXT_CAPTURE_UID_ID.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        guard.insert(record_id, tx);
+        Some((record_id, rx))
+    })
 }
 
 /// Release a capture correlation slot (timeout / abandoned future). A later
 /// answer for the id then finds no sender and is dropped.
 pub(crate) fn deregister_capture_uid(record_id: u64) {
-    capture_uid_pending()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&record_id);
+    with_capture_uid_pending(|guard| {
+        guard.remove(&record_id);
+    });
 }
 
 /// Emit one capture-origin query batch through the same host lane `tick` uses.
@@ -1549,10 +1578,7 @@ fn handle_uid_result_at(payload: &[u8], now_ms: u64) -> Result<usize, ModuleErro
 /// (timed out / abandoned) and a dropped receiver (late answer) both discard
 /// the answer without touching the request store.
 fn route_capture_uid_answer(answer: UidAnswer) {
-    let sender = capture_uid_pending()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&answer.record_id);
+    let sender = with_capture_uid_pending(|guard| guard.remove(&answer.record_id));
     if let Some(sender) = sender {
         let _ = sender.send(answer);
     }
@@ -1634,19 +1660,13 @@ pub(crate) fn finalize_all_active(now_ms: u64) -> u64 {
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     with_store(|st| *st = RequestStore::fresh());
-    capture_uid_pending()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
+    CAPTURE_UID_PENDING_TLS.with(|m| m.borrow_mut().clear());
     NEXT_CAPTURE_UID_ID.store(CAPTURE_UID_ID_BASE, Ordering::SeqCst);
 }
 
 #[cfg(test)]
 pub(crate) fn capture_uid_registry_len_for_tests() -> usize {
-    capture_uid_pending()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .len()
+    with_capture_uid_pending(|m| m.len())
 }
 
 #[cfg(test)]
@@ -2523,9 +2543,48 @@ mod tests {
     fn close_mitm_flow_unknown_conn_is_silent_noop() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
+        let before = next_record_id_for_tests();
         close_mitm_flow("never-opened", 1_000);
-        let page = snapshot(0, 10, &RequestFilter::default());
-        assert!(page.records.is_empty(), "no record is fabricated");
+        assert_eq!(
+            next_record_id_for_tests(),
+            before,
+            "closing an unknown conn must not mint a request record"
+        );
+    }
+
+    /// Failure QA: once the bounded ring has evicted the skeleton, a late
+    /// `close_mitm_flow` is a silent no-op — it neither panics nor mints a
+    /// replacement record.
+    #[test]
+    fn close_mitm_flow_after_ring_eviction_is_silent_noop() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let (src, dst) = mitm_endpoints();
+        let rid = open_mitm_flow("mitm-evicted", "shop.example", src, dst, 1_000);
+        assert_eq!(rid, 1, "the skeleton is the first record");
+
+        for i in 0..REQUEST_RING_CAP {
+            open_mitm_flow(
+                &format!("evictor-{i}"),
+                "shop.example",
+                src,
+                dst,
+                2_000 + i as u64,
+            );
+        }
+        assert!(
+            record_of(rid).is_none(),
+            "the oldest record must have been evicted by the bounded ring"
+        );
+
+        let before = next_record_id_for_tests();
+        close_mitm_flow("mitm-evicted", 9_999);
+        assert_eq!(
+            next_record_id_for_tests(),
+            before,
+            "a late close of an evicted skeleton must not fabricate a record"
+        );
+        assert!(record_of(rid).is_none(), "the evicted skeleton must stay gone");
     }
 
     /// A stale record is NOT terminal: no `closeTsMs`, no `durationMs`. Only the
@@ -4173,6 +4232,17 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// How many emitted `proxy.uid.query` batches carried a reserved capture id.
+    fn reserved_capture_query_count() -> usize {
+        take_uid_query_events()
+            .iter()
+            .filter_map(|ev| ev["queries"].as_array())
+            .flatten()
+            .filter_map(|q| q["recordId"].as_u64())
+            .filter(|id| *id >= CAPTURE_UID_ID_BASE)
+            .count()
+    }
+
     fn uid_result_payload(record_id: u64, uid: i64, packages: &[&str]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "results": [{ "recordId": record_id, "uid": uid, "packages": packages }]
@@ -4265,9 +4335,10 @@ mod tests {
         let (src, dst) = capture_src_dst();
         let attr = resolver.resolve(src, dst).await;
         assert_eq!(attr, AppAttribution::Unknown, "a full registry denies");
-        assert!(
-            take_uid_query_events().is_empty(),
-            "no query may be emitted when no slot was reserved"
+        assert_eq!(
+            reserved_capture_query_count(),
+            0,
+            "no capture query may be emitted when no slot was reserved"
         );
 
         for (id, _rx) in held {

@@ -1186,6 +1186,38 @@ mod mitm_e2e_tests {
         port
     }
 
+    /// Same as [`start_tls_fixture`] but keeps the HTTP/1.1 connection alive, so
+    /// one MITM session can serve several exchanges (and thus several captures).
+    async fn start_tls_keepalive_fixture(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        body: Vec<u8>,
+    ) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = ca.server_config(host).unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            let service = hyper::service::service_fn(move |_req| {
+                let body = body.clone();
+                async move {
+                    let mut response = hyper::Response::new(Full::new(Bytes::from(body)));
+                    response.headers_mut().insert(
+                        hyper::header::CONTENT_TYPE,
+                        hyper::header::HeaderValue::from_static("text/plain"),
+                    );
+                    Ok::<_, std::convert::Infallible>(response)
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .keep_alive(true)
+                .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
+                .await;
+        });
+        port
+    }
+
     async fn start_hanging_tls_fixture(ca: Arc<CertificateAuthority>, host: &str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1421,6 +1453,96 @@ mod mitm_e2e_tests {
                 skeleton.duration_ms.is_some(),
                 "session end must finalize the skeleton with a duration"
             );
+            teardown();
+        });
+    }
+
+    /// One TLS/HTTP1.1 keep-alive session carries several exchanges; every
+    /// resulting capture must point at the SAME single non-zero skeleton id.
+    /// This is a Rust-observable linkage fact only — the Dart row folding is
+    /// covered separately.
+    #[test]
+    fn mitm_e2e_multi_capture_session_shares_one_skeleton_id() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_tls_keepalive_fixture(
+                mitm::ca().unwrap(),
+                "flow.test",
+                b"upstream".to_vec(),
+            )
+            .await;
+            capture_config(&[port], true);
+            let ca = mitm::ca().unwrap();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let tls = TlsConnector::from(client_tls(&ca, b"http/1.1"))
+                        .connect(ServerName::try_from("flow.test").unwrap(), io)
+                        .await
+                        .expect("client TLS handshake");
+                    let (mut sender, conn) =
+                        hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+                            hyper_util::rt::TokioIo::new(tls),
+                        )
+                        .await
+                        .expect("client h1 handshake");
+                    tokio::spawn(async move {
+                        let _ = conn.await;
+                    });
+                    for path in ["/keep-alive-one", "/keep-alive-two"] {
+                        let request = hyper::Request::builder()
+                            .method("GET")
+                            .uri(path)
+                            .header(hyper::header::HOST, "flow.test")
+                            .body(Full::new(Bytes::new()))
+                            .unwrap();
+                        let response = sender
+                            .send_request(request)
+                            .await
+                            .expect("keep-alive response");
+                        assert_eq!(response.status().as_u16(), 200);
+                        let _ = response.into_body().collect().await;
+                    }
+                }
+            })
+            .await;
+
+            let records = wait_for_capture(|rs| {
+                rs.iter().filter(|r| r.host == "flow.test").count() >= 2
+            })
+            .await;
+            let linked: Vec<crate::captures::CaptureSummary> = records
+                .into_iter()
+                .filter(|r| r.host == "flow.test")
+                .collect();
+            assert!(
+                linked.len() >= 2,
+                "one keep-alive session must yield two or more captures, got {}",
+                linked.len()
+            );
+            let rid = linked[0].request_record_id;
+            assert_ne!(
+                rid, 0,
+                "a MITM capture must carry the non-zero requestRecordId of its skeleton"
+            );
+            assert!(
+                linked.iter().all(|r| r.request_record_id == rid),
+                "all captures of one session must share the skeleton id: {:?}",
+                linked.iter().map(|r| r.request_record_id).collect::<Vec<_>>()
+            );
+
+            let page =
+                crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+            assert_eq!(
+                page.records.iter().filter(|r| r.record_id == rid).count(),
+                1,
+                "exactly one request skeleton must back the whole session"
+            );
+
+            drain_inflight().await;
             teardown();
         });
     }
