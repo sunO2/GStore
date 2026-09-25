@@ -29,7 +29,7 @@ enum RequestDebugSection {
 
 /// 「请求调试」原生工作台页（Postman-like，非 it-tools WebView 内）。
 ///
-/// 本页（plan todo 30）只搭骨架：顶部 [AppSegmentedButton] 4 分区
+/// 本页（plan todo 30）只搭骨架：顶部 [AppTabBar] 4 分区
 /// `集合 / 历史 / 环境 / 改写规则` + 各分区空态 / 极简列表；分区内容由
 /// todos 31-34 深化。门面经构造函数注入（[facade] 默认
 /// [DefaultRequestDebugFacade.production]），测试注入假 store / 端口，
@@ -84,44 +84,40 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     );
   }
 
-  /// 顶部 4 分区切换（复用设计系统 [AppSegmentedButton]/[AppSegment]）。
+  /// 顶部 4 分区切换（复用设计系统 [AppTabBar]/[AppSegment]）。
+  ///
+  /// [AppTabBar] 基于 `TabBar(isScrollable: true)` 且标签宽度随文本，
+  /// 窄屏自身可横向滚动，无需外层 `SingleChildScrollView`，选中宽标签
+  /// 也不会拉伸其余标签。
   Widget _buildSectionSwitch(BuildContext context) {
     return Padding(
       padding: AppSpacing.allLG,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        // 窄屏可横向滚动，避免 4 分区在手机上溢出。
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: AppSegmentedButton<RequestDebugSection>(
-            key: const Key('request-debug-section-switch'),
-            value: _section,
-            density: AppSegmentedButton.mediumDensity,
-            segments: const <AppSegment<RequestDebugSection>>[
-              AppSegment(
-                value: RequestDebugSection.collections,
-                label: '集合',
-                key: Key('request-debug-segment-collections'),
-              ),
-              AppSegment(
-                value: RequestDebugSection.history,
-                label: '历史',
-                key: Key('request-debug-segment-history'),
-              ),
-              AppSegment(
-                value: RequestDebugSection.environments,
-                label: '环境',
-                key: Key('request-debug-segment-environments'),
-              ),
-              AppSegment(
-                value: RequestDebugSection.rules,
-                label: '改写规则',
-                key: Key('request-debug-segment-rules'),
-              ),
-            ],
-            onChanged: (section) => setState(() => _section = section),
+      child: AppTabBar<RequestDebugSection>(
+        key: const Key('request-debug-section-switch'),
+        value: _section,
+        segments: const <AppSegment<RequestDebugSection>>[
+          AppSegment(
+            value: RequestDebugSection.collections,
+            label: '集合',
+            key: Key('request-debug-segment-collections'),
           ),
-        ),
+          AppSegment(
+            value: RequestDebugSection.history,
+            label: '历史',
+            key: Key('request-debug-segment-history'),
+          ),
+          AppSegment(
+            value: RequestDebugSection.environments,
+            label: '环境',
+            key: Key('request-debug-segment-environments'),
+          ),
+          AppSegment(
+            value: RequestDebugSection.rules,
+            label: '改写规则',
+            key: Key('request-debug-segment-rules'),
+          ),
+        ],
+        onChanged: (section) => setState(() => _section = section),
       ),
     );
   }
