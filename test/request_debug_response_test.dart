@@ -312,7 +312,45 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('搜索基于完整 bodyText，展开可见文本以包含命中位置', (tester) async {
+    testWidgets('inline Body（JSON 树）不渲染搜索框，仅提供全屏入口', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1}',
+        ),
+      );
+
+      expect(find.byKey(const Key('response-body-tree')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-search')), findsNothing);
+      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
+      expect(find.byKey(const Key('response-body-fullscreen')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口', (tester) async {
+      final huge = 'A' * 120000;
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+          },
+          body: huge,
+        ),
+      );
+
+      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-search')), findsNothing);
+      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
+      expect(find.byKey(const Key('response-body-fullscreen')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body', (tester) async {
       const marker = 'NEEDLE_AT_TAIL_917';
       final huge = 'A' * 190000 + marker + 'B' * 9000;
       await _pump(
@@ -325,20 +363,85 @@ void main() {
         ),
       );
 
-      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
-      expect(find.byKey(const Key('response-body-search-input')), findsOneWidget);
-      // 搜索前只渲染前 `chunkChars` 个字符，命中不在可见文本中。
-      expect(_bodyText(tester).contains(marker), isFalse);
+      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
+      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('response-body-fullscreen-view')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('response-fullscreen-search-input')),
+        findsOneWidget,
+      );
+      // 搜索前只渲染首个分块，命中不在可见文本中。
+      expect(
+        _bodyText(tester, prefix: 'response-fullscreen').contains(marker),
+        isFalse,
+      );
 
       await tester.enterText(
-        find.byKey(const Key('response-body-search-input')),
+        find.byKey(const Key('response-fullscreen-search-input')),
         marker,
       );
       await tester.pumpAndSettle();
 
-      // 不再引用私有 `_visibleChars`：可见文本已包含命中且超过单块长度。
-      expect(_bodyText(tester).contains(marker), isTrue);
-      expect(_bodyText(tester).length, greaterThan(ResponseViewer.chunkChars));
+      // 全量搜索：可见文本已包含命中且超过单块长度。
+      final shown = _bodyText(tester, prefix: 'response-fullscreen');
+      expect(shown.contains(marker), isTrue);
+      expect(shown.length, greaterThan(ResponseViewer.chunkChars));
+
+      // 关闭全屏返回 Body 分段。
+      await tester.tap(find.byKey(const Key('response-body-fullscreen-close')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('response-body-fullscreen-view')), findsNothing);
+      expect(find.byKey(const Key('response-tab-body')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('全屏查看：>256KB JSON 走分块路径，关闭无异常', (tester) async {
+      final big = '{"data":"${'x' * (256 * 1024)}"}';
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: big,
+        ),
+      );
+
+      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-tree')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('response-fullscreen-more')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('response-fullscreen-tree')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('全屏查看：非法 JSON 回退纯文本无异常', (tester) async {
+      const raw = '{not json}';
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: raw,
+        ),
+      );
+
+      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
+      await tester.pumpAndSettle();
+
+      expect(_bodyText(tester, prefix: 'response-fullscreen'), raw);
+      expect(find.textContaining('JSON 解析失败'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

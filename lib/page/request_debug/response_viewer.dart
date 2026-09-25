@@ -80,39 +80,19 @@ class ResponseViewer extends StatefulWidget {
 class _ResponseViewerState extends State<ResponseViewer> {
   ResponseViewerTab _tab = ResponseViewerTab.body;
   ResponseBodyFormat _format = ResponseBodyFormat.formatted;
-
-  /// 当前已展开的字符数（分块续载）。
-  int _visibleChars = ResponseViewer.chunkChars;
   bool _saving = false;
-
-  /// Body 内搜索：输入控制器 + 命中状态（命中项基于**完整**文本计算）。
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-  int? _searchOffset;
-  bool _searchMiss = false;
-
-  /// 已折叠的 JSON 容器区间 id（== 开括号所在行号）。
-  final Set<int> _collapsed = <int>{};
 
   DebugResponse get _response => widget.response;
 
   @override
   void didUpdateWidget(ResponseViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 换了一次响应（重发）：回到 Body 默认态并重置分块 / 搜索 / 折叠。
+    // 换了一次响应（重发）：回到 Body 默认态。分块 / 搜索 / 折叠由 Body pane 自持，
+    // 会因 pane 的文本 / 格式变化在其 didUpdateWidget 中重置。
     if (!identical(oldWidget.response, widget.response)) {
       _tab = ResponseViewerTab.body;
       _format = ResponseBodyFormat.formatted;
-      _visibleChars = ResponseViewer.chunkChars;
-      _clearSearch();
-      _collapsed.clear();
     }
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 
   // ==================== 纯逻辑（可单测） ====================
@@ -141,78 +121,11 @@ class _ResponseViewerState extends State<ResponseViewer> {
   }
 
   /// 按开关 / 类型得到用于展示与复制的 Body 文本。
-  String get _displayText {
-    if (_bodyKind == ResponseBodyKind.binary) return '';
-    final raw = _response.bodyText;
-    if (_format == ResponseBodyFormat.raw) return raw;
-    switch (_bodyKind) {
-      case ResponseBodyKind.json:
-        // 超限时不做（昂贵的）整体美化，直接原文分块展示。
-        if (raw.length > ResponseViewer.maxJsonHighlightChars) return raw;
-        return tryPrettyJson(raw) ?? raw;
-      case ResponseBodyKind.xml:
-        return prettyXml(raw);
-      case ResponseBodyKind.html:
-      case ResponseBodyKind.text:
-      case ResponseBodyKind.binary:
-        return raw;
-    }
-  }
-
-  /// 搜索所依据的完整文本：JSON / XML 走（完整）美化文本，其余走原始 bodyText。
-  ///
-  /// 关键点：搜索永远基于**完整**文本而非当前可见分块，因此命中位于分块外时
-  /// 仍可被定位并展开。
-  String get _searchSourceText {
-    if (_bodyKind == ResponseBodyKind.binary) return '';
-    if (_format == ResponseBodyFormat.raw) return _response.bodyText;
-    switch (_bodyKind) {
-      case ResponseBodyKind.json:
-      case ResponseBodyKind.xml:
-        return _displayText;
-      case ResponseBodyKind.html:
-      case ResponseBodyKind.text:
-      case ResponseBodyKind.binary:
-        return _response.bodyText;
-    }
-  }
-
-  /// 清空搜索状态（切换分段 / 切换格式 / 重发时调用）。
-  void _clearSearch() {
-    _searchController.clear();
-    _searchQuery = '';
-    _searchOffset = null;
-    _searchMiss = false;
-  }
-
-  /// 搜索输入变化：在完整文本上定位首个命中；分块纯文本路径下展开可见文本。
-  void _onSearchChanged(String query) {
-    setState(() {
-      _searchQuery = query;
-      if (query.isEmpty) {
-        _searchOffset = null;
-        _searchMiss = false;
-        return;
-      }
-      final index = _searchSourceText.indexOf(query);
-      if (index < 0) {
-        _searchOffset = null;
-        _searchMiss = true;
-        return;
-      }
-      _searchOffset = index;
-      _searchMiss = false;
-      // 仅分块纯文本路径需要按命中位置扩展可见范围；JSON 高亮树整体渲染。
-      final jsonTreeActive = _bodyKind == ResponseBodyKind.json &&
-          _format == ResponseBodyFormat.formatted &&
-          _response.bodyText.length <= ResponseViewer.maxJsonHighlightChars &&
-          tryPrettyJson(_response.bodyText) != null;
-      if (!jsonTreeActive) {
-        final end = index + query.length;
-        if (end > _visibleChars) _visibleChars = end;
-      }
-    });
-  }
+  String get _displayText => _displayResponseBodyText(
+        rawText: _response.bodyText,
+        bodyKind: _bodyKind,
+        format: _format,
+      );
 
   /// Cookie 行的展示模型（含从 `Set-Cookie` 还原的过期信息）。
   List<ResponseCookieRow> get _cookieRows {
@@ -335,8 +248,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
             ],
             onChanged: (value) => setState(() {
               _format = value;
-              _visibleChars = ResponseViewer.chunkChars;
-              _clearSearch();
             }),
           ),
           IconButton(
@@ -421,8 +332,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
             ],
             onChanged: (value) => setState(() {
               _tab = value;
-              _visibleChars = ResponseViewer.chunkChars;
-              _clearSearch();
             }),
           ),
         ),
@@ -477,7 +386,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
       }
     });
     if (rows.isEmpty) {
-      return _buildEmpty(context, '无响应头');
+      return _buildEmptyState(context, '无响应头');
     }
     return ListView.builder(
       padding: AppSpacing.allLG,
@@ -516,54 +425,322 @@ class _ResponseViewerState extends State<ResponseViewer> {
   }
 
   Widget _buildBody(BuildContext context) {
-    final kind = _bodyKind;
-    if (kind == ResponseBodyKind.binary) {
-      return _buildBinary(context);
-    }
-    final text = _displayText;
-    if (text.isEmpty) {
-      return _buildEmpty(context, '响应体为空');
-    }
-    // JSON 高亮 / 折叠树仅在小体量下启用；超限或非法 JSON 退回分块纯文本。
-    final canHighlight = kind == ResponseBodyKind.json &&
-        _format == ResponseBodyFormat.formatted &&
-        _response.bodyText.length <= ResponseViewer.maxJsonHighlightChars;
-    final pretty = canHighlight ? tryPrettyJson(_response.bodyText) : null;
-    if (canHighlight && pretty != null) {
-      return _buildJsonTree(context, pretty);
-    }
-    return _buildChunkedText(
-      context,
-      text,
+    return _ResponseBodyPane(
+      key: const ValueKey<String>('response-body-pane'),
+      rawText: _response.bodyText,
+      bodyKind: _bodyKind,
+      format: _format,
+      sizeBytes: _response.sizeBytes,
       keyPrefix: 'response-body',
-      note: canHighlight ? 'JSON 解析失败，已按原文展示' : null,
-      withSearch: true,
+      onFullscreen: _openFullScreenBody,
     );
   }
 
   Widget _buildRaw(BuildContext context) {
-    final text = _response.bodyText;
+    return _ResponseBodyPane(
+      key: const ValueKey<String>('response-raw-pane'),
+      rawText: _response.bodyText,
+      bodyKind: _bodyKind,
+      format: _format,
+      sizeBytes: _response.sizeBytes,
+      keyPrefix: 'response-raw',
+      forceRaw: true,
+    );
+  }
+
+  /// 打开全屏响应体查看（搜索仅在此处提供）。
+  Future<void> _openFullScreenBody() async {
+    await Navigator.of(context, rootNavigator: false).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => _ResponseBodyFullScreen(
+          rawText: _response.bodyText,
+          bodyKind: _bodyKind,
+          format: _format,
+          sizeBytes: _response.sizeBytes,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCookies(BuildContext context) {
+    final theme = Theme.of(context);
+    final rows = _cookieRows;
+    if (rows.isEmpty) {
+      return _buildEmptyState(context, '无 Cookie');
+    }
+    return ListView(
+      padding: AppSpacing.allLG,
+      children: [
+        _cookieHeaderRow(context, theme),
+        const Divider(height: 1),
+        for (var i = 0; i < rows.length; i++) _cookieRow(context, theme, rows[i], i),
+      ],
+    );
+  }
+
+  Widget _cookieHeaderRow(BuildContext context, ThemeData theme) {
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      fontWeight: AppTypography.weightSemiBold,
+    );
+    return Padding(
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        children: [
+          Expanded(flex: 2, child: Text('名称', style: style)),
+          Expanded(flex: 3, child: Text('值', style: style)),
+          Expanded(flex: 2, child: Text('域', style: style)),
+          Expanded(flex: 2, child: Text('过期', style: style)),
+        ],
+      ),
+    );
+  }
+
+  Widget _cookieRow(
+    BuildContext context,
+    ThemeData theme,
+    ResponseCookieRow row,
+    int index,
+  ) {
+    final base = theme.textTheme.bodySmall;
+    return Padding(
+      key: Key('response-cookie-row-${row.cookie.name}-$index'),
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            flex: 2,
+            child: Text(
+              row.cookie.name,
+              key: Key('response-cookie-${row.cookie.name}-name'),
+              style: base?.copyWith(fontWeight: AppTypography.weightMedium),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: SelectableText(
+              row.cookie.value,
+              key: Key('response-cookie-${row.cookie.name}-value'),
+              style: AppTypography.code,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              row.cookie.domain ?? '—',
+              key: Key('response-cookie-${row.cookie.name}-domain'),
+              style: base,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              row.expires,
+              key: Key('response-cookie-${row.cookie.name}-expires'),
+              style: base,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Body 渲染面板：行内 Body / 原始分段 / 全屏查看共用。
+///
+/// 自持分块可见字符数、完整文本搜索状态与 JSON 折叠状态。[showSearch] 决定是否
+/// 渲染搜索条（仅全屏为真）；[onFullscreen] 非空时渲染「全屏查看」按钮。
+/// 搜索命中项基于**完整** bodyText 定位，命中位于当前分块外时仍会展开可见范围。
+class _ResponseBodyPane extends StatefulWidget {
+  const _ResponseBodyPane({
+    super.key,
+    required this.rawText,
+    required this.bodyKind,
+    required this.format,
+    required this.sizeBytes,
+    required this.keyPrefix,
+    this.showSearch = false,
+    this.forceRaw = false,
+    this.onFullscreen,
+  });
+
+  final String rawText;
+  final ResponseBodyKind bodyKind;
+  final ResponseBodyFormat format;
+  final int sizeBytes;
+
+  /// 内容控件 key 前缀（`<prefix>-tree` / `-gutter` / `-collapse-<id>` /
+  /// `-text` / `-more` / `-counter` / `-search` / `-search-input` / `-search-status`）。
+  final String keyPrefix;
+
+  /// 是否渲染搜索条（仅全屏为真）。
+  final bool showSearch;
+
+  /// 原始分段：始终按原文分块，不做 JSON 树 / 二进制占位 / 类型美化。
+  final bool forceRaw;
+
+  /// 非空时渲染「全屏查看」按钮并作为其动作。
+  final VoidCallback? onFullscreen;
+
+  @override
+  State<_ResponseBodyPane> createState() => _ResponseBodyPaneState();
+}
+
+class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
+  /// 当前已展开的字符数（分块续载）。
+  int _visibleChars = ResponseViewer.chunkChars;
+
+  /// Body 内搜索：输入控制器 + 命中状态（命中项基于**完整**文本计算）。
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  int? _searchOffset;
+  bool _searchMiss = false;
+
+  /// 已折叠的 JSON 容器区间 id（== 开括号所在行号）。
+  final Set<int> _collapsed = <int>{};
+
+  @override
+  void didUpdateWidget(_ResponseBodyPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 文本 / 类型 / 格式变化（换响应、切格式化）→ 重置分块 / 搜索 / 折叠。
+    if (oldWidget.rawText != widget.rawText ||
+        oldWidget.bodyKind != widget.bodyKind ||
+        oldWidget.format != widget.format ||
+        oldWidget.forceRaw != widget.forceRaw) {
+      _visibleChars = ResponseViewer.chunkChars;
+      _clearSearch();
+      _collapsed.clear();
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // ==================== 纯逻辑（可单测） ====================
+
+  /// 按开关 / 类型得到用于展示的 Body 文本。
+  String get _displayText => _displayResponseBodyText(
+        rawText: widget.rawText,
+        bodyKind: widget.bodyKind,
+        format: widget.format,
+        forceRaw: widget.forceRaw,
+      );
+
+  /// 搜索所依据的完整文本（JSON / XML 走完整美化文本，其余走原始 bodyText）。
+  String get _searchSourceText => _searchResponseBodySource(
+        rawText: widget.rawText,
+        bodyKind: widget.bodyKind,
+        format: widget.format,
+        forceRaw: widget.forceRaw,
+      );
+
+  /// JSON 高亮 / 折叠树是否启用（小体量、合法、格式化态的 JSON）。
+  bool get _jsonTreeActive =>
+      !widget.forceRaw &&
+      widget.bodyKind == ResponseBodyKind.json &&
+      widget.format == ResponseBodyFormat.formatted &&
+      widget.rawText.length <= ResponseViewer.maxJsonHighlightChars &&
+      tryPrettyJson(widget.rawText) != null;
+
+  /// 清空搜索状态（切换格式 / 换文本时调用）。
+  void _clearSearch() {
+    _searchController.clear();
+    _searchQuery = '';
+    _searchOffset = null;
+    _searchMiss = false;
+  }
+
+  /// 搜索输入变化：在完整文本上定位首个命中；分块纯文本路径下展开可见文本。
+  void _onSearchChanged(String query) {
+    setState(() {
+      _searchQuery = query;
+      if (query.isEmpty) {
+        _searchOffset = null;
+        _searchMiss = false;
+        return;
+      }
+      final index = _searchSourceText.indexOf(query);
+      if (index < 0) {
+        _searchOffset = null;
+        _searchMiss = true;
+        return;
+      }
+      _searchOffset = index;
+      _searchMiss = false;
+      // 仅分块纯文本路径需要按命中位置扩展可见范围；JSON 高亮树整体渲染。
+      if (!_jsonTreeActive) {
+        final end = index + query.length;
+        if (end > _visibleChars) _visibleChars = end;
+      }
+    });
+  }
+
+  // ==================== 构建 ====================
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.showSearch) _buildSearchBar(context),
+        if (widget.onFullscreen != null) _buildFullscreenBar(context),
+        Expanded(child: _buildContent(context)),
+      ],
+    );
+  }
+
+  /// 行内 Body 的「全屏查看」入口（搜索只在全屏存在）。
+  Widget _buildFullscreenBar(BuildContext context) {
+    return Padding(
+      padding: AppSpacing.onlyHorizontalLG,
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          key: Key('${widget.keyPrefix}-fullscreen'),
+          onPressed: widget.onFullscreen,
+          icon: const Icon(Icons.open_in_full, size: AppTypography.iconSM),
+          label: const Text('全屏查看'),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
+    if (!widget.forceRaw && widget.bodyKind == ResponseBodyKind.binary) {
+      return _buildBinary(context);
+    }
+    final text = _displayText;
     if (text.isEmpty) {
-      return _buildEmpty(context, '响应体为空');
+      return _buildEmptyState(context, '响应体为空');
+    }
+    // JSON 高亮 / 折叠树仅在小体量下启用；超限或非法 JSON 退回分块纯文本。
+    final canHighlight = !widget.forceRaw &&
+        widget.bodyKind == ResponseBodyKind.json &&
+        widget.format == ResponseBodyFormat.formatted &&
+        widget.rawText.length <= ResponseViewer.maxJsonHighlightChars;
+    if (_jsonTreeActive) {
+      return _buildJsonTree(context, tryPrettyJson(widget.rawText)!);
     }
     return _buildChunkedText(
       context,
       text,
-      keyPrefix: 'response-raw',
-      note: null,
+      keyPrefix: widget.keyPrefix,
+      note: canHighlight ? 'JSON 解析失败，已按原文展示' : null,
     );
   }
 
   /// 分块渲染：首屏只建前 [ResponseViewer.chunkChars] 个字符的文本，
   /// 超出部分经顶部的「展开更多」按钮按块续载，避免一次性布局超长文本。
-  ///
-  /// [withSearch] 为真时在顶部提供 Body 内搜索，命中项基于**完整**文本定位。
   Widget _buildChunkedText(
     BuildContext context,
     String text, {
     required String keyPrefix,
     required String? note,
-    bool withSearch = false,
   }) {
     final theme = Theme.of(context);
     final total = text.length;
@@ -573,7 +750,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
     return ListView(
       padding: AppSpacing.allLG,
       children: [
-        if (withSearch) _buildSearchBar(context),
         // 控制条在文本**之前**：超长文本会占满视口，按钮若在其后将被
         // ListView 懒加载跳过而不可达。
         if (remaining > 0)
@@ -647,18 +823,18 @@ class _ResponseViewerState extends State<ResponseViewer> {
     );
   }
 
-  /// Body 内搜索条（JSON 树与分块纯文本共用）。
+  /// Body 内搜索条（仅全屏渲染）。
   Widget _buildSearchBar(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return Padding(
-      key: const Key('response-body-search'),
+      key: Key('${widget.keyPrefix}-search'),
       padding: AppSpacing.onlyBottomMD,
       child: Row(
         children: [
           Expanded(
             child: TextField(
-              key: const Key('response-body-search-input'),
+              key: Key('${widget.keyPrefix}-search-input'),
               controller: _searchController,
               style: theme.textTheme.bodySmall,
               decoration: InputDecoration(
@@ -689,7 +865,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
               padding: AppSpacing.onlyLeftMD,
               child: Text(
                 _searchMiss ? '无匹配' : '已定位',
-                key: const Key('response-body-search-status'),
+                key: Key('${widget.keyPrefix}-search-status'),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: _searchMiss ? scheme.error : scheme.onSurfaceVariant,
                 ),
@@ -737,13 +913,12 @@ class _ResponseViewerState extends State<ResponseViewer> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _buildSearchBar(context),
         Expanded(
           child: SingleChildScrollView(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Container(
-                key: const Key('response-body-tree'),
+                key: Key('${widget.keyPrefix}-tree'),
                 padding: AppSpacing.allMD,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -783,7 +958,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
     final numberWidth =
         AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS;
     return Column(
-      key: const Key('response-body-gutter'),
+      key: Key('${widget.keyPrefix}-gutter'),
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         for (final i in visibleLines)
@@ -797,7 +972,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
                   width: AppTypography.iconMD,
                   child: regionById.containsKey(i)
                       ? GestureDetector(
-                          key: Key('response-body-collapse-$i'),
+                          key: Key('${widget.keyPrefix}-collapse-$i'),
                           behavior: HitTestBehavior.opaque,
                           onTap: () => setState(() {
                             if (!_collapsed.remove(i)) _collapsed.add(i);
@@ -879,7 +1054,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
       padding: AppSpacing.allLG,
       children: [
         Container(
-          key: const Key('response-body-binary'),
+          key: Key('${widget.keyPrefix}-binary'),
           padding: AppSpacing.allLG,
           decoration: BoxDecoration(
             color: scheme.surfaceContainerHighest,
@@ -900,7 +1075,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
                     ),
                     const SizedBox(height: AppSpacing.xs),
                     Text(
-                      '${byteSize(_response.sizeBytes)} · 不显示为文本（可点击复制原始预览）',
+                      '${byteSize(widget.sizeBytes)} · 不显示为文本（可点击复制原始预览）',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -914,101 +1089,113 @@ class _ResponseViewerState extends State<ResponseViewer> {
       ],
     );
   }
+}
 
-  Widget _buildCookies(BuildContext context) {
-    final theme = Theme.of(context);
-    final rows = _cookieRows;
-    if (rows.isEmpty) {
-      return _buildEmpty(context, '无 Cookie');
-    }
-    return ListView(
-      padding: AppSpacing.allLG,
-      children: [
-        _cookieHeaderRow(context, theme),
-        const Divider(height: 1),
-        for (var i = 0; i < rows.length; i++) _cookieRow(context, theme, rows[i], i),
-      ],
-    );
-  }
+/// 全屏响应体查看页：自带 [Scaffold] + [AppBar]，搜索仅在此提供。
+///
+/// 由行内 Body 的「全屏查看」经 `Navigator.push`（`fullscreenDialog: true`,
+/// `rootNavigator: false`）打开；返回后行内 Body 保持不变。
+class _ResponseBodyFullScreen extends StatelessWidget {
+  const _ResponseBodyFullScreen({
+    required this.rawText,
+    required this.bodyKind,
+    required this.format,
+    required this.sizeBytes,
+  });
 
-  Widget _cookieHeaderRow(BuildContext context, ThemeData theme) {
-    final style = theme.textTheme.labelSmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-      fontWeight: AppTypography.weightSemiBold,
-    );
-    return Padding(
-      padding: AppSpacing.onlyVerticalXS,
-      child: Row(
-        children: [
-          Expanded(flex: 2, child: Text('名称', style: style)),
-          Expanded(flex: 3, child: Text('值', style: style)),
-          Expanded(flex: 2, child: Text('域', style: style)),
-          Expanded(flex: 2, child: Text('过期', style: style)),
-        ],
+  final String rawText;
+  final ResponseBodyKind bodyKind;
+  final ResponseBodyFormat format;
+  final int sizeBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: const Key('response-body-fullscreen-view'),
+      appBar: AppBar(
+        title: const Text('响应体'),
+        leading: IconButton(
+          key: const Key('response-body-fullscreen-close'),
+          tooltip: '返回',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
       ),
-    );
-  }
-
-  Widget _cookieRow(
-    BuildContext context,
-    ThemeData theme,
-    ResponseCookieRow row,
-    int index,
-  ) {
-    final base = theme.textTheme.bodySmall;
-    return Padding(
-      key: Key('response-cookie-row-${row.cookie.name}-$index'),
-      padding: AppSpacing.onlyVerticalXS,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            flex: 2,
-            child: Text(
-              row.cookie.name,
-              key: Key('response-cookie-${row.cookie.name}-name'),
-              style: base?.copyWith(fontWeight: AppTypography.weightMedium),
-            ),
-          ),
-          Expanded(
-            flex: 3,
-            child: SelectableText(
-              row.cookie.value,
-              key: Key('response-cookie-${row.cookie.name}-value'),
-              style: AppTypography.code,
-            ),
-          ),
-          Expanded(
-            flex: 2,
-            child: Text(
-              row.cookie.domain ?? '—',
-              key: Key('response-cookie-${row.cookie.name}-domain'),
-              style: base,
-            ),
-          ),
-          Expanded(
-            flex: 2,
-            child: Text(
-              row.expires,
-              key: Key('response-cookie-${row.cookie.name}-expires'),
-              style: base,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmpty(BuildContext context, String message) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Text(
-        message,
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
+      body: SafeArea(
+        child: _ResponseBodyPane(
+          rawText: rawText,
+          bodyKind: bodyKind,
+          format: format,
+          sizeBytes: sizeBytes,
+          keyPrefix: 'response-fullscreen',
+          showSearch: true,
         ),
       ),
     );
+  }
+}
+
+/// 空态占位（无响应体 / 无响应头 / 无 Cookie）。
+Widget _buildEmptyState(BuildContext context, String message) {
+  final theme = Theme.of(context);
+  return Center(
+    child: Text(
+      message,
+      style: theme.textTheme.bodyMedium?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
+}
+
+/// Body 展示文本：二进制返回空串；原始 / 原文按开关；JSON 小体量美化。
+String _displayResponseBodyText({
+  required String rawText,
+  required ResponseBodyKind bodyKind,
+  required ResponseBodyFormat format,
+  bool forceRaw = false,
+}) {
+  if (!forceRaw && bodyKind == ResponseBodyKind.binary) return '';
+  if (forceRaw || format == ResponseBodyFormat.raw) return rawText;
+  switch (bodyKind) {
+    case ResponseBodyKind.json:
+      // 超限时不做（昂贵的）整体美化，直接原文分块展示。
+      if (rawText.length > ResponseViewer.maxJsonHighlightChars) return rawText;
+      return tryPrettyJson(rawText) ?? rawText;
+    case ResponseBodyKind.xml:
+      return prettyXml(rawText);
+    case ResponseBodyKind.html:
+    case ResponseBodyKind.text:
+    case ResponseBodyKind.binary:
+      return rawText;
+  }
+}
+
+/// 搜索所依据的完整文本：JSON / XML 走（完整）美化文本，其余走原始 bodyText。
+///
+/// 关键点：搜索永远基于**完整**文本而非当前可见分块，因此命中位于分块外时
+/// 仍可被定位并展开。
+String _searchResponseBodySource({
+  required String rawText,
+  required ResponseBodyKind bodyKind,
+  required ResponseBodyFormat format,
+  bool forceRaw = false,
+}) {
+  if (!forceRaw && bodyKind == ResponseBodyKind.binary) return '';
+  if (forceRaw || format == ResponseBodyFormat.raw) return rawText;
+  switch (bodyKind) {
+    case ResponseBodyKind.json:
+    case ResponseBodyKind.xml:
+      return _displayResponseBodyText(
+        rawText: rawText,
+        bodyKind: bodyKind,
+        format: format,
+        forceRaw: forceRaw,
+      );
+    case ResponseBodyKind.html:
+    case ResponseBodyKind.text:
+    case ResponseBodyKind.binary:
+      return rawText;
   }
 }
 

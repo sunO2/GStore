@@ -1,0 +1,180 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart
+00:00 +0: 头部（状态 / 耗时 / 大小 / 开关） 渲染状态码、耗时、大小，且格式化/原始开关存在
+00:00 +1: Body · 按 Content-Type 渲染 + 格式化切换 application/json → 高亮树格式化；原始为单行原文
+00:00 +2: Body · 按 Content-Type 渲染 + 格式化切换 application/xml → 格式化按标签缩进
+00:01 +3: Body · 按 Content-Type 渲染 + 格式化切换 text/html → 渲染 HTML 源文本
+00:01 +4: Body · 按 Content-Type 渲染 + 格式化切换 text/plain → 原文渲染
+00:01 +5: Body · 按 Content-Type 渲染 + 格式化切换 非法 JSON → 回退原文并提示解析失败
+00:01 +6: Body · 按 Content-Type 渲染 + 格式化切换 原始分段始终展示未格式化原文
+00:01 +7: JSON 高亮树 · token / gutter / 折叠 / 搜索 多类型 JSON → 多种 token 样式 + gutter
+00:01 +8: JSON 高亮树 · token / gutter / 折叠 / 搜索 折叠子树 → 该子树文本消失
+00:01 +9: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（JSON 树）不渲染搜索框，仅提供全屏入口
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: no matching candidates
+  Actual: _KeyWidgetFinder:<Found 1 widget with key [<'response-body-search'>]: [
+            Padding-[<'response-body-search'>](padding: EdgeInsets(0.0, 0.0, 0.0, 12.0),
+dependencies: [Directionality], renderObject: RenderPadding#9e2ef relayoutBoundary=up1),
+          ]>
+   Which: means one was found but none were expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:327:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart line 327
+The test description was:
+  inline Body（JSON 树）不渲染搜索框，仅提供全屏入口
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +9 -1: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（JSON 树）不渲染搜索框，仅提供全屏入口 [E]
+  Test failed. See exception logs above.
+  The test description was: inline Body（JSON 树）不渲染搜索框，仅提供全屏入口
+  
+00:01 +9 -1: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: no matching candidates
+  Actual: _KeyWidgetFinder:<Found 1 widget with key [<'response-body-search'>]: [
+            Padding-[<'response-body-search'>](padding: EdgeInsets(0.0, 0.0, 0.0, 12.0),
+dependencies: [Directionality], renderObject: RenderPadding#d96a5 relayoutBoundary=up5),
+          ]>
+   Which: means one was found but none were expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:347:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart line 347
+The test description was:
+  inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +9 -2: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口 [E]
+  Test failed. See exception logs above.
+  The test description was: inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口
+  
+00:01 +9 -2: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: no matching candidates
+  Actual: _KeyWidgetFinder:<Found 1 widget with key [<'response-body-search-input'>]: [
+            TextField-[<'response-body-search-input'>](controller:
+TextEditingController#4996b(TextEditingValue(text: ┤├, selection: TextSelection.invalid, composing:
+TextRange(start: -1, end: -1))), decoration: InputDecoration(hintText: "在完整响应体中搜索", isDense: true,
+prefixIcon: Icon(IconData(U+0EB1C), size: 15.0), border: OutlineInputBorder()), style:
+TextStyle(debugLabel: (englishLike bodySmall 2021).merge((blackMountainView bodySmall).apply),
+inherit: false, color: Color(alpha: 1.0000, red: 0.1137, green: 0.1059, blue: 0.1255, colorSpace:
+ColorSpace.sRGB), family: Roboto, size: 12.0, weight: 400, letterSpacing: 0.4, baseline: alphabetic,
+height: 1.3x, leadingDistribution: even, decoration: Color(alpha: 1.0000, red: 0.1137, green:
+0.1059, blue: 0.1255, colorSpace: ColorSpace.sRGB) TextDecoration.none), dependencies:
+[DefaultSelectionStyle, InheritedCupertinoTheme, MediaQuery, UnmanagedRestorationScope,
+_InheritedTheme, _LocalizationsScope-[GlobalKey#7838e]], state: _TextFieldState#12667),
+          ]>
+   Which: means one was found but none were expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:366:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart line 366
+The test description was:
+  全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +9 -3: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body [E]
+  Test failed. See exception logs above.
+  The test description was: 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+  
+00:02 +9 -3: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：>256KB JSON 走分块路径，关闭无异常
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'response-body-fullscreen'>]: []" (used in a call to "tap()")
+could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:418:20)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  全屏查看：>256KB JSON 走分块路径，关闭无异常
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +9 -4: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：>256KB JSON 走分块路径，关闭无异常 [E]
+  Test failed. See exception logs above.
+  The test description was: 全屏查看：>256KB JSON 走分块路径，关闭无异常
+  
+00:02 +9 -4: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：非法 JSON 回退纯文本无异常
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'response-body-fullscreen'>]: []" (used in a call to "tap()")
+could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:440:20)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  全屏查看：非法 JSON 回退纯文本无异常
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +9 -5: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：非法 JSON 回退纯文本无异常 [E]
+  Test failed. See exception logs above.
+  The test description was: 全屏查看：非法 JSON 回退纯文本无异常
+  
+00:02 +9 -5: JSON 高亮树 · token / gutter / 折叠 / 搜索 超过 256KB 的 JSON → 分块纯文本路径，无异常
+00:02 +10 -5: Cookie 表 名称 / 值 / 域 / 过期 行内容精确
+00:02 +11 -5: Cookie 表 无 Cookie → 空态
+00:02 +12 -5: 头 表 逐条渲染响应头
+00:02 +13 -5: 头 表 360dp 下头部 / Cookie 表无溢出
+00:02 +14 -5: 重发重置 换一次响应 → 回到 Body 默认态，格式化回默认，且不抛异常
+00:02 +15 -5: 超长 Body 分块 首屏只建首个分块，展开更多后字符数增长且不崩
+00:03 +16 -5: 二进制 / 非文本安全展示 image/png → 安全占位，不渲染原始文本，不崩
+00:03 +17 -5: 二进制 / 非文本安全展示 无 Content-Type 但含 NUL → 判为二进制并安全占位
+00:03 +18 -5: 动作 复制 → 剪贴板写入当前展示文本
+00:03 +19 -5: 动作 保存为改写响应 → 生成的规则字段精确并经门面结果提示
+00:03 +20 -5: JSON 词法 / 折叠（纯逻辑） tokenizeJsonLine 识别 key / string / number / keyword / 标点
+00:03 +21 -5: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 找到对象与数组区间
+00:03 +22 -5: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 忽略空容器单行
+00:03 +23 -5: Some tests failed.
+
+Failing tests:
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（JSON 树）不渲染搜索框，仅提供全屏入口
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：>256KB JSON 走分块路径，关闭无异常
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：非法 JSON 回退纯文本无异常
