@@ -21,11 +21,10 @@
 //! `false`. ECH/ESNI, QUIC/HTTP3 (UDP, deliberately out of scope) and ports not
 //! in the configured lists still fall back to the IP.
 
-use std::collections::HashMap;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
@@ -37,36 +36,41 @@ const MAX_PREFIX: usize = 8192;
 /// Per-read chunk when draining the first flight.
 const CHUNK: usize = 2048;
 
-/// Which parser to run for a destination port.
-#[derive(Clone, Copy)]
-enum Proto {
+/// Which parser to run for a sniffed flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SniffProto {
     Tls,
     Http,
+}
+
+/// Explicit per-flow sniff directive: which parser to run and for how long.
+///
+/// The dispatch layer owns the port -> `SniffPlan` mapping (`dispatch::sniff_plan`);
+/// the sniffer itself reads no global config and no port list, so it stays a pure
+/// `stream + plan` transform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SniffPlan {
+    /// Parser to run once the first flight is buffered.
+    pub proto: SniffProto,
+    /// Total wall-clock budget for the prefetch.
+    pub timeout: Duration,
 }
 
 /// Prefetch-and-replay sniffer. Built once and shared (`Arc`) by every accepted
 /// TCP flow ([`crate::dispatch`]).
 pub(crate) struct Sniffer {
     cfg: SnifferConfig,
-    port_map: HashMap<u16, Proto>,
 }
 
 impl Sniffer {
-    /// Build from a [`SnifferConfig`]; `port_map` maps each `tls_ports` entry
-    /// to [`Proto::Tls`] and each `http_ports` entry to [`Proto::Http`].
+    /// Build from a [`SnifferConfig`]; only `enable` is retained — the parser and
+    /// timeout now arrive per flow in the [`SniffPlan`].
     pub(crate) fn new(cfg: SnifferConfig) -> Self {
-        let mut port_map = HashMap::new();
-        for &p in &cfg.tls_ports {
-            port_map.insert(p, Proto::Tls);
-        }
-        for &p in &cfg.http_ports {
-            port_map.insert(p, Proto::Http);
-        }
-        Self { cfg, port_map }
+        Self { cfg }
     }
 
-    /// Shipping configuration: enabled with [`SnifferConfig::default`]'s
-    /// 100 ms timeout and `443/8443` (TLS) + `80/8080/8880` (HTTP) port lists.
+    /// Shipping configuration: enabled. The parser and timeout come from the
+    /// per-flow [`SniffPlan`] built by the dispatcher.
     pub(crate) fn default_enabled() -> Self {
         Self::new(SnifferConfig {
             enable: true,
@@ -76,31 +80,30 @@ impl Sniffer {
 
     /// Read the client's first flight and try to extract a hostname.
     ///
-    /// Reads are bounded by a **single overall deadline**
-    /// (`Instant::now() + cfg.timeout`) and by [`MAX_PREFIX`] bytes. The loop
-    /// stops early once a full TLS record is buffered
-    /// (`buf.len() >= 5 + record_len`) or an HTTP header terminator (`\r\n\r\n`)
-    /// is seen — whichever the port's [`Proto`] selects.
+    /// Reads are bounded by a **single overall deadline** (`plan.timeout`) and by
+    /// [`MAX_PREFIX`] bytes. The loop stops early once a full TLS record is
+    /// buffered (`buf.len() >= 5 + record_len`) or an HTTP header terminator
+    /// (`\r\n\r\n`) is seen — whichever `plan.proto` selects.
     ///
     /// Returns **all** bytes read together with the sniffed host (`None` when
     /// nothing was parsed), so the caller can replay them via
-    /// [`PrefixedStream`]. **Never returns an error**: a disabled sniffer, an
-    /// unmapped port, EOF, timeout, IO error or parse failure all collapse to
-    /// `(prefix, None)`. A disabled sniffer or an unmapped port reads **nothing**
-    /// (so no latency/data is added on non-sniff ports).
+    /// [`PrefixedStream`]. **Never returns an error**: a disabled sniffer, a
+    /// `None` plan, EOF, timeout, IO error or parse failure all collapse to
+    /// `(prefix, None)`. A disabled sniffer or a `None` plan reads **nothing**
+    /// (so no latency/data is added on non-sniff flows).
     pub(crate) async fn sniff_prefix<S: AsyncRead + Unpin>(
         &self,
         stream: &mut S,
-        dst_port: u16,
+        plan: Option<SniffPlan>,
     ) -> (Vec<u8>, Option<String>) {
         if !self.cfg.enable {
             return (Vec::new(), None);
         }
-        let Some(proto) = self.port_map.get(&dst_port).copied() else {
+        let Some(plan) = plan else {
             return (Vec::new(), None);
         };
 
-        let deadline = Instant::now() + self.cfg.timeout;
+        let deadline = Instant::now() + plan.timeout;
         let mut buf: Vec<u8> = Vec::new();
         let mut chunk = [0u8; CHUNK];
 
@@ -119,9 +122,9 @@ impl Sniffer {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => {
                     buf.extend_from_slice(&chunk[..n]);
-                    let complete = match proto {
-                        Proto::Tls => tls_record_complete(&buf),
-                        Proto::Http => has_http_header_end(&buf),
+                    let complete = match plan.proto {
+                        SniffProto::Tls => tls_record_complete(&buf),
+                        SniffProto::Http => has_http_header_end(&buf),
                     };
                     if complete {
                         break;
@@ -130,9 +133,9 @@ impl Sniffer {
             }
         }
 
-        let host = match proto {
-            Proto::Tls => sniff_tls(&buf),
-            Proto::Http => sniff_http(&buf),
+        let host = match plan.proto {
+            SniffProto::Tls => sniff_tls(&buf),
+            SniffProto::Http => sniff_http(&buf),
         };
         (buf, host.map(|h| h.to_string()))
     }
@@ -322,7 +325,11 @@ mod tests {
             CountingReader::new(hello.clone(), Arc::new(AtomicUsize::new(0)));
         let sniffer = Sniffer::default_enabled();
 
-        let (prefix, host) = sniffer.sniff_prefix(&mut stream, 443).await;
+        let plan = SniffPlan {
+            proto: SniffProto::Tls,
+            timeout: Duration::from_millis(100),
+        };
+        let (prefix, host) = sniffer.sniff_prefix(&mut stream, Some(plan)).await;
 
         assert_eq!(host.as_deref(), Some("example.com"));
         assert_eq!(prefix, hello, "replayed prefix must equal the input bytes");
@@ -336,28 +343,32 @@ mod tests {
             CountingReader::new(request.clone(), Arc::new(AtomicUsize::new(0)));
         let sniffer = Sniffer::default_enabled();
 
-        let (prefix, host) = sniffer.sniff_prefix(&mut stream, 80).await;
+        let plan = SniffPlan {
+            proto: SniffProto::Http,
+            timeout: Duration::from_millis(100),
+        };
+        let (prefix, host) = sniffer.sniff_prefix(&mut stream, Some(plan)).await;
 
         assert_eq!(host.as_deref(), Some("example.com"));
         assert_eq!(prefix, request);
     }
 
-    /// A port not in the map returns `(vec![], None)` **without reading**.
+    /// A `None` plan returns `(vec![], None)` **without reading**.
     #[tokio::test]
-    async fn sniff_prefix_unmapped_port_reads_nothing() {
+    async fn sniff_prefix_none_plan_reads_nothing() {
         let reads = Arc::new(AtomicUsize::new(0));
         let hello = build_client_hello("example.com");
         let mut stream = CountingReader::new(hello, Arc::clone(&reads));
         let sniffer = Sniffer::default_enabled();
 
-        let (prefix, host) = sniffer.sniff_prefix(&mut stream, 22).await;
+        let (prefix, host) = sniffer.sniff_prefix(&mut stream, None).await;
 
         assert!(prefix.is_empty());
         assert!(host.is_none());
         assert_eq!(
             reads.load(Ordering::SeqCst),
             0,
-            "an unmapped port must consume no data"
+            "a None plan must consume no data"
         );
     }
 
@@ -371,7 +382,11 @@ mod tests {
             ..Default::default()
         });
 
-        let (prefix, host) = sniffer.sniff_prefix(&mut stream, 443).await;
+        let plan = SniffPlan {
+            proto: SniffProto::Tls,
+            timeout: Duration::from_millis(100),
+        };
+        let (prefix, host) = sniffer.sniff_prefix(&mut stream, Some(plan)).await;
 
         assert!(prefix.is_empty());
         assert!(host.is_none());
@@ -382,16 +397,16 @@ mod tests {
     #[tokio::test]
     async fn sniff_prefix_silent_client_returns_within_deadline() {
         let timeout = Duration::from_millis(100);
-        let sniffer = Sniffer::new(SnifferConfig {
-            enable: true,
-            timeout,
-            ..Default::default()
-        });
+        let sniffer = Sniffer::default_enabled();
         // Connected but never sends: the read stays Pending until the deadline.
         let (_client, mut server) = tokio::io::duplex(64);
 
         let start = Instant::now();
-        let (prefix, host) = sniffer.sniff_prefix(&mut server, 443).await;
+        let plan = SniffPlan {
+            proto: SniffProto::Tls,
+            timeout,
+        };
+        let (prefix, host) = sniffer.sniff_prefix(&mut server, Some(plan)).await;
         let elapsed = start.elapsed();
 
         assert!(prefix.is_empty());

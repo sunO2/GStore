@@ -20,6 +20,7 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use futures::{FutureExt, StreamExt};
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
@@ -135,6 +136,49 @@ pub(crate) fn spawn(
     Dispatcher { tcp, udp }
 }
 
+/// TLS ports sniffed even when capture is disabled, so `sniff_host` still fills
+/// the connection record on the common secure ports.
+const BASELINE_TLS_SNIFF_PORTS: [u16; 2] = [443, 8443];
+/// Plain-HTTP ports sniffed for the `Host` header.
+const HTTP_SNIFF_PORTS: [u16; 3] = [80, 8080, 8880];
+/// Prefetch budget for the baseline/best-effort ports.
+const SNIFF_TIMEOUT_MS: u64 = 100;
+/// Longer prefetch budget for capture-enabled TLS ports: the gate needs the SNI
+/// before it can decide, so waiting a little longer is worthwhile.
+const SNIFF_TIMEOUT_CAPTURE_MS: u64 = 400;
+
+/// Decide whether to sniff `port` and with which parser/window.
+///
+/// Precedence:
+/// 1. capture enabled and `tls_ports` contains the port -> TLS, 400 ms;
+/// 2. baseline TLS port (`443`/`8443`) -> TLS, 100 ms;
+/// 3. HTTP port (`80`/`8080`/`8880`) -> HTTP, 100 ms;
+/// 4. otherwise -> `None` (nothing is read).
+///
+/// A capture `tls_ports` entry always wins over the HTTP defaults, so a port
+/// listed in both is sniffed as TLS, never as HTTP.
+fn sniff_plan(config: &capture::CaptureConfig, port: u16) -> Option<sniff::SniffPlan> {
+    if config.enabled && config.tls_ports.contains(&port) {
+        return Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Tls,
+            timeout: Duration::from_millis(SNIFF_TIMEOUT_CAPTURE_MS),
+        });
+    }
+    if BASELINE_TLS_SNIFF_PORTS.contains(&port) {
+        return Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Tls,
+            timeout: Duration::from_millis(SNIFF_TIMEOUT_MS),
+        });
+    }
+    if HTTP_SNIFF_PORTS.contains(&port) {
+        return Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Http,
+            timeout: Duration::from_millis(SNIFF_TIMEOUT_MS),
+        });
+    }
+    None
+}
+
 /// Handle one accepted TCP flow.
 ///
 /// The sniffer runs first so the gate can consult the SNI host; its prefetched
@@ -151,14 +195,15 @@ pub(crate) async fn handle_flow<S>(
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let mut metadata = tcp_metadata(src, dst);
+    let config = capture::config();
     // Prefetch the first flight, then replay it before the live stream so the
     // tunnel sees every byte in order.
-    let (prefix, host) = sniffer.sniff_prefix(&mut stream, dst.port()).await;
+    let plan = sniff_plan(&config, dst.port());
+    let (prefix, host) = sniffer.sniff_prefix(&mut stream, plan).await;
     if let Some(h) = host.as_deref() {
         metadata.sniff_host = h.into();
     }
 
-    let config = capture::config();
     // App attribution is only resolved when it is the sole possible decider.
     let app = if capture::needs_app_resolution(&config, dst.port()) {
         capture::resolve_app(src, dst).await
@@ -781,7 +826,11 @@ mod mitm_gate_tests {
             // Exact dispatch order: sniff first, then gate.
             let sniffer = sniff::Sniffer::default_enabled();
             let mut server = server;
-            let (prefix, host) = sniffer.sniff_prefix(&mut server, 443).await;
+            let plan = sniff::SniffPlan {
+                proto: sniff::SniffProto::Tls,
+                timeout: Duration::from_millis(100),
+            };
+            let (prefix, host) = sniffer.sniff_prefix(&mut server, Some(plan)).await;
             assert_eq!(host.as_deref(), Some("blocked.example"));
 
             let cfg = enabled(&["allowed.example"], &[]);
