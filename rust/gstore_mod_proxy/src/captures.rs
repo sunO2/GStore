@@ -714,6 +714,44 @@ impl CaptureStore {
         }
         Ok(count)
     }
+
+    /// Remove one record from the ring (rebuilding the index), the pending flush
+    /// queue and the durable table. `true` when the record actually existed;
+    /// idempotent — an absent id is a `false` no-op, never an error. A durable
+    /// delete failure is logged and reported `false`, so `captures.get`
+    /// (DB-authoritative) can never claim a success it did not persist.
+    pub(crate) fn delete(&mut self, record_id: u64) -> bool {
+        let db_removed = match &self.db {
+            Some(db) => match db.delete(record_id) {
+                Ok(n) => n > 0,
+                Err(e) => {
+                    crate::log_message(2, &format!("proxy.captures: delete failed: {e}"));
+                    return false;
+                }
+            },
+            None => false,
+        };
+        let ring_removed = self.by_record_id.contains_key(&record_id);
+        if ring_removed {
+            self.records.retain(|r| r.record_id != record_id);
+            self.reindex();
+            self.window_start_ms = self.records.front().map(|r| r.started_at_ms).unwrap_or(0);
+        }
+        let pending_before = self.pending.len();
+        if pending_before != 0 {
+            let mut kept: VecDeque<CaptureRecord> = VecDeque::with_capacity(pending_before);
+            while let Some(record) = self.pending.pop_front() {
+                if record.record_id == record_id {
+                    self.pending_bytes = self.pending_bytes.saturating_sub(record_size(&record));
+                } else {
+                    kept.push_back(record);
+                }
+            }
+            self.pending = kept;
+        }
+        let pending_removed = self.pending.len() != pending_before;
+        db_removed || ring_removed || pending_removed
+    }
 }
 
 /// A durable capture-store read/write failure (`PROXY_CAPTURE_STORE_FAILED`,
@@ -1092,6 +1130,13 @@ impl Persist {
         self.conn.execute_batch("DELETE FROM capture_records;")
     }
 
+    fn delete(&self, record_id: u64) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "DELETE FROM capture_records WHERE record_id = ?1",
+            rusqlite::params![record_id as i64],
+        )
+    }
+
     fn count(&self, floor: u64) -> rusqlite::Result<usize> {
         self.conn
             .query_row(
@@ -1304,6 +1349,16 @@ pub(crate) fn detail(record_id: u64) -> Result<Option<CaptureDetail>, ModuleErro
     with_store(|st| st.detail(record_id))
 }
 
+/// Delete one record over the process-global store. Bumps the shared dirty
+/// counter only on an actual removal (reused — no new event type).
+pub(crate) fn delete(record_id: u64) -> bool {
+    let removed = with_store(|st| st.delete(record_id));
+    if removed {
+        crate::requests::mark_external_dirty();
+    }
+    removed
+}
+
 // ==================== Todo 12: `captures.*` dispatch arms ====================
 
 /// `captures.get` request body:
@@ -1381,6 +1436,23 @@ pub(crate) fn detail_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
 pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
     let cleared = with_store(|st| st.clear())?;
     crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
+}
+
+/// `captures.delete` request body: `{ "recordId": recordId }`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureDeleteRequest {
+    pub record_id: u64,
+}
+
+/// `captures.delete` arm. Idempotent: an unknown `recordId` is
+/// `{ok:true,removed:false}` (never `PROXY_CAPTURE_NOT_FOUND`).
+pub(crate) fn delete_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req: CaptureDeleteRequest = serde_json::from_slice(payload).map_err(|e| {
+        ModuleError::invalid_arg(format!("captures.delete payload must be a JSON object: {e}"))
+    })?;
+    let removed = delete(req.record_id);
+    crate::ok_data(serde_json::json!({ "ok": true, "removed": removed }))
 }
 
 // ==================== Todo 14: `capture.rules.*` store + arms ====================
@@ -2139,6 +2211,77 @@ mod tests {
         assert_eq!(snapshot(0, 10, &CaptureFilter::default()).records.len(), 4, "the 4th row reached the DB");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D8a acceptance: `delete` removes a record from the ring (rebuilding the
+    /// index), the pending-flush queue and the durable row; a missing id is an
+    /// idempotent `false` no-op; the ring index stays consistent for survivors.
+    #[test]
+    fn captures_store_delete_removes_ring_pending_and_disk() {
+        reset_for_tests();
+        let dir = unique_temp_dir("delete");
+        let dir_s = dir.to_str().unwrap().to_string();
+        configure_at(&dir_s, 1_000);
+        assert!(db_configured_for_tests());
+
+        let id1 = with_store(|st| st.push_full(fixture(0, 1_000), 1_000));
+        let id2 = with_store(|st| st.push_full(fixture(1, 1_001), 1_001));
+        flush_for_tests(2_000);
+        assert_eq!(db_row_count_for_tests(), Some(2), "two rows reached the DB");
+        let id3 = with_store(|st| st.push_full(fixture(2, 1_002), 1_002));
+        assert_eq!(db_row_count_for_tests(), Some(2), "id3 is still pending");
+
+        assert!(delete(id2), "an existing record is removed");
+        assert!(
+            !snapshot(0, 10, &CaptureFilter::default())
+                .records
+                .iter()
+                .any(|r| r.record_id == id2),
+            "deleted id is gone from the ring page"
+        );
+        assert!(detail(id2).unwrap().is_none(), "deleted id is gone from detail");
+        assert_eq!(db_row_count_for_tests(), Some(1), "the durable row was deleted");
+
+        assert_eq!(detail(id1).unwrap().unwrap().record_id, id1);
+        assert_eq!(detail(id3).unwrap().unwrap().record_id, id3, "pending ok");
+        assert!(with_store(|st| st.by_record_id.len() == st.records.len()));
+
+        assert!(delete(id3));
+        assert!(
+            with_store(|st| !st.pending.iter().any(|r| r.record_id == id3)),
+            "deleted id is gone from the pending flush queue"
+        );
+        assert!(detail(id3).unwrap().is_none());
+
+        crate::requests::reset_for_tests();
+        let dirty_before = crate::requests::external_dirty_for_tests();
+        assert!(!delete(9_999), "a missing id is an idempotent no-op");
+        assert_eq!(
+            crate::requests::external_dirty_for_tests(),
+            dirty_before,
+            "a miss never bumps the shared dirty signal"
+        );
+
+        reset_for_tests();
+        let ids: Vec<u64> = (0..3)
+            .map(|i| with_store(|st| st.push_full(fixture(i, 1_000), 1_000)))
+            .collect();
+        assert!(delete(ids[1]));
+        let page = snapshot(0, 10, &CaptureFilter::default());
+        assert_eq!(page.records.len(), 2, "one ring record removed");
+        assert_eq!(page.records[0].record_id, ids[0]);
+        assert_eq!(page.records[1].record_id, ids[2]);
+        assert!(detail(ids[1]).unwrap().is_none());
+        assert_eq!(detail(ids[0]).unwrap().unwrap().record_id, ids[0]);
+        assert_eq!(detail(ids[2]).unwrap().unwrap().record_id, ids[2]);
+        assert!(
+            with_store(|st| st.by_record_id.len() == st.records.len()
+                && st.by_record_id.get(&ids[2]) == Some(&1)),
+            "the ring index was rebuilt after the middle record was removed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        reset_for_tests();
     }
 
     /// Acceptance: a capture change bumps the shared dirty counter but never

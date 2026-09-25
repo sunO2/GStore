@@ -445,6 +445,7 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "captures.get",
     "captures.detail",
     "captures.reset",
+    "captures.delete",
     "capture.rules.get",
     "capture.rules.set",
     "capture.rules.remove",
@@ -2308,6 +2309,8 @@ fn call_impl(
             .and_then(|_| captures::detail_arm(_payload)),
         "captures.reset" => require_instance(instance_id, instance.clone())
             .and_then(|_| captures::reset_arm()),
+        "captures.delete" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::delete_arm(_payload)),
         "capture.rules.get" => require_instance(instance_id, instance.clone())
             .and_then(|_| captures::rules_get_arm()),
         "capture.rules.set" => require_instance(instance_id, instance.clone())
@@ -3217,6 +3220,130 @@ mod abi_tests {
             after["data"]["nextCursor"].as_u64().unwrap(),
             2,
             "reset never recycles the cursor"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        captures::reset_for_tests();
+        let _ = destroy(inst);
+    }
+
+    /// D8a: `captures.delete` over the real ABI — an existing record is gone
+    /// from `captures.get`/`captures.detail` after the delete (never a
+    /// misleading success), a missing id is an idempotent
+    /// `{ok:true,removed:false}` (never a 404), and the surviving row resolves.
+    #[test]
+    fn captures_delete_round_trip_and_idempotent() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        captures::reset_for_tests();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "captures-delete");
+
+        let now = crate::now_ms();
+        captures::configure_at(&dir.display().to_string(), now);
+        let mk = |seq: u64| mitm::CaptureRecord {
+            record_id: 0,
+            request_record_id: seq,
+            conn_id: format!("conn-{seq}"),
+            host: format!("h{seq}.example"),
+            method: "GET".to_string(),
+            scheme: "https".to_string(),
+            url: format!("https://h{seq}.example/p/{seq}"),
+            status_code: 200,
+            protocol: "h1".to_string(),
+            req_headers: "host: h.example\r\n".to_string(),
+            resp_headers: "content-type: text/plain\r\n".to_string(),
+            req_body_preview: b"req".to_vec(),
+            resp_body_preview: b"resp".to_vec(),
+            req_body: b"full-req".to_vec(),
+            resp_body: b"full-resp".to_vec(),
+            req_bytes: 8,
+            resp_bytes: 9,
+            content_type: "text/plain".to_string(),
+            started_at_ms: now,
+            finished_at_ms: now + 5,
+            duration_ms: 5,
+            truncated: false,
+            mitm_failed: false,
+            ws_frames: Vec::new(),
+        };
+        captures::ingest(mk(0));
+        captures::ingest(mk(1));
+        captures::flush_for_tests(now);
+
+        let (code, out) = call_json(call, inst, "captures.get");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let page: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let ids: Vec<u64> = page["data"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["recordId"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        let (target, survivor) = (ids[0], ids[1]);
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "captures.delete",
+            format!(r#"{{"recordId":{target}}}"#).as_bytes(),
+        );
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let deleted: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(deleted["data"]["ok"], true);
+        assert_eq!(deleted["data"]["removed"], true);
+
+        let (_, out) = call_json(call, inst, "captures.get");
+        let after: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let remaining: Vec<u64> = after["data"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["recordId"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![survivor],
+            "the success envelope must not lie: the deleted id is gone from captures.get"
+        );
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "captures.detail",
+            format!(r#"{{"recordId":{target}}}"#).as_bytes(),
+        );
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 404);
+        assert_eq!(err["code"], captures::ERR_CAPTURE_NOT_FOUND);
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "captures.detail",
+            format!(r#"{{"recordId":{survivor}}}"#).as_bytes(),
+        );
+        assert_eq!(
+            code,
+            ABI_OK,
+            "the survivor still resolves (index consistent): {}",
+            String::from_utf8_lossy(&out)
+        );
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "captures.delete",
+            format!(r#"{{"recordId":{target}}}"#).as_bytes(),
+        );
+        assert_eq!(code, ABI_OK);
+        let again: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(again["data"]["ok"], true);
+        assert_eq!(again["data"]["removed"], false, "missing id is a no-op");
+        assert!(
+            again.get("code").is_none() && again.get("status").is_none(),
+            "the idempotent miss carries no error code/status"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

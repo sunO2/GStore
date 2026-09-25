@@ -1309,6 +1309,7 @@ TLS 终止失败（`mitmFailed`）不抓，非 root 不绕过 pinning；`routing
 | `captures.get` | `{ "cursor"?: recordId, "limit"?: 256, "filter"?: { "host"?: string, "method"?: string, "statusClass"?: 1\|2\|3\|4\|5, "protocol"?: "h1"\|"h2"\|"ws", "requestRecordId"?: recordId } }` | `CapturePage` |
 | `captures.detail` | `{ "recordId": recordId }` | `CaptureDetail` |
 | `captures.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
+| `captures.delete` | `{ "recordId": recordId }` | `{ "ok": true, "removed": true }` |
 
 `CaptureRecord` (one row of `CapturePage.records`; the full bodies are **not** here):
 ```json
@@ -1375,8 +1376,10 @@ bounded in-memory ring is the source. Filters: `host` is a case-insensitive subs
 **full** record for one `recordId` (pending flush queue → SQLite → ring summary); an unknown id is
 `PROXY_CAPTURE_NOT_FOUND` (404). `captures.reset` drops every retained row (ring, pending queue and
 durable table) and keeps `recordId`/cursor numbering monotonic, so a cleared record is never
-detail-able again. All three require a live instance (structured `INSTANCE_NOT_FOUND` 410, never
-`METHOD_NOT_FOUND`).
+detail-able again. `captures.delete` removes the one row named by `recordId` from the ring, the
+pending-flush queue and the durable table; it is **idempotent** — an absent `recordId` returns
+`{ "ok": true, "removed": false }` and is never `PROXY_CAPTURE_NOT_FOUND`. All four require a live
+instance (structured `INSTANCE_NOT_FOUND` 410, never `METHOD_NOT_FOUND`).
 
 **Config-switch semantics.** `capture.config.set` applies to **new flows only**; an in-flight MITM
 session keeps the config snapshot it started with, so a mid-session change can never leave a session

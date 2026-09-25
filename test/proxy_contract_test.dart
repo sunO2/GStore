@@ -342,6 +342,10 @@ final _captureDetailFixture = <String, dynamic>{
 /// `captures.reset` 冻结响应 fixture（`API.md` §2.18 `{ok, cleared}`）。
 const _capturesResetFixture = <String, dynamic>{'ok': true, 'cleared': 1};
 
+/// `captures.delete` 冻结响应 fixture（`API.md` §2.18 `{ok, removed}`）。删除
+/// 已存在的 `recordId` 时 `removed:true`；缺席时为 `removed:false`（幂等）。
+const _capturesDeleteFixture = <String, dynamic>{'ok': true, 'removed': true};
+
 /// 一条改写规则 fixture（`API.md` §2.19 `CaptureRule`）：字段值刻意非默认以证
 /// round-trip 保真（可选字段非空、`hitCount`>0）。
 const _captureRuleFixture = <String, dynamic>{
@@ -803,6 +807,7 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   ProxyMethods.capturesGet: _capturePageFixture,
   ProxyMethods.capturesDetail: _captureDetailFixture,
   ProxyMethods.capturesReset: _capturesResetFixture,
+  ProxyMethods.capturesDelete: _capturesDeleteFixture,
   // `capture.rules.*` 改写规则（API.md §2.19）。
   ProxyMethods.captureRulesGet: _captureRuleListFixture,
   ProxyMethods.captureRulesSet: _captureRuleFixture,
@@ -1277,6 +1282,31 @@ void main() {
       expect(empty.recordId, 0);
       expect(empty.wsFrames, isEmpty);
       expect(empty.reqBodyPreview, isEmpty);
+    });
+
+    test('captures.delete fixture round-trip + 幂等 removed:false + 请求编码', () async {
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.capturesDelete: _okEnvelope(_capturesDeleteFixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final deleted = await facade.invoke(
+        ProxyMethods.capturesDelete,
+        proxyResponseDecoders[ProxyMethods.capturesDelete]!,
+      ) as CaptureDeleteResult;
+      expect(deleted.ok, isTrue);
+      expect(deleted.removed, isTrue);
+
+      final absent = CaptureDeleteResult.fromJson(
+          const <String, dynamic>{'ok': true, 'removed': false});
+      expect(absent.ok, isTrue);
+      expect(absent.removed, isFalse, reason: '幂等：缺席 recordId 不算错误');
+
+      expect(
+        const CaptureDeleteRequest(7).toJson(),
+        <String, dynamic>{'recordId': 7},
+        reason: '请求编码器精确保真',
+      );
     });
 
     test('capture.rules fixture round-trip 保留真实字段值 + 请求编码保真', () async {

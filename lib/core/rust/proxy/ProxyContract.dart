@@ -96,6 +96,7 @@ class ProxyMethods {
   static const String capturesGet = 'captures.get';
   static const String capturesDetail = 'captures.detail';
   static const String capturesReset = 'captures.reset';
+  static const String capturesDelete = 'captures.delete';
 
   // `capture.rules.*`：HTTP 实时改写规则（API.md §2.19，默认关）。
   static const String captureRulesGet = 'capture.rules.get';
@@ -167,6 +168,7 @@ class ProxyMethods {
     capturesGet,
     capturesDetail,
     capturesReset,
+    capturesDelete,
     captureRulesGet,
     captureRulesSet,
     captureRulesRemove,
@@ -3298,6 +3300,21 @@ class CapturesResetResult {
   final int cleared;
 }
 
+/// `captures.delete` 响应（镜像 `API.md` §2.18 `{ok, removed}`）。幂等：删除
+/// 缺席的 `recordId` 时 `removed` 为 `false`，不报 404。
+class CaptureDeleteResult {
+  const CaptureDeleteResult({this.ok = false, this.removed = false});
+
+  factory CaptureDeleteResult.fromJson(Map<String, dynamic> json) =>
+      CaptureDeleteResult(
+        ok: _bool(json['ok']),
+        removed: _bool(json['removed']),
+      );
+
+  final bool ok;
+  final bool removed;
+}
+
 /// `captures.get` 过滤器（`API.md` §2.18）；未提供的字段不编码。
 class CapturesFilter {
   const CapturesFilter({
@@ -3341,6 +3358,15 @@ class CapturesGetRequest {
 /// `captures.detail` 请求（`API.md` §2.18）。
 class CaptureDetailRequest {
   const CaptureDetailRequest(this.recordId);
+
+  final int recordId;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{'recordId': recordId};
+}
+
+/// `captures.delete` 请求（`API.md` §2.18）。
+class CaptureDeleteRequest {
+  const CaptureDeleteRequest(this.recordId);
 
   final int recordId;
 
@@ -3546,6 +3572,7 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.capturesGet: CapturePage.fromJson,
   ProxyMethods.capturesDetail: CaptureDetail.fromJson,
   ProxyMethods.capturesReset: CapturesResetResult.fromJson,
+  ProxyMethods.capturesDelete: CaptureDeleteResult.fromJson,
   ProxyMethods.captureRulesGet: CaptureRuleList.fromJson,
   ProxyMethods.captureRulesSet: CaptureRule.fromJson,
   ProxyMethods.captureRulesRemove: CaptureRulesRemoveResult.fromJson,
@@ -3971,6 +3998,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.capturesGet: () => const CapturesGetRequest().toJson(),
   ProxyMethods.capturesDetail: () => const CaptureDetailRequest(1).toJson(),
   ProxyMethods.capturesReset: () => const <String, dynamic>{},
+  ProxyMethods.capturesDelete: () => const CaptureDeleteRequest(1).toJson(),
   ProxyMethods.captureRulesSet: () => const CaptureRuleSetRequest(
         enabled: false,
         url: 'https://example.com/',
