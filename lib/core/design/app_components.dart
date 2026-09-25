@@ -16,6 +16,8 @@ import 'app_radius.dart';
 import 'app_shadows.dart';
 import 'app_typography.dart';
 import 'app_animations.dart';
+import 'app_dialogs.dart';
+import 'app_sheet.dart';
 
 // ========== AppCard ==========
 /// Unified card component with consistent styling
@@ -1542,6 +1544,406 @@ class AppIcon extends StatelessWidget {
         borderRadius: BorderRadius.circular(borderRadius),
       ),
       child: const Icon(TablerIcons.brand_android, color: Colors.grey),
+    );
+  }
+}
+
+// ========== AppEditableField ==========
+
+/// [AppEditableField] 的呈现方式。
+enum AppEditableFieldMode {
+  /// 只读展示：换行文本最多约 4 行 + 省略号；空值显示 hint；整行可点按。
+  display,
+
+  /// 行内自增高：`TextField(minLines: 1, maxLines: null)`。
+  inline,
+
+  /// 弹层编辑：点按后在统一底部弹层内用大输入框编辑（完成 / 取消 + 全屏升级）。
+  sheet,
+}
+
+/// 弹层内工具栏槽位构造器。
+///
+/// 传入当前编辑面的 controller（sheet 打开时为本地草稿），
+/// 方便工具栏把「插入变量 / 粘贴 / 清空」落到正在编辑的值上。
+typedef AppEditableFieldToolbarBuilder = Widget Function(
+  BuildContext context,
+  TextEditingController controller,
+);
+
+/// 自适应可编辑字段（设计系统原语）
+///
+/// 按 [AppEditableFieldMode] 呈现同一份绑定值：
+/// - [AppEditableFieldMode.display]：只读换行展示（限 [displayMaxLines] 行 + 省略号）；
+/// - [AppEditableFieldMode.inline]：行内自增高输入框；
+/// - [AppEditableFieldMode.sheet]：点按展开统一底部弹层（大输入框 + 完成/取消 +
+///   全屏升级），未确认前不修改绑定值。
+///
+/// 绑定 [controller] 即业务值；弹层 / 全屏打开期间 [AppEditableFieldState]
+/// 会把「激活 controller」切到本地草稿，[AppEditableFieldState.insertAtCursor]
+/// 与聚焦都落在当前编辑面，确保「插入变量」不会写错值。
+class AppEditableField extends StatefulWidget {
+  const AppEditableField({
+    super.key,
+    required this.controller,
+    this.mode = AppEditableFieldMode.display,
+    this.onSubmitted,
+    this.onTap,
+    this.textInputAction = TextInputAction.done,
+    this.hintText,
+    this.label,
+    this.toolbarBuilder,
+    this.displayMaxLines = 4,
+  });
+
+  /// 绑定的业务 controller（唯一真值来源）。
+  final TextEditingController controller;
+
+  /// 呈现方式，默认只读展示。
+  final AppEditableFieldMode mode;
+
+  /// 提交回调；在草稿写回 [controller] 并关闭编辑面之后触发。
+  final ValueChanged<String>? onSubmitted;
+
+  /// display 模式下的整行点按回调（sheet 模式下点按固定用于打开弹层）。
+  final VoidCallback? onTap;
+
+  /// 输入动作，默认 `TextInputAction.done`。
+  final TextInputAction textInputAction;
+
+  /// 空值提示文案。
+  final String? hintText;
+
+  /// 字段标签（inline 作 labelText，sheet 作标题）。
+  final String? label;
+
+  /// 弹层内工具栏槽位（可选）。
+  final AppEditableFieldToolbarBuilder? toolbarBuilder;
+
+  /// display 模式最大行数，默认 4。
+  final int displayMaxLines;
+
+  @override
+  AppEditableFieldState createState() => AppEditableFieldState();
+}
+
+/// [AppEditableField] 的状态：持有「激活 controller」并路由插入/聚焦。
+class AppEditableFieldState extends State<AppEditableField> {
+  final FocusNode _inlineFocus = FocusNode();
+
+  // 弹层 / 全屏共用的本地草稿与其 focus。
+  //
+  // 注意：草稿与 focus 由本 State 长期持有、仅在本 widget dispose 时释放。
+  // 不能在弹层 pop 后立即 dispose —— `AppSheet.showCustom` 的 Future 在动画
+  // 退场前就完成，退场期间 TextField 仍会重建并引用该 focus。
+  final TextEditingController _draft = TextEditingController();
+  final FocusNode _draftFocus = FocusNode();
+  bool _sheetOpen = false;
+
+  /// 当前激活的 controller：
+  /// 空闲时为绑定 controller；sheet / 全屏打开时为本地草稿 controller。
+  TextEditingController get activeController =>
+      _sheetOpen ? _draft : widget.controller;
+
+  @override
+  void dispose() {
+    _inlineFocus.dispose();
+    _draftFocus.dispose();
+    _draft.dispose();
+    super.dispose();
+  }
+
+  /// 聚焦当前激活的编辑面（inline 输入框 / 弹层草稿）。
+  void focus() {
+    if (_sheetOpen) {
+      _draftFocus.requestFocus();
+    } else {
+      _inlineFocus.requestFocus();
+    }
+  }
+
+  /// 在激活 controller 的当前选区处插入 [text]（选中内容会被替换）。
+  void insertAtCursor(String text) {
+    final target = activeController;
+    final value = target.value;
+    final selection = value.selection;
+    final start =
+        selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final newText = value.text.replaceRange(start, end, text);
+    target.value = value.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+      composing: TextRange.empty,
+    );
+  }
+
+  /// 打开统一底部弹层编辑（复制当前值为本地草稿）。
+  Future<void> _openSheet() async {
+    if (_sheetOpen) return;
+    _draft.text = widget.controller.text;
+    setState(() => _sheetOpen = true);
+    try {
+      await AppSheet.showCustom<String>(
+        context: context,
+        builder: (sheetContext) => _buildSheet(sheetContext),
+      );
+    } finally {
+      if (mounted) setState(() => _sheetOpen = false);
+    }
+  }
+
+  Widget _buildSheet(BuildContext sheetContext) {
+    final theme = Theme.of(sheetContext);
+    final scheme = theme.colorScheme;
+    return AppSheetScaffold(
+      key: const Key('request-editor-field-sheet'),
+      title: widget.label,
+      headerTrailing: IconButton(
+        key: const Key('request-editor-field-fullscreen'),
+        tooltip: '全屏编辑',
+        icon: const Icon(Icons.open_in_full),
+        onPressed: () => _openFullScreen(sheetContext),
+      ),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.toolbarBuilder != null) ...[
+            widget.toolbarBuilder!(sheetContext, _draft),
+            const SizedBox(height: AppSpacing.sm),
+          ],
+          TextField(
+            key: const Key('request-editor-field-sheet-input'),
+            controller: _draft,
+            focusNode: _draftFocus,
+            autofocus: true,
+            minLines: 6,
+            maxLines: null,
+            textInputAction: widget.textInputAction,
+            decoration: InputDecoration(
+              hintText: widget.hintText,
+              border: const OutlineInputBorder(),
+              filled: true,
+              fillColor: scheme.inputFill,
+            ),
+            onSubmitted: (_) => _commitSheet(sheetContext),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('request-editor-field-sheet-cancel'),
+          onPressed: () => Navigator.of(sheetContext).pop(null),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('request-editor-field-sheet-confirm'),
+          onPressed: () => _commitSheet(sheetContext),
+          child: const Text('完成'),
+        ),
+      ],
+    );
+  }
+
+  /// 提交弹层草稿：先写回绑定 controller，再关闭弹层，最后触发 [onSubmitted]。
+  void _commitSheet(BuildContext sheetContext) {
+    final text = _draft.text;
+    widget.controller.text = text;
+    Navigator.of(sheetContext).pop(text);
+    widget.onSubmitted?.call(text);
+  }
+
+  /// 从弹层升级到全屏编辑；返回的文本写回弹层草稿（不直接改绑定值）。
+  ///
+  /// 使用弹层自身的 navigator（`rootNavigator: false`），全屏 route 叠在弹层之上，
+  /// 返回后弹层与草稿都存活。
+  Future<void> _openFullScreen(BuildContext sheetContext) async {
+    final result =
+        await Navigator.of(sheetContext, rootNavigator: false).push<String>(
+      MaterialPageRoute<String>(
+        fullscreenDialog: true,
+        builder: (_) => _AppEditableFullScreen(
+          initialText: _draft.text,
+          title: widget.label,
+          hintText: widget.hintText,
+          textInputAction: widget.textInputAction,
+        ),
+      ),
+    );
+    if (result != null) {
+      _draft.text = result;
+    }
+  }
+
+  Widget _buildInline(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return TextField(
+      controller: widget.controller,
+      focusNode: _inlineFocus,
+      minLines: 1,
+      maxLines: null,
+      textInputAction: widget.textInputAction,
+      onSubmitted: widget.onSubmitted,
+      decoration: InputDecoration(
+        hintText: widget.hintText,
+        labelText: widget.label,
+        border: const OutlineInputBorder(),
+        filled: true,
+        fillColor: scheme.inputFill,
+      ),
+    );
+  }
+
+  Widget _buildDisplay(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final onTap = widget.mode == AppEditableFieldMode.sheet
+        ? _openSheet
+        : widget.onTap;
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: widget.controller,
+      builder: (context, value, _) {
+        final isEmpty = value.text.isEmpty;
+        final display = isEmpty ? (widget.hintText ?? '') : value.text;
+        return Semantics(
+          button: onTap != null,
+          label: display,
+          child: InkWell(
+            key: const Key('request-editor-field-display'),
+            borderRadius: AppRadius.allSM,
+            onTap: onTap,
+            child: Padding(
+              padding: AppSpacing.allSM,
+              child: Text(
+                display,
+                maxLines: widget.displayMaxLines,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: isEmpty ? scheme.onSurfaceVariant : scheme.onSurface,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    switch (widget.mode) {
+      case AppEditableFieldMode.inline:
+        return _buildInline(context);
+      case AppEditableFieldMode.display:
+      case AppEditableFieldMode.sheet:
+        return _buildDisplay(context);
+    }
+  }
+}
+
+/// 全屏编辑 route：自带 [Scaffold] + [PopScope] 脏值守卫。
+///
+/// 确认时把文本 pop 回弹层（由弹层写回草稿）；返回键 / 手势在脏值时先确认放弃。
+class _AppEditableFullScreen extends StatefulWidget {
+  const _AppEditableFullScreen({
+    required this.initialText,
+    this.title,
+    this.hintText,
+    this.textInputAction = TextInputAction.done,
+  });
+
+  final String initialText;
+  final String? title;
+  final String? hintText;
+  final TextInputAction textInputAction;
+
+  @override
+  State<_AppEditableFullScreen> createState() =>
+      _AppEditableFullScreenState();
+}
+
+class _AppEditableFullScreenState extends State<_AppEditableFullScreen> {
+  late final TextEditingController _controller;
+  late final FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialText);
+    _focus = FocusNode();
+    _controller.addListener(_onChanged);
+  }
+
+  void _onChanged() => setState(() {});
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onChanged);
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  bool get _dirty => _controller.text != widget.initialText;
+
+  void _confirm() {
+    Navigator.of(context).pop(_controller.text);
+  }
+
+  Future<void> _handlePop() async {
+    final discard = await AppDialogs.showConfirmSheet(
+      title: '放弃未保存的修改？',
+      message: '全屏编辑的内容尚未应用，返回后将丢失。',
+      confirmText: '放弃',
+      cancelText: '继续编辑',
+      isDangerous: true,
+    );
+    if (!mounted) return;
+    if (discard == true) Navigator.of(context).pop(null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return PopScope(
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handlePop();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.title ?? '编辑'),
+          actions: [
+            TextButton(
+              key: const Key('request-editor-field-fullscreen-done'),
+              onPressed: _confirm,
+              child: const Text('完成'),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: Padding(
+            padding: AppSpacing.allLG,
+            child: TextField(
+              key: const Key('request-editor-field-fullscreen-input'),
+              controller: _controller,
+              focusNode: _focus,
+              autofocus: true,
+              minLines: 6,
+              maxLines: null,
+              textInputAction: widget.textInputAction,
+              decoration: InputDecoration(
+                hintText: widget.hintText,
+                border: const OutlineInputBorder(),
+                filled: true,
+                fillColor: scheme.inputFill,
+              ),
+              onSubmitted: (_) => _confirm(),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
