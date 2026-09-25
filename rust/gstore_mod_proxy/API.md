@@ -1850,13 +1850,20 @@ destination IP with `domainKnown:false`. `crate::sniff` closes that gap for TCP:
   does not offer. Instead the module reads the first flight into a `Vec<u8>` and
   replays it verbatim through `sniff::PrefixedStream` before the live stream, so
   the tunnel observes an unmodified byte sequence (no drop, no reorder).
-- **Bounds.** A single overall deadline of `100 ms` (`SnifferConfig::timeout`),
-  at most `8192` bytes buffered, and early stop once a full TLS record is
-  buffered (`buf.len() >= 5 + record_len`) or an HTTP header terminator
-  (`\r\n\r\n`) is seen.
-- **Ports.** `443/8443` are parsed as TLS, `80/8080/8880` as HTTP
-  (`SnifferConfig::default()`). A disabled sniffer or an off-list port reads
-  **nothing** and adds no latency or data consumption (e.g. port 22).
+- **Bounds.** A single overall per-flow deadline (`SniffPlan.timeout`), at most
+  `8192` bytes buffered, and early stop once a full TLS record is buffered
+  (`buf.len() >= 5 + record_len`) or an HTTP header terminator (`\r\n\r\n`) is
+  seen. A TLS port that capture has enabled waits up to `400 ms`; every other
+  sniff port waits `100 ms`.
+- **Ports.** `dispatch::sniff_plan` derives the mapping from the live capture
+  config: TLS sniff ports are `{443,8443} ∪ (capture.tlsPorts while capture is
+  enabled)`, with `tlsPorts` taking precedence over the HTTP defaults, and HTTP
+  sniff ports are `80/8080/8880`. A disabled sniffer or a `plan=None` (no port
+  mapping) reads **nothing** and adds no latency or data consumption (e.g.
+  port 22).
+- **Configuration applies to newly created flows only.** Toggling capture or
+  editing `tlsPorts` steers how *future* connections are sniffed; connections
+  that were already established keep the behavior they started with.
 - **Routing is unchanged.** The result is written to `metadata.sniff_host` only.
   `metadata.host` and `override_destination` are **not** touched, so rule
   matching/dialing still targets the original destination; `sniff_host` is a
@@ -1868,12 +1875,13 @@ destination IP with `domainKnown:false`. `crate::sniff` closes that gap for TCP:
   **out of scope** here (`handle_udp` is untouched), protocols on ports outside
   the lists above, and non-TLS/non-HTTP payloads.
 
-**Verification.** `cargo test -p gstore_mod_proxy` proves: `PrefixedStream`
-replays `prefix + inner` in order; `sniff_prefix` extracts a synthetic TLS SNI
-and returns the prefix byte-identical; it extracts an HTTP `Host`; an off-list
-port (22) and a disabled sniffer read **nothing**; and a silent client returns
-within `timeout + slack` with no host and no panic. All sniffing here is
-host-side; on-device dispatch stays **UNVERIFIED** (no adb device).
+**Verification.** `(cd rust/gstore_mod_proxy && cargo test)` proves:
+`PrefixedStream` replays `prefix + inner` in order; `sniff_prefix` extracts a
+synthetic TLS SNI and returns the prefix byte-identical; it extracts an HTTP
+`Host`; a `plan=None` (no port mapping) reads **0 bytes**; a disabled sniffer
+likewise reads **0 bytes**; and a silent client returns within `timeout + slack`
+with no host and no panic. All sniffing here is host-side; on-device dispatch
+stays **UNVERIFIED** (no adb device).
 
 ## 10. Rule engine and routing (Todo 9)
 
