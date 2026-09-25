@@ -564,6 +564,7 @@ class _ResponseBodyPane extends StatefulWidget {
     this.showSearch = false,
     this.forceRaw = false,
     this.onFullscreen,
+    this.scale = 1.0,
   });
 
   final String rawText;
@@ -583,6 +584,9 @@ class _ResponseBodyPane extends StatefulWidget {
 
   /// 非空时渲染「全屏查看」按钮并作为其动作。
   final VoidCallback? onFullscreen;
+
+  /// 正文内容缩放系数（仅全屏页可 != 1.0；行内 Body / Raw 固定 1.0）。
+  final double scale;
 
   @override
   State<_ResponseBodyPane> createState() => _ResponseBodyPaneState();
@@ -646,6 +650,28 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
       widget.format == ResponseBodyFormat.formatted &&
       widget.rawText.length <= ResponseViewer.maxJsonHighlightChars &&
       tryPrettyJson(widget.rawText) != null;
+
+  // ==================== 缩放（字号 / 行高同一来源） ====================
+
+  /// 缩放后的正文字号（JSON / 纯文本 / gutter 行号共用）。
+  double get _contentFontSize =>
+      (AppTypography.code.fontSize ?? AppTypography.sizeSM) * widget.scale;
+
+  /// 缩放后的正文行高 = 字号 × 行高倍数。
+  double get _contentLineHeight =>
+      (AppTypography.code.fontSize ?? AppTypography.sizeSM) *
+      (AppTypography.code.height ?? AppTypography.heightNormal) *
+      widget.scale;
+
+  /// gutter 每行占位高度：文本引擎按 `round(fontSize × height)` 排版行盒，
+  /// gutter 必须取同一取整值，否则非整数缩放（如 1.25 → 26.25）会逐行累积错位。
+  double get _gutterLineHeight => _contentLineHeight.roundToDouble();
+
+  /// 缩放后的代码样式：JSON 内容 / token / gutter 行号 / 纯文本共用。
+  TextStyle get _scaledCodeStyle => AppTypography.code.copyWith(
+        fontSize: _contentFontSize,
+        height: AppTypography.code.height ?? AppTypography.heightNormal,
+      );
 
   /// 清空搜索状态（切换格式 / 换文本时调用）。
   void _clearSearch() {
@@ -804,7 +830,7 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
     final index =
         _searchOffset == null || query.isEmpty ? -1 : shown.indexOf(query);
     if (index < 0) {
-      return SelectableText(shown, key: key, style: AppTypography.code);
+      return SelectableText(shown, key: key, style: _scaledCodeStyle);
     }
     final end = index + query.length;
     return SelectableText.rich(
@@ -819,7 +845,7 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
         ],
       ),
       key: key,
-      style: AppTypography.code,
+      style: _scaledCodeStyle,
     );
   }
 
@@ -932,8 +958,8 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
                     const SizedBox(width: AppSpacing.md),
                     Text.rich(
                       TextSpan(children: spans),
-                      style:
-                          AppTypography.code.copyWith(color: scheme.onSurface),
+                      key: Key('${widget.keyPrefix}-json'),
+                      style: _scaledCodeStyle.copyWith(color: scheme.onSurface),
                       softWrap: false,
                     ),
                   ],
@@ -954,7 +980,7 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
     Map<int, JsonFoldRegion> regionById,
   ) {
     final scheme = Theme.of(context).colorScheme;
-    const lineHeight = AppTypography.sizeSM * AppTypography.heightNormal;
+    final lineHeight = _gutterLineHeight;
     final numberWidth =
         AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS;
     return Column(
@@ -994,7 +1020,7 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
                     '${i + 1}',
                     textAlign: TextAlign.right,
                     softWrap: false,
-                    style: AppTypography.code.copyWith(
+                    style: _scaledCodeStyle.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),
                   ),
@@ -1025,20 +1051,18 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
     JsonTokenKind kind,
     bool highlight,
   ) {
+    final base = _scaledCodeStyle;
     final style = switch (kind) {
-      JsonTokenKind.key => AppTypography.code.copyWith(
+      JsonTokenKind.key => base.copyWith(
           color: scheme.primary,
           fontWeight: AppTypography.weightMedium,
         ),
-      JsonTokenKind.string =>
-        AppTypography.code.copyWith(color: scheme.tertiary),
-      JsonTokenKind.number =>
-        AppTypography.code.copyWith(color: scheme.secondary),
-      JsonTokenKind.keyword => AppTypography.code.copyWith(color: scheme.error),
+      JsonTokenKind.string => base.copyWith(color: scheme.tertiary),
+      JsonTokenKind.number => base.copyWith(color: scheme.secondary),
+      JsonTokenKind.keyword => base.copyWith(color: scheme.error),
       JsonTokenKind.punctuation =>
-        AppTypography.code.copyWith(color: scheme.onSurfaceVariant),
-      JsonTokenKind.plain =>
-        AppTypography.code.copyWith(color: scheme.onSurface),
+        base.copyWith(color: scheme.onSurfaceVariant),
+      JsonTokenKind.plain => base.copyWith(color: scheme.onSurface),
     };
     return highlight
         ? style.copyWith(
@@ -1094,8 +1118,10 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
 /// 全屏响应体查看页：自带 [Scaffold] + [AppBar]，搜索仅在此提供。
 ///
 /// 由行内 Body 的「全屏查看」经 `Navigator.push`（`fullscreenDialog: true`,
-/// `rootNavigator: false`）打开；返回后行内 Body 保持不变。
-class _ResponseBodyFullScreen extends StatelessWidget {
+/// `rootNavigator: false`）打开；返回后行内 Body 保持不变。AppBar 提供内容
+/// 缩放（[response-fullscreen-zoom-*]），缩放系数经 [_ResponseBodyPane.scale]
+/// 同因子作用于正文与行号 gutter，保证行号始终对齐。
+class _ResponseBodyFullScreen extends StatefulWidget {
   const _ResponseBodyFullScreen({
     required this.rawText,
     required this.bodyKind,
@@ -1109,7 +1135,37 @@ class _ResponseBodyFullScreen extends StatelessWidget {
   final int sizeBytes;
 
   @override
+  State<_ResponseBodyFullScreen> createState() =>
+      _ResponseBodyFullScreenState();
+}
+
+class _ResponseBodyFullScreenState extends State<_ResponseBodyFullScreen> {
+  static const double _minScale = 0.75;
+  static const double _maxScale = 2.0;
+  static const double _scaleStep = 0.25;
+
+  double _scale = 1.0;
+
+  bool get _canZoomOut => _scale > _minScale;
+  bool get _canZoomIn => _scale < _maxScale;
+
+  void _zoomIn() {
+    if (!_canZoomIn) return;
+    final next = _scale + _scaleStep;
+    setState(() => _scale = next > _maxScale ? _maxScale : next);
+  }
+
+  void _zoomOut() {
+    if (!_canZoomOut) return;
+    final next = _scale - _scaleStep;
+    setState(() => _scale = next < _minScale ? _minScale : next);
+  }
+
+  void _resetZoom() => setState(() => _scale = 1.0);
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
       key: const Key('response-body-fullscreen-view'),
       appBar: AppBar(
@@ -1120,15 +1176,43 @@ class _ResponseBodyFullScreen extends StatelessWidget {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).maybePop(),
         ),
+        actions: [
+          IconButton(
+            key: const Key('response-fullscreen-zoom-out'),
+            tooltip: '缩小',
+            icon: const Icon(Icons.zoom_out),
+            onPressed: _canZoomOut ? _zoomOut : null,
+          ),
+          Center(
+            child: Text(
+              '${(_scale * 100).round()}%',
+              key: const Key('response-fullscreen-zoom-level'),
+              style: theme.textTheme.labelLarge,
+            ),
+          ),
+          IconButton(
+            key: const Key('response-fullscreen-zoom-in'),
+            tooltip: '放大',
+            icon: const Icon(Icons.zoom_in),
+            onPressed: _canZoomIn ? _zoomIn : null,
+          ),
+          IconButton(
+            key: const Key('response-fullscreen-zoom-reset'),
+            tooltip: '重置缩放',
+            icon: const Icon(Icons.restart_alt),
+            onPressed: _resetZoom,
+          ),
+        ],
       ),
       body: SafeArea(
         child: _ResponseBodyPane(
-          rawText: rawText,
-          bodyKind: bodyKind,
-          format: format,
-          sizeBytes: sizeBytes,
+          rawText: widget.rawText,
+          bodyKind: widget.bodyKind,
+          format: widget.format,
+          sizeBytes: widget.sizeBytes,
           keyPrefix: 'response-fullscreen',
           showSearch: true,
+          scale: _scale,
         ),
       ),
     );

@@ -1,0 +1,166 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart
+00:00 +0: 头部（状态 / 耗时 / 大小 / 开关） 渲染状态码、耗时、大小，且格式化/原始开关存在
+00:00 +1: Body · 按 Content-Type 渲染 + 格式化切换 application/json → 高亮树格式化；原始为单行原文
+00:00 +2: Body · 按 Content-Type 渲染 + 格式化切换 application/xml → 格式化按标签缩进
+00:00 +3: Body · 按 Content-Type 渲染 + 格式化切换 text/html → 渲染 HTML 源文本
+00:00 +4: Body · 按 Content-Type 渲染 + 格式化切换 text/plain → 原文渲染
+00:00 +5: Body · 按 Content-Type 渲染 + 格式化切换 非法 JSON → 回退原文并提示解析失败
+00:01 +6: Body · 按 Content-Type 渲染 + 格式化切换 原始分段始终展示未格式化原文
+00:01 +7: JSON 高亮树 · token / gutter / 折叠 / 搜索 多类型 JSON → 多种 token 样式 + gutter
+00:01 +8: JSON 高亮树 · token / gutter / 折叠 / 搜索 折叠子树 → 该子树文本消失
+00:01 +9: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（JSON 树）不渲染搜索框，仅提供全屏入口
+00:01 +10: JSON 高亮树 · token / gutter / 折叠 / 搜索 inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口
+00:01 +11: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:03 +12: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：>256KB JSON 走分块路径，关闭无异常
+00:03 +13: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：非法 JSON 回退纯文本无异常
+00:03 +14: JSON 高亮树 · token / gutter / 折叠 / 搜索 超过 256KB 的 JSON → 分块纯文本路径，无异常
+00:03 +15: 全屏缩放 · 行号对齐 放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: exactly one matching candidate
+  Actual: _KeyWidgetFinder:<Found 0 widgets with key [<'response-fullscreen-json'>]: []>
+   Which: means none were found but one was expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:500:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart line 500
+The test description was:
+  放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:03 +15 -1: 全屏缩放 · 行号对齐 放大 → JSON 字号与 gutter 行高同比增大且始终对齐 [E]
+  Test failed. See exception logs above.
+  The test description was: 放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+  
+00:03 +15 -1: 全屏缩放 · 行号对齐 缩小 / 级别标签 / 重置回 1.0
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.widget (package:flutter_test/src/controller.dart:828:30)
+#2      _zoomLabel (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:78:12)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:539:14)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  缩小 / 级别标签 / 重置回 1.0
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:04 +15 -2: 全屏缩放 · 行号对齐 缩小 / 级别标签 / 重置回 1.0 [E]
+  Test failed. See exception logs above.
+  The test description was: 缩小 / 级别标签 / 重置回 1.0
+  
+00:04 +15 -2: 全屏缩放 · 行号对齐 在上下限 0.75 / 2.0 处钳制且不抛异常
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'response-fullscreen-zoom-in'>]: []" (used in a call to
+"tap()") could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:581:22)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  在上下限 0.75 / 2.0 处钳制且不抛异常
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:04 +15 -3: 全屏缩放 · 行号对齐 在上下限 0.75 / 2.0 处钳制且不抛异常 [E]
+  Test failed. See exception logs above.
+  The test description was: 在上下限 0.75 / 2.0 处钳制且不抛异常
+  
+00:04 +15 -3: 全屏缩放 · 行号对齐 分块纯文本同样按缩放因子变大
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'response-fullscreen-zoom-in'>]: []" (used in a call to
+"tap()") could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:615:20)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  分块纯文本同样按缩放因子变大
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:04 +15 -4: 全屏缩放 · 行号对齐 分块纯文本同样按缩放因子变大 [E]
+  Test failed. See exception logs above.
+  The test description was: 分块纯文本同样按缩放因子变大
+  
+00:04 +15 -4: 全屏缩放 · 行号对齐 行内 Body 无缩放控件且保持默认字号
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: exactly one matching candidate
+  Actual: _KeyWidgetFinder:<Found 0 widgets with key [<'response-body-json'>]: []>
+   Which: means none were found but one was expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart:633:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart line 633
+The test description was:
+  行内 Body 无缩放控件且保持默认字号
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:04 +15 -5: 全屏缩放 · 行号对齐 行内 Body 无缩放控件且保持默认字号 [E]
+  Test failed. See exception logs above.
+  The test description was: 行内 Body 无缩放控件且保持默认字号
+  
+00:04 +15 -5: Cookie 表 名称 / 值 / 域 / 过期 行内容精确
+00:04 +16 -5: Cookie 表 无 Cookie → 空态
+00:04 +17 -5: 头 表 逐条渲染响应头
+00:04 +18 -5: 头 表 360dp 下头部 / Cookie 表无溢出
+00:04 +19 -5: 重发重置 换一次响应 → 回到 Body 默认态，格式化回默认，且不抛异常
+00:04 +20 -5: 超长 Body 分块 首屏只建首个分块，展开更多后字符数增长且不崩
+00:05 +21 -5: 二进制 / 非文本安全展示 image/png → 安全占位，不渲染原始文本，不崩
+00:05 +22 -5: 二进制 / 非文本安全展示 无 Content-Type 但含 NUL → 判为二进制并安全占位
+00:05 +23 -5: 动作 复制 → 剪贴板写入当前展示文本
+00:05 +24 -5: 动作 保存为改写响应 → 生成的规则字段精确并经门面结果提示
+00:05 +25 -5: JSON 词法 / 折叠（纯逻辑） tokenizeJsonLine 识别 key / string / number / keyword / 标点
+00:05 +26 -5: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 找到对象与数组区间
+00:05 +27 -5: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 忽略空容器单行
+00:05 +28 -5: Some tests failed.
+
+Failing tests:
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 分块纯文本同样按缩放因子变大
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 在上下限 0.75 / 2.0 处钳制且不抛异常
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 缩小 / 级别标签 / 重置回 1.0
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 行内 Body 无缩放控件且保持默认字号

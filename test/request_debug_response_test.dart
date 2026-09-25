@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
 import 'package:gstore/core/request_debug/debug_response.dart';
@@ -58,6 +59,23 @@ Future<void> _pump(WidgetTester tester, DebugResponse response,
   );
   await tester.pumpAndSettle();
 }
+
+/// 行内 Body → 点「全屏查看」进入全屏响应体页。
+Future<void> _openFullscreen(WidgetTester tester, DebugResponse response) async {
+  await _pump(tester, response);
+  await tester.tap(find.byKey(const Key('response-body-fullscreen')));
+  await tester.pumpAndSettle();
+}
+
+/// 缩放相关 key（全屏页）。
+const Key _zoomIn = Key('response-fullscreen-zoom-in');
+const Key _zoomOut = Key('response-fullscreen-zoom-out');
+const Key _zoomReset = Key('response-fullscreen-zoom-reset');
+const Key _zoomLevel = Key('response-fullscreen-zoom-level');
+
+/// 读取缩放级别标签文本。
+String _zoomLabel(WidgetTester tester) =>
+    tester.widget<Text>(find.byKey(_zoomLevel)).data ?? '';
 
 /// 读取某个 key 下文本控件（`Text` / `SelectableText`）的纯文本。
 ///
@@ -460,6 +478,175 @@ void main() {
       expect(find.byKey(const Key('response-body-more')), findsOneWidget);
       expect(find.byKey(const Key('response-body-tree')), findsNothing);
       expect(find.byKey(const Key('response-body-gutter')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('全屏缩放 · 行号对齐', () {
+    testWidgets('放大 → JSON 字号与 gutter 行高同比增大且始终对齐', (tester) async {
+      await _openFullscreen(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1,"b":[true,null,"s"],"c":3.5}',
+        ),
+      );
+
+      final gutterFinder = find.byKey(const Key('response-fullscreen-gutter'));
+      final jsonFinder = find.byKey(const Key('response-fullscreen-json'));
+      expect(gutterFinder, findsOneWidget);
+      expect(jsonFinder, findsOneWidget);
+
+      double contentFontSize() =>
+          tester.widget<Text>(jsonFinder).style!.fontSize!;
+      double gutterHeight() => tester.getSize(gutterFinder).height;
+      double jsonHeight() => tester.getSize(jsonFinder).height;
+
+      final font0 = contentFontSize();
+      final gutter0 = gutterHeight();
+      expect(font0, AppTypography.sizeSM);
+      // 1.0 时行号 gutter 与 JSON 内容等高（对齐）。
+      expect(gutter0, closeTo(jsonHeight(), 0.01));
+
+      // 放大一步（1.0 → 1.25）：字号按步长增大，gutter 同步变高。
+      await tester.tap(find.byKey(_zoomIn));
+      await tester.pumpAndSettle();
+      expect(contentFontSize(), closeTo(font0 * 1.25, 0.001));
+      expect(gutterHeight(), greaterThan(gutter0));
+      // 放大后行号仍与内容行等高（对齐）。
+      expect(gutterHeight(), closeTo(jsonHeight(), 0.01));
+
+      // 放大到 2.0：缩放因子为整数倍，字号与 gutter 行高来自同一缩放源，
+      // 均为 2×（行盒取整的误差在此归零）。
+      for (var i = 0; i < 3; i++) {
+        await tester.tap(find.byKey(_zoomIn));
+        await tester.pumpAndSettle();
+      }
+      final fontMax = contentFontSize();
+      final gutterMax = gutterHeight();
+      expect(fontMax, closeTo(font0 * 2.0, 0.001));
+      expect(gutterMax / gutter0, closeTo(fontMax / font0, 1e-6));
+      expect(gutterMax, closeTo(jsonHeight(), 0.01));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('缩小 / 级别标签 / 重置回 1.0', (tester) async {
+      await _openFullscreen(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1}',
+        ),
+      );
+
+      final jsonFinder = find.byKey(const Key('response-fullscreen-json'));
+      double fontSize() => tester.widget<Text>(jsonFinder).style!.fontSize!;
+
+      expect(_zoomLabel(tester), '100%');
+      final base = fontSize();
+
+      await tester.tap(find.byKey(_zoomIn));
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '125%');
+
+      await tester.tap(find.byKey(_zoomOut));
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '100%');
+
+      await tester.tap(find.byKey(_zoomIn));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(_zoomIn));
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '150%');
+
+      await tester.tap(find.byKey(_zoomReset));
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '100%');
+      expect(fontSize(), closeTo(base, 0.001));
+
+      // 缩小：字号变小。
+      await tester.tap(find.byKey(_zoomOut));
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '75%');
+      expect(fontSize(), lessThan(base));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('在上下限 0.75 / 2.0 处钳制且不抛异常', (tester) async {
+      await _openFullscreen(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1}',
+        ),
+      );
+
+      for (var i = 0; i < 8; i++) {
+        await tester.tap(find.byKey(_zoomIn));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '200%');
+
+      for (var i = 0; i < 8; i++) {
+        await tester.tap(find.byKey(_zoomOut));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(_zoomLabel(tester), '75%');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('分块纯文本同样按缩放因子变大', (tester) async {
+      await _openFullscreen(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+          },
+          body: 'line1\nline2\nline3',
+        ),
+      );
+
+      final textFinder = find.byKey(const Key('response-fullscreen-text'));
+      expect(textFinder, findsOneWidget);
+      double fontSize() =>
+          tester.widget<SelectableText>(textFinder).style!.fontSize!;
+
+      final base = fontSize();
+      expect(base, AppTypography.sizeSM);
+
+      await tester.tap(find.byKey(_zoomIn));
+      await tester.pumpAndSettle();
+      expect(fontSize(), closeTo(base * 1.25, 0.001));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('行内 Body 无缩放控件且保持默认字号', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1}',
+        ),
+      );
+
+      final jsonFinder = find.byKey(const Key('response-body-json'));
+      expect(jsonFinder, findsOneWidget);
+      expect(tester.widget<Text>(jsonFinder).style!.fontSize,
+          AppTypography.sizeSM);
+      expect(find.byKey(_zoomIn), findsNothing);
+      expect(find.byKey(_zoomOut), findsNothing);
+      expect(find.byKey(_zoomLevel), findsNothing);
+      expect(find.byKey(_zoomReset), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });

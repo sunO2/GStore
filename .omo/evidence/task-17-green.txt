@@ -1,0 +1,52 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart
+00:00 +0: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 头部（状态 / 耗时 / 大小 / 开关） 渲染状态码、耗时、大小，且格式化/原始开关存在
+00:00 +1: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +2: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +3: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +4: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +5: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +6: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +7: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +8: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 多类型 JSON → 多种 token 样式 + gutter
+00:01 +9: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:01 +10: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:01 +11: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:01 +12: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:02 +13: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:02 +14: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:02 +15: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:02 +16: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:02 +17: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:03 +18: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:03 +19: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:03 +20: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:03 +21: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:04 +22: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:04 +23: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:04 +24: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body
+00:04 +25: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 AppSuggestionChips 含 store.history 派生的最近值
+00:05 +26: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 全屏查看：>256KB JSON 走分块路径，关闭无异常
+00:05 +27: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 工具栏 prev/next 在编辑器字段间移动焦点
+00:05 +28: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 工具栏 prev/next 在编辑器字段间移动焦点
+00:05 +29: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 工具栏 prev/next 在编辑器字段间移动焦点
+00:05 +30: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+00:05 +31: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 放大 → JSON 字号与 gutter 行高同比增大且始终对齐
+00:05 +32: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 设计系统约束 窄屏 360x640：外壳渲染无异常且动作齐备
+00:05 +33: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 缩小 / 级别标签 / 重置回 1.0
+00:05 +34: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 在上下限 0.75 / 2.0 处钳制且不抛异常
+00:05 +35: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 分块纯文本同样按缩放因子变大
+00:06 +36: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 全屏缩放 · 行号对齐 行内 Body 无缩放控件且保持默认字号
+00:06 +37: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: Cookie 表 名称 / 值 / 域 / 过期 行内容精确
+00:06 +38: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: Cookie 表 无 Cookie → 空态
+00:06 +39: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 头 表 逐条渲染响应头
+00:06 +40: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 头 表 360dp 下头部 / Cookie 表无溢出
+00:06 +41: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 重发重置 换一次响应 → 回到 Body 默认态，格式化回默认，且不抛异常
+00:06 +42: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 超长 Body 分块 首屏只建首个分块，展开更多后字符数增长且不崩
+00:06 +43: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 二进制 / 非文本安全展示 image/png → 安全占位，不渲染原始文本，不崩
+00:06 +44: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 二进制 / 非文本安全展示 无 Content-Type 但含 NUL → 判为二进制并安全占位
+00:06 +45: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 动作 复制 → 剪贴板写入当前展示文本
+00:06 +46: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 动作 保存为改写响应 → 生成的规则字段精确并经门面结果提示
+00:06 +47: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） tokenizeJsonLine 识别 key / string / number / keyword / 标点
+00:06 +48: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 找到对象与数组区间
+00:06 +49: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 忽略空容器单行
+00:06 +50: All tests passed!
