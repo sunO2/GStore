@@ -573,50 +573,45 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   Widget _buildSegmentSwitch(BuildContext context) {
+    // 用 [AppTabBar] 取代分段按钮：可滚动、宽度随文本，且程序化 value 变更
+    // 只同步选中态、不回流触发 onChanged（发送后自动切「响应」需要）。
     return Padding(
       padding: AppSpacing.onlyHorizontalLG,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: AppSegmentedButton<RequestEditorSegment>(
-            value: _segment,
-            density: AppSegmentedButton.mediumDensity,
-            segments: const <AppSegment<RequestEditorSegment>>[
-              AppSegment(
-                value: RequestEditorSegment.params,
-                label: '参数',
-                key: Key('request-editor-segment-params'),
-              ),
-              AppSegment(
-                value: RequestEditorSegment.headers,
-                label: '头',
-                key: Key('request-editor-segment-headers'),
-              ),
-              AppSegment(
-                value: RequestEditorSegment.body,
-                label: '体',
-                key: Key('request-editor-segment-body'),
-              ),
-              AppSegment(
-                value: RequestEditorSegment.auth,
-                label: '认证',
-                key: Key('request-editor-segment-auth'),
-              ),
-              AppSegment(
-                value: RequestEditorSegment.cookies,
-                label: 'Cookie',
-                key: Key('request-editor-segment-cookies'),
-              ),
-              AppSegment(
-                value: RequestEditorSegment.response,
-                label: '响应',
-                key: Key('request-editor-segment-response'),
-              ),
-            ],
-            onChanged: (segment) => setState(() => _segment = segment),
+      child: AppTabBar<RequestEditorSegment>(
+        value: _segment,
+        segments: const <AppSegment<RequestEditorSegment>>[
+          AppSegment(
+            value: RequestEditorSegment.params,
+            label: '参数',
+            key: Key('request-editor-segment-params'),
           ),
-        ),
+          AppSegment(
+            value: RequestEditorSegment.headers,
+            label: '头',
+            key: Key('request-editor-segment-headers'),
+          ),
+          AppSegment(
+            value: RequestEditorSegment.body,
+            label: '体',
+            key: Key('request-editor-segment-body'),
+          ),
+          AppSegment(
+            value: RequestEditorSegment.auth,
+            label: '认证',
+            key: Key('request-editor-segment-auth'),
+          ),
+          AppSegment(
+            value: RequestEditorSegment.cookies,
+            label: 'Cookie',
+            key: Key('request-editor-segment-cookies'),
+          ),
+          AppSegment(
+            value: RequestEditorSegment.response,
+            label: '响应',
+            key: Key('request-editor-segment-response'),
+          ),
+        ],
+        onChanged: (segment) => setState(() => _segment = segment),
       ),
     );
   }
