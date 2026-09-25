@@ -1590,6 +1590,10 @@ class _UnifiedRowCard extends StatelessWidget {
                             color: row.isError ? scheme.error : scheme.onSurface,
                           ),
                         ),
+                        if (capture != null && capture.mitmFailed) ...[
+                          const SizedBox(width: AppSpacing.sm),
+                          const _UpstreamFailedBadge(),
+                        ],
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
                           child: Text(
@@ -1624,6 +1628,33 @@ class _UnifiedRowCard extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 「上游失败」角标：已拦截但上游拨号失败的 capture，区别于从未解密的流。
+class _UpstreamFailedBadge extends StatelessWidget {
+  const _UpstreamFailedBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('capture_upstream_failed_badge'),
+      padding: AppSpacing.horizontalSM_verticalXS,
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: AppRadius.allSM,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        '上游失败',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: scheme.onErrorContainer,
+          fontWeight: AppTypography.weightBold,
         ),
       ),
     );

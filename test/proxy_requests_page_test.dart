@@ -447,6 +447,76 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('上游失败 capture 行显示「上游失败」角标，普通 200 行不显示', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[
+          _record(recordId: 1, domain: 'failed.example'),
+          _record(
+            recordId: 2,
+            domain: 'ok.example',
+            dstIp: '10.0.0.8',
+            outbound: 'DIRECT',
+          ),
+        ],
+        firstCursor: 1,
+        nextCursor: 2,
+        retained: 2,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          // 已拦截但上游拨号失败：capture != null 且 statusCode == 0（显示 `—`）。
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'failed.example',
+            url: 'https://failed.example/x',
+            statusCode: 0,
+            mitmFailed: true,
+          ),
+          // 正常的已解密 200 行，不得带角标。
+          _capture(
+            recordId: 22,
+            requestRecordId: 2,
+            host: 'ok.example',
+            url: 'https://ok.example/y',
+            statusCode: 200,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('capture_upstream_failed_badge')),
+      findsOneWidget,
+      reason: '仅上游失败行命中角标',
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('request_row_1')),
+        matching: find.byKey(const Key('capture_upstream_failed_badge')),
+      ),
+      findsOneWidget,
+      reason: 'mitmFailed 行必须显示「上游失败」角标',
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('request_row_2')),
+        matching: find.byKey(const Key('capture_upstream_failed_badge')),
+      ),
+      findsNothing,
+      reason: '普通 200 行不得显示「上游失败」角标',
+    );
+    expect(find.text('未解密'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('孤儿 capture（requestRecordId == 0）自成一行，不被丢弃', (tester) async {
     _useLargeViewport(tester);
     final fake = _FakeRequestsFacade(
