@@ -112,17 +112,17 @@ class DebugSender {
     }
 
     if (useCookies) {
-      final cookieHeader = cookieJar.cookieHeaderFor(
+      final jarHeader = cookieJar.cookieHeaderFor(
         uri.host,
         path: uri.path,
         secure: uri.scheme == 'https',
       );
-      if (cookieHeader.isNotEmpty) {
-        final existing = request.headers['Cookie'] ?? request.headers['cookie'];
-        request.headers['Cookie'] = (existing == null || existing.isEmpty)
-            ? cookieHeader
-            : '$existing; $cookieHeader';
-      }
+      // 显式 `Cookie` 头（如编辑器 `_cookies` 合并而来）优先；jar 与显式同名
+      // 去重，避免同名 cookie 重复发送。
+      final explicit =
+          request.headers['Cookie'] ?? request.headers['cookie'] ?? '';
+      final merged = DebugCookieJar.mergeCookieHeader(explicit, jarHeader);
+      if (merged.isNotEmpty) request.headers['Cookie'] = merged;
     }
 
     if (body.isNotEmpty) {

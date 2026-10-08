@@ -124,6 +124,55 @@ class DebugCookieJar {
   /// 清空全部 cookie。
   void clear() => _byHost.clear();
 
+  /// 清除某个 host 桶内的全部 cookie（Cookie 管理界面用）。
+  ///
+  /// 仅移除以 [host] 为**存储键**的桶（与 [snapshot] 的分组一致）。
+  void clearHost(String host) => _byHost.remove(host.toLowerCase());
+
+  /// 可列出的快照：host → 未过期 cookie 列表（Cookie 管理界面用）。
+  ///
+  /// host 为**存储该 cookie 的请求 host**（host-only cookie 的 `domain` 即此
+  /// host；带 `Domain` 的 cookie 归入设置它的 host 桶）。返回的 map 与列表
+  /// 均为不可变视图，修改快照不影响 jar；过期条目在生成时被剔除。
+  Map<String, List<DebugCookie>> snapshot() {
+    final result = <String, List<DebugCookie>>{};
+    for (final entry in _byHost.entries) {
+      final bucket = entry.value;
+      bucket.removeWhere((_, value) => value.isExpired);
+      if (bucket.isEmpty) continue;
+      result[entry.key] =
+          List<DebugCookie>.unmodifiable(bucket.values.map((s) => s.cookie));
+    }
+    _byHost.removeWhere((_, bucket) => bucket.isEmpty);
+    return Map<String, List<DebugCookie>>.unmodifiable(result);
+  }
+
+  // ==================== Cookie 头合并（静态，可单测） ====================
+
+  /// 合并「显式 `Cookie` 头」与「jar 生成的 `Cookie` 头」。
+  ///
+  /// 语义：**先出现者优先**（故 [explicit] 中的条目优先于 [jar]），并按
+  /// cookie 名去重，避免同名 cookie 重复发送。空串来源被忽略；两者皆空返回
+  /// 空串。形如 `name=value; name2=value2`。
+  static String mergeCookieHeader(String explicit, String jar) {
+    final parts = <String>[];
+    final seen = <String>{};
+    void add(String header) {
+      for (final raw in header.split(';')) {
+        final pair = raw.trim();
+        if (pair.isEmpty) continue;
+        final eq = pair.indexOf('=');
+        final name = (eq <= 0 ? pair : pair.substring(0, eq)).trim();
+        if (name.isEmpty || !seen.add(name)) continue;
+        parts.add(pair);
+      }
+    }
+
+    add(explicit);
+    add(jar);
+    return parts.join('; ');
+  }
+
   // ==================== 纯解析（静态，可单测） ====================
 
   /// 解析一条 `Set-Cookie`（可能已被合并多条）为 [DebugCookie] 列表。

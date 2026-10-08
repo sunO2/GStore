@@ -24,6 +24,7 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'cookie_manager_sheet.dart';
 import 'response_viewer.dart';
 
 /// 编辑器分段。
@@ -582,6 +583,48 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   // ==================== 动作 ====================
 
+  /// 把编辑器显式 cookie 组合为 `Cookie` 头值（跳过空名；同名保留首个）。
+  ///
+  /// **不**解析 cookie 内 `{{var}}`（与认证约定一致）。
+  static String _cookieHeaderFrom(List<DebugCookie> cookies) {
+    final parts = <String>[];
+    final seen = <String>{};
+    for (final cookie in cookies) {
+      final name = cookie.name.trim();
+      if (name.isEmpty || !seen.add(name)) continue;
+      parts.add('$name=${cookie.value}');
+    }
+    return parts.join('; ');
+  }
+
+  /// 把显式 cookie 头并入 [headers]：命中同名 `Cookie` 头则与之合并（编辑器
+  /// 条目优先），否则追加。
+  static List<DebugHeader> _withCookieHeader(
+    List<DebugHeader> headers,
+    String cookieHeader,
+  ) {
+    final next = <DebugHeader>[];
+    var replaced = false;
+    for (final header in headers) {
+      if (!replaced && header.name.toLowerCase() == 'cookie') {
+        final merged =
+            DebugCookieJar.mergeCookieHeader(cookieHeader, header.value);
+        next.add(DebugHeader(
+          name: header.name,
+          value: merged,
+          enabled: header.enabled,
+        ));
+        replaced = true;
+      } else {
+        next.add(header);
+      }
+    }
+    if (!replaced) {
+      next.add(DebugHeader(name: 'Cookie', value: cookieHeader));
+    }
+    return next;
+  }
+
   Future<void> _send() async {
     if (_sending) return;
     final draft = _composeDraft();
@@ -612,6 +655,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       query: query,
     );
 
+    // 编辑器显式 Cookie 真正生效：并入 `Cookie` 头；与 jar 的同名去重由
+    // `DebugSender` 在发送时完成（显式条目优先）。
+    final cookieHeader = _cookieHeaderFrom(draft.cookies);
+    final sendHeaders = cookieHeader.isEmpty
+        ? applied.headers
+        : _withCookieHeader(applied.headers, cookieHeader);
+
     setState(() {
       _sending = true;
       _segment = RequestEditorSegment.response;
@@ -619,7 +669,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     final response = await _facade.send(
       method: draft.method,
       url: resolve(draft.url),
-      headers: applied.headers,
+      headers: sendHeaders,
       query: applied.query,
       body: resolve(draft.body),
     );
@@ -629,6 +679,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       _response = response;
     });
   }
+
+  /// 打开 Cookie jar 管理弹层（统一底部弹层）。
+  Future<void> _openCookieManager() =>
+      CookieManagerSheet.show(context, jar: _facade.sender.cookieJar);
 
   String? _persistedCollectionId() =>
       widget.collectionId ?? widget.request?.collectionId;
@@ -935,12 +989,33 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       case RequestEditorSegment.auth:
         return _buildAuthEditor(context);
       case RequestEditorSegment.cookies:
-        return _buildKvList(
-          rows: _cookies,
-          addLabel: '添加 Cookie',
-          addKey: const Key('request-editor-cookies-add'),
-          keyPrefix: 'request-editor-cookie',
-          nameHint: 'Cookie 名',
+        return Column(
+          children: [
+            Expanded(
+              child: _buildKvList(
+                rows: _cookies,
+                addLabel: '添加 Cookie',
+                addKey: const Key('request-editor-cookies-add'),
+                keyPrefix: 'request-editor-cookie',
+                nameHint: 'Cookie 名',
+              ),
+            ),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: AppSpacing.onlyHorizontalLG,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    key: const Key('request-editor-cookie-manage'),
+                    onPressed: _openCookieManager,
+                    icon: const Icon(TablerIcons.cookie),
+                    label: const Text('管理 Cookie jar'),
+                  ),
+                ),
+              ),
+            ),
+          ],
         );
       case RequestEditorSegment.response:
         return _buildResponse(context);
