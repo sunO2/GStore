@@ -46,8 +46,11 @@ class DebugSender {
   /// [headers] / [query] 仅发送 `enabled=true` 项；[bodyBytes] 非 `null` 时
   /// **直接作为线缆字节**（按 `bodyKind` 编码后的结果）；否则 [body] 非空时按
   /// UTF-8 编成字节（旧路径，行为不变）。`useCookies=true` 时自动带上 jar 中
-  /// 匹配 [url] host 的 cookie，并在响应后把 `Set-Cookie` 存入 jar。失败返回
-  /// 结构化错误，不抛。
+  /// 匹配 [url] host 的 cookie，并在响应后把 `Set-Cookie` 存入 jar。
+  ///
+  /// [skipTlsVerify] 为 `true` 时，本次请求使用一个**临时** `HttpClient`（带
+  /// `badCertificateCallback`）完成 TLS 校验绕过，请求结束后立即释放——**仅对
+  /// 该次请求生效**，绝不修改共享客户端或全局安全策略。失败返回结构化错误，不抛。
   Future<DebugResponse> send({
     required String method,
     required String url,
@@ -58,6 +61,7 @@ class DebugSender {
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
+    bool skipTlsVerify = false,
   }) async {
     final effectiveTimeout = timeout ?? defaultTimeout;
     final stopwatch = Stopwatch()..start();
@@ -71,6 +75,7 @@ class DebugSender {
         bodyBytes: bodyBytes,
         followRedirects: followRedirects,
         useCookies: useCookies,
+        skipTlsVerify: skipTlsVerify,
       ).timeout(effectiveTimeout);
       stopwatch.stop();
       return response;
@@ -103,6 +108,7 @@ class DebugSender {
     required List<int>? bodyBytes,
     required bool followRedirects,
     required bool useCookies,
+    required bool skipTlsVerify,
   }) async {
     final stopwatch = Stopwatch()..start();
     final uri = _buildUri(url, query);
@@ -138,21 +144,38 @@ class DebugSender {
       request.bodyBytes = utf8.encode(body);
     }
 
-    final streamed = await _client.send(request);
-    final bytes = await _readBounded(streamed.stream);
-    stopwatch.stop();
-
-    final response = DebugResponse.fromStreamed(
-      statusCode: streamed.statusCode,
-      headers: streamed.headers,
-      bodyBytes: bytes,
-      durationMs: stopwatch.elapsedMilliseconds,
-    );
-
-    if (useCookies) {
-      cookieJar.store(uri.host, response.headers, path: uri.path);
+    // skipTlsVerify 仅对该请求生效：用一次性 HttpClient 绕过证书校验，绝不复用/
+    // 修改共享客户端，也绝不触碰进程级/全局安全设置。
+    http.Client? disposableClient;
+    var client = _client;
+    if (skipTlsVerify) {
+      final inner = HttpClient()
+        ..badCertificateCallback =
+            (X509Certificate cert, String host, int port) => true;
+      disposableClient = IOClient(inner);
+      client = disposableClient;
     }
-    return response;
+
+    try {
+      final streamed = await client.send(request);
+      final bytes = await _readBounded(streamed.stream);
+      stopwatch.stop();
+
+      final response = DebugResponse.fromStreamed(
+        statusCode: streamed.statusCode,
+        headers: streamed.headers,
+        bodyBytes: bytes,
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
+
+      if (useCookies) {
+        cookieJar.store(uri.host, response.headers, path: uri.path);
+      }
+      return response;
+    } finally {
+      // 一次性客户端必须释放，避免每次跳过校验都泄漏 socket 资源。
+      disposableClient?.close();
+    }
   }
 
   /// 把 URL 与启用的查询参数合并为最终 [Uri]（同名参数**覆盖** URL 原值）。

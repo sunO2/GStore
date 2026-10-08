@@ -104,6 +104,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   String _apiKeyIn = 'header';
   RequestEditorSegment _segment = RequestEditorSegment.params;
 
+  // 每请求网络选项（默认 = 发送器默认：30s / 跟随重定向 / 用 jar / 严格证书）。
+  int _timeoutMs = DebugSender.defaultTimeout.inMilliseconds;
+  bool _followRedirects = true;
+  bool _useCookieJar = true;
+  bool _skipTlsVerify = false;
+
   DebugResponse? _response;
   bool _sending = false;
   bool _dirty = false;
@@ -141,6 +147,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _binarySource = request?.binarySource ?? DebugBinarySource.raw;
     _authType = request?.auth?.type ?? DebugAuthType.none;
     _apiKeyIn = request?.auth?.apiKeyIn ?? 'header';
+    _timeoutMs = request?.timeoutMs ?? DebugSender.defaultTimeout.inMilliseconds;
+    _followRedirects = request?.followRedirects ?? true;
+    _useCookieJar = request?.useCookieJar ?? true;
+    _skipTlsVerify = request?.skipTlsVerify ?? false;
     _authUser = TextEditingController(text: request?.auth?.username ?? '');
     _authPass = TextEditingController(text: request?.auth?.password ?? '');
     _authToken = TextEditingController(text: request?.auth?.token ?? '');
@@ -381,6 +391,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               ))
           .toList(),
       collectionId: widget.collectionId ?? widget.request?.collectionId,
+      timeoutMs: _timeoutMs,
+      followRedirects: _followRedirects,
+      useCookieJar: _useCookieJar,
+      skipTlsVerify: _skipTlsVerify,
     );
   }
 
@@ -705,6 +719,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       query: applied.query,
       body: bodyText,
       bodyBytes: encoded?.bytes,
+      followRedirects: _followRedirects,
+      timeout: Duration(milliseconds: _timeoutMs),
+      useCookies: _useCookieJar,
+      skipTlsVerify: _skipTlsVerify,
     );
     if (!mounted) return;
     setState(() {
@@ -769,6 +787,29 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   /// 打开 Cookie jar 管理弹层（统一底部弹层）。
   Future<void> _openCookieManager() =>
       CookieManagerSheet.show(context, jar: _facade.sender.cookieJar);
+
+  /// 打开「网络选项」底部弹层；确认后写回 state 并标记脏值。
+  Future<void> _openNetworkOptions() async {
+    final result = await AppSheet.showCustom<_NetworkOptions>(
+      context: context,
+      builder: (_) => _NetworkOptionsSheet(
+        initial: _NetworkOptions(
+          timeoutMs: _timeoutMs,
+          followRedirects: _followRedirects,
+          useCookieJar: _useCookieJar,
+          skipTlsVerify: _skipTlsVerify,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _timeoutMs = result.timeoutMs;
+      _followRedirects = result.followRedirects;
+      _useCookieJar = result.useCookieJar;
+      _skipTlsVerify = result.skipTlsVerify;
+      _dirty = true;
+    });
+  }
 
   String? _persistedCollectionId() =>
       widget.collectionId ?? widget.request?.collectionId;
@@ -1645,6 +1686,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               icon: const Icon(TablerIcons.dots),
               onSelected: (value) {
                 switch (value) {
+                  case 'network-options':
+                    _openNetworkOptions();
                   case 'save':
                     _save();
                   case 'save-as':
@@ -1654,6 +1697,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 }
               },
               itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(
+                  key: Key('request-editor-network-options'),
+                  value: 'network-options',
+                  child: Text('网络选项'),
+                ),
                 PopupMenuItem<String>(
                   key: Key('request-editor-save'),
                   value: 'save',
@@ -1674,6 +1722,170 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 每请求网络选项值对象（弹层结果）。
+class _NetworkOptions {
+  const _NetworkOptions({
+    required this.timeoutMs,
+    required this.followRedirects,
+    required this.useCookieJar,
+    required this.skipTlsVerify,
+  });
+
+  final int timeoutMs;
+  final bool followRedirects;
+  final bool useCookieJar;
+  final bool skipTlsVerify;
+}
+
+/// 网络选项弹层（统一底部弹层骨架）。
+///
+/// 「跳过 TLS 证书校验」为危险开关：开启前必须经
+/// [AppDialogs.showConfirmSheet] 且 `isDangerous: true` 确认，取消则保持严格。
+class _NetworkOptionsSheet extends StatefulWidget {
+  const _NetworkOptionsSheet({required this.initial});
+
+  final _NetworkOptions initial;
+
+  @override
+  State<_NetworkOptionsSheet> createState() => _NetworkOptionsSheetState();
+}
+
+class _NetworkOptionsSheetState extends State<_NetworkOptionsSheet> {
+  late final TextEditingController _timeout;
+  late bool _followRedirects;
+  late bool _useCookieJar;
+  late bool _skipTlsVerify;
+  String? _timeoutError;
+
+  @override
+  void initState() {
+    super.initState();
+    _timeout = TextEditingController(text: widget.initial.timeoutMs.toString());
+    _followRedirects = widget.initial.followRedirects;
+    _useCookieJar = widget.initial.useCookieJar;
+    _skipTlsVerify = widget.initial.skipTlsVerify;
+  }
+
+  @override
+  void dispose() {
+    _timeout.dispose();
+    super.dispose();
+  }
+
+  int? _parseTimeout() {
+    final value = int.tryParse(_timeout.text.trim());
+    if (value == null || value <= 0) return null;
+    return value;
+  }
+
+  Future<void> _toggleSkipTls(bool value) async {
+    if (!value) {
+      setState(() => _skipTlsVerify = false);
+      return;
+    }
+    final confirmed = await AppDialogs.showConfirmSheet(
+      title: '跳过 TLS 证书校验？',
+      message: '跳过校验会接受自签名 / 无效证书，仅应临时用于你信任的调试目标，'
+          '存在中间人攻击风险。此设置只对当前请求生效。',
+      confirmText: '仍要跳过',
+      cancelText: '取消',
+      isDangerous: true,
+    );
+    if (!mounted) return;
+    if (confirmed == true) setState(() => _skipTlsVerify = true);
+  }
+
+  void _confirm() {
+    final timeoutMs = _parseTimeout();
+    if (timeoutMs == null) {
+      setState(() => _timeoutError = '超时必须是大于 0 的整数（毫秒）');
+      return;
+    }
+    Navigator.of(context).pop(_NetworkOptions(
+      timeoutMs: timeoutMs,
+      followRedirects: _followRedirects,
+      useCookieJar: _useCookieJar,
+      skipTlsVerify: _skipTlsVerify,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppSheetScaffold(
+      title: '网络选项',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('request-editor-net-timeout'),
+            controller: _timeout,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: '超时（毫秒）',
+              border: const OutlineInputBorder(),
+              errorText: _timeoutError,
+            ),
+            onChanged: (_) {
+              if (_timeoutError != null) setState(() => _timeoutError = null);
+            },
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
+              key: const Key('request-editor-net-follow'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('跟随重定向'),
+              value: _followRedirects,
+              onChanged: (v) => setState(() => _followRedirects = v),
+            ),
+          ),
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
+              key: const Key('request-editor-net-jar'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('使用 Cookie jar'),
+              value: _useCookieJar,
+              onChanged: (v) => setState(() => _useCookieJar = v),
+            ),
+          ),
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
+              key: const Key('request-editor-net-skip-tls'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('跳过 TLS 证书校验'),
+              subtitle: Text(
+                '危险：仅对当前请求生效',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+              value: _skipTlsVerify,
+              onChanged: _toggleSkipTls,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('request-editor-net-cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+        FilledButton(
+          key: const Key('request-editor-net-confirm'),
+          onPressed: _confirm,
+          child: const Text('完成'),
+        ),
+      ],
     );
   }
 }

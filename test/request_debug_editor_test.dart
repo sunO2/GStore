@@ -50,6 +50,7 @@ class _FakeSender implements DebugSender {
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
+    bool skipTlsVerify = false,
   }) async {
     calls.add(<String, Object?>{
       'method': method,
@@ -64,6 +65,9 @@ class _FakeSender implements DebugSender {
           .map((q) => '${q.name}=${q.value}')
           .toList(),
       'useCookies': useCookies,
+      'followRedirects': followRedirects,
+      'timeoutMs': timeout?.inMilliseconds,
+      'skipTlsVerify': skipTlsVerify,
     });
     return response;
   }
@@ -178,6 +182,14 @@ Future<void> _tapMore(WidgetTester tester, Key itemKey) async {
   await tester.tap(find.byKey(itemKey));
   await tester.pumpAndSettle();
 }
+
+/// 打开「更多 → 网络选项」底部弹层。
+Future<void> _openNetworkOptions(WidgetTester tester) =>
+    _tapMore(tester, const Key('request-editor-network-options'));
+
+/// 读取网络选项弹层中某个开关的当前值。
+bool _switchValue(WidgetTester tester, String key) =>
+    tester.widget<SwitchListTile>(find.byKey(Key(key))).value;
 
 /// URL 自适应字段当前展示的文本。
 Finder _urlDisplay(String url) => find.descendant(
@@ -490,6 +502,123 @@ void main() {
 
       expect(find.textContaining('curl'), findsWidgets);
       expect(find.textContaining('https://api.example/x'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('请求编辑器 · 网络选项', () {
+    testWidgets('弹层暴露 4 项；跳过 TLS 仅在危险确认后开启', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+      await _openNetworkOptions(tester);
+
+      expect(find.text('网络选项'), findsOneWidget);
+      expect(
+        find.byKey(const Key('request-editor-net-timeout')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('request-editor-net-follow')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-net-jar')), findsOneWidget);
+      expect(
+        find.byKey(const Key('request-editor-net-skip-tls')),
+        findsOneWidget,
+      );
+
+      // 危险开关默认关；点击后必须经统一确认弹层，且取消前不生效。
+      expect(_switchValue(tester, 'request-editor-net-skip-tls'), isFalse);
+      await tester.tap(find.byKey(const Key('request-editor-net-skip-tls')));
+      await tester.pumpAndSettle();
+      expect(find.text('跳过 TLS 证书校验？'), findsOneWidget);
+      expect(
+        _switchValue(tester, 'request-editor-net-skip-tls'),
+        isFalse,
+        reason: '确认前不得开启危险的跳过校验',
+      );
+
+      // 取消 → 保持严格。
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(
+        _switchValue(tester, 'request-editor-net-skip-tls'),
+        isFalse,
+        reason: '取消确认必须保持严格证书',
+      );
+
+      // 再来一次并确认 → 只在确认后开启。
+      await tester.tap(find.byKey(const Key('request-editor-net-skip-tls')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('仍要跳过'));
+      await tester.pumpAndSettle();
+      expect(_switchValue(tester, 'request-editor-net-skip-tls'), isTrue);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('保存后网络选项随模型持久化并可回读', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+      await _openNetworkOptions(tester);
+
+      await tester.enterText(
+        find.byKey(const Key('request-editor-net-timeout')),
+        '1500',
+      );
+      await tester.tap(find.byKey(const Key('request-editor-net-follow')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-editor-net-jar')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-editor-net-skip-tls')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('仍要跳过'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-editor-net-confirm')));
+      await tester.pumpAndSettle();
+      await _tapMore(tester, const Key('request-editor-save'));
+
+      final saved = facade.store.collectionById(collection.id)!.requests.single;
+      expect(saved.timeoutMs, 1500);
+      expect(saved.followRedirects, isFalse);
+      expect(saved.useCookieJar, isFalse);
+      expect(saved.skipTlsVerify, isTrue);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('发送时把网络选项透传给 sender', (tester) async {
+      final sender = _sender();
+      final facade = _facade(sender: sender);
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-net',
+          name: 'net',
+          method: 'GET',
+          url: 'https://api.example/x',
+          timeoutMs: 1500,
+          followRedirects: false,
+          useCookieJar: false,
+          skipTlsVerify: true,
+        ),
+      );
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+      await tester.tap(find.byKey(const Key('request-editor-send')));
+      await tester.pumpAndSettle();
+
+      expect(sender.calls, hasLength(1));
+      expect(sender.calls.single['timeoutMs'], 1500);
+      expect(sender.calls.single['followRedirects'], isFalse);
+      expect(sender.calls.single['useCookies'], isFalse);
+      expect(sender.calls.single['skipTlsVerify'], isTrue);
       expect(tester.takeException(), isNull);
     });
   });

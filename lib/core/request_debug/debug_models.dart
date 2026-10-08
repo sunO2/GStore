@@ -380,6 +380,10 @@ class DebugRequest {
     List<DebugCookie>? cookies,
     this.collectionId,
     this.overrides,
+    this.timeoutMs,
+    this.followRedirects,
+    this.useCookieJar,
+    this.skipTlsVerify,
   })  : headers = headers ?? [],
         query = query ?? [],
         multipartFields = multipartFields ?? [],
@@ -413,6 +417,24 @@ class DebugRequest {
   /// 保存时附带的响应覆盖（可空）。
   final DebugResponseOverride? overrides;
 
+  // ==================== 每请求网络选项（plan todo 4）====================
+  //
+  // 全部可选：`null` 表示「采用发送器默认」（30s / 跟随重定向 / 使用 Cookie
+  // jar / 严格证书）。刻意不落地默认值，保证旧数据与新旧代码端到端兼容；
+  // 版本/迁移由 todo 10 负责，本模型**不单独升版**。
+
+  /// 请求超时（毫秒）；`null` = 默认 30s。
+  final int? timeoutMs;
+
+  /// 是否跟随重定向；`null` = 默认跟随。
+  final bool? followRedirects;
+
+  /// 是否使用 Cookie jar；`null` = 默认使用。
+  final bool? useCookieJar;
+
+  /// 是否跳过 TLS 证书校验；`null`/`false` = 严格校验（默认）。
+  final bool? skipTlsVerify;
+
   DebugRequest copyWith({
     String? id,
     String? name,
@@ -429,6 +451,10 @@ class DebugRequest {
     List<DebugCookie>? cookies,
     String? collectionId,
     DebugResponseOverride? overrides,
+    int? timeoutMs,
+    bool? followRedirects,
+    bool? useCookieJar,
+    bool? skipTlsVerify,
   }) =>
       DebugRequest(
         id: id ?? this.id,
@@ -446,6 +472,10 @@ class DebugRequest {
         cookies: cookies ?? this.cookies,
         collectionId: collectionId ?? this.collectionId,
         overrides: overrides ?? this.overrides,
+        timeoutMs: timeoutMs ?? this.timeoutMs,
+        followRedirects: followRedirects ?? this.followRedirects,
+        useCookieJar: useCookieJar ?? this.useCookieJar,
+        skipTlsVerify: skipTlsVerify ?? this.skipTlsVerify,
       );
 
   Map<String, dynamic> toJson() => {
@@ -466,6 +496,10 @@ class DebugRequest {
         'cookies': cookies.map((e) => e.toJson()).toList(),
         if (collectionId != null) 'collectionId': collectionId,
         if (overrides != null) 'overrides': overrides!.toJson(),
+        if (timeoutMs != null) 'timeoutMs': timeoutMs,
+        if (followRedirects != null) 'followRedirects': followRedirects,
+        if (useCookieJar != null) 'useCookieJar': useCookieJar,
+        if (skipTlsVerify != null) 'skipTlsVerify': skipTlsVerify,
       };
 
   factory DebugRequest.fromJson(Map<String, dynamic> json) => DebugRequest(
@@ -484,6 +518,10 @@ class DebugRequest {
         cookies: _cookies(json['cookies']),
         collectionId: _asStringOrNull(json['collectionId']),
         overrides: _overrides(json['overrides']),
+        timeoutMs: _asIntOrNull(json['timeoutMs']),
+        followRedirects: _asBoolOrNull(json['followRedirects']),
+        useCookieJar: _asBoolOrNull(json['useCookieJar']),
+        skipTlsVerify: _asBoolOrNull(json['skipTlsVerify']),
       );
 }
 
@@ -727,6 +765,9 @@ int? _asIntOrNull(Object? value) {
 
 bool _asBool(Object? value, {required bool fallback}) =>
     value is bool ? value : fallback;
+
+/// 容忍解码：非 bool（含缺失 / 类型错误）→ `null`（由调用方取默认）。
+bool? _asBoolOrNull(Object? value) => value is bool ? value : null;
 
 String _requireString(Map<String, dynamic> json, String key) {
   final value = json[key];

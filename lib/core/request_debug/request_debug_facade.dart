@@ -131,7 +131,9 @@ abstract class RequestDebugFacade {
   /// 发送一次请求，归一化为 [DebugResponse]（失败结构化，不抛）。
   ///
   /// [bodyBytes] 非 `null` 时按 `bodyKind` 编码后的字节直发；否则走旧 [body]
-  /// UTF-8 路径。
+  /// UTF-8 路径。[followRedirects] / [timeout] / [useCookies] /
+  /// [skipTlsVerify] 为**每请求**网络选项；[skipTlsVerify] 仅对该请求绕过
+  /// TLS 校验，绝不启用全局证书绕过。
   Future<DebugResponse> send({
     required String method,
     required String url,
@@ -142,6 +144,7 @@ abstract class RequestDebugFacade {
     bool followRedirects,
     Duration? timeout,
     bool useCookies,
+    bool skipTlsVerify,
   });
 
   /// 解析 cURL（永不抛，结构化错误）。
@@ -231,6 +234,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
+    bool skipTlsVerify = false,
   }) =>
       sender.send(
         method: method,
@@ -242,6 +246,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
         followRedirects: followRedirects,
         timeout: timeout,
         useCookies: useCookies,
+        skipTlsVerify: skipTlsVerify,
       );
 
   @override

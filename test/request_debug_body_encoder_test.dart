@@ -569,6 +569,7 @@ class _CapturingSender implements DebugSender {
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
+    bool skipTlsVerify = false,
   }) async {
     calls.add(_Call(
       method: method,

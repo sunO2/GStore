@@ -48,6 +48,7 @@ class _FakeSender implements DebugSender {
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
+    bool skipTlsVerify = false,
   }) async {
     calls.add(<String, Object?>{
       'method': method,

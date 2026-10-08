@@ -76,6 +76,103 @@ class _Fixture {
   }
 }
 
+/// 自签名 HTTPS fixture（用于 TLS 校验开关）。证书 SAN=IP:127.0.0.1。
+class _TlsFixture {
+  _TlsFixture._(this._server);
+
+  final HttpServer _server;
+  final List<_Recorded> recorded = <_Recorded>[];
+  late final StreamSubscription<HttpRequest> _sub;
+
+  int get port => _server.port;
+  String get origin => 'https://127.0.0.1:$port';
+
+  static Future<_TlsFixture> start() async {
+    final context = SecurityContext()
+      ..useCertificateChainBytes(utf8.encode(_selfSignedCertPem))
+      ..usePrivateKeyBytes(utf8.encode(_selfSignedKeyPem));
+    final server = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      context,
+    );
+    final fixture = _TlsFixture._(server);
+    fixture._sub = server.listen((request) async {
+      final recorded = _Recorded(request);
+      final chunks = await request.toList();
+      recorded.body = <int>[for (final c in chunks) ...c];
+      fixture.recorded.add(recorded);
+      try {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write('secure-ok');
+        await request.response.close();
+      } catch (_) {
+        // 严格校验握手失败时服务端写入可能抛错，属预期。
+      }
+    });
+    return fixture;
+  }
+
+  Future<void> close() async {
+    await _sub.cancel();
+    await _server.close(force: true);
+  }
+}
+
+/// 测试专用自签名证书（仅用于本地 fixture，非生产信任链）。
+const String _selfSignedCertPem = '''
+-----BEGIN CERTIFICATE-----
+MIIDGjCCAgKgAwIBAgIUYHBgIEXjLd47c20qrdKjOb4LQeIwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJMTI3LjAuMC4xMB4XDTI2MTAwODIzNDYxNVoXDTM2MTAw
+NTIzNDYxNVowFDESMBAGA1UEAwwJMTI3LjAuMC4xMIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEA1mmLIFMyyHZ0bFrmfML0/FxQSOagRaW2KY0AiC5xp4pN
+ifqSMM8C2zlRDdGX0W2PExIs1XH86yrxvvgw/b6EkRnmmhAS8nd9lwRcxOay9qUy
+dI1etIlKyiMlUZTJqdeBikCkw4bKFruqIpQ++EOTCd4s4UK26LnFbOCvl3MdE0Rb
+ZNYLa+Qz8L38Odl/sa9bpXV7FhE0DMOC/iaToZodtE4BGe+ZbFtvYcFNdpVmD0kW
+YFkKmzFZ+tL3E5oUpp4xPlv6td2REzn3s26tbW2NAVUsDxFJYwe7bqSPp8x7SVn/
+s8w7YyOD+ptg7nQNtoCu1+NwWBZXD9ZlkjbsUCT+yQIDAQABo2QwYjAdBgNVHQ4E
+FgQUkybS5qV0Zhq8uwetPAVPPjv39x4wHwYDVR0jBBgwFoAUkybS5qV0Zhq8uwet
+PAVPPjv39x4wDwYDVR0TAQH/BAUwAwEB/zAPBgNVHREECDAGhwR/AAABMA0GCSqG
+SIb3DQEBCwUAA4IBAQCvjYMlSxK+eHjT6JwMgCQssF0M2ZYm8kQPz5muUq9P0cFI
+H44WHRhs65HhygdNvE2O/NY+f0h9zVRTLJ4v8p3ICUURH+fTn6mzySyys0vytt9O
+XcD9Rk2MPWDOcMUhKxyWdFkT9FpyYbNA13eP5LD0fuhVkJdJYtbEkr9nYQn01s+0
+d7w2mWJLD1Vu04clyjixPhDMkqFxLwVqMradIrhKmpBEFKwDvYF7ry0BG6ZGo5Vd
+9olbAd+Sgi9HBu/HCYv3lmqoFJZFGTXcu0mpV4cECbbhffAtNyqbsDAK4cfxRyZj
+5s43NsoWdKfZU3ls8neSzsHM/JC/wi7x05WPqx+d
+-----END CERTIFICATE-----
+''';
+
+const String _selfSignedKeyPem = '''
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDWaYsgUzLIdnRs
+WuZ8wvT8XFBI5qBFpbYpjQCILnGnik2J+pIwzwLbOVEN0ZfRbY8TEizVcfzrKvG+
++DD9voSRGeaaEBLyd32XBFzE5rL2pTJ0jV60iUrKIyVRlMmp14GKQKTDhsoWu6oi
+lD74Q5MJ3izhQrboucVs4K+Xcx0TRFtk1gtr5DPwvfw52X+xr1uldXsWETQMw4L+
+JpOhmh20TgEZ75lsW29hwU12lWYPSRZgWQqbMVn60vcTmhSmnjE+W/q13ZETOfez
+bq1tbY0BVSwPEUljB7tupI+nzHtJWf+zzDtjI4P6m2DudA22gK7X43BYFlcP1mWS
+NuxQJP7JAgMBAAECggEAD4E4BYE5XGQDJ5dr2xzGq33KHnjIS+Zfpbc5ER/5VF9n
+cQa0zfZs+J5h8p5enKSQDUB/YSX/ifVOivvr9bAdFQMVo7wYKql3uap1QkCD3jB0
+VWz9qroniuDUwNwCDe1JbvkdZmLtDTd1O6U9vSU3JlEHLM5EEiXmQBPVZB3NE0ij
+GHMXadh7cqXCV60/hmaY2yAUavOBF+8vH6InlUSx607lavfI+y1Uu/lDblJ4qcLC
+MD5673UyKYJnmnR4GVMFBBJLP0yYvPOdspnesQPjyb6HG2MEeNHOjsrFdrZIsq1T
+USbvxsSuTOzHLFu1135YDH4sRadA5+by3r7jvHL8awKBgQDiWZdZQbKWHzaP8b2N
+KWFcateJ/Zi1r3ThbZCajpGwkKHUENUMieITLsfZp6p1Z6Ac1m3mSotrxtjSLFB8
+O3Xwu15KM/Duql8WYFuhjugZ+eiGlpAA/MfR2KBcgNzXeY9r6P4P3czGD40QI5lA
+dzTuaWNhoB22E35L13NztFjbjwKBgQDyf6Jro4hhZHSiYAZ0kpRZuVi02tvCFpnG
+o9QE09Eg+56GMMTYOUXlFQWH0TpPqz9avCDKPAYztDrn02Vd39IQ5iIW4B8/SLji
+xXHZnJsjn9iQccFK7dZuWQV5Mj1N9ha5lDcs/HyYgUsnCcYcb38zlGZbjz2EOxNp
+NycgTpW0JwKBgQC7j4WsfpYfc6ngyW5KpLl6vUXxoGSEWOm/Su0CRZVP++k9Mt13
+0GG3h5IvN5I2SzIP81eJ9sdk/Zb5QaNH7nWij4BoeHXzLtYwUpRbYXHO5JjbvbOC
+PfTOXHU1ccqN+rrvrleoiiB/Fq/LadQ56Q3BaS7i3K0CDVEgQ131yMHA3QKBgEft
+gdCplfdFY68SCngjTit65Yvnas2cBIq951JzPZGp8LBe4NQ90LSNUrGhZslgww73
+xEYYHcLST7KZqnR4wgdPK4dbfQk5WdWxuP5SDFY5wHO/uhSujS736r6zHynzt3Pe
+Oat3TMGzgAYZSREAJVu4RdAcoaOKHkzUFh/oD1F7AoGANgzX8jfjCHWqNym6e6dm
+1W9dVz2WZDlvTulc5i6s99PYWZGbYZC/eNSqmt9tYq+ivjtsD4g8QcJmrFRexDXc
+uNQqOUT3FcA9aUaldmJY70QxXNiNollzl3hqZQrfjgSmkd2qHNxiJhaPJHjh8R7Y
+ffs2whjmSITQ/U3mPC8bdic=
+-----END PRIVATE KEY-----
+''';
+
 void main() {
   group('DebugSender', () {
     test('sends method / enabled headers / query / body to the server', () async {
@@ -386,6 +483,121 @@ void main() {
       expect(response, isA<DebugResponse>());
       expect(response.error, isNotNull,
           reason: '未解析占位符不是合法绝对 URL，必须结构化失败而非抛');
+    });
+  });
+
+  // plan todo 4：每请求网络选项（useCookies / skipTlsVerify）。
+  group('DebugSender per-request network options', () {
+    test('useCookies:false sends no jar cookie and does not record Set-Cookie',
+        () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.headers.add('Set-Cookie', 'server=1; Path=/');
+        request.response.write('ok');
+        await request.response.close();
+      });
+      addTearDown(fixture.close);
+
+      final jar = DebugCookieJar()..store('127.0.0.1', <String, List<String>>{
+            'set-cookie': <String>['jar=present; Path=/'],
+          });
+      final sender = DebugSender(cookieJar: jar);
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/x',
+        useCookies: false,
+      );
+
+      expect(response.error, isNull);
+      expect(fixture.recorded.single.cookie, isNull,
+          reason: 'useCookies=false 时绝不带 jar cookie');
+      expect(jar.cookieHeaderFor('127.0.0.1'), contains('jar=present'),
+          reason: 'useCookies=false 不得清空既有 jar');
+      expect(
+        jar.cookiesFor('127.0.0.1').map((c) => c.name),
+        isNot(contains('server')),
+        reason: 'useCookies=false 时响应 Set-Cookie 不写入 jar',
+      );
+    });
+
+    test('default strict certificate rejects a self-signed HTTPS server',
+        () async {
+      final fixture = await _TlsFixture.start();
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/secure',
+        timeout: const Duration(seconds: 5),
+      );
+
+      expect(response.statusCode, 0);
+      expect(response.error, isNotNull, reason: '默认严格证书必须拒绝自签名');
+    });
+
+    test(
+        'skipTlsVerify:true accepts a self-signed HTTPS server, only for that request',
+        () async {
+      final fixture = await _TlsFixture.start();
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final ok = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/secure',
+        timeout: const Duration(seconds: 5),
+        skipTlsVerify: true,
+      );
+      expect(ok.error, isNull);
+      expect(ok.statusCode, 200);
+      expect(ok.bodyText, 'secure-ok');
+
+      // 紧接一个严格请求必须再次失败：跳过校验只作用于那一个请求。
+      final strict = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/secure',
+        timeout: const Duration(seconds: 5),
+      );
+      expect(strict.error, isNotNull,
+          reason: '跳过校验不得泄漏到后续请求（禁止全局证书绕过）');
+    });
+  });
+
+  // plan todo 4：模型容错持久化（可选字段 / 缺失即默认）。
+  group('DebugRequest network options round-trip', () {
+    test('round-trips optional options and tolerates missing keys', () {
+      final request = DebugRequest(
+        id: 'r-net',
+        name: 'net',
+        timeoutMs: 5000,
+        followRedirects: false,
+        useCookieJar: false,
+        skipTlsVerify: true,
+      );
+
+      final decoded = DebugRequest.fromJson(
+        jsonDecode(jsonEncode(request.toJson())) as Map<String, dynamic>,
+      );
+      expect(decoded.timeoutMs, 5000);
+      expect(decoded.followRedirects, isFalse);
+      expect(decoded.useCookieJar, isFalse);
+      expect(decoded.skipTlsVerify, isTrue);
+
+      // 旧数据缺少这些键 → 全部为 null（调用方按默认 30s/跟随/用 jar/严格）。
+      final legacy = DebugRequest.fromJson(
+        <String, dynamic>{'id': 'r-legacy', 'name': 'old'},
+      );
+      expect(legacy.timeoutMs, isNull);
+      expect(legacy.followRedirects, isNull);
+      expect(legacy.useCookieJar, isNull);
+      expect(legacy.skipTlsVerify, isNull);
     });
   });
 
