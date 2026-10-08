@@ -129,12 +129,16 @@ abstract class RequestDebugFacade {
   Future<bool> save();
 
   /// 发送一次请求，归一化为 [DebugResponse]（失败结构化，不抛）。
+  ///
+  /// [bodyBytes] 非 `null` 时按 `bodyKind` 编码后的字节直发；否则走旧 [body]
+  /// UTF-8 路径。
   Future<DebugResponse> send({
     required String method,
     required String url,
     List<DebugHeader> headers,
     List<DebugQueryParam> query,
     String body,
+    List<int>? bodyBytes,
     bool followRedirects,
     Duration? timeout,
     bool useCookies,
@@ -223,6 +227,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
     List<DebugHeader> headers = const <DebugHeader>[],
     List<DebugQueryParam> query = const <DebugQueryParam>[],
     String body = '',
+    List<int>? bodyBytes,
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
@@ -233,6 +238,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
         headers: headers,
         query: query,
         body: body,
+        bodyBytes: bodyBytes,
         followRedirects: followRedirects,
         timeout: timeout,
         useCookies: useCookies,

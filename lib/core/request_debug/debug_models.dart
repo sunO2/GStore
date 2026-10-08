@@ -40,6 +40,29 @@ enum DebugBodyKind {
       );
 }
 
+/// 二进制请求体的输入来源（`bodyKind == binary` 时生效）。
+///
+/// - [raw]：textarea 文本按 UTF-8 原样作为字节（默认、向后兼容）；
+/// - [hex] / [base64]：把文本解码为字节；
+/// - [file]：从 [DebugRequest.binaryFilePath] 读取本地文件字节。
+enum DebugBinarySource {
+  raw('raw'),
+  hex('hex'),
+  base64('base64'),
+  file('file');
+
+  const DebugBinarySource(this.wire);
+
+  /// 持久化 / 线缆值。
+  final String wire;
+
+  /// 未知值降级为 [DebugBinarySource.raw]。
+  static DebugBinarySource fromWire(Object? value) => values.firstWhere(
+        (e) => e.wire == value,
+        orElse: () => DebugBinarySource.raw,
+      );
+}
+
 /// 认证类型（编辑器的「认证」分段）。
 enum DebugAuthType {
   none('none'),
@@ -188,6 +211,66 @@ class DebugCookie {
       );
 }
 
+/// multipart 表单项（`bodyKind == multipart`）。
+///
+/// [filePath] 非空表示**文件项**（发送前由 IO 辅助读取字节，文件名取
+/// [fileName] 或路径 basename）；否则为普通文本项（[value]）。
+class DebugMultipartField {
+  const DebugMultipartField({
+    required this.name,
+    this.value = '',
+    this.filePath,
+    this.fileName,
+    this.contentType,
+    this.enabled = true,
+  });
+
+  final String name;
+  final String value;
+  final String? filePath;
+  final String? fileName;
+  final String? contentType;
+  final bool enabled;
+
+  bool get isFile => filePath != null && filePath!.isNotEmpty;
+
+  DebugMultipartField copyWith({
+    String? name,
+    String? value,
+    String? filePath,
+    String? fileName,
+    String? contentType,
+    bool? enabled,
+  }) =>
+      DebugMultipartField(
+        name: name ?? this.name,
+        value: value ?? this.value,
+        filePath: filePath ?? this.filePath,
+        fileName: fileName ?? this.fileName,
+        contentType: contentType ?? this.contentType,
+        enabled: enabled ?? this.enabled,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'value': value,
+        if (filePath != null) 'filePath': filePath,
+        if (fileName != null) 'fileName': fileName,
+        if (contentType != null) 'contentType': contentType,
+        'enabled': enabled,
+      };
+
+  factory DebugMultipartField.fromJson(Map<String, dynamic> json) =>
+      DebugMultipartField(
+        name: _asString(json['name']),
+        value: _asString(json['value']),
+        filePath: _asStringOrNull(json['filePath']),
+        fileName: _asStringOrNull(json['fileName']),
+        contentType: _asStringOrNull(json['contentType']),
+        enabled: _asBool(json['enabled'], fallback: true),
+      );
+}
+
 /// 认证配置（按 [type] 取用相应字段，其余为 null）。
 class DebugAuth {
   const DebugAuth({
@@ -290,12 +373,16 @@ class DebugRequest {
     List<DebugQueryParam>? query,
     this.body = '',
     this.bodyKind = DebugBodyKind.none,
+    this.binarySource = DebugBinarySource.raw,
+    this.binaryFilePath,
+    List<DebugMultipartField>? multipartFields,
     this.auth,
     List<DebugCookie>? cookies,
     this.collectionId,
     this.overrides,
   })  : headers = headers ?? [],
         query = query ?? [],
+        multipartFields = multipartFields ?? [],
         cookies = cookies ?? [];
 
   final String id;
@@ -308,6 +395,15 @@ class DebugRequest {
   final List<DebugQueryParam> query;
   final String body;
   final DebugBodyKind bodyKind;
+
+  /// `bodyKind == binary` 时的输入来源（默认 [DebugBinarySource.raw]）。
+  final DebugBinarySource binarySource;
+
+  /// `binarySource == file` 时的本地文件路径。
+  final String? binaryFilePath;
+
+  /// `bodyKind == multipart` 的结构化字段 / 文件项。
+  final List<DebugMultipartField> multipartFields;
   final DebugAuth? auth;
   final List<DebugCookie> cookies;
 
@@ -326,6 +422,9 @@ class DebugRequest {
     List<DebugQueryParam>? query,
     String? body,
     DebugBodyKind? bodyKind,
+    DebugBinarySource? binarySource,
+    String? binaryFilePath,
+    List<DebugMultipartField>? multipartFields,
     DebugAuth? auth,
     List<DebugCookie>? cookies,
     String? collectionId,
@@ -340,6 +439,9 @@ class DebugRequest {
         query: query ?? this.query,
         body: body ?? this.body,
         bodyKind: bodyKind ?? this.bodyKind,
+        binarySource: binarySource ?? this.binarySource,
+        binaryFilePath: binaryFilePath ?? this.binaryFilePath,
+        multipartFields: multipartFields ?? this.multipartFields,
         auth: auth ?? this.auth,
         cookies: cookies ?? this.cookies,
         collectionId: collectionId ?? this.collectionId,
@@ -355,6 +457,11 @@ class DebugRequest {
         'query': query.map((e) => e.toJson()).toList(),
         'body': body,
         'bodyKind': bodyKind.wire,
+        if (binarySource != DebugBinarySource.raw)
+          'binarySource': binarySource.wire,
+        if (binaryFilePath != null) 'binaryFilePath': binaryFilePath,
+        if (multipartFields.isNotEmpty)
+          'multipartFields': multipartFields.map((e) => e.toJson()).toList(),
         if (auth != null) 'auth': auth!.toJson(),
         'cookies': cookies.map((e) => e.toJson()).toList(),
         if (collectionId != null) 'collectionId': collectionId,
@@ -370,6 +477,9 @@ class DebugRequest {
         query: _queries(json['query']),
         body: _asString(json['body']),
         bodyKind: DebugBodyKind.fromWire(json['bodyKind']),
+        binarySource: DebugBinarySource.fromWire(json['binarySource']),
+        binaryFilePath: _asStringOrNull(json['binaryFilePath']),
+        multipartFields: _multipartFields(json['multipartFields']),
         auth: _auth(json['auth']),
         cookies: _cookies(json['cookies']),
         collectionId: _asStringOrNull(json['collectionId']),
@@ -666,6 +776,14 @@ List<DebugCookie> _cookies(Object? value) {
   return value
       .whereType<Map>()
       .map((e) => DebugCookie.fromJson(e.cast<String, dynamic>()))
+      .toList();
+}
+
+List<DebugMultipartField> _multipartFields(Object? value) {
+  if (value is! List) return [];
+  return value
+      .whereType<Map>()
+      .map((e) => DebugMultipartField.fromJson(e.cast<String, dynamic>()))
       .toList();
 }
 

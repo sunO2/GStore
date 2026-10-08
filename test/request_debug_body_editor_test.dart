@@ -35,6 +35,7 @@ class _FakeSender implements DebugSender {
     List<DebugHeader> headers = const <DebugHeader>[],
     List<DebugQueryParam> query = const <DebugQueryParam>[],
     String body = '',
+    List<int>? bodyBytes,
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,

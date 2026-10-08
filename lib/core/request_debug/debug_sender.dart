@@ -43,15 +43,18 @@ class DebugSender {
 
   /// 发送一次请求并返回 [DebugResponse]。
   ///
-  /// [headers] / [query] 仅发送 `enabled=true` 项；[body] 非空时按 UTF-8
-  /// 编成字节。`useCookies=true` 时自动带上 jar 中匹配 [url] host 的 cookie，
-  /// 并在响应后把 `Set-Cookie` 存入 jar。失败返回结构化错误，不抛。
+  /// [headers] / [query] 仅发送 `enabled=true` 项；[bodyBytes] 非 `null` 时
+  /// **直接作为线缆字节**（按 `bodyKind` 编码后的结果）；否则 [body] 非空时按
+  /// UTF-8 编成字节（旧路径，行为不变）。`useCookies=true` 时自动带上 jar 中
+  /// 匹配 [url] host 的 cookie，并在响应后把 `Set-Cookie` 存入 jar。失败返回
+  /// 结构化错误，不抛。
   Future<DebugResponse> send({
     required String method,
     required String url,
     List<DebugHeader> headers = const <DebugHeader>[],
     List<DebugQueryParam> query = const <DebugQueryParam>[],
     String body = '',
+    List<int>? bodyBytes,
     bool followRedirects = true,
     Duration? timeout,
     bool useCookies = true,
@@ -65,6 +68,7 @@ class DebugSender {
         headers: headers,
         query: query,
         body: body,
+        bodyBytes: bodyBytes,
         followRedirects: followRedirects,
         useCookies: useCookies,
       ).timeout(effectiveTimeout);
@@ -96,6 +100,7 @@ class DebugSender {
     required List<DebugHeader> headers,
     required List<DebugQueryParam> query,
     required String body,
+    required List<int>? bodyBytes,
     required bool followRedirects,
     required bool useCookies,
   }) async {
@@ -125,7 +130,11 @@ class DebugSender {
       if (merged.isNotEmpty) request.headers['Cookie'] = merged;
     }
 
-    if (body.isNotEmpty) {
+    if (bodyBytes != null) {
+      // 新路径：按 bodyKind 编码后的字节直接上线（即使为空也显式置空）。
+      request.bodyBytes = bodyBytes;
+    } else if (body.isNotEmpty) {
+      // 旧路径：仅传 body 的调用方行为保持完全不变（UTF-8）。
       request.bodyBytes = utf8.encode(body);
     }
 

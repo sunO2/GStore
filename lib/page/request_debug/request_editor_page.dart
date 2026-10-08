@@ -99,6 +99,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   late String _method;
   late DebugBodyKind _bodyKind;
+  late DebugBinarySource _binarySource;
   late DebugAuthType _authType;
   String _apiKeyIn = 'header';
   RequestEditorSegment _segment = RequestEditorSegment.params;
@@ -137,6 +138,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _method = request?.method ?? 'GET';
     if (!_httpMethods.contains(_method)) _method = 'GET';
     _bodyKind = request?.bodyKind ?? DebugBodyKind.none;
+    _binarySource = request?.binarySource ?? DebugBinarySource.raw;
     _authType = request?.auth?.type ?? DebugAuthType.none;
     _apiKeyIn = request?.auth?.apiKeyIn ?? 'header';
     _authUser = TextEditingController(text: request?.auth?.username ?? '');
@@ -365,6 +367,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       query: _currentParams(),
       body: _body.text,
       bodyKind: _bodyKind,
+      binarySource: _binarySource,
+      binaryFilePath: _binarySource == DebugBinarySource.file
+          ? _body.text.trim()
+          : null,
+      multipartFields: widget.request?.multipartFields ?? const [],
       auth: _composeAuth(),
       cookies: _cookies
           .where((c) => c.nameCtrl.text.trim().isNotEmpty)
@@ -658,9 +665,34 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     // 编辑器显式 Cookie 真正生效：并入 `Cookie` 头；与 jar 的同名去重由
     // `DebugSender` 在发送时完成（显式条目优先）。
     final cookieHeader = _cookieHeaderFrom(draft.cookies);
-    final sendHeaders = cookieHeader.isEmpty
+    var sendHeaders = cookieHeader.isEmpty
         ? applied.headers
         : _withCookieHeader(applied.headers, cookieHeader);
+
+    // `bodyKind` 真正影响线缆：按类型编码为字节；`none` 走旧 `body` 路径。
+    final bodyText = resolve(draft.body);
+    final explicitContentType = _explicitContentType(sendHeaders);
+    BodyEncodeResult? encoded;
+    try {
+      encoded = await _encodeDraftBody(
+        draft,
+        bodyText,
+        explicitContentType: explicitContentType,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError('请求体编码失败：$error');
+      return;
+    }
+    if (encoded != null &&
+        encoded.contentType != null &&
+        explicitContentType == null) {
+      // 未显式设置 Content-Type 时按 bodyKind 自动补上。
+      sendHeaders = <DebugHeader>[
+        ...sendHeaders,
+        DebugHeader(name: 'Content-Type', value: encoded.contentType!),
+      ];
+    }
 
     setState(() {
       _sending = true;
@@ -671,13 +703,67 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       url: resolve(draft.url),
       headers: sendHeaders,
       query: applied.query,
-      body: resolve(draft.body),
+      body: bodyText,
+      bodyBytes: encoded?.bytes,
     );
     if (!mounted) return;
     setState(() {
       _sending = false;
       _response = response;
     });
+  }
+
+  /// 按 [draft.bodyKind] 把请求体编码为线缆字节；`none` 返回 `null`（旧路径）。
+  Future<BodyEncodeResult?> _encodeDraftBody(
+    DebugRequest draft,
+    String text, {
+    required String? explicitContentType,
+  }) async {
+    switch (draft.bodyKind) {
+      case DebugBodyKind.none:
+        return null;
+      case DebugBodyKind.json:
+      case DebugBodyKind.text:
+      case DebugBodyKind.formUrlEncoded:
+        return encodeBody(BodyEncodeInput(
+          kind: draft.bodyKind,
+          text: text,
+          contentType: explicitContentType,
+        ));
+      case DebugBodyKind.multipart:
+        final parts = draft.multipartFields.isNotEmpty
+            ? await resolveMultipartFields(draft.multipartFields)
+            : parseMultipartText(text);
+        return encodeBody(BodyEncodeInput(
+          kind: DebugBodyKind.multipart,
+          parts: parts,
+          contentType: explicitContentType,
+          boundary: multipartBoundaryOf(explicitContentType),
+        ));
+      case DebugBodyKind.binary:
+        final bytes = await resolveBinaryBytes(
+          text,
+          draft.binarySource,
+          filePath: draft.binaryFilePath,
+        );
+        return encodeBody(BodyEncodeInput(
+          kind: DebugBodyKind.binary,
+          binaryBytes: bytes,
+          contentType: explicitContentType,
+        ));
+    }
+  }
+
+  /// 返回首个启用的 `Content-Type` 值（大小写不敏感；无则 `null`）。
+  static String? _explicitContentType(List<DebugHeader> headers) {
+    for (final header in headers) {
+      if (header.enabled &&
+          header.name.trim().toLowerCase() == 'content-type' &&
+          header.value.isNotEmpty) {
+        return header.value;
+      }
+    }
+    return null;
   }
 
   /// 打开 Cookie jar 管理弹层（统一底部弹层）。
@@ -1253,9 +1339,35 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     });
   }
 
+  /// 请求体输入框的提示文案（随 `bodyKind` / 二进制来源变化）。
+  String _bodyHintText() {
+    switch (_bodyKind) {
+      case DebugBodyKind.multipart:
+        return '每行一个字段：name=value';
+      case DebugBodyKind.binary:
+        switch (_binarySource) {
+          case DebugBinarySource.raw:
+            return '原始文本（按 UTF-8 字节发送）';
+          case DebugBinarySource.hex:
+            return '十六进制，如 0a ff 10';
+          case DebugBinarySource.base64:
+            return 'Base64 文本';
+          case DebugBinarySource.file:
+            return '本地文件绝对路径';
+        }
+      case DebugBodyKind.formUrlEncoded:
+        return '如 a=1&b=hello world';
+      case DebugBodyKind.json:
+      case DebugBodyKind.text:
+      case DebugBodyKind.none:
+        return '请求体';
+    }
+  }
+
   Widget _buildBodyEditor(BuildContext context) {
     final theme = Theme.of(context);
     final isJson = _bodyKind == DebugBodyKind.json;
+    final isBinary = _bodyKind == DebugBodyKind.binary;
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
@@ -1300,6 +1412,32 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               ],
             ],
           ),
+          if (isBinary) ...[
+            const SizedBox(height: AppSpacing.md),
+            DropdownButtonFormField<DebugBinarySource>(
+              key: const Key('request-editor-binary-source'),
+              initialValue: _binarySource,
+              decoration: const InputDecoration(
+                labelText: '二进制来源',
+                border: OutlineInputBorder(),
+              ),
+              items: DebugBinarySource.values
+                  .map(
+                    (source) => DropdownMenuItem<DebugBinarySource>(
+                      value: source,
+                      child: Text(source.wire),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() {
+                  _binarySource = value;
+                  _dirty = true;
+                });
+              },
+            ),
+          ],
           const SizedBox(height: AppSpacing.md),
           AppEditorToolbar(
             controller: _body,
@@ -1324,9 +1462,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               maxLines: null,
               expands: true,
               textAlignVertical: TextAlignVertical.top,
-              decoration: const InputDecoration(
-                hintText: '请求体',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                hintText: _bodyHintText(),
+                border: const OutlineInputBorder(),
               ),
               onChanged: (_) {
                 setState(() {
