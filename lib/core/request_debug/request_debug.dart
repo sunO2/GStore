@@ -4,6 +4,7 @@
 /// 等可独立测试的纯逻辑。
 library;
 
+export 'auth_apply.dart';
 export 'capture_mapping.dart';
 export 'curl_codec.dart';
 export 'debug_cookie_jar.dart';

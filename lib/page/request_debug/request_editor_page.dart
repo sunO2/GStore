@@ -604,6 +604,14 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             ))
         .toList();
 
+    // 认证真正生效：Basic / Bearer 注入 Authorization 头，APIKey 注入命名头或
+    // 查询参数。**不**解析 auth 内的 `{{var}}`（与既有约定一致）。
+    final applied = applyAuth(
+      auth: draft.auth,
+      headers: headers,
+      query: query,
+    );
+
     setState(() {
       _sending = true;
       _segment = RequestEditorSegment.response;
@@ -611,8 +619,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     final response = await _facade.send(
       method: draft.method,
       url: resolve(draft.url),
-      headers: headers,
-      query: query,
+      headers: applied.headers,
+      query: applied.query,
       body: resolve(draft.body),
     );
     if (!mounted) return;

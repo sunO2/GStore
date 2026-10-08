@@ -14,6 +14,7 @@ library;
 
 import 'dart:convert';
 
+import 'auth_apply.dart';
 import 'debug_models.dart';
 import 'query_codec.dart';
 
@@ -82,6 +83,7 @@ CurlParseResult _parse(String curl) {
   final cookies = <DebugCookie>[];
   final bodyParts = <String>[];
   final formParts = <String>[];
+  DebugAuth? auth;
 
   var headFlag = false;
   var getFlag = false;
@@ -99,6 +101,14 @@ CurlParseResult _parse(String curl) {
     if (name.isEmpty) {
       ignored.add('无效 header（忽略）：$raw');
       return;
+    }
+    // Authorization 头反向还原为认证配置（Bearer / Basic），保证 cURL 往返。
+    if (name.toLowerCase() == 'authorization') {
+      final parsed = _parseAuthorizationHeader(value);
+      if (parsed != null) {
+        auth = parsed;
+        return;
+      }
     }
     headers.add(DebugHeader(name: name, value: value));
   }
@@ -259,11 +269,20 @@ CurlParseResult _parse(String curl) {
         if (v == null) {
           ignored.add('$name 缺少值（忽略）');
         } else {
-          final encoded = base64Encode(utf8.encode(v));
-          headers.add(DebugHeader(
-            name: 'Authorization',
-            value: 'Basic $encoded',
-          ));
+          final sep = v.indexOf(':');
+          auth = DebugAuth(
+            type: DebugAuthType.basic,
+            username: sep < 0 ? v : v.substring(0, sep),
+            password: sep < 0 ? '' : v.substring(sep + 1),
+          );
+        }
+        break;
+      case '--oauth2-bearer':
+        final v = takeValue();
+        if (v == null) {
+          ignored.add('$name 缺少值（忽略）');
+        } else {
+          auth = DebugAuth(type: DebugAuthType.bearer, token: v);
         }
         break;
       case '-I':
@@ -341,10 +360,42 @@ CurlParseResult _parse(String curl) {
     headers: headers,
     body: body,
     bodyKind: bodyKind,
+    auth: auth,
     cookies: cookies,
   );
 
   return CurlParseResult.success(request, ignored: ignored);
+}
+
+/// 把 `Authorization` 头值反向还原为 [DebugAuth]；无法识别时返回 `null`
+/// （交由调用方保留为普通 header）。
+///
+/// 支持 `Bearer <token>` 与 `Basic <base64(user:pass)>`（base64 非法时返回
+/// `null`，绝不抛）。
+DebugAuth? _parseAuthorizationHeader(String value) {
+  final trimmed = value.trim();
+  final lower = trimmed.toLowerCase();
+  if (lower.startsWith('bearer ')) {
+    return DebugAuth(
+      type: DebugAuthType.bearer,
+      token: trimmed.substring(7).trim(),
+    );
+  }
+  if (lower.startsWith('basic ')) {
+    final encoded = trimmed.substring(6).trim();
+    try {
+      final decoded = utf8.decode(base64Decode(encoded));
+      final sep = decoded.indexOf(':');
+      return DebugAuth(
+        type: DebugAuthType.basic,
+        username: sep < 0 ? decoded : decoded.substring(0, sep),
+        password: sep < 0 ? '' : decoded.substring(sep + 1),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
 }
 
 /// 由 content-type 头或 body 内容推断 [DebugBodyKind]。
@@ -411,19 +462,48 @@ const Set<String> _valueTakingFlags = {
 
 /// 把 [DebugRequest] 序列化为等价 cURL 命令（单引号转义）。
 ///
-/// 输出可被 [parseCurl] 再次解析并保持等价。
+/// 输出可被 [parseCurl] 再次解析并保持等价。认证按类型导出：
+/// - Basic  → `-u '<user>:<pass>'`；
+/// - Bearer → `--oauth2-bearer '<token>'`；
+/// - APIKey → 命名头 `-H`（header）或 URL 查询（query）。
 String toCurl(DebugRequest req) {
   final b = StringBuffer('curl');
   b.write(' -X ${_shellQuote(req.method)}');
 
-  final url = effectiveUrl(req);
+  // 认证先应用一次：APIKey(query) 会并入查询（同名覆盖），APIKey(header)
+  // 会并入头集合；Basic / Bearer 走下方专用 flag，故需跳过其 Authorization 头。
+  final applied = applyAuth(
+    auth: req.auth,
+    headers: req.headers,
+    query: req.query,
+  );
+  final authType = req.auth?.type ?? DebugAuthType.none;
+  final useAuthFlag = authType == DebugAuthType.basic ||
+      authType == DebugAuthType.bearer;
+
+  final url = _effectiveUrl(req.url, applied.query);
   if (url.isNotEmpty) {
     b.write(' ${_shellQuote(url)}');
   }
 
-  for (final h in req.headers) {
+  for (final h in applied.headers) {
     if (!h.enabled || h.name.isEmpty) continue;
+    if (useAuthFlag && h.name.toLowerCase() == 'authorization') continue;
     b.write(' -H ${_shellQuote('${h.name}: ${h.value}')}');
+  }
+
+  switch (authType) {
+    case DebugAuthType.basic:
+      final user = req.auth?.username ?? '';
+      final pass = req.auth?.password ?? '';
+      b.write(' -u ${_shellQuote('$user:$pass')}');
+      break;
+    case DebugAuthType.bearer:
+      b.write(' --oauth2-bearer ${_shellQuote(req.auth?.token ?? '')}');
+      break;
+    case DebugAuthType.apiKey:
+    case DebugAuthType.none:
+      break;
   }
 
   final cookieParts = req.cookies
@@ -453,10 +533,13 @@ String toCurl(DebugRequest req) {
 /// 复用 [parseUrlQuery] / [mergeParams] / [rebuildUrl]：同名参数**覆盖** URL
 /// 原有值（而非追加），并保证查询串位于 `#fragment` **之前**。绝不在此处
 /// 重新实现百分号编码。
-String effectiveUrl(DebugRequest req) {
-  final parsed = parseUrlQuery(req.url);
+String effectiveUrl(DebugRequest req) => _effectiveUrl(req.url, req.query);
+
+/// [effectiveUrl] 的底层实现：指定 URL 与查询参数。
+String _effectiveUrl(String url, List<DebugQueryParam> query) {
+  final parsed = parseUrlQuery(url);
   final enabled =
-      req.query.where((q) => q.enabled && q.name.isNotEmpty).toList();
+      query.where((q) => q.enabled && q.name.isNotEmpty).toList();
   final merged = mergeParams(parsed.params, enabled);
   return rebuildUrl(parsed.base, parsed.fragment, merged);
 }
