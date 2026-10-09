@@ -517,6 +517,42 @@ void main() {
       expect(find.textContaining('https://api.example/x'), findsWidgets);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('生成代码 → 打开多语言片段弹层（默认 cURL，占位符保留）',
+        (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-codegen',
+          name: 'codegen',
+          method: 'POST',
+          url: 'https://{{host}}/api/items',
+          body: '{"name":"{{name}}"}',
+          bodyKind: DebugBodyKind.json,
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      await _tapMore(tester, const Key('request-editor-generate-code'));
+
+      expect(find.text('生成代码'), findsOneWidget);
+      expect(
+        find.byKey(const Key('request-editor-codegen-output')),
+        findsOneWidget,
+      );
+      // 默认 cURL：URL 与 {{var}} 占位符逐字保留。
+      expect(find.textContaining('https://{{host}}/api/items'), findsWidgets);
+      expect(find.textContaining('{{name}}'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('请求编辑器 · 网络选项', () {

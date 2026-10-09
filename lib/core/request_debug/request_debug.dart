@@ -8,6 +8,7 @@ export 'auth_apply.dart';
 export 'body_encoder.dart';
 export 'body_encoder_io.dart';
 export 'capture_mapping.dart';
+export 'code_gen.dart';
 export 'curl_codec.dart';
 export 'debug_cookie_jar.dart';
 export 'debug_models.dart';

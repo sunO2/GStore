@@ -938,8 +938,19 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
   }
 
-  // ==================== 离开 ====================
+  /// 打开「生成代码」底部弹层：把当前草稿渲染为多语言请求片段。
+  ///
+  /// 与 cURL 导出一致，先经 [redactRequest] 脱敏，绝不把明文密钥写进可复制
+  /// 文本；`{{var}}` 占位符由 [generateCode] 逐字保留。
+  Future<void> _openCodeGen() async {
+    final request = redactRequest(_composeDraft());
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (_) => _CodeGenSheet(request: request),
+    );
+  }
 
+  // ==================== 离开 ====================
   Future<void> _handleLeave() async {
     // 发送中：先警告；确认后取消请求再离开（绝不静默丢弃进行中的请求）。
     if (_sending) {
@@ -1797,6 +1808,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                     _saveAs();
                   case 'export-curl':
                     _exportCurl();
+                  case 'generate-code':
+                    _openCodeGen();
                 }
               },
               itemBuilder: (_) => const <PopupMenuEntry<String>>[
@@ -1824,6 +1837,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                   key: Key('request-editor-export-curl'),
                   value: 'export-curl',
                   child: Text('导出 cURL'),
+                ),
+                PopupMenuItem<String>(
+                  key: Key('request-editor-generate-code'),
+                  value: 'generate-code',
+                  child: Text('生成代码'),
                 ),
               ],
             ),
@@ -2138,3 +2156,70 @@ int? _firstKvSeparator(String line) {
   if (equals < 0) return colon;
   return colon < equals ? colon : equals;
 }
+
+/// 「生成代码」弹层：语言下拉 + 只读可选中代码片段。
+///
+/// 纯展示：代码由 [generateCode] 依据传入（已脱敏）的 [request] 生成；切换语言
+/// 仅重渲染，绝不修改请求。走统一底部弹层骨架（[AppSheetScaffold]），颜色 /
+/// 字号全取主题令牌。
+class _CodeGenSheet extends StatefulWidget {
+  const _CodeGenSheet({required this.request});
+
+  final DebugRequest request;
+
+  @override
+  State<_CodeGenSheet> createState() => _CodeGenSheetState();
+}
+
+class _CodeGenSheetState extends State<_CodeGenSheet> {
+  CodeGenLanguage _language = CodeGenLanguage.curl;
+
+  @override
+  Widget build(BuildContext context) {
+    final code = generateCode(widget.request, _language);
+    return AppSheetScaffold(
+      title: '生成代码',
+      subtitle: '复制到目标语言运行；{{var}} 占位符保持原样',
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<CodeGenLanguage>(
+            key: const Key('request-editor-codegen-language'),
+            initialValue: _language,
+            decoration: const InputDecoration(
+              labelText: '语言',
+              border: OutlineInputBorder(),
+            ),
+            items: CodeGenLanguage.values
+                .map(
+                  (language) => DropdownMenuItem<CodeGenLanguage>(
+                    value: language,
+                    child: Text(language.label),
+                  ),
+                )
+                .toList(),
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => _language = value);
+            },
+          ),
+          const SizedBox(height: AppSpacing.md),
+          SelectableText(
+            code,
+            key: const Key('request-editor-codegen-output'),
+            style: AppTypography.code,
+          ),
+        ],
+      ),
+      actions: [
+        FilledButton(
+          key: const Key('request-editor-codegen-close'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
