@@ -125,6 +125,45 @@ class _FakeProfilesFacade implements ProxyProfilesFacade {
   }
 
   @override
+  Future<StoredProfile> profileUpdate(Map<String, dynamic> payload) async {
+    final id = payload['id'] as String?;
+    final name = payload['name'] as String?;
+    final index = _profiles.indexWhere((profile) => profile.id == id);
+    if (index >= 0 && name != null) {
+      final old = _profiles[index];
+      _profiles[index] = ProfileSummary(
+        id: old.id,
+        name: name,
+        format: old.format,
+        nodeCount: old.nodeCount,
+        groupCount: old.groupCount,
+        createdAtMs: old.createdAtMs,
+        updatedAtMs: old.updatedAtMs,
+        revision: old.revision + 1,
+        sourceOrigin: old.sourceOrigin,
+        sourceUrl: old.sourceUrl,
+        userinfo: old.userinfo,
+        refresh: old.refresh,
+      );
+    }
+    return StoredProfile(
+      id: id ?? '',
+      profile: const ImportedProfile(name: '', format: 'clash'),
+    );
+  }
+
+  @override
+  Future<GeneratedConfig> profileExportClash(ProfileExportRequest request) async =>
+      const GeneratedConfig(config: 'mode: rule\n', profileId: 'p1');
+
+  @override
+  Future<StoredProfile> profileSetSchedule(String id, int intervalMs) async =>
+      StoredProfile(
+        id: id,
+        profile: const ImportedProfile(name: '', format: 'clash'),
+      );
+
+  @override
   Future<void> applyProfile(String profileId) async {
     final error = applyError;
     if (error != null) throw error;

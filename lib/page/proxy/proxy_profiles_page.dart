@@ -20,6 +20,15 @@ typedef ProfileFilePick = Future<({String name, String text})?> Function();
 /// 读取系统剪贴板文本（null = 无内容）。
 typedef ProfileClipboardRead = Future<String?> Function();
 
+/// 导出 Clash 配置的另存接缝：调用系统保存对话框并返回落地路径（取消 → `null`）。
+///
+/// 生产默认走 [FilePicker.platform.saveFile]，测试注入假实现断言「保存被调用」。
+typedef ProfileSaveFile = Future<String?> Function({
+  required String fileName,
+  required Uint8List bytes,
+  required List<String> allowedExtensions,
+});
+
 /// 订阅与配置管理页（Todo 20，**纯展示层**）。
 ///
 /// 职责边界：
@@ -49,6 +58,7 @@ class ProxyProfilesPage extends StatefulWidget {
     this.filePicker,
     this.clipboardReader,
     this.profileStore,
+    this.saveFile,
   });
 
   /// 门面（测试注入假实现；为空时用生产适配器 [ProxyModuleProfilesFacade]）。
@@ -63,6 +73,9 @@ class ProxyProfilesPage extends StatefulWidget {
   /// 选中订阅的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   final ProxyActiveProfileStore? profileStore;
 
+  /// 导出 Clash 配置的另存接缝（测试注入；为空时走 [FilePicker.platform.saveFile]）。
+  final ProfileSaveFile? saveFile;
+
   @override
   State<ProxyProfilesPage> createState() => _ProxyProfilesPageState();
 }
@@ -72,12 +85,14 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   late final ProfileFilePick _filePicker;
   late final ProfileClipboardRead _clipboardReader;
   late final ProxyActiveProfileStore _profileStore;
+  late final ProfileSaveFile _saveFile;
 
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
   bool _importing = false;
   bool _refreshingAll = false;
+  bool _exporting = false;
   String? _loadError;
   List<ProfileSummary> _profiles = const <ProfileSummary>[];
   List<ProfileWarning> _warnings = const <ProfileWarning>[];
@@ -99,6 +114,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     _clipboardReader = widget.clipboardReader ?? _defaultReadClipboard;
     _profileStore =
         widget.profileStore ?? const ConfigStoreProxyActiveProfileStore();
+    _saveFile = widget.saveFile ?? _defaultSaveFile;
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
     _load();
   }
@@ -272,15 +288,18 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     if (_refreshingAll || _importing) return;
     setState(() => _refreshingAll = true);
     try {
-      final result = await _facade.profileRefreshAll();
+      var result = await _facade.profileRefreshAll();
       if (!mounted) return;
-      if (result.failedCount > 0) {
-        AppDialogs.showWarning(
-          '已更新 ${result.count} 个，${result.failedCount} 个失败',
-        );
-      } else {
-        AppDialogs.showSuccess('已更新 ${result.count} 个网络组');
+      // 有被跳过的来源（不可刷新 / 退避 / 未到期 / 超上限）→ 展示原因并允许强制。
+      if (result.skipped.isNotEmpty) {
+        final force = await _showSkippedSheet(result);
+        if (!mounted) return;
+        if (force == true) {
+          result = await _facade.profileRefreshAll(force: true);
+          if (!mounted) return;
+        }
       }
+      _announceRefreshAll(result);
       await _load();
     } on ProxyModuleException catch (error) {
       await _showErrorSheet('全部更新失败', error.message);
@@ -289,6 +308,81 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     } finally {
       if (mounted) setState(() => _refreshingAll = false);
     }
+  }
+
+  /// 汇总批量刷新结果并提示（跳过数计入文案，不谎报为失败）。
+  void _announceRefreshAll(RefreshAllResult result) {
+    final parts = <String>['已更新 ${result.count} 个网络组'];
+    if (result.failedCount > 0) parts.add('${result.failedCount} 个失败');
+    if (result.skipped.isNotEmpty) parts.add('${result.skipped.length} 个跳过');
+    final message = parts.join('，');
+    if (result.failedCount > 0) {
+      AppDialogs.showWarning(message);
+    } else {
+      AppDialogs.showSuccess(message);
+    }
+  }
+
+  /// 展示 `profile.refresh_all` 的 `skipped[]` 原因；返回 `true` 表示用户选择强制更新。
+  Future<bool?> _showSkippedSheet(RefreshAllResult result) {
+    final names = <String, String>{
+      for (final profile in _profiles)
+        profile.id: profile.name.isEmpty ? '未命名网络组' : profile.name,
+    };
+    final scheme = Theme.of(context).colorScheme;
+    return AppDialogs.showContentSheet<bool>(
+      title: '部分网络组已跳过',
+      subtitle: '共 ${result.skipped.length} 个未更新，可选择强制更新',
+      icon: const Icon(TablerIcons.refresh_dot),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final skip in result.skipped)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    TablerIcons.clock,
+                    size: AppTypography.iconSM,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          names[skip.profileId] ?? skip.profileId,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        Text(
+                          _skipReasonLabel(skip.reason),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<bool>(false),
+          child: const Text('关闭'),
+        ),
+        FilledButton(
+          onPressed: () => AppDialogs.popSheet<bool>(true),
+          child: const Text('强制更新'),
+        ),
+      ],
+    );
   }
 
   Future<void> _refreshProfile(ProfileSummary profile) async {
@@ -311,6 +405,169 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     } finally {
       if (mounted) setState(() => _refreshingIds.remove(profile.id));
     }
+  }
+
+  // ==================== 编辑 / 导出 / 排程 ====================
+
+  /// 单个 profile 的「更多」菜单：重命名 / 导出 Clash / 自动更新间隔。
+  Future<void> _openProfileMenu(ProfileSummary profile) async {
+    final action = await AppDialogs.showContentSheet<_ProfileAction>(
+      title: profile.name.isEmpty ? '未命名网络组' : profile.name,
+      icon: const Icon(TablerIcons.dots_vertical),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _MenuOption(
+            key: const Key('profile_menu_rename'),
+            icon: TablerIcons.pencil,
+            title: '重命名',
+            subtitle: '修改网络组的显示名称',
+            onTap: () => AppDialogs.popSheet<_ProfileAction>(
+              _ProfileAction.rename,
+            ),
+          ),
+          _MenuOption(
+            key: const Key('profile_menu_export'),
+            icon: TablerIcons.file_download,
+            title: '导出 Clash',
+            subtitle: '生成并另存该网络组的 Clash 配置',
+            onTap: () => AppDialogs.popSheet<_ProfileAction>(
+              _ProfileAction.export,
+            ),
+          ),
+          _MenuOption(
+            key: const Key('profile_menu_schedule'),
+            icon: TablerIcons.clock,
+            title: '自动更新间隔',
+            subtitle: '设置或关闭该网络组的定时更新',
+            onTap: () => AppDialogs.popSheet<_ProfileAction>(
+              _ProfileAction.schedule,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<_ProfileAction>(null),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _ProfileAction.rename:
+        await _renameProfile(profile);
+      case _ProfileAction.export:
+        await _exportClash(profile);
+      case _ProfileAction.schedule:
+        await _scheduleProfile(profile);
+    }
+  }
+
+  /// `profile.update`：重命名并刷新列表。
+  Future<void> _renameProfile(ProfileSummary profile) async {
+    final request = await AppSheet.showCustom<_RenameRequest>(
+      context: context,
+      builder: (_) => _RenameSheet(initialName: profile.name),
+    );
+    if (request == null || !mounted) return;
+    final name = request.name.trim();
+    if (name.isEmpty) {
+      AppDialogs.showError('名称不能为空');
+      return;
+    }
+    if (name == profile.name) return;
+    try {
+      await _facade.profileUpdate(<String, dynamic>{
+        'id': profile.id,
+        'name': name,
+      });
+      if (!mounted) return;
+      AppDialogs.showSuccess('已重命名为「$name」');
+      await _load();
+    } on ProxyModuleException catch (error) {
+      await _showErrorSheet('重命名失败', error.message);
+    } catch (error) {
+      await _showErrorSheet('重命名失败', '$error');
+    }
+  }
+
+  /// `profile.export_clash`：生成 Clash 配置并另存（取消不报错）。
+  Future<void> _exportClash(ProfileSummary profile) async {
+    if (_exporting) return;
+    setState(() => _exporting = true);
+    try {
+      final generated = await _facade.profileExportClash(
+        ProfileExportRequest(id: profile.id),
+      );
+      if (!mounted) return;
+      final bytes = Uint8List.fromList(utf8.encode(generated.config));
+      final path = await _saveFile(
+        fileName: '${_safeFileName(profile.name)}.yaml',
+        bytes: bytes,
+        allowedExtensions: const <String>['yaml', 'yml'],
+      );
+      if (!mounted) return;
+      // 用户取消：静默停止，不提示失败。
+      if (path == null || path.isEmpty) return;
+      AppDialogs.showSuccess('已导出「${profile.name}」的 Clash 配置');
+    } on ProxyModuleException catch (error) {
+      await _showErrorSheet('导出失败', error.message);
+    } catch (error) {
+      await _showErrorSheet('导出失败', '$error');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// `profile.set_schedule`：设置 / 清除自动更新间隔并回读。
+  Future<void> _scheduleProfile(ProfileSummary profile) async {
+    const options = <int>[
+      0,
+      Duration.millisecondsPerHour,
+      6 * Duration.millisecondsPerHour,
+      12 * Duration.millisecondsPerHour,
+      Duration.millisecondsPerDay,
+    ];
+    final current = profile.refresh?.intervalMs ?? 0;
+    final intervalMs = await AppDialogs.showSelectionBottomSheet<int>(
+      title: '自动更新间隔',
+      items: options,
+      selectedItem: current,
+      itemLabel: _intervalLabel,
+    );
+    if (intervalMs == null || !mounted) return;
+    try {
+      await _facade.profileSetSchedule(profile.id, intervalMs);
+      if (!mounted) return;
+      AppDialogs.showSuccess(
+        intervalMs == 0
+            ? '已关闭自动更新'
+            : '自动更新间隔已设为 ${_intervalLabel(intervalMs)}',
+      );
+      await _load();
+    } on ProxyModuleException catch (error) {
+      await _showErrorSheet('设置自动更新失败', error.message);
+    } catch (error) {
+      await _showErrorSheet('设置自动更新失败', '$error');
+    }
+  }
+
+  /// 生产默认另存：系统保存对话框（与请求记录 / 备份导出同机制）。
+  static Future<String?> _defaultSaveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowedExtensions,
+  }) {
+    return FilePicker.platform.saveFile(
+      dialogTitle: '导出 Clash 配置',
+      fileName: fileName,
+      lockParentWindow: true,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
+      bytes: bytes,
+    );
   }
 
   // ==================== 删除 ====================
@@ -381,7 +638,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   }
 
   List<Widget> _buildActions(BuildContext context) {
-    if (_importing || _refreshingAll) {
+    if (_importing || _refreshingAll || _exporting) {
       return const <Widget>[
         Padding(
           padding: AppSpacing.onlyHorizontalLG,
@@ -427,8 +684,10 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
             profile: profile,
             selected: profile.id == _selectedId,
             refreshing: _refreshingIds.contains(profile.id),
+            refreshable: _isRefreshable(profile),
             onSelect: () => _selectProfile(profile),
             onRefresh: () => _refreshProfile(profile),
+            onMore: () => _openProfileMenu(profile),
             onDelete: () => _deleteProfile(profile),
           ),
         ),
@@ -569,8 +828,10 @@ class _ProfileCard extends StatelessWidget {
     required this.profile,
     required this.selected,
     required this.refreshing,
+    required this.refreshable,
     required this.onSelect,
     required this.onRefresh,
+    required this.onMore,
     required this.onDelete,
   });
 
@@ -579,8 +840,12 @@ class _ProfileCard extends StatelessWidget {
   /// 是否为「当前订阅」（连接时生效）。
   final bool selected;
   final bool refreshing;
+
+  /// 该来源是否可刷新（`url` 来源才有可重取的地址）。
+  final bool refreshable;
   final VoidCallback onSelect;
   final VoidCallback onRefresh;
+  final VoidCallback onMore;
   final VoidCallback onDelete;
 
   @override
@@ -649,12 +914,17 @@ class _ProfileCard extends StatelessWidget {
                       padding: AppSpacing.onlyHorizontalSM,
                       child: AppLoading(size: AppLoadingSize.small),
                     )
-                  else
+                  else if (refreshable)
                     IconButton(
                       tooltip: '更新',
                       icon: const Icon(TablerIcons.refresh),
                       onPressed: onRefresh,
                     ),
+                  IconButton(
+                    tooltip: '更多',
+                    icon: const Icon(TablerIcons.dots_vertical),
+                    onPressed: onMore,
+                  ),
                   IconButton(
                     tooltip: '删除',
                     icon: const Icon(TablerIcons.trash),
@@ -1025,3 +1295,161 @@ String _formatInterval(int ms) {
 }
 
 String _two(int value) => value.toString().padLeft(2, '0');
+
+/// 该来源是否可刷新：仅带 URL 的 `url` 来源可重新抓取（`text` / `link` 无地址）。
+bool _isRefreshable(ProfileSummary profile) {
+  final origin = profile.sourceOrigin ?? '';
+  if (origin == 'text' || origin == 'link') return false;
+  return profile.sourceUrl?.isNotEmpty ?? false;
+}
+
+/// 自动更新间隔的人类可读标签（用于选择器与提示）。
+String _intervalLabel(int ms) {
+  if (ms <= 0) return '关闭自动更新';
+  if (ms >= Duration.millisecondsPerDay) {
+    return '每 ${ms ~/ Duration.millisecondsPerDay} 天';
+  }
+  if (ms >= Duration.millisecondsPerHour) {
+    return '每 ${ms ~/ Duration.millisecondsPerHour} 小时';
+  }
+  return '每 ${ms ~/ Duration.millisecondsPerMinute} 分钟';
+}
+
+/// `refresh_all.skipped[].reason` 的中文说明。
+String _skipReasonLabel(String reason) => switch (reason) {
+      'not_refreshable' => '来源不可刷新',
+      'backoff' => '失败退避中，稍后重试',
+      'interval' => '未到自动更新间隔',
+      'limit' => '超出本次批量上限',
+      'error' => '上次刷新出错',
+      _ => reason.isEmpty ? '未知原因' : reason,
+    };
+
+/// 导出文件名安全化：去掉路径分隔符 / 控制字符，空名回退 `clash-config`。
+String _safeFileName(String name) {
+  final cleaned =
+      name.replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_').trim();
+  return cleaned.isEmpty ? 'clash-config' : cleaned;
+}
+
+// ==================== 更多菜单 / 重命名弹层 ====================
+
+enum _ProfileAction { rename, export, schedule }
+
+class _RenameRequest {
+  const _RenameRequest(this.name);
+
+  final String name;
+}
+
+/// 更多菜单的可点行（避免 [ListTile] 对 Material 祖先的依赖）。
+class _MenuOption extends StatelessWidget {
+  const _MenuOption({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: AppRadius.allMD,
+      child: Padding(
+        padding: AppSpacing.allMD,
+        child: Row(
+          children: [
+            ColoredAliIcon(
+              icon: icon,
+              size: AppTypography.iconMD,
+              color: scheme.primary,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 重命名表单弹层（返回 [ _RenameRequest ]；取消返回 null）。
+class _RenameSheet extends StatefulWidget {
+  const _RenameSheet({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameSheet> createState() => _RenameSheetState();
+}
+
+class _RenameSheetState extends State<_RenameSheet> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialName);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _controller.text.trim();
+    if (name.isEmpty) {
+      AppDialogs.showError('名称不能为空');
+      return;
+    }
+    Navigator.of(context).pop(_RenameRequest(name));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: '重命名网络组',
+      subtitle: '仅修改显示名称，不影响订阅内容',
+      content: TextField(
+        controller: _controller,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+        decoration: const InputDecoration(
+          labelText: '名称',
+          border: OutlineInputBorder(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+

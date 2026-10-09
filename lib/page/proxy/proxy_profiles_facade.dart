@@ -50,6 +50,18 @@ abstract class ProxyProfilesFacade {
   /// `profile.refresh_all`：有界批量刷新。
   Future<RefreshAllResult> profileRefreshAll({bool force = false, int? limit});
 
+  /// `profile.update`：重命名 / 编辑 profile（内容、名称、`appBackup`、刷新标记）。
+  ///
+  /// 负载为 `profile.update` 的请求体（至少含 `id`，可含 `name` / `profile` /
+  /// `appBackup` / `refresh`）；本门面只透传，不做任何字段改写。
+  Future<StoredProfile> profileUpdate(Map<String, dynamic> payload);
+
+  /// `profile.export_clash`：导出单个存储 profile 的 Clash 生成配置。
+  Future<GeneratedConfig> profileExportClash(ProfileExportRequest request);
+
+  /// `profile.set_schedule`：设置 / 清除自动更新间隔（`intervalMs: 0` 清除）。
+  Future<StoredProfile> profileSetSchedule(String id, int intervalMs);
+
   /// `config.apply`：把 [profileId] 热应用到正在运行的引擎。
   ///
   /// 订阅切换后调用，避免「已换订阅但运行中引擎仍用旧订阅」。引擎未运行时
@@ -120,6 +132,18 @@ class ProxyModuleProfilesFacade implements ProxyProfilesFacade {
     int? limit,
   }) =>
       _module.profileRefreshAll(force: force, limit: limit);
+
+  @override
+  Future<StoredProfile> profileUpdate(Map<String, dynamic> payload) =>
+      _module.profileUpdate(payload);
+
+  @override
+  Future<GeneratedConfig> profileExportClash(ProfileExportRequest request) =>
+      _module.profileExportClash(request);
+
+  @override
+  Future<StoredProfile> profileSetSchedule(String id, int intervalMs) =>
+      _module.profileSetSchedule(id, intervalMs);
 
   @override
   Future<void> applyProfile(String profileId) async {
