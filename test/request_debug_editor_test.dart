@@ -998,6 +998,157 @@ void main() {
     });
   });
 
+  group('请求编辑器 · 字段保真与脏标记', () {
+    testWidgets('保存保留 overrides（_composeDraft 不丢失）', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-overrides',
+          name: 'ovr',
+          method: 'GET',
+          url: 'https://api.example/x',
+          overrides: DebugResponseOverride(
+            statusCode: 201,
+            body: 'saved-override',
+          ),
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      await _tapMore(tester, const Key('request-editor-save'));
+
+      final saved = facade.store.requestById('r-overrides')!;
+      expect(saved.overrides, isNotNull,
+          reason: 'overrides 必须在保存草稿时保留');
+      expect(saved.overrides!.statusCode, 201);
+      expect(saved.overrides!.body, 'saved-override');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('非标准 HTTP 方法（PROPFIND）保留并可保存', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-custom-method',
+          name: 'custom',
+          method: 'PROPFIND',
+          url: 'https://api.example/x',
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      // 下拉当前值仍是自定义方法（未被回退成 GET）。
+      expect(
+        tester
+            .widget<DropdownButton<String>>(
+              find.byKey(const Key('request-editor-method')),
+            )
+            .value,
+        'PROPFIND',
+      );
+
+      await _tapMore(tester, const Key('request-editor-save'));
+      expect(facade.store.requestById('r-custom-method')!.method, 'PROPFIND');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('将认证改为 none 并保存 → 已存认证被清空', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-auth-clear',
+          name: 'auth',
+          method: 'GET',
+          url: 'https://api.example/x',
+          auth: const DebugAuth(
+            type: DebugAuthType.bearer,
+            token: 'secret',
+          ),
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      await tester.tap(find.byKey(const Key('request-editor-segment-auth')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-editor-auth-type')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('none').last);
+      await tester.pumpAndSettle();
+
+      await _tapMore(tester, const Key('request-editor-save'));
+      expect(facade.store.requestById('r-auth-clear')!.auth, isNull,
+          reason: '切换为 none 后保存必须真正清空认证');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('body 工具栏清空后标记脏值：返回弹出未保存确认', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-body-dirty',
+          name: 'body',
+          method: 'POST',
+          url: 'https://api.example/x',
+          body: 'hello',
+          bodyKind: DebugBodyKind.text,
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      await tester.tap(find.byKey(const Key('request-editor-segment-body')));
+      await tester.pumpAndSettle();
+
+      // 工具栏「清空」是程序化写 controller：若未绑定监听则不会标记脏值。
+      await tester.tap(find.byKey(const Key('editor-toolbar-clear')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('request-editor-body')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+
+      // 返回 → 必须弹出未保存确认，证明清空已标记脏值。
+      await tester.tap(find.byKey(const Key('request-editor-back')));
+      await tester.pumpAndSettle();
+      expect(find.text('放弃未保存的修改？'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('设计系统约束', () {
     testWidgets('编辑器分区使用 AppSegmentedButton（分段 参数/头/体/认证/Cookie/响应）',
         (tester) async {

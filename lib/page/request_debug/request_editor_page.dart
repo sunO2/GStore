@@ -154,7 +154,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
     _body = TextEditingController(text: request?.body ?? '');
     _method = request?.method ?? 'GET';
-    if (!_httpMethods.contains(_method)) _method = 'GET';
     _bodyKind = request?.bodyKind ?? DebugBodyKind.none;
     _binarySource = request?.binarySource ?? DebugBinarySource.raw;
     _authType = request?.auth?.type ?? DebugAuthType.none;
@@ -169,7 +168,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _authKeyName = TextEditingController(text: request?.auth?.apiKeyName ?? '');
     _authKeyValue = TextEditingController(text: request?.auth?.apiKeyValue ?? '');
     for (final controller in <TextEditingController>[
+      _name,
       _url,
+      _body,
       _authUser,
       _authPass,
       _authToken,
@@ -394,6 +395,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
           ? _body.text.trim()
           : null,
       multipartFields: widget.request?.multipartFields ?? const [],
+      overrides: widget.request?.overrides,
       auth: _composeAuth(),
       cookies: _cookies
           .where((c) => c.nameCtrl.text.trim().isNotEmpty)
@@ -752,7 +754,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     // 取消绝不落历史（保持 T5 语义）。
     if (response.isCancelled) return;
     appendDebugHistory(_facade, request: draft, response: response);
-    await _facade.save();
+    final saved = await _facade.save();
+    if (!mounted) return;
+    if (!saved) AppDialogs.showError('保存失败，历史未写入磁盘');
   }
 
   /// 取消进行中的请求（幂等：重复调用只生效一次）。
@@ -854,10 +858,18 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         AppDialogs.showError('无法保存：请从集合中新建请求');
         return;
       }
-      _facade.store.addRequest(collectionId, draft);
+      if (_facade.store.addRequest(collectionId, draft) == null) {
+        AppDialogs.showError('无法保存：目标集合不存在');
+        return;
+      }
     }
-    await _facade.save();
+    final ok = await _facade.save();
     if (!mounted) return;
+    if (!ok) {
+      // 保存失败必须可见，且保持 dirty（离开时仍提示未保存）。
+      AppDialogs.showError('保存失败，改动未写入磁盘');
+      return;
+    }
     setState(() => _dirty = false);
     AppDialogs.showSuccess('请求已保存');
   }
@@ -875,8 +887,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       collectionId: collectionId,
     );
     _facade.store.addRequest(collectionId, clone);
-    await _facade.save();
+    final ok = await _facade.save();
     if (!mounted) return;
+    if (!ok) {
+      AppDialogs.showError('保存失败，改动未写入磁盘');
+      return;
+    }
     setState(() => _dirty = false);
     AppDialogs.showSuccess('已另存为新请求');
   }
@@ -1021,6 +1037,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   Widget _buildMethodDropdown(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 非标准方法（如 PROPFIND）：把自定义值补进下拉选项，避免 DropdownButton
+    // 因 value 不在 items 中断言失败，从而保留方法字符串（todo 13）。
+    final methods = _httpMethods.contains(_method)
+        ? _httpMethods
+        : <String>[_method, ..._httpMethods];
     return Container(
       padding: AppSpacing.onlyHorizontalSM,
       decoration: BoxDecoration(
@@ -1031,7 +1052,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         key: const Key('request-editor-method'),
         value: _method,
         underline: const SizedBox.shrink(),
-        items: _httpMethods
+        items: methods
             .map(
               (method) => DropdownMenuItem<String>(
                 value: method,

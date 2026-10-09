@@ -13,6 +13,12 @@ library;
 /// id 生成序号：避免同一微秒内批量创建时碰撞。
 int _idSeq = 0;
 
+/// copyWith 哨兵：区分「未传参（保留原值）」与「显式传 `null`（清空可空字段）」。
+///
+/// 可空字段的 copyWith 参数默认为此哨兵；调用方显式传 `null` 即可清空，
+/// 从而修复「无法把可空字段改回 null」的数据保真缺陷（todo 13）。
+const Object _unset = Object();
+
 /// 生成带前缀的唯一 id。
 String generateDebugId(String prefix) =>
     '$prefix-${DateTime.now().microsecondsSinceEpoch}-${_idSeq++}';
@@ -293,23 +299,34 @@ class DebugAuth {
   /// apiKey 注入位置：`header` | `query`。
   final String? apiKeyIn;
 
+  /// 可空字段使用哨兵语义：缺省保留原值，**显式传 `null` 清空**。
   DebugAuth copyWith({
     DebugAuthType? type,
-    String? username,
-    String? password,
-    String? token,
-    String? apiKeyName,
-    String? apiKeyValue,
-    String? apiKeyIn,
+    Object? username = _unset,
+    Object? password = _unset,
+    Object? token = _unset,
+    Object? apiKeyName = _unset,
+    Object? apiKeyValue = _unset,
+    Object? apiKeyIn = _unset,
   }) =>
       DebugAuth(
         type: type ?? this.type,
-        username: username ?? this.username,
-        password: password ?? this.password,
-        token: token ?? this.token,
-        apiKeyName: apiKeyName ?? this.apiKeyName,
-        apiKeyValue: apiKeyValue ?? this.apiKeyValue,
-        apiKeyIn: apiKeyIn ?? this.apiKeyIn,
+        username: identical(username, _unset)
+            ? this.username
+            : username as String?,
+        password: identical(password, _unset)
+            ? this.password
+            : password as String?,
+        token: identical(token, _unset) ? this.token : token as String?,
+        apiKeyName: identical(apiKeyName, _unset)
+            ? this.apiKeyName
+            : apiKeyName as String?,
+        apiKeyValue: identical(apiKeyValue, _unset)
+            ? this.apiKeyValue
+            : apiKeyValue as String?,
+        apiKeyIn: identical(apiKeyIn, _unset)
+            ? this.apiKeyIn
+            : apiKeyIn as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -435,6 +452,8 @@ class DebugRequest {
   /// 是否跳过 TLS 证书校验；`null`/`false` = 严格校验（默认）。
   final bool? skipTlsVerify;
 
+  /// 可空字段使用哨兵语义：缺省保留原值，**显式传 `null` 清空**
+  /// （`auth` / `overrides` / `collectionId` / `binaryFilePath` / 每请求网络选项）。
   DebugRequest copyWith({
     String? id,
     String? name,
@@ -445,16 +464,16 @@ class DebugRequest {
     String? body,
     DebugBodyKind? bodyKind,
     DebugBinarySource? binarySource,
-    String? binaryFilePath,
+    Object? binaryFilePath = _unset,
     List<DebugMultipartField>? multipartFields,
-    DebugAuth? auth,
+    Object? auth = _unset,
     List<DebugCookie>? cookies,
-    String? collectionId,
-    DebugResponseOverride? overrides,
-    int? timeoutMs,
-    bool? followRedirects,
-    bool? useCookieJar,
-    bool? skipTlsVerify,
+    Object? collectionId = _unset,
+    Object? overrides = _unset,
+    Object? timeoutMs = _unset,
+    Object? followRedirects = _unset,
+    Object? useCookieJar = _unset,
+    Object? skipTlsVerify = _unset,
   }) =>
       DebugRequest(
         id: id ?? this.id,
@@ -466,16 +485,30 @@ class DebugRequest {
         body: body ?? this.body,
         bodyKind: bodyKind ?? this.bodyKind,
         binarySource: binarySource ?? this.binarySource,
-        binaryFilePath: binaryFilePath ?? this.binaryFilePath,
+        binaryFilePath: identical(binaryFilePath, _unset)
+            ? this.binaryFilePath
+            : binaryFilePath as String?,
         multipartFields: multipartFields ?? this.multipartFields,
-        auth: auth ?? this.auth,
+        auth: identical(auth, _unset) ? this.auth : auth as DebugAuth?,
         cookies: cookies ?? this.cookies,
-        collectionId: collectionId ?? this.collectionId,
-        overrides: overrides ?? this.overrides,
-        timeoutMs: timeoutMs ?? this.timeoutMs,
-        followRedirects: followRedirects ?? this.followRedirects,
-        useCookieJar: useCookieJar ?? this.useCookieJar,
-        skipTlsVerify: skipTlsVerify ?? this.skipTlsVerify,
+        collectionId: identical(collectionId, _unset)
+            ? this.collectionId
+            : collectionId as String?,
+        overrides: identical(overrides, _unset)
+            ? this.overrides
+            : overrides as DebugResponseOverride?,
+        timeoutMs: identical(timeoutMs, _unset)
+            ? this.timeoutMs
+            : timeoutMs as int?,
+        followRedirects: identical(followRedirects, _unset)
+            ? this.followRedirects
+            : followRedirects as bool?,
+        useCookieJar: identical(useCookieJar, _unset)
+            ? this.useCookieJar
+            : useCookieJar as bool?,
+        skipTlsVerify: identical(skipTlsVerify, _unset)
+            ? this.skipTlsVerify
+            : skipTlsVerify as bool?,
       );
 
   Map<String, dynamic> toJson() => {

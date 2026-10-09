@@ -118,8 +118,8 @@ class _RequestDebugHistorySectionState
     );
     if (!mounted) return;
     appendDebugHistory(_facade, request: request, response: response);
-    await _persist();
-    if (!mounted) return;
+    final ok = await _persist();
+    if (!mounted || !ok) return;
     if (response.error != null) {
       AppDialogs.showError('重发失败：${response.error}');
     } else {
@@ -168,8 +168,8 @@ class _RequestDebugHistorySectionState
       collectionId: picked.id,
     );
     _facade.store.addRequest(picked.id, clone);
-    await _persist();
-    if (!mounted) return;
+    final ok = await _persist();
+    if (!mounted || !ok) return;
     AppDialogs.showSuccess('已保存到「${picked.name}」');
   }
 
@@ -215,10 +215,14 @@ class _RequestDebugHistorySectionState
     setState(() {});
   }
 
-  Future<void> _persist() async {
-    await _facade.save();
-    if (!mounted) return;
+  Future<bool> _persist() async {
+    final ok = await _facade.save();
+    if (!mounted) return ok;
+    if (!ok) {
+      AppDialogs.showError('保存失败，改动未写入磁盘');
+    }
     setState(() {});
+    return ok;
   }
 
   // ==================== 构建 ====================

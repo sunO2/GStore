@@ -55,8 +55,8 @@ class _RequestDebugEnvironmentSectionState
     } else {
       _facade.store.updateEnvironment(result);
     }
-    await _persist();
-    if (!mounted) return;
+    final ok = await _persist();
+    if (!mounted || !ok) return;
     AppDialogs.showSuccess(environment == null ? '环境已创建' : '环境已保存');
   }
 
@@ -79,10 +79,14 @@ class _RequestDebugEnvironmentSectionState
     await _persist();
   }
 
-  Future<void> _persist() async {
-    await _facade.save();
-    if (!mounted) return;
+  Future<bool> _persist() async {
+    final ok = await _facade.save();
+    if (!mounted) return ok;
+    if (!ok) {
+      AppDialogs.showError('保存失败，改动未写入磁盘');
+    }
     setState(() {});
+    return ok;
   }
 
   // ==================== 构建 ====================

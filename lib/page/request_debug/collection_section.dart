@@ -159,8 +159,11 @@ class _RequestDebugCollectionSectionState
   }
 
   Future<void> _persist() async {
-    await _facade.save();
+    final ok = await _facade.save();
     if (!mounted) return;
+    if (!ok) {
+      AppDialogs.showError('保存失败，改动未写入磁盘');
+    }
     setState(() {});
   }
 
