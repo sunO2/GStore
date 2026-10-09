@@ -764,6 +764,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         case ProxyDnsEvent():
         case ProxyTunReleasedEvent():
         case ProxyRequestEvent():
+        case ProxyCaptureBreakpointEvent():
           break;
       }
     });

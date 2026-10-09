@@ -232,6 +232,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
       case ProxyTunReleasedEvent():
       case ProxyConfigAppliedEvent():
       case ProxyRequestEvent():
+      case ProxyCaptureBreakpointEvent():
         break;
     }
   }

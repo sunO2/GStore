@@ -376,6 +376,55 @@ const _captureRulesRemoveFixture = <String, dynamic>{
   'removed': true,
 };
 
+/// `captures.breakpoint.*` 配置 fixture（`API.md` §2.20 `BreakpointConfig`）：
+/// 字段值刻意非默认以证 round-trip 保真（`enabled:true`、非默认 timeout/scope）。
+const _breakpointConfigFixture = <String, dynamic>{
+  'enabled': true,
+  'timeoutMs': 20000,
+  'scope': 'request',
+  'urlPattern': 'https://api.example.com/',
+  'matchType': 'prefix',
+};
+
+/// 一个暂停流 fixture（`API.md` §2.20 `BreakpointPending`）。
+const _breakpointPendingFixture = <String, dynamic>{
+  'handle': 'bp-1',
+  'phase': 'request',
+  'method': 'POST',
+  'url': 'https://api.example.com/p',
+  'host': 'api.example.com',
+  'connId': 'uuid-1',
+  'requestRecordId': 7,
+  'statusCode': 0,
+  'headers': 'host: api.example.com',
+  'body': 'eyJvayI6dHJ1ZX0=',
+  'truncated': false,
+  'createdAtMs': 1700000000000,
+  'expiresAtMs': 1700000015000,
+};
+
+/// `captures.breakpoint.list` 冻结响应 fixture（`API.md` §2.20 `BreakpointList`）。
+const _breakpointListFixture = <String, dynamic>{
+  'pending': <Map<String, dynamic>>[_breakpointPendingFixture],
+  'count': 1,
+};
+
+/// `captures.breakpoint.resume` 冻结响应 fixture（`API.md` §2.20 `BreakpointResumeResult`）。
+const _breakpointResumeFixture = <String, dynamic>{
+  'ok': true,
+  'handle': 'bp-1',
+  'resumed': true,
+  'phase': 'request',
+};
+
+/// `captures.breakpoint.cancel` 冻结响应 fixture（`API.md` §2.20 `BreakpointCancelResult`）。
+const _breakpointCancelFixture = <String, dynamic>{
+  'ok': true,
+  'handle': 'bp-1',
+  'cancelled': true,
+  'phase': 'request',
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -815,6 +864,12 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   ProxyMethods.captureRulesGet: _captureRuleListFixture,
   ProxyMethods.captureRulesSet: _captureRuleFixture,
   ProxyMethods.captureRulesRemove: _captureRulesRemoveFixture,
+  // `captures.breakpoint.*` 请求/响应拦截断点（API.md §2.20，冻结契约草图）。
+  ProxyMethods.capturesBreakpointGet: _breakpointConfigFixture,
+  ProxyMethods.capturesBreakpointSet: _breakpointConfigFixture,
+  ProxyMethods.capturesBreakpointList: _breakpointListFixture,
+  ProxyMethods.capturesBreakpointResume: _breakpointResumeFixture,
+  ProxyMethods.capturesBreakpointCancel: _breakpointCancelFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -898,6 +953,7 @@ final Map<String, Map<String, dynamic>> _eventFixtures =
     'hash': 'abc',
     'template': 'gstore-controlled-v1',
   },
+  ProxyEvents.captureBreakpoint: _breakpointPendingFixture,
 };
 
 // ==================== API.md 解析 ====================

@@ -103,6 +103,13 @@ class ProxyMethods {
   static const String captureRulesSet = 'capture.rules.set';
   static const String captureRulesRemove = 'capture.rules.remove';
 
+  // `captures.breakpoint.*`：请求/响应拦截断点（API.md §2.20，冻结契约草图，默认关）。
+  static const String capturesBreakpointGet = 'captures.breakpoint.get';
+  static const String capturesBreakpointSet = 'captures.breakpoint.set';
+  static const String capturesBreakpointList = 'captures.breakpoint.list';
+  static const String capturesBreakpointResume = 'captures.breakpoint.resume';
+  static const String capturesBreakpointCancel = 'captures.breakpoint.cancel';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -172,6 +179,11 @@ class ProxyMethods {
     captureRulesGet,
     captureRulesSet,
     captureRulesRemove,
+    capturesBreakpointGet,
+    capturesBreakpointSet,
+    capturesBreakpointList,
+    capturesBreakpointResume,
+    capturesBreakpointCancel,
   ];
 }
 
@@ -194,6 +206,9 @@ class ProxyEvents {
   static const String tunReleased = 'proxy.tun.released';
   static const String configApplied = 'proxy.config.applied';
 
+  /// `proxy.capture.breakpoint`：命中流被暂停在请求/响应阶段（API.md §2.20，默认关）。
+  static const String captureBreakpoint = 'proxy.capture.breakpoint';
+
   static const List<String> all = <String>[
     state,
     mode,
@@ -209,6 +224,7 @@ class ProxyEvents {
     dns,
     tunReleased,
     configApplied,
+    captureBreakpoint,
   ];
 }
 
@@ -3554,6 +3570,208 @@ class CaptureRuleRemoveRequest {
   Map<String, dynamic> toJson() => <String, dynamic>{'id': id};
 }
 
+// ==================== captures.breakpoint.* ====================
+
+/// `captures.breakpoint.*` 配置（`API.md` §2.20，**冻结契约草图**，默认关）。
+///
+/// 数据面暂停/恢复路径本期未实现：所有方法返回
+/// `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED`；本模型仅冻结线缆形状。
+class ProxyBreakpointConfig {
+  const ProxyBreakpointConfig({
+    this.enabled = false,
+    this.timeoutMs = 15000,
+    this.scope = 'both',
+    this.urlPattern = '',
+    this.matchType = 'exact',
+  });
+
+  /// 主开关；**默认 false**（关闭时数据面逐字节透传）。
+  final bool enabled;
+
+  /// 单次暂停的最长挂起时间（ms）；到点自动放行，绝不阻塞数据面。
+  final int timeoutMs;
+
+  /// `"request"` / `"response"` / `"both"`。
+  final String scope;
+
+  /// 命中 URL 模式；空串 = 命中全部流。
+  final String urlPattern;
+
+  /// `"exact"` / `"prefix"` / `"glob"` / `"regex"`（同 §2.19）。
+  final String matchType;
+
+  factory ProxyBreakpointConfig.fromJson(Map<String, dynamic> json) =>
+      ProxyBreakpointConfig(
+        enabled: json['enabled'] == true,
+        timeoutMs: _intOrNull(json['timeoutMs']) ?? 15000,
+        scope: _str(json['scope']).isEmpty ? 'both' : _str(json['scope']),
+        urlPattern: _str(json['urlPattern']),
+        matchType:
+            _str(json['matchType']).isEmpty ? 'exact' : _str(json['matchType']),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'enabled': enabled,
+        'timeoutMs': timeoutMs,
+        'scope': scope,
+        'urlPattern': urlPattern,
+        'matchType': matchType,
+      };
+}
+
+/// 一个被暂停的流（`captures.breakpoint.list` 的一项 / `proxy.capture.breakpoint`
+/// 事件载荷；`API.md` §2.20 `BreakpointPending`）。
+class ProxyBreakpointPending {
+  const ProxyBreakpointPending({
+    this.handle = '',
+    this.phase = '',
+    this.method = '',
+    this.url = '',
+    this.host = '',
+    this.connId = '',
+    this.requestRecordId = 0,
+    this.statusCode = 0,
+    this.headers = '',
+    this.body = '',
+    this.truncated = false,
+    this.createdAtMs = 0,
+    this.expiresAtMs = 0,
+  });
+
+  /// 本次暂停的关联 id；`resume`/`cancel` 回传它定位挂起的流。
+  final String handle;
+  final String phase;
+  final String method;
+  final String url;
+  final String host;
+  final String connId;
+  final int requestRecordId;
+  final int statusCode;
+  final String headers;
+
+  /// 待编辑体，**base64**（与 `captures.*` 同一字节编码）；空体为 `""`。
+  final String body;
+  final bool truncated;
+  final int createdAtMs;
+  final int expiresAtMs;
+
+  factory ProxyBreakpointPending.fromJson(Map<String, dynamic> json) =>
+      ProxyBreakpointPending(
+        handle: _str(json['handle']),
+        phase: _str(json['phase']),
+        method: _str(json['method']),
+        url: _str(json['url']),
+        host: _str(json['host']),
+        connId: _str(json['connId']),
+        requestRecordId: _intOrNull(json['requestRecordId']) ?? 0,
+        statusCode: _intOrNull(json['statusCode']) ?? 0,
+        headers: _str(json['headers']),
+        body: _str(json['body']),
+        truncated: json['truncated'] == true,
+        createdAtMs: _intOrNull(json['createdAtMs']) ?? 0,
+        expiresAtMs: _intOrNull(json['expiresAtMs']) ?? 0,
+      );
+}
+
+/// `captures.breakpoint.list` 响应（`API.md` §2.20 `BreakpointList`）。
+class ProxyBreakpointList {
+  const ProxyBreakpointList({
+    this.pending = const <ProxyBreakpointPending>[],
+    this.count = 0,
+  });
+
+  final List<ProxyBreakpointPending> pending;
+  final int count;
+
+  factory ProxyBreakpointList.fromJson(Map<String, dynamic> json) =>
+      ProxyBreakpointList(
+        pending: _mapList(json['pending'])
+            .map(ProxyBreakpointPending.fromJson)
+            .toList(),
+        count: _intOrNull(json['count']) ?? 0,
+      );
+}
+
+/// `captures.breakpoint.resume` 请求（`API.md` §2.20）；省略的字段保留捕获值。
+class ProxyBreakpointResumeRequest {
+  const ProxyBreakpointResumeRequest({
+    required this.handle,
+    this.method,
+    this.url,
+    this.headers,
+    this.body,
+  });
+
+  final String handle;
+  final String? method;
+  final String? url;
+  final String? headers;
+  final String? body;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'handle': handle,
+        if (method != null) 'method': method,
+        if (url != null) 'url': url,
+        if (headers != null) 'headers': headers,
+        if (body != null) 'body': body,
+      };
+}
+
+/// `captures.breakpoint.cancel` 请求（`API.md` §2.20）。
+class ProxyBreakpointCancelRequest {
+  const ProxyBreakpointCancelRequest(this.handle);
+
+  final String handle;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{'handle': handle};
+}
+
+/// `captures.breakpoint.resume` 响应（`API.md` §2.20 `BreakpointResumeResult`）。
+class ProxyBreakpointResumeResult {
+  const ProxyBreakpointResumeResult({
+    this.ok = false,
+    this.handle = '',
+    this.resumed = false,
+    this.phase = '',
+  });
+
+  final bool ok;
+  final String handle;
+  final bool resumed;
+  final String phase;
+
+  factory ProxyBreakpointResumeResult.fromJson(Map<String, dynamic> json) =>
+      ProxyBreakpointResumeResult(
+        ok: json['ok'] == true,
+        handle: _str(json['handle']),
+        resumed: json['resumed'] == true,
+        phase: _str(json['phase']),
+      );
+}
+
+/// `captures.breakpoint.cancel` 响应（`API.md` §2.20 `BreakpointCancelResult`）。
+class ProxyBreakpointCancelResult {
+  const ProxyBreakpointCancelResult({
+    this.ok = false,
+    this.handle = '',
+    this.cancelled = false,
+    this.phase = '',
+  });
+
+  final bool ok;
+  final String handle;
+  final bool cancelled;
+  final String phase;
+
+  factory ProxyBreakpointCancelResult.fromJson(Map<String, dynamic> json) =>
+      ProxyBreakpointCancelResult(
+        ok: json['ok'] == true,
+        handle: _str(json['handle']),
+        cancelled: json['cancelled'] == true,
+        phase: _str(json['phase']),
+      );
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -3638,6 +3856,11 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.captureRulesGet: CaptureRuleList.fromJson,
   ProxyMethods.captureRulesSet: CaptureRule.fromJson,
   ProxyMethods.captureRulesRemove: CaptureRulesRemoveResult.fromJson,
+  ProxyMethods.capturesBreakpointGet: ProxyBreakpointConfig.fromJson,
+  ProxyMethods.capturesBreakpointSet: ProxyBreakpointConfig.fromJson,
+  ProxyMethods.capturesBreakpointList: ProxyBreakpointList.fromJson,
+  ProxyMethods.capturesBreakpointResume: ProxyBreakpointResumeResult.fromJson,
+  ProxyMethods.capturesBreakpointCancel: ProxyBreakpointCancelResult.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -4067,6 +4290,12 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
       ).toJson(),
   ProxyMethods.captureRulesRemove: () =>
       const CaptureRuleRemoveRequest('r1').toJson(),
+  ProxyMethods.capturesBreakpointSet: () =>
+      const ProxyBreakpointConfig().toJson(),
+  ProxyMethods.capturesBreakpointResume: () =>
+      const ProxyBreakpointResumeRequest(handle: 'bp-1').toJson(),
+  ProxyMethods.capturesBreakpointCancel: () =>
+      const ProxyBreakpointCancelRequest('bp-1').toJson(),
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

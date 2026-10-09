@@ -830,6 +830,42 @@ class ProxyModule implements ProxyFacade {
         payload: CaptureRuleRemoveRequest(id).toJson(),
       );
 
+  /// `captures.breakpoint.get`：断点配置（API.md §2.20，冻结契约草图，默认关）。
+  Future<ProxyBreakpointConfig> capturesBreakpointGet() =>
+      invoke(ProxyMethods.capturesBreakpointGet, ProxyBreakpointConfig.fromJson);
+
+  /// `captures.breakpoint.set`：部分更新断点配置并返回生效后的配置。
+  Future<ProxyBreakpointConfig> capturesBreakpointSet(
+    ProxyBreakpointConfig config,
+  ) =>
+      invoke(
+        ProxyMethods.capturesBreakpointSet,
+        ProxyBreakpointConfig.fromJson,
+        payload: config.toJson(),
+      );
+
+  /// `captures.breakpoint.list`：当前暂停中的流。
+  Future<ProxyBreakpointList> capturesBreakpointList() =>
+      invoke(ProxyMethods.capturesBreakpointList, ProxyBreakpointList.fromJson);
+
+  /// `captures.breakpoint.resume`：放行一个暂停流并携带编辑后内容。
+  Future<ProxyBreakpointResumeResult> capturesBreakpointResume(
+    ProxyBreakpointResumeRequest request,
+  ) =>
+      invoke(
+        ProxyMethods.capturesBreakpointResume,
+        ProxyBreakpointResumeResult.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `captures.breakpoint.cancel`：放行一个暂停流（保持原内容）。
+  Future<ProxyBreakpointCancelResult> capturesBreakpointCancel(String handle) =>
+      invoke(
+        ProxyMethods.capturesBreakpointCancel,
+        ProxyBreakpointCancelResult.fromJson,
+        payload: ProxyBreakpointCancelRequest(handle).toJson(),
+      );
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；
@@ -1165,6 +1201,10 @@ sealed class ProxyEvent {
           hash: data['hash']?.toString() ?? '',
           template: data['template']?.toString() ?? '',
         );
+      case 'proxy.capture.breakpoint':
+        return ProxyCaptureBreakpointEvent(
+          pending: ProxyBreakpointPending.fromJson(data),
+        );
       default:
         return null;
     }
@@ -1447,6 +1487,22 @@ final class ProxyConfigAppliedEvent extends ProxyEvent {
 
   @override
   String get eventType => 'proxy.config.applied';
+}
+
+/// `proxy.capture.breakpoint`：命中流被暂停在请求/响应阶段（API.md §2.20，默认关）。
+final class ProxyCaptureBreakpointEvent extends ProxyEvent {
+  const ProxyCaptureBreakpointEvent({required this.pending});
+
+  final ProxyBreakpointPending pending;
+
+  @override
+  String get eventType => 'proxy.capture.breakpoint';
+
+  /// 关联 id；`resume`/`cancel` 回传它。
+  String get handle => pending.handle;
+
+  /// `"request"` / `"response"`。
+  String get phase => pending.phase;
 }
 
 // ==================== JSON 工具 ====================

@@ -37,6 +37,7 @@ use gstore_contract::abi::{
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
 
+mod breakpoint;
 mod config;
 mod conn;
 mod capture;
@@ -449,6 +450,11 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "capture.rules.get",
     "capture.rules.set",
     "capture.rules.remove",
+    "captures.breakpoint.get",
+    "captures.breakpoint.set",
+    "captures.breakpoint.list",
+    "captures.breakpoint.resume",
+    "captures.breakpoint.cancel",
 ];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
@@ -2317,6 +2323,17 @@ fn call_impl(
             .and_then(|_| captures::rules_set_arm(_payload)),
         "capture.rules.remove" => require_instance(instance_id, instance.clone())
             .and_then(|_| captures::rules_remove_arm(_payload)),
+        // Contract sketch (Todo 34): shape frozen, dataplane path not implemented.
+        "captures.breakpoint.get" => require_instance(instance_id, instance.clone())
+            .and_then(|_| breakpoint::stub_arm("captures.breakpoint.get")),
+        "captures.breakpoint.set" => require_instance(instance_id, instance.clone())
+            .and_then(|_| breakpoint::stub_arm("captures.breakpoint.set")),
+        "captures.breakpoint.list" => require_instance(instance_id, instance.clone())
+            .and_then(|_| breakpoint::stub_arm("captures.breakpoint.list")),
+        "captures.breakpoint.resume" => require_instance(instance_id, instance.clone())
+            .and_then(|_| breakpoint::stub_arm("captures.breakpoint.resume")),
+        "captures.breakpoint.cancel" => require_instance(instance_id, instance.clone())
+            .and_then(|_| breakpoint::stub_arm("captures.breakpoint.cancel")),
         other => Err(ModuleError::method_not_found(other)),
     };
 

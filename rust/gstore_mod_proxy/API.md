@@ -1480,6 +1480,84 @@ increments the rule's `hitCount` in memory (persisted on the next `set`). Unmatc
 forwarded **byte-for-byte unchanged**. `delayMs` is accepted/stored but **not injected**. WS rewrites
 are not supported — WebSocket frames are capture-only.
 
+### 2.20 `captures.breakpoint.*` — request/response intercept breakpoints (Todo 34, CONTRACT SKETCH)
+
+> **Status: FROZEN SHAPE ONLY (Todo 34).** The wire shape below is frozen so a
+> later dataplane wave can implement it without a second contract change.
+> **The MITM pause/resume path is NOT implemented in this wave**: every method
+> currently returns `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED` (500). The default
+> is **OFF** and no method changes traffic behaviour; a future implementation
+> MUST NOT block the dataplane past `timeoutMs` (auto-release on expiry).
+
+| method | request | data |
+|---|---|---|
+| `captures.breakpoint.get` | *(none)* | `BreakpointConfig` |
+| `captures.breakpoint.set` | partial `BreakpointConfig` | `BreakpointConfig` |
+| `captures.breakpoint.list` | *(none)* | `BreakpointList` |
+| `captures.breakpoint.resume` | `{ "handle": string, "method"?: string, "url"?: string, "headers"?: string, "body"?: string }` | `BreakpointResumeResult` |
+| `captures.breakpoint.cancel` | `{ "handle": string }` | `BreakpointCancelResult` |
+
+`BreakpointConfig`:
+```json
+{ "enabled": false, "timeoutMs": 15000, "scope": "both",
+  "urlPattern": "", "matchType": "exact" }
+```
+
+| field | type | default | 含义 |
+|---|---|---|---|
+| `enabled` | bool | `false` | 主开关；**默认关**。`false` 时数据面完全透传（与今日行为逐字节一致） |
+| `timeoutMs` | number | `15000` | 单次暂停的最长挂起时间；到点**自动放行**（用原始内容），绝不阻塞数据面超过该值。范围 `[1000, 120000]` |
+| `scope` | `"request"` \| `"response"` \| `"both"` | `"both"` | 在哪些阶段暂停命中流 |
+| `urlPattern` | string | `""` | 命中 URL 模式；空串 = 命中全部流 |
+| `matchType` | `"exact"` \| `"prefix"` \| `"glob"` \| `"regex"` | `"exact"` | 与 §2.19 同一套匹配语义（`urlPattern` 空串时忽略） |
+
+`BreakpointPending`（`list` 的一项 / `proxy.capture.breakpoint` 事件载荷；含 flow/handle 关联 id 与待编辑载荷）：
+```json
+{ "handle": "bp-1", "phase": "request", "method": "GET",
+  "url": "https://example.com/p", "host": "example.com",
+  "connId": "uuid", "requestRecordId": 0, "statusCode": 0,
+  "headers": "host: example.com", "body": "<base64>",
+  "truncated": false, "createdAtMs": 0, "expiresAtMs": 0 }
+```
+
+| field | type | notes |
+|---|---|---|
+| `handle` | string | 本次暂停的关联 id；`resume`/`cancel` 回传它定位挂起的流 |
+| `phase` | string | `"request"` / `"response"` |
+| `method` / `url` / `host` | string | 命中流的请求行信息 |
+| `connId` / `requestRecordId` | string / number | 关联到 `captures.*` / `requests.*` 的流 id（只读关联，不作为 join key） |
+| `statusCode` | number | `phase:"response"` 时的上游状态码；`phase:"request"` 时为 `0` |
+| `headers` | string | 待编辑头文本（`name: value` 行） |
+| `body` | string | 待编辑体，**base64**（与 `captures.*` 同一字节编码）；空体为 `""` |
+| `truncated` | bool | 载荷被 `maxBodyBytes` 截断 |
+| `createdAtMs` / `expiresAtMs` | number | 暂停建立时间 / 自动放行截止时间（Unix ms） |
+
+`BreakpointList`：
+```json
+{ "pending": [BreakpointPending], "count": 0 }
+```
+
+`BreakpointResumeResult` / `BreakpointCancelResult`：
+```json
+{ "ok": true, "handle": "bp-1", "resumed": true, "phase": "request" }
+{ "ok": true, "handle": "bp-1", "cancelled": true, "phase": "request" }
+```
+
+**Semantics (for the future dataplane wave).** When `enabled` is true and a
+decrypted flow matches `urlPattern`/`matchType`, the MITM path pauses the flow at
+`scope`, buffers the pending request (or response) payload, registers a
+`BreakpointPending` and emits `proxy.capture.breakpoint`; the client then either
+`resume`s (carrying the edited `method`/`url`/`headers`/`body`, each optional —
+omitted fields keep the captured value) or `cancel`s (release unchanged). If
+neither arrives within `timeoutMs`, the flow is **auto-released with its original
+content** — a paused flow can never block the dataplane past the timeout. With
+`enabled:false` (the default) the dataplane is never entered and traffic is
+byte-for-byte unchanged.
+
+**Errors.** `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED` (500) in this wave for
+every method. All five require a live instance (structured `INSTANCE_NOT_FOUND`
+410, never `METHOD_NOT_FOUND`).
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart
@@ -1501,6 +1579,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 | `proxy.config.applied` | `{ "profileId": string, "hash": string, "template": string }` — `config.apply` hot-applied a new config on the running engine without a process restart (Todo 13). |
+| `proxy.capture.breakpoint` | `BreakpointPending` (see §2.20) — a matching flow paused at `phase`; emitted only while `captures.breakpoint.*` is enabled (default OFF, Todo 34). The future dataplane wave emits it once per paused flow; `handle` correlates `resume`/`cancel`. |
 
 > **Not an `emit_event` type: `proxy.log`.** The push log lane is the ABI `log`
 > callback captured at register (LogBridge → `LogManager`), **not** the event
@@ -1580,6 +1659,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_CAPTURE_BODY_TOO_LARGE` | 507 | defensive `captures.detail` body-read cap (`CAPTURE_BODY_MAX_BYTES`) (Todo 12) |
 | `PROXY_CAPTURE_RULE_INVALID` | 422 | `capture.rules.set` payload invalid: `url` not an absolute `http(s)` URL, `kind` not `replace`/`local`, `id` outside `[A-Za-z0-9_-]{1,64}`, or an unknown field. The in-memory/on-disk rule table is left untouched on rejection (Todo 14) |
 | `PROXY_CAPTURE_RULE_LIMIT` | 507 | `capture.rules.set` would push the rule table past `CAPTURE_RULE_CAP` (128) or a single rule past `CAPTURE_RULE_ENTRY_MAX_BYTES` (2048); a rejected `set` never persists (Todo 14) |
+| `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED` | 500 | `captures.breakpoint.*` is a **frozen contract sketch** (Todo 34); the MITM pause/resume dataplane path is not implemented in this wave, so every breakpoint method returns this code. The default is OFF and traffic is unaffected. |
 
 ## 6. Module distribution decision (state it now)
 
