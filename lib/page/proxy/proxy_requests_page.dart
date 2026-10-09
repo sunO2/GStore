@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_animation.dart';
@@ -22,13 +23,18 @@ import 'proxy_capture_bridge.dart';
 import 'proxy_capture_debug_bridge.dart';
 import 'proxy_capture_detail_page.dart';
 import 'proxy_requests_facade.dart';
+import 'proxy_requests_paging.dart';
 
-/// 单次 `requests.get` 拉取上限（拉取为准；本页不做无限分页）。
+/// 单次 `requests.get` 拉取上限（游标前向翻页的页大小）。
 const int _pageLimit = 200;
 
 /// 单次 `captures.get` 拉取上限；与 [ _pageLimit ] **独立**（两条流各自分页，
 /// join 只在展示层，不落盘）。
 const int _capturesLimit = 200;
+
+/// 自动前向翻页的页数上限（保护：坏后端重复返回满页时不会死循环）。
+/// 单流上限：200 × 64 = 12800 条，覆盖 ring/DB 的保留上限。
+const int _maxAutoPages = 64;
 
 /// 分组视图（Top 应用 / 域名 / IP、出站 / 规则分布）展示条数。
 const int _groupLimit = 5;
@@ -78,6 +84,19 @@ const List<String?> _methodOptions = <String?>[
   'HEAD',
   'OPTIONS',
 ];
+
+/// 列表排序方式（稳定排序：相等键保持原相对顺序）。
+enum _SortMode {
+  order('默认', TablerIcons.list),
+  newest('最新优先', TablerIcons.arrow_down),
+  oldest('最早优先', TablerIcons.arrow_up),
+  largest('按大小', TablerIcons.arrows_sort);
+
+  const _SortMode(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+}
 
 /// 导出另存的测试接缝：调用系统保存对话框并返回落地路径（取消 → `null`）。
 ///
@@ -239,6 +258,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   late final ProxyRequestsSaveFile _saveFile;
   late final ProxyRequestsReadFile _readFile;
 
+  /// 列表单条删除门面（`captures.delete`）：详情页与长按菜单共用。
+  late final ProxyCaptureDeleteFacade _deleteFacade;
+
   /// 详情页动作绑定（首次点击抓包行时构建；优先注入缝，否则生产装配）。
   late final CaptureDetailActionBinder _captureActionBinder =
       widget.captureActionBinder ?? productionCaptureActionBinder();
@@ -256,9 +278,20 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   bool _loading = true;
   bool _pullInFlight = false;
   bool _exporting = false;
+  bool _loadingMore = false;
 
+  /// 跨页累计的请求骨架 / 抓包详情（按 `recordId` 去重）。
+  List<RequestRecord> _requests = <RequestRecord>[];
+  List<CaptureRecord> _captures = <CaptureRecord>[];
+
+  /// 最近一页的元数据（`retained` / `nextCursor` / `firstCursor`）。
   RequestPage? _requestsPage;
   CapturePage? _capturesPage;
+
+  /// 是否仍有更“新”的页可拉（游标前向分页的续页标志）。
+  bool _requestsHasMore = false;
+  bool _capturesHasMore = false;
+
   String? _error;
 
   /// `captures.get` 拉取失败 → 列表降级为仅流级信息（不视为致命错误）。
@@ -280,6 +313,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   bool _errorsOnly = false;
   int _rangeMs = 0;
 
+  /// 列表排序方式（默认沿用后端顺序）。
+  _SortMode _sortMode = _SortMode.order;
+
   /// 分析区是否展开（默认折叠）。
   bool _analysisExpanded = false;
 
@@ -288,6 +324,8 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _facade = widget.facade ?? ProxyModuleRequestsFacade();
+    _deleteFacade =
+        widget.captureDeleteFacade ?? ProxyModuleCaptureDeleteFacade();
     _events = widget.events ?? ProxyModule.instance.events;
     _saveFile = widget.saveFile ?? _defaultSaveFile;
     _readFile = widget.readFile ?? _defaultReadFile;
@@ -325,13 +363,13 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
 
   // ==================== 实时 ====================
 
-  /// 脏信号（`proxy.request`）→ 拉取（**拉取为准**）。
+  /// 脏信号（`proxy.request`）→ 增量拉取（**拉取为准**）。
   ///
   /// 实时关闭或页面不可见时忽略；[dispose] 取消订阅。
   void _onEvent(ProxyEvent event) {
     if (!mounted || !_visible || !_live) return;
     if (event is ProxyRequestEvent) {
-      unawaited(_fetch(silent: true));
+      unawaited(_poll());
     }
   }
 
@@ -339,7 +377,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     _fallbackTimer?.cancel();
     _fallbackTimer = Timer.periodic(
       _fallbackInterval,
-      (_) => unawaited(_fetch(silent: true)),
+      (_) => unawaited(_poll()),
     );
   }
 
@@ -352,7 +390,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     setState(() => _live = !_live);
     if (_live) {
       _startFallback();
-      unawaited(_fetch(silent: true));
+      unawaited(_poll());
     } else {
       _stopFallback();
     }
@@ -361,9 +399,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   // ==================== 加载 ====================
 
   /// 手动 / 首屏加载：整页 loading。
-  Future<void> _load() async {
-    await _fetch(silent: false);
-  }
+  Future<void> _load() => _reload(silent: false);
 
   /// 预加载已安装应用身份（惰性、缓存、失败静默）。
   ///
@@ -374,10 +410,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     if (mounted) setState(() {});
   }
 
-  /// 拉取 `requests.get`（骨架，致命）后叠加 `captures.get`（best-effort）。
-  ///
-  /// [silent] 为 true（实时刷新 / 兜底轮询）时不切整页 loading、失败保留现有数据。
-  Future<void> _fetch({bool silent = false}) async {
+  /// 全量重载：清空累计、从 `cursor = 0` 起前向翻页到耗尽（有界），
+  /// 按 `recordId` 去重后落地。筛选变化 / 刷新 / 首屏走此路径。
+  Future<void> _reload({required bool silent}) async {
     if (_pullInFlight) return;
     _pullInFlight = true;
     if (!silent) {
@@ -387,10 +422,33 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       });
     }
     try {
-      final page = await _facade.requestsGet(_buildRequest());
+      final loaded = <RequestRecord>[];
+      RequestPage? last;
+      int? cursor;
+      var hasMore = false;
+      var pages = 0;
+      do {
+        final page = await _facade.requestsGet(_buildRequest(cursor: cursor));
+        last = page;
+        loaded.addAll(page.records);
+        if (page.records.isNotEmpty) {
+          cursor = page.records.last.recordId;
+        }
+        hasMore = page.records.length >= _pageLimit &&
+            cursor != null &&
+            cursor < page.nextCursor;
+      } while (hasMore && ++pages < _maxAutoPages);
+
+      final records = mergeById<RequestRecord>(
+        const <RequestRecord>[],
+        loaded,
+        (record) => record.recordId,
+      );
       if (!mounted) return;
       setState(() {
-        _requestsPage = page;
+        _requests = records;
+        _requestsPage = last;
+        _requestsHasMore = hasMore;
         _loading = false;
         _error = null;
       });
@@ -412,13 +470,50 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     }
   }
 
-  /// `captures.get` + `capture.config.get` 的 best-effort 叠加（失败静默降级）。
-  Future<void> _fetchAux() async {
-    // HTTP 详情：失败仅标记降级，不影响 requests 列表。
+  /// 增量拉取：以当前累计的最后一条 `recordId` 为游标，只取更新的页并合并去重。
+  /// 实时脏信号 / 兜底轮询 / 「加载更多」走此路径。
+  Future<void> _poll() async {
+    if (_pullInFlight) return;
+    _pullInFlight = true;
     try {
-      final page = await _facade.capturesGet(_buildCapturesRequest());
+      final reqCursor = _requests.isEmpty ? null : _requests.last.recordId;
+      final page = await _facade.requestsGet(_buildRequest(cursor: reqCursor));
+      if (!mounted) return;
+      final merged = mergeById(
+        _requests,
+        page.records,
+        (record) => record.recordId,
+      );
+      final mergedCursor = merged.isEmpty ? null : merged.last.recordId;
+      setState(() {
+        _requests = merged;
+        _requestsPage = page;
+        _requestsHasMore = page.records.length >= _pageLimit &&
+            mergedCursor != null &&
+            mergedCursor < page.nextCursor;
+      });
+      await _pollCaptures();
+    } on ProxyModuleException catch (_) {
+      // 静默：保留现有数据。
+    } catch (_) {
+      // 静默：保留现有数据。
+    } finally {
+      _pullInFlight = false;
+    }
+  }
+
+  Future<void> _pollCaptures() async {
+    final capCursor = _captures.isEmpty ? null : _captures.last.recordId;
+    try {
+      final page =
+          await _facade.capturesGet(_buildCapturesRequest(cursor: capCursor));
       if (!mounted) return;
       setState(() {
+        _captures = mergeById(
+          _captures,
+          page.records,
+          (capture) => capture.recordId,
+        );
         _capturesPage = page;
         _capturesDegraded = false;
       });
@@ -426,7 +521,59 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       if (!mounted) return;
       setState(() => _capturesDegraded = true);
     }
-    // 抓包总开关：失败保持未知，不打断。
+  }
+
+  /// 手动加载下一页（仅在前向游标仍有更“新”记录时出现）。
+  Future<void> _loadMore() async {
+    if (_loadingMore || _pullInFlight) return;
+    setState(() => _loadingMore = true);
+    try {
+      await _poll();
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  /// `captures.get` + `capture.config.get` 的 best-effort 叠加（失败静默降级）。
+  Future<void> _fetchAux() async {
+    try {
+      final loaded = <CaptureRecord>[];
+      CapturePage? last;
+      int? cursor;
+      var hasMore = false;
+      var pages = 0;
+      do {
+        final page =
+            await _facade.capturesGet(_buildCapturesRequest(cursor: cursor));
+        last = page;
+        loaded.addAll(page.records);
+        if (page.records.isNotEmpty) {
+          cursor = page.records.last.recordId;
+        }
+        hasMore = page.records.length >= _capturesLimit &&
+            cursor != null &&
+            cursor < page.nextCursor;
+      } while (hasMore && ++pages < _maxAutoPages);
+
+      if (!mounted) return;
+      setState(() {
+        _captures = mergeById<CaptureRecord>(
+          const <CaptureRecord>[],
+          loaded,
+          (capture) => capture.recordId,
+        );
+        _capturesPage = last;
+        _capturesHasMore = hasMore;
+        _capturesDegraded = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _capturesDegraded = true);
+    }
+    await _fetchCaptureConfig();
+  }
+
+  Future<void> _fetchCaptureConfig() async {
     try {
       final config = await _facade.captureConfigGet();
       if (!mounted) return;
@@ -439,25 +586,34 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     }
   }
 
-  RequestGetRequest _buildRequest() {
-    final filter = _buildRequestsFilter();
-    return RequestGetRequest(limit: _pageLimit, filter: filter);
+  RequestGetRequest _buildRequest({int? cursor}) {
+    return RequestGetRequest(
+      cursor: cursor,
+      limit: _pageLimit,
+      filter: _buildRequestsFilter(),
+    );
   }
 
   RequestsFilter? _buildRequestsFilter() {
     final sinceMs = _rangeMs > 0
         ? DateTime.now().millisecondsSinceEpoch - _rangeMs
         : null;
-    if (_outboundQuery.isEmpty && sinceMs == null) return null;
+    if (_outboundQuery.isEmpty && sinceMs == null && _network == null) {
+      return null;
+    }
     return RequestsFilter(
+      network: _network,
       outbound: _outboundQuery.isEmpty ? null : _outboundQuery,
       sinceMs: sinceMs,
     );
   }
 
-  CapturesGetRequest _buildCapturesRequest() {
-    final filter = _buildCapturesFilter();
-    return CapturesGetRequest(limit: _capturesLimit, filter: filter);
+  CapturesGetRequest _buildCapturesRequest({int? cursor}) {
+    return CapturesGetRequest(
+      cursor: cursor,
+      limit: _capturesLimit,
+      filter: _buildCapturesFilter(),
+    );
   }
 
   CapturesFilter? _buildCapturesFilter() {
@@ -684,8 +840,8 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
 
   /// 骨架行 + 孤儿 capture 行（未套用筛选、未截断）。
   List<_UnifiedRow> _allRows() {
-    final requests = _requestsPage?.records ?? const <RequestRecord>[];
-    final captures = _capturesPage?.records ?? const <CaptureRecord>[];
+    final requests = _requests;
+    final captures = _captures;
 
     // `requestRecordId -> 最新 capture`（recordId 单调，取最大者作摘要）。
     final byRequestId = <int, CaptureRecord>{};
@@ -723,9 +879,24 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       if (!_matchesFilters(row, nowMs)) return false;
       return true;
     }).toList();
-    return matched.length <= _maxRendered
-        ? matched
-        : matched.sublist(0, _maxRendered);
+    final sorted = _sortRows(matched);
+    return sorted.length <= _maxRendered
+        ? sorted
+        : sorted.sublist(0, _maxRendered);
+  }
+
+  /// 稳定排序（相等键保持原相对顺序）。
+  List<_UnifiedRow> _sortRows(List<_UnifiedRow> rows) {
+    switch (_sortMode) {
+      case _SortMode.order:
+        return rows;
+      case _SortMode.newest:
+        return stableSortBy(rows, (a, b) => b.timeMs.compareTo(a.timeMs));
+      case _SortMode.oldest:
+        return stableSortBy(rows, (a, b) => a.timeMs.compareTo(b.timeMs));
+      case _SortMode.largest:
+        return stableSortBy(rows, (a, b) => b.sizeBytes.compareTo(a.sizeBytes));
+    }
   }
 
   bool _matchesSearch(_UnifiedRow row) {
@@ -804,7 +975,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   /// 任一筛选变化：本地重算 + best-effort 后端重拉（转发可支持的字段）。
   void _onFilterChanged() {
     setState(() {});
-    unawaited(_fetch(silent: true));
+    unawaited(_reload(silent: true));
   }
 
   void _applySearch() => setState(() {});
@@ -824,6 +995,153 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     });
   }
 
+  // ==================== 排序 / 长按操作 ====================
+
+  Future<void> _openSort() async {
+    final selected = await AppDialogs.showContentSheet<_SortMode>(
+      title: '排序方式',
+      icon: const Icon(TablerIcons.arrows_sort),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final mode in _SortMode.values)
+            _ExportOption(
+              key: Key('requests_sort_${mode.name}'),
+              icon: mode.icon,
+              title: mode.label,
+              subtitle: mode == _sortMode ? '当前' : '',
+              onTap: () => AppDialogs.popSheet<_SortMode>(mode),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<_SortMode>(null),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+    if (selected == null || !mounted) return;
+    setState(() => _sortMode = selected);
+  }
+
+  /// 长按行：复制域名 / URL、分享文本、删除该抓包记录。
+  Future<void> _onRowLongPress(_UnifiedRow row) async {
+    final capture = row.capture;
+    final action = await AppDialogs.showContentSheet<String>(
+      title: row.host.isEmpty ? '记录操作' : row.host,
+      icon: const Icon(TablerIcons.dots_vertical),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ExportOption(
+            key: const Key('row_action_copy_host'),
+            icon: TablerIcons.copy,
+            title: '复制域名',
+            subtitle: row.host.isEmpty ? '（无域名）' : row.host,
+            onTap: () => AppDialogs.popSheet<String>('copy_host'),
+          ),
+          if (capture != null && capture.url.isNotEmpty)
+            _ExportOption(
+              key: const Key('row_action_copy_url'),
+              icon: TablerIcons.link,
+              title: '复制 URL',
+              subtitle: capture.url,
+              onTap: () => AppDialogs.popSheet<String>('copy_url'),
+            ),
+          _ExportOption(
+            key: const Key('row_action_share'),
+            icon: TablerIcons.share,
+            title: '分享',
+            subtitle: '复制可分享的文本摘要',
+            onTap: () => AppDialogs.popSheet<String>('share'),
+          ),
+          if (capture != null)
+            _ExportOption(
+              key: const Key('row_action_delete'),
+              icon: TablerIcons.trash,
+              title: '删除该记录',
+              subtitle: '仅删除这一条抓包记录',
+              onTap: () => AppDialogs.popSheet<String>('delete'),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<String>(null),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case 'copy_host':
+        await _copyToClipboard(row.host, '已复制域名');
+      case 'copy_url':
+        await _copyToClipboard(capture?.url ?? '', '已复制 URL');
+      case 'share':
+        await _copyToClipboard(_shareText(row), '已复制分享文本');
+      case 'delete':
+        if (capture != null) await _deleteCapture(capture);
+    }
+  }
+
+  Future<void> _copyToClipboard(String text, String successMessage) async {
+    if (text.isEmpty) return;
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      AppDialogs.showSuccess(successMessage);
+    } catch (_) {
+      if (!mounted) return;
+      AppDialogs.showError('复制失败');
+    }
+  }
+
+  String _shareText(_UnifiedRow row) {
+    final buffer = StringBuffer()
+      ..writeln('${row.method.isEmpty ? '—' : row.method} ${row.host}')
+      ..write(row.path.isEmpty ? '' : row.path);
+    final capture = row.capture;
+    if (capture != null && capture.url.isNotEmpty) {
+      buffer
+        ..writeln()
+        ..write(capture.url);
+    }
+    return buffer.toString().trim();
+  }
+
+  /// 单条删除（`captures.delete`）：危险确认 → 乐观移除 → 重载刷新计数。
+  Future<void> _deleteCapture(CaptureRecord capture) async {
+    final ok = await AppDialogs.showConfirmSheet(
+      title: '删除该记录',
+      message: '将删除这一条抓包记录，无法撤销。确定继续吗？',
+      confirmText: '删除',
+      isDangerous: true,
+      icon: const Icon(TablerIcons.trash),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await _deleteFacade.delete(capture.recordId);
+      if (!mounted) return;
+      setState(() {
+        _captures = _captures
+            .where((item) => item.recordId != capture.recordId)
+            .toList();
+      });
+      AppDialogs.showSuccess('已删除该记录');
+      await _reload(silent: true);
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError(error.message, title: '删除失败');
+    } catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError('删除失败：$error', title: '删除失败');
+    }
+  }
+
   // ==================== 筛选弹层 ====================
 
   Future<void> _openFilters() async {
@@ -836,13 +1154,13 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           void sync(VoidCallback change) {
             setState(change);
             setSheetState(() {});
-            unawaited(_fetch(silent: true));
+            unawaited(_reload(silent: true));
           }
 
           void reset() {
             _resetFilters();
             setSheetState(() {});
-            unawaited(_fetch(silent: true));
+            unawaited(_reload(silent: true));
           }
 
           return Column(
@@ -971,6 +1289,12 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         title: const Text('请求域名 / IP'),
         actions: [
           IconButton(
+            key: const Key('requests_sort'),
+            tooltip: '排序',
+            icon: const Icon(TablerIcons.arrows_sort),
+            onPressed: _openSort,
+          ),
+          IconButton(
             key: const Key('requests_export'),
             tooltip: '导出',
             icon: const Icon(TablerIcons.file_download),
@@ -1059,7 +1383,22 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
               borderRadius: AppRadius.allMD,
             ),
             child: Text(
-              '共 ${_visibleRows.length} 条',
+              '共 ${_allRows().length} 条',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Container(
+            key: const Key('requests_retained_chip'),
+            padding: AppSpacing.horizontalSM_verticalXS,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: AppRadius.allMD,
+            ),
+            child: Text(
+              '保留 请求 ${_requestsPage?.retained ?? 0} · '
+              '抓包 ${_capturesPage?.retained ?? 0}',
               style: theme.textTheme.labelMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
@@ -1109,7 +1448,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   Widget _buildAnalysis(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final records = _requestsPage?.records ?? const <RequestRecord>[];
+    final records = _requests;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         AppSpacing.lg,
@@ -1332,12 +1671,36 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
               key: ValueKey(row.rowKey),
               row: row,
               onTap: () => _openRow(row),
+              onLongPress: () => _onRowLongPress(row),
             );
           },
         ),
       ),
+      if (_requestsHasMore || _capturesHasMore)
+        SliverToBoxAdapter(child: _buildLoadMore(context)),
       const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xxl)),
     ];
+  }
+
+  Widget _buildLoadMore(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.sm,
+        AppSpacing.lg,
+        0,
+      ),
+      child: Center(
+        child: OutlinedButton.icon(
+          key: const Key('requests_load_more'),
+          onPressed: _loadingMore ? null : _loadMore,
+          icon: _loadingMore
+              ? const AppLoading(size: AppLoadingSize.small)
+              : const Icon(TablerIcons.chevron_down),
+          label: const Text('加载更多'),
+        ),
+      ),
+    );
   }
 
   Widget _buildListHeader(BuildContext context, int count) {
@@ -1403,7 +1766,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           recordId: capture.recordId,
           flow: flow,
           facade: widget.captureDetailFacade,
-          deleteFacade: widget.captureDeleteFacade,
+          deleteFacade: _deleteFacade,
           onCopyCurl: binder.onCopyCurl,
           onSaveToDebug: binder.onSaveToDebug,
           onCreateRewriteRule: binder.onCreateRewriteRule,
@@ -1504,10 +1867,12 @@ class _UnifiedRowCard extends StatelessWidget {
     super.key,
     required this.row,
     required this.onTap,
+    this.onLongPress,
   });
 
   final _UnifiedRow row;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -1536,6 +1901,7 @@ class _UnifiedRowCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: AppSpacing.allMD,
           child: Row(

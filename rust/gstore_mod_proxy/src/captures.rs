@@ -2176,6 +2176,73 @@ mod tests {
         }
     }
 
+    /// Characterization (Todo 22, STEP 0): freezes the CURRENT `snapshot`
+    /// cursor semantics so the "by default returns the oldest 200" suspicion is
+    /// pinned down.
+    ///
+    /// The contract is: `since = 0` returns the OLDEST page, ordered
+    /// `recordId` ascending; the next page is requested by passing the **last
+    /// returned `recordId`** as `since` (NOT `nextCursor`, which is the
+    /// never-reclaimed high-water mark); pages are disjoint; and paging past
+    /// the high-water mark yields an empty page (the stop signal).
+    ///
+    /// If this test passes, the Rust cursor primitive is correct and Todo 22
+    /// must do the pagination purely in Dart (no Rust change).
+    #[test]
+    fn captures_snapshot_cursor_semantics_characterization() {
+        fn page_ids(page: &CapturePage) -> Vec<u64> {
+            page.records.iter().map(|r| r.record_id).collect()
+        }
+
+        let mut st = CaptureStore::fresh();
+        for i in 0..5 {
+            st.push_full(fixture(i, 1_000 + i as u64), 1_000 + i as u64);
+        }
+
+        // Default cursor (since = 0) returns the OLDEST records first, ascending.
+        let p1 = st.snapshot(0, 2, &CaptureFilter::default());
+        assert_eq!(page_ids(&p1), vec![1, 2], "default page is the oldest 2");
+        // `nextCursor` is the high-water mark, NOT the page tail.
+        assert_eq!(p1.next_cursor, 5, "nextCursor is the high-water mark");
+        assert_ne!(
+            p1.next_cursor,
+            p1.records.last().unwrap().record_id,
+            "nextCursor must not be mistaken for the next `since`"
+        );
+
+        // Forward paging uses the last returned id as the next `since`.
+        let p2 = st.snapshot(
+            p1.records.last().unwrap().record_id,
+            2,
+            &CaptureFilter::default(),
+        );
+        assert_eq!(page_ids(&p2), vec![3, 4]);
+        let p3 = st.snapshot(
+            p2.records.last().unwrap().record_id,
+            2,
+            &CaptureFilter::default(),
+        );
+        assert_eq!(page_ids(&p3), vec![5]);
+
+        // Exhausted: advancing past the high-water mark yields an empty page.
+        let p4 = st.snapshot(
+            p3.records.last().unwrap().record_id,
+            2,
+            &CaptureFilter::default(),
+        );
+        assert!(
+            p4.records.is_empty(),
+            "cursor exhausted at the high-water mark"
+        );
+
+        // Pages are disjoint: no duplicate `recordId` across the pages.
+        let mut all = page_ids(&p1);
+        all.extend(page_ids(&p2));
+        all.extend(page_ids(&p3));
+        let unique: std::collections::HashSet<u64> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "pages never overlap");
+    }
+
     /// Acceptance: over cap the oldest is evicted first and the eviction is
     /// counted; the index never goes stale.
     #[test]
