@@ -18,6 +18,7 @@ import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 
+import '../request_debug/request_debug_facade_provider.dart';
 import 'proxy_capture_bridge.dart';
 
 /// 抓包保存的默认集合名（集合不存在时自动创建）。
@@ -27,11 +28,14 @@ const String kCaptureDebugCollectionName = '抓包';
 typedef RewriteRuleEditorOpener = void Function(CaptureRulePrefill prefill);
 
 /// 生产抓包动作桥：映射 + 经请求调试门面落库。
+///
+/// 门面默认取共享 [RequestDebugFacadeProvider.instance]（与请求调试页同一
+/// store，消除双门面覆盖）；测试可注入假门面。
 class RequestDebugCaptureBridge implements CaptureBridge {
   RequestDebugCaptureBridge({
     RequestDebugFacade? facade,
     RewriteRuleEditorOpener? openRuleEditor,
-  })  : _facade = facade ?? DefaultRequestDebugFacade.production(),
+  })  : _facade = facade ?? RequestDebugFacadeProvider.instance,
         _openRuleEditor = openRuleEditor ?? _openViaRouter;
 
   final RequestDebugFacade _facade;

@@ -9,7 +9,7 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 import 'collection_section.dart';
 import 'environment_section.dart';
 import 'history_section.dart';
-import 'proxy_capture_rules_port.dart';
+import 'request_debug_facade_provider.dart';
 import 'rules_section.dart';
 import '../proxy/proxy_capture_bridge.dart';
 
@@ -32,9 +32,9 @@ enum RequestDebugSection {
 ///
 /// 本页（plan todo 30）只搭骨架：顶部 [AppTabBar] 4 分区
 /// `集合 / 历史 / 环境 / 改写规则` + 各分区空态 / 极简列表；分区内容由
-/// todos 31-34 深化。门面经构造函数注入（[facade] 默认
-/// [DefaultRequestDebugFacade.production]），测试注入假 store / 端口，
-/// 不触碰原生 FFI。
+/// todos 31-34 深化。门面经构造函数注入；[facade] 为空时取共享
+/// [RequestDebugFacadeProvider.instance]（与抓包桥同一 store，消除双门面覆盖）。
+/// 测试注入假 store / 端口，不触碰原生 FFI。
 ///
 /// 设计约束：全部取主题令牌（[Theme.of]），颜色 / 字号零硬编码；空态图标用
 /// [ColoredAliIcon] 染色以适配夜间模式。
@@ -74,10 +74,7 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     super.initState();
     _section = widget.initialSection ?? RequestDebugSection.collections;
     _rulePrefill = widget.rulePrefill;
-    _facade = widget.facade ??
-        DefaultRequestDebugFacade.production(
-          captureRules: ProxyModuleCaptureRulesPort(),
-        );
+    _facade = widget.facade ?? RequestDebugFacadeProvider.instance;
     unawaited(_load());
   }
 
