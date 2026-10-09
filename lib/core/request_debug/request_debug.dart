@@ -23,3 +23,4 @@ export 'env_resolver.dart';
 export 'query_codec.dart';
 export 'request_debug_facade.dart';
 export 'request_debug_store.dart';
+export 'scope_resolver.dart';

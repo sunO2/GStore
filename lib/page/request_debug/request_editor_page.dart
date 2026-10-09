@@ -664,9 +664,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   Future<void> _send() async {
     if (_sending) return;
     final draft = _composeDraft();
-    final env = _facade.store.activeEnvironment;
-    String resolve(String text) =>
-        env == null ? text : _facade.resolveEnvIn(text, env).text;
+    // 作用域合并：global → collection（祖先→叶子）→ environment → local。
+    // 仅激活单一环境（无 global / 集合变量 / local）时结果与旧 `activeEnvironment`
+    // 完全一致，单环境语义不回归（todo 20）。
+    final effectiveVars = _facade.store.effectiveVarsForRequest(draft);
+    String resolve(String text) => _facade.resolveEnv(text, effectiveVars).text;
 
     final headers = draft.headers
         .map((h) => DebugHeader(
@@ -684,9 +686,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         .toList();
 
     // 认证真正生效：Basic / Bearer 注入 Authorization 头，APIKey 注入命名头或
-    // 查询参数。**不**解析 auth 内的 `{{var}}`（与既有约定一致）。
+    // 查询参数。请求自身鉴权优先，其次最近集合级鉴权，最后全局（todo 20）。
+    // **不**解析 auth 内的 `{{var}}`（与既有约定一致）。
     final applied = applyAuth(
-      auth: draft.auth,
+      auth: _facade.store.effectiveAuthForRequest(draft),
       headers: headers,
       query: query,
     );

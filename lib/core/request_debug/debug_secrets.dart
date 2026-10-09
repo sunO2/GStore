@@ -129,6 +129,7 @@ class DebugSecretCodec {
   /// 保存前密封：返回**新**根 JSON，其中密钥值改为引用。
   Future<Map<String, dynamic>> seal(Map<String, dynamic> root) async {
     final out = _deepCopy(root);
+    await _sealGlobals(out['globals']);
     await _sealEnvironments(out['environments']);
     await _sealCollections(out['collections']);
     await _sealHistory(out['history']);
@@ -140,6 +141,7 @@ class DebugSecretCodec {
     final out = _deepCopy(root);
     var migrated = false;
 
+    if (await _openGlobals(out['globals'])) migrated = true;
     if (await _openEnvironments(out['environments'])) migrated = true;
     if (await _openCollections(out['collections'])) migrated = true;
     if (await _openHistory(out['history'])) migrated = true;
@@ -149,24 +151,20 @@ class DebugSecretCodec {
 
   // ---------- 密封 ----------
 
+  Future<void> _sealGlobals(Object? raw) async {
+    if (raw is! Map) return;
+    final globals = raw.cast<String, dynamic>();
+    await _sealSecretVars(globals, 'global');
+    await _sealAuthIn(globals, 'global');
+  }
+
   Future<void> _sealEnvironments(Object? raw) async {
     if (raw is! List) return;
     for (final item in raw) {
       if (item is! Map) continue;
       final env = item.cast<String, dynamic>();
-      final secretVars = env['secretVars'];
-      final vars = env['vars'];
-      if (secretVars is! List || vars is! Map) continue;
       final envId = env['id']?.toString() ?? '';
-      for (final name in secretVars) {
-        final key = name.toString();
-        final value = vars[key];
-        if (value is String && value.isNotEmpty &&
-            !DebugSecretReference.isReference(value)) {
-          await _store('env:$envId:var:$key', value);
-          vars[key] = DebugSecretReference.encode('env:$envId:var:$key');
-        }
-      }
+      await _sealSecretVars(env, 'env:$envId');
     }
   }
 
@@ -175,16 +173,16 @@ class DebugSecretCodec {
     for (final item in raw) {
       if (item is! Map) continue;
       final col = item.cast<String, dynamic>();
+      final colId = col['id']?.toString() ?? '';
+      // 集合 / 文件夹级变量（含密钥标记）与集合级鉴权。
+      await _sealSecretVars(col, 'col:$colId');
+      await _sealAuthIn(col, 'col:$colId');
       final requests = col['requests'];
       if (requests is! List) continue;
-      final colId = col['id']?.toString() ?? '';
       for (final requestItem in requests) {
         if (requestItem is! Map) continue;
         final request = requestItem.cast<String, dynamic>();
-        await _sealRequestAuth(
-          request,
-          'col:$colId:req:${request['id']}',
-        );
+        await _sealAuthIn(request, 'col:$colId:req:${request['id']}');
       }
     }
   }
@@ -196,18 +194,43 @@ class DebugSecretCodec {
       final entry = item.cast<String, dynamic>();
       final request = entry['request'];
       if (request is! Map) continue;
-      await _sealRequestAuth(
+      await _sealAuthIn(
         request.cast<String, dynamic>(),
         'hist:${entry['id']}',
       );
     }
   }
 
-  Future<void> _sealRequestAuth(
-    Map<String, dynamic> request,
+  /// 密封一个容器（环境 / 集合 / 全局）的 `vars` 中的 `secretVars` 值。
+  ///
+  /// 键格式：`<scope>:var:<name>`。
+  Future<void> _sealSecretVars(
+    Map<String, dynamic> holder,
     String scope,
   ) async {
-    final auth = request['auth'];
+    final secretVars = holder['secretVars'];
+    final vars = holder['vars'];
+    if (secretVars is! List || vars is! Map) return;
+    for (final name in secretVars) {
+      final key = name.toString();
+      final value = vars[key];
+      if (value is String && value.isNotEmpty &&
+          !DebugSecretReference.isReference(value)) {
+        final refKey = '$scope:var:$key';
+        await _store(refKey, value);
+        vars[key] = DebugSecretReference.encode(refKey);
+      }
+    }
+  }
+
+  /// 密封一个容器 / 请求的 `auth` 中的密钥字段。
+  ///
+  /// 键格式：`<scope>:auth:<field>`。
+  Future<void> _sealAuthIn(
+    Map<String, dynamic> holder,
+    String scope,
+  ) async {
+    final auth = holder['auth'];
     if (auth is! Map) return;
     for (final field in _secretAuthFields) {
       final value = auth[field];
@@ -222,27 +245,23 @@ class DebugSecretCodec {
 
   // ---------- 打开 ----------
 
+  Future<bool> _openGlobals(Object? raw) async {
+    if (raw is! Map) return false;
+    final globals = raw.cast<String, dynamic>();
+    var migrated = false;
+    if (await _openSecretVars(globals, 'global')) migrated = true;
+    if (await _openAuthIn(globals, 'global')) migrated = true;
+    return migrated;
+  }
+
   Future<bool> _openEnvironments(Object? raw) async {
     if (raw is! List) return false;
     var migrated = false;
     for (final item in raw) {
       if (item is! Map) continue;
       final env = item.cast<String, dynamic>();
-      final secretVars = env['secretVars'];
-      final vars = env['vars'];
-      if (secretVars is! List || vars is! Map) continue;
       final envId = env['id']?.toString() ?? '';
-      for (final name in secretVars) {
-        final key = name.toString();
-        final value = vars[key];
-        if (DebugSecretReference.isReference(value)) {
-          vars[key] = await _resolve(value as String) ?? '';
-        } else if (value is String && value.isNotEmpty) {
-          // 旧明文：写入安全存储并标记迁移（保留明文供本次读取）。
-          await _store('env:$envId:var:$key', value);
-          migrated = true;
-        }
-      }
+      if (await _openSecretVars(env, 'env:$envId')) migrated = true;
     }
     return migrated;
   }
@@ -253,13 +272,15 @@ class DebugSecretCodec {
     for (final item in raw) {
       if (item is! Map) continue;
       final col = item.cast<String, dynamic>();
+      final colId = col['id']?.toString() ?? '';
+      if (await _openSecretVars(col, 'col:$colId')) migrated = true;
+      if (await _openAuthIn(col, 'col:$colId')) migrated = true;
       final requests = col['requests'];
       if (requests is! List) continue;
-      final colId = col['id']?.toString() ?? '';
       for (final requestItem in requests) {
         if (requestItem is! Map) continue;
         final request = requestItem.cast<String, dynamic>();
-        if (await _openRequestAuth(request, 'col:$colId:req:${request['id']}')) {
+        if (await _openAuthIn(request, 'col:$colId:req:${request['id']}')) {
           migrated = true;
         }
       }
@@ -275,7 +296,7 @@ class DebugSecretCodec {
       final entry = item.cast<String, dynamic>();
       final request = entry['request'];
       if (request is! Map) continue;
-      if (await _openRequestAuth(
+      if (await _openAuthIn(
         request.cast<String, dynamic>(),
         'hist:${entry['id']}',
       )) {
@@ -285,11 +306,35 @@ class DebugSecretCodec {
     return migrated;
   }
 
-  Future<bool> _openRequestAuth(
-    Map<String, dynamic> request,
+  /// 打开一个容器的 `vars` 中的 `secretVars` 值：引用 → 明文；旧明文 → 迁移。
+  Future<bool> _openSecretVars(
+    Map<String, dynamic> holder,
     String scope,
   ) async {
-    final auth = request['auth'];
+    final secretVars = holder['secretVars'];
+    final vars = holder['vars'];
+    if (secretVars is! List || vars is! Map) return false;
+    var migrated = false;
+    for (final name in secretVars) {
+      final key = name.toString();
+      final value = vars[key];
+      if (DebugSecretReference.isReference(value)) {
+        vars[key] = await _resolve(value as String) ?? '';
+      } else if (value is String && value.isNotEmpty) {
+        // 旧明文：写入安全存储并标记迁移（保留明文供本次读取）。
+        await _store('$scope:var:$key', value);
+        migrated = true;
+      }
+    }
+    return migrated;
+  }
+
+  /// 打开一个容器 / 请求的 `auth` 密钥字段：引用 → 明文；旧明文 → 迁移。
+  Future<bool> _openAuthIn(
+    Map<String, dynamic> holder,
+    String scope,
+  ) async {
+    final auth = holder['auth'];
     if (auth is! Map) return false;
     var migrated = false;
     for (final field in _secretAuthFields) {
@@ -355,6 +400,38 @@ DebugRequest redactRequest(DebugRequest request) {
   final auth = request.auth;
   return auth == null ? request : request.copyWith(auth: redactAuth(auth));
 }
+
+/// 返回 [env] 的脱敏副本：`secretVars` 标记的变量值替换为 [debugSecretMask]，
+/// 其余变量原样保留（用于环境导出）。
+DebugEnvironment redactEnvironment(DebugEnvironment env) => DebugEnvironment(
+      id: env.id,
+      name: env.name,
+      vars: <String, String>{
+        for (final entry in env.vars.entries)
+          entry.key: env.secretVars.contains(entry.key)
+              ? debugSecretMask
+              : entry.value,
+      },
+      secretVars: env.secretVars,
+    );
+
+/// 返回 [collection] 的脱敏副本：集合级密钥变量值与集合级鉴权密钥替换为
+/// [debugSecretMask]；请求列表**原样保留**（逐请求脱敏由调用方按需处理）。
+DebugCollection redactCollection(DebugCollection collection) =>
+    DebugCollection(
+      id: collection.id,
+      name: collection.name,
+      parentId: collection.parentId,
+      requests: collection.requests,
+      vars: <String, String>{
+        for (final entry in collection.vars.entries)
+          entry.key: collection.secretVars.contains(entry.key)
+              ? debugSecretMask
+              : entry.value,
+      },
+      secretVars: collection.secretVars,
+      auth: collection.auth == null ? null : redactAuth(collection.auth!),
+    );
 
 /// 历史条目的导出 JSON（请求中的 auth 密钥已脱敏）。
 ///

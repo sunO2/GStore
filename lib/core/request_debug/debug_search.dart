@@ -118,12 +118,7 @@ List<DebugCollection> filterDebugCollections(
     final requests = keepAll.contains(c.id)
         ? c.requests
         : c.requests.where((r) => debugRequestMatches(r, q)).toList();
-    out.add(DebugCollection(
-      id: c.id,
-      name: c.name,
-      parentId: c.parentId,
-      requests: requests,
-    ));
+    out.add(c.copyWith(requests: requests));
   }
   return out;
 }

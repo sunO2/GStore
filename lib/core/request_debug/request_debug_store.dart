@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'debug_models.dart';
 import 'debug_secrets.dart';
+import 'scope_resolver.dart';
 
 /// 目录提供者接缝：生产用应用文档目录，测试注入临时目录。
 typedef DebugStoreDirectoryProvider = Future<Directory> Function();
@@ -124,6 +125,15 @@ class RequestDebugStore {
   /// 改写规则。
   final List<DebugRewriteRule> rules = [];
 
+  /// **全局**作用域变量（最低优先级；被集合 / 环境 / local 覆盖）。
+  final Map<String, String> globalVars = {};
+
+  /// 全局密钥变量名集合（其值经安全存储，store 只存引用）。
+  final Set<String> globalSecretVars = <String>{};
+
+  /// 全局默认鉴权（优先级低于集合级与请求自身鉴权）。
+  DebugAuth? globalAuth;
+
   /// 当前激活环境 id。
   String? activeEnvironmentId;
 
@@ -150,6 +160,9 @@ class RequestDebugStore {
     environments.clear();
     history.clear();
     rules.clear();
+    globalVars.clear();
+    globalSecretVars.clear();
+    globalAuth = null;
     activeEnvironmentId = null;
     _loadedDiskVersion = null;
   }
@@ -295,6 +308,7 @@ class RequestDebugStore {
           _parseList(map['environments'], DebugEnvironment.fromJson));
       history.addAll(_parseList(map['history'], DebugHistoryEntry.fromJson));
       rules.addAll(_parseList(map['rules'], DebugRewriteRule.fromJson));
+      _loadGlobals(map['globals']);
       final active = map['activeEnvironmentId'];
       activeEnvironmentId =
           active is String && active.isNotEmpty ? active : null;
@@ -407,11 +421,37 @@ class RequestDebugStore {
   Map<String, dynamic> _toJson() => {
         'version': schemaVersion,
         'activeEnvironmentId': activeEnvironmentId,
+        'globals': {
+          'vars': globalVars,
+          if (globalSecretVars.isNotEmpty)
+            'secretVars': globalSecretVars.toList(),
+          if (globalAuth != null) 'auth': globalAuth!.toJson(),
+        },
         'collections': collections.map((e) => e.toJson()).toList(),
         'environments': environments.map((e) => e.toJson()).toList(),
         'history': history.map((e) => e.toJson()).toList(),
         'rules': rules.map((e) => e.toJson()).toList(),
       };
+
+  /// 解析全局作用域（缺失 / 损坏安全降级为空）。
+  void _loadGlobals(Object? raw) {
+    if (raw is! Map) return;
+    final globals = raw.cast<String, dynamic>();
+    final vars = globals['vars'];
+    if (vars is Map) {
+      globalVars.addAll(
+        vars.map((k, v) => MapEntry(k.toString(), v?.toString() ?? '')),
+      );
+    }
+    final secretVars = globals['secretVars'];
+    if (secretVars is List) {
+      globalSecretVars.addAll(secretVars.whereType<String>());
+    }
+    final auth = globals['auth'];
+    if (auth is Map) {
+      globalAuth = DebugAuth.fromJson(auth.cast<String, dynamic>());
+    }
+  }
 
   /// 逐条解析：非对象 / 脏条目跳过，不牵连整份数据。
   ///
@@ -490,16 +530,22 @@ class RequestDebugStore {
 
   // ==================== 集合 / 请求 CRUD ====================
 
-  /// 新建集合 / 文件夹。
+  /// 新建集合 / 文件夹（可带集合级变量与鉴权）。
   DebugCollection addCollection({
     String? id,
     required String name,
     String? parentId,
+    Map<String, String>? vars,
+    Set<String>? secretVars,
+    DebugAuth? auth,
   }) {
     final c = DebugCollection(
       id: id ?? generateDebugId('col'),
       name: name,
       parentId: parentId,
+      vars: vars,
+      secretVars: secretVars,
+      auth: auth,
     );
     collections.add(c);
     return c;
@@ -681,12 +727,7 @@ class RequestDebugStore {
       }
     }
     final at = collections.indexOf(collection);
-    collections[at] = DebugCollection(
-      id: collection.id,
-      name: collection.name,
-      parentId: newParentId,
-      requests: collection.requests,
-    );
+    collections[at] = collection.copyWith(parentId: newParentId);
     if (index != null) {
       // 在新父级的兄弟序列中重新落位。
       final siblings = <DebugCollection>[];
@@ -796,6 +837,9 @@ class RequestDebugStore {
       name: rootName ?? src.name,
       parentId: parentId,
       requests: requests,
+      vars: Map<String, String>.of(src.vars),
+      secretVars: Set<String>.of(src.secretVars),
+      auth: src.auth?.copyWith(),
     ));
     for (final child in collections.where((e) => e.parentId == src.id)) {
       _cloneCollectionTree(child, newId, out);
@@ -847,6 +891,47 @@ class RequestDebugStore {
     activeEnvironmentId =
         (id != null && environmentById(id) != null) ? id : null;
   }
+
+  // ==================== 作用域解析（todo 20）====================
+
+  /// 返回 [collectionId] 的集合祖先链（**祖先 → 叶子**）；未知 / `null` → 空。
+  List<DebugCollection> collectionChainFor(String? collectionId) {
+    final chain = <DebugCollection>[];
+    var cursor = collectionId == null ? null : collectionById(collectionId);
+    while (cursor != null) {
+      chain.insert(0, cursor);
+      cursor =
+          cursor.parentId == null ? null : collectionById(cursor.parentId!);
+    }
+    return chain;
+  }
+
+  /// 计算某请求的有效变量表：
+  /// `global → collection（祖先→叶子）→ environment → local`（后者覆盖前者）。
+  Map<String, String> effectiveVarsForRequest(
+    DebugRequest request, {
+    Map<String, String> localVars = const <String, String>{},
+  }) =>
+      resolveEffectiveVars(
+        globalVars: globalVars,
+        collectionChain: <Map<String, String>>[
+          for (final c in collectionChainFor(request.collectionId)) c.vars,
+        ],
+        environmentVars: activeEnvironment?.vars ?? const <String, String>{},
+        localVars: localVars,
+      );
+
+  /// 计算某请求的有效鉴权：`request → 最近集合（叶子→祖先）→ global`。
+  ///
+  /// 全部未配置时返回 `null`（不注入任何鉴权）。
+  DebugAuth? effectiveAuthForRequest(DebugRequest request) =>
+      resolveEffectiveAuth(
+        requestAuth: request.auth,
+        collectionAuthChain: <DebugAuth?>[
+          for (final c in collectionChainFor(request.collectionId)) c.auth,
+        ],
+        globalAuth: globalAuth,
+      );
 
   // ==================== 历史 CRUD ====================
 

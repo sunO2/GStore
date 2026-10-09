@@ -8,6 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:gstore/core/request_debug/debug_models.dart';
+import 'package:gstore/core/request_debug/debug_secrets.dart';
 
 import 'codec_utils.dart';
 import 'har_codec.dart';
@@ -100,12 +101,15 @@ class DebugImportExport {
   // ==================== 环境 / 规则（JSON）====================
 
   /// 环境列表 → JSON 文本（含格式标识，便于导入时校验）。
+  ///
+  /// **脱敏**：`secretVars` 标记的变量值以 [debugSecretMask] 替换，绝不导出明文
+  /// 密钥（真实值在安全存储中，本导出仅供分享 / 备份非敏感配置）。
   static String encodeEnvironmentsJson(List<DebugEnvironment> environments) {
     return const JsonEncoder.withIndent('  ').convert(<String, dynamic>{
       'format': 'gstore.debug.environments',
       'version': 1,
       'environments': <Map<String, dynamic>>[
-        for (final e in environments) e.toJson(),
+        for (final e in environments) redactEnvironment(e).toJson(),
       ],
     });
   }
@@ -254,6 +258,9 @@ List<DebugCollection> remapImportedCollections(
         requests: <DebugRequest>[
           for (final r in c.requests) r.copyWith(collectionId: newId),
         ],
+        vars: Map<String, String>.of(c.vars),
+        secretVars: Set<String>.of(c.secretVars),
+        auth: c.auth?.copyWith(),
       ),
     );
   }

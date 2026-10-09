@@ -92,14 +92,7 @@ class _RequestDebugCollectionSectionState
     if (name == null || name.isEmpty || name == collection.name || !mounted) {
       return;
     }
-    _facade.store.updateCollection(
-      DebugCollection(
-        id: collection.id,
-        name: name,
-        parentId: collection.parentId,
-        requests: collection.requests,
-      ),
-    );
+    _facade.store.updateCollection(collection.copyWith(name: name));
     await _persist();
   }
 

@@ -559,13 +559,23 @@ class DebugRequest {
 }
 
 /// 集合 / 文件夹（[parentId] 非空表示嵌套子文件夹）。
+///
+/// 支持**集合 / 文件夹级变量与鉴权**（plan todo 20）：[vars] 参与
+/// `{{var}}` 作用域解析（被后代请求以「后覆盖前」继承），[auth] 作为子请求的
+/// 默认鉴权（请求自身鉴权优先）。[secretVars] 标记其中哪些变量是密钥（值走
+/// 安全存储，见 [DebugSecretCodec]）。
 class DebugCollection {
   DebugCollection({
     required this.id,
     required this.name,
     this.parentId,
     List<DebugRequest>? requests,
-  }) : requests = requests ?? [];
+    Map<String, String>? vars,
+    Set<String>? secretVars,
+    this.auth,
+  })  : requests = requests ?? [],
+        vars = vars ?? {},
+        secretVars = secretVars ?? <String>{};
 
   final String id;
   final String name;
@@ -576,11 +586,46 @@ class DebugCollection {
   /// 该集合下的请求（嵌套为持久化的单一真源）。
   final List<DebugRequest> requests;
 
+  /// 集合 / 文件夹级变量（供后代请求继承）。
+  final Map<String, String> vars;
+
+  /// 集合级密钥变量名集合（其值经安全存储，store 只存引用）。
+  final Set<String> secretVars;
+
+  /// 集合级默认鉴权（子请求自身鉴权优先于本字段）。
+  final DebugAuth? auth;
+
+  /// 可空字段（[parentId] / [auth]）使用哨兵语义：缺省保留原值，**显式传
+  /// `null` 清空**；其余字段缺省保留。
+  DebugCollection copyWith({
+    String? id,
+    String? name,
+    Object? parentId = _unset,
+    List<DebugRequest>? requests,
+    Map<String, String>? vars,
+    Set<String>? secretVars,
+    Object? auth = _unset,
+  }) =>
+      DebugCollection(
+        id: id ?? this.id,
+        name: name ?? this.name,
+        parentId: identical(parentId, _unset)
+            ? this.parentId
+            : parentId as String?,
+        requests: requests ?? this.requests,
+        vars: vars ?? this.vars,
+        secretVars: secretVars ?? this.secretVars,
+        auth: identical(auth, _unset) ? this.auth : auth as DebugAuth?,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         if (parentId != null) 'parentId': parentId,
         'requests': requests.map((e) => e.toJson()).toList(),
+        if (vars.isNotEmpty) 'vars': vars,
+        if (secretVars.isNotEmpty) 'secretVars': secretVars.toList(),
+        if (auth != null) 'auth': auth!.toJson(),
       };
 
   factory DebugCollection.fromJson(Map<String, dynamic> json) =>
@@ -589,6 +634,9 @@ class DebugCollection {
         name: _asString(json['name']),
         parentId: _asStringOrNull(json['parentId']),
         requests: _requests(json['requests']),
+        vars: _stringMap(json['vars']),
+        secretVars: _stringSet(json['secretVars']),
+        auth: _auth(json['auth']),
       );
 }
 
