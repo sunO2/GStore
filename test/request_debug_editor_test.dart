@@ -36,6 +36,9 @@ class _FakeSender implements DebugSender {
     sizeBytes: 2,
   );
 
+  /// 为 `true` 时发送挂起直到 `cancelToken` 被取消，返回结构化「已取消」。
+  bool blockUntilCancelled = false;
+
   @override
   final DebugCookieJar cookieJar = DebugCookieJar();
 
@@ -51,7 +54,12 @@ class _FakeSender implements DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async {
+    if (blockUntilCancelled && cancelToken != null) {
+      await cancelToken.whenCancelled;
+      return DebugResponse.cancelled();
+    }
     calls.add(<String, Object?>{
       'method': method,
       'url': url,
@@ -619,6 +627,111 @@ void main() {
       expect(sender.calls.single['followRedirects'], isFalse);
       expect(sender.calls.single['useCookies'], isFalse);
       expect(sender.calls.single['skipTlsVerify'], isTrue);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('请求编辑器 · 取消', () {
+    testWidgets('发送中显示取消入口；取消后回到就绪且不追加历史', (tester) async {
+      final sender = _sender()..blockUntilCancelled = true;
+      final facade = _facade(sender: sender);
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-cancel',
+          name: 'cancel',
+          method: 'GET',
+          url: 'https://api.example/slow',
+        ),
+      );
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      await tester.tap(find.byKey(const Key('request-editor-send')));
+      await tester.pump();
+
+      // 发送中：出现取消入口，发送按钮禁用。
+      expect(find.byKey(const Key('request-editor-cancel')), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('request-editor-send')))
+            .onPressed,
+        isNull,
+      );
+
+      // 取消 → 回到就绪。
+      await tester.tap(find.byKey(const Key('request-editor-cancel')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('request-editor-cancel')), findsNothing);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('request-editor-send')))
+            .onPressed,
+        isNotNull,
+      );
+      expect(find.text('尚未发送请求'), findsOneWidget,
+          reason: '取消后必须回到就绪态，不展示残缺响应');
+      expect(facade.store.history, isEmpty,
+          reason: '取消绝不能追加半成品历史');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('重复取消幂等：无异常、无重复副作用', (tester) async {
+      final sender = _sender()..blockUntilCancelled = true;
+      final facade = _facade(sender: sender);
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+      await tester.tap(find.byKey(const Key('request-editor-send')));
+      await tester.pump();
+      expect(find.byKey(const Key('request-editor-cancel')), findsOneWidget);
+
+      // 同一帧内连点两次取消（第二次命中已取消 token）。
+      await tester.tap(find.byKey(const Key('request-editor-cancel')));
+      await tester.tap(find.byKey(const Key('request-editor-cancel')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('request-editor-cancel')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('发送中返回：先警告；确认后取消请求并离开', (tester) async {
+      final sender = _sender()..blockUntilCancelled = true;
+      final facade = _facade(sender: sender);
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+      await tester.tap(find.byKey(const Key('request-editor-send')));
+      await tester.pump();
+
+      // 发送中返回 → 警告弹层（发送中 AppLoading 持续动画，用固定帧推进）。
+      await tester.tap(find.byKey(const Key('request-editor-back')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('请求正在发送'), findsOneWidget,
+          reason: '_sending 时必须警告而不能静默离开');
+
+      // 继续等待 → 不离开。
+      await tester.tap(find.text('继续等待'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
+
+      // 再次返回并确认 → 取消请求并离开。
+      await tester.tap(find.byKey(const Key('request-editor-back')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('取消请求并离开'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const Key('open-editor')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

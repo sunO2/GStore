@@ -46,6 +46,7 @@ class _FakeSender implements DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async =>
       const DebugResponse(statusCode: 200);
 

@@ -40,6 +40,7 @@ class _FakeSender implements DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async {
     return const DebugResponse(statusCode: 200, bodyText: 'ok', sizeBytes: 2);
   }

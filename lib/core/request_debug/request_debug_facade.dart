@@ -134,6 +134,9 @@ abstract class RequestDebugFacade {
   /// UTF-8 路径。[followRedirects] / [timeout] / [useCookies] /
   /// [skipTlsVerify] 为**每请求**网络选项；[skipTlsVerify] 仅对该请求绕过
   /// TLS 校验，绝不启用全局证书绕过。
+  ///
+  /// [cancelToken] 非 `null` 时该请求可取消，取消返回结构化
+  /// [DebugResponse.cancelled]。
   Future<DebugResponse> send({
     required String method,
     required String url,
@@ -145,6 +148,7 @@ abstract class RequestDebugFacade {
     Duration? timeout,
     bool useCookies,
     bool skipTlsVerify,
+    DebugCancellationToken? cancelToken,
   });
 
   /// 解析 cURL（永不抛，结构化错误）。
@@ -235,6 +239,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) =>
       sender.send(
         method: method,
@@ -247,6 +252,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
         timeout: timeout,
         useCookies: useCookies,
         skipTlsVerify: skipTlsVerify,
+        cancelToken: cancelToken,
       );
 
   @override

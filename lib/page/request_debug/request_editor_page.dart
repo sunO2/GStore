@@ -112,6 +112,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   DebugResponse? _response;
   bool _sending = false;
+  DebugCancellationToken? _cancelToken;
   bool _dirty = false;
 
   /// 请求体 JSON 格式化失败的内联错误；成功格式化或再次编辑后清除。
@@ -712,6 +713,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       _sending = true;
       _segment = RequestEditorSegment.response;
     });
+    final cancelToken = DebugCancellationToken();
+    _cancelToken = cancelToken;
     final response = await _facade.send(
       method: draft.method,
       url: resolve(draft.url),
@@ -723,12 +726,22 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       timeout: Duration(milliseconds: _timeoutMs),
       useCookies: _useCookieJar,
       skipTlsVerify: _skipTlsVerify,
+      cancelToken: cancelToken,
     );
     if (!mounted) return;
     setState(() {
       _sending = false;
-      _response = response;
+      _cancelToken = null;
+      // 取消是结构化第三种结果：回到就绪，绝不落半成品响应 / 历史。
+      if (!response.isCancelled) {
+        _response = response;
+      }
     });
+  }
+
+  /// 取消进行中的请求（幂等：重复调用只生效一次）。
+  void _cancelSend() {
+    _cancelToken?.cancel();
   }
 
   /// 按 [draft.bodyKind] 把请求体编码为线缆字节；`none` 返回 `null`（旧路径）。
@@ -874,6 +887,21 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   // ==================== 离开 ====================
 
   Future<void> _handleLeave() async {
+    // 发送中：先警告；确认后取消请求再离开（绝不静默丢弃进行中的请求）。
+    if (_sending) {
+      final leave = await AppDialogs.showConfirmSheet(
+        title: '请求正在发送',
+        message: '离开将取消正在进行的请求。',
+        confirmText: '取消请求并离开',
+        cancelText: '继续等待',
+        isDangerous: true,
+      );
+      if (!mounted) return;
+      if (leave != true) return;
+      _cancelSend();
+      Navigator.of(context).pop();
+      return;
+    }
     if (!_dirty) {
       if (mounted) Navigator.of(context).pop();
       return;
@@ -894,7 +922,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_dirty,
+      canPop: !_dirty && !_sending,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _handleLeave();
       },
@@ -1638,7 +1666,21 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   Widget _buildResponse(BuildContext context) {
     if (_sending) {
-      return const Center(child: AppLoading(size: AppLoadingSize.medium));
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const AppLoading(size: AppLoadingSize.medium),
+            const SizedBox(height: AppSpacing.md),
+            TextButton.icon(
+              key: const Key('request-editor-cancel'),
+              onPressed: _cancelSend,
+              icon: const Icon(TablerIcons.x),
+              label: const Text('取消请求'),
+            ),
+          ],
+        ),
+      );
     }
     final response = _response;
     final theme = Theme.of(context);

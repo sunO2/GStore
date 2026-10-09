@@ -570,6 +570,7 @@ class _CapturingSender implements DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async {
     calls.add(_Call(
       method: method,

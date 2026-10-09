@@ -23,6 +23,7 @@ class DebugResponse {
     this.durationMs = 0,
     this.sizeBytes = 0,
     this.error,
+    this.cancelled = false,
   });
 
   /// HTTP 状态码；失败 / 出错时为 0。
@@ -48,6 +49,15 @@ class DebugResponse {
 
   /// 结构化错误（连接失败 / 超时为非 null；出错时不抛异常）。
   final String? error;
+
+  /// 是否因调用方**主动取消**而提前结束。
+  ///
+  /// 取消是独立于成功 / 错误的第三种结构化结果：[statusCode] 为 0、[error]
+  /// 为 `null`、[cancelled] 为 `true`，绝不抛异常。
+  final bool cancelled;
+
+  /// 是否为**已取消**结果。
+  bool get isCancelled => cancelled;
 
   /// 文本预览上限（字符）：超出即截断，避免无界保留。
   static const int maxTextPreviewChars = 200000;
@@ -88,6 +98,10 @@ class DebugResponse {
   /// 结构化错误响应（状态码 0，无体）。
   factory DebugResponse.error(String message, {int durationMs = 0}) =>
       DebugResponse(error: message, durationMs: durationMs);
+
+  /// 结构化**已取消**响应（状态码 0、无错误，仅标记 [cancelled]）。
+  factory DebugResponse.cancelled({int durationMs = 0}) =>
+      DebugResponse(cancelled: true, durationMs: durationMs);
 
   /// 由响应体字节生成限长文本预览。
   static String textPreview(List<int> bytes) {

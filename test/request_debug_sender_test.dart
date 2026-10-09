@@ -635,4 +635,106 @@ void main() {
       expect(fixture.recorded.single.query, 'a=2');
     });
   });
+
+  // plan todo 5：请求取消 + 结构化「已取消」结果 + 幂等。
+  group('DebugSender cancellation', () {
+    test('aborts an in-flight request with a structured cancelled result',
+        () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        await Future<void>.delayed(const Duration(seconds: 3));
+        try {
+          request.response.statusCode = HttpStatus.ok;
+          request.response.write('late');
+          await request.response.close();
+        } catch (_) {
+          // 客户端取消后写入抛错，属预期（最佳努力）。
+        }
+      });
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final token = DebugCancellationToken();
+      final stopwatch = Stopwatch()..start();
+      final pending = sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/slow',
+        timeout: const Duration(seconds: 10),
+        cancelToken: token,
+      );
+      // 等请求真正上路后再取消。
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      token.cancel();
+
+      final response = await pending;
+      stopwatch.stop();
+
+      expect(response.cancelled, isTrue,
+          reason: '取消必须返回结构化 cancelled 结果');
+      expect(response.error, isNull,
+          reason: '取消不是错误，不得伪造成 error');
+      expect(response.statusCode, 0);
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 2)),
+          reason: '取消必须尽快返回，绝不挂起');
+    });
+
+    test('cancel() is idempotent (no crash, single effect)', () {
+      final token = DebugCancellationToken();
+      var effects = 0;
+      token.onCancel(() => effects++);
+
+      token.cancel();
+      token.cancel();
+      token.cancel();
+
+      expect(token.isCancelled, isTrue);
+      expect(effects, 1, reason: '重复取消不得重复触发副作用');
+    });
+
+    test('an already-cancelled token short-circuits before any network I/O',
+        () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+      });
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final token = DebugCancellationToken()..cancel();
+      final response = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/never',
+        cancelToken: token,
+      );
+
+      expect(response.cancelled, isTrue);
+      expect(fixture.recorded, isEmpty,
+          reason: '已取消的 token 必须在建立连接前短路');
+    });
+
+    test('a null token keeps the existing success shape unchanged', () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write('ok');
+        await request.response.close();
+      });
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: '${fixture.origin}/ok',
+      );
+
+      expect(response.cancelled, isFalse);
+      expect(response.error, isNull);
+      expect(response.statusCode, 200);
+      expect(response.bodyText, 'ok');
+    });
+  });
 }

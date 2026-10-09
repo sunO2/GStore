@@ -48,6 +48,7 @@ class _FakeSender implements DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async {
     calls.add(<String, Object?>{'method': method, 'url': url, 'body': body});
     return response;

@@ -22,6 +22,45 @@ import 'debug_models.dart';
 import 'debug_response.dart';
 import 'query_codec.dart';
 
+/// 可取消句柄：传给 [DebugSender.send]，在请求进行中主动取消。
+///
+/// 取消**幂等**（重复调用只生效一次、无重复副作用）；[whenCancelled] 无论何时
+/// await 都会立即完成或等到被取消；[onCancel] 注册的一次性监听器在取消时触发，
+/// [DebugSender] 用它来中止底层 socket（`HttpClient.close(force: true)`）。
+class DebugCancellationToken {
+  final Completer<void> _completer = Completer<void>();
+  final List<void Function()> _listeners = <void Function()>[];
+  bool _cancelled = false;
+
+  /// 是否已取消。
+  bool get isCancelled => _cancelled;
+
+  /// 取消信号：取消前 await 会挂起，取消后立即完成。
+  Future<void> get whenCancelled => _completer.future;
+
+  /// 注册一次性取消监听器；若已取消则**立即**调用。
+  void onCancel(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  /// 请求取消；**幂等**，重复调用不产生额外副作用。
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    // 先完成信号（让等待方尽快观察到取消），再通知监听器中止底层 I/O。
+    if (!_completer.isCompleted) _completer.complete();
+    final listeners = List<void Function()>.of(_listeners);
+    _listeners.clear();
+    for (final listener in listeners) {
+      listener();
+    }
+  }
+}
+
 /// 使用 `package:http`（`IOClient`）的请求调试发送器。
 class DebugSender {
   DebugSender({http.Client? client, DebugCookieJar? cookieJar})
@@ -51,6 +90,10 @@ class DebugSender {
   /// [skipTlsVerify] 为 `true` 时，本次请求使用一个**临时** `HttpClient`（带
   /// `badCertificateCallback`）完成 TLS 校验绕过，请求结束后立即释放——**仅对
   /// 该次请求生效**，绝不修改共享客户端或全局安全策略。失败返回结构化错误，不抛。
+  ///
+  /// [cancelToken] 非 `null` 时该请求可被取消：取消会中止底层 socket 并返回
+  /// **结构化** [DebugResponse.cancelled]（不是异常、不是 error）。取消只作用于
+  /// 本次请求，绝不关闭共享客户端。已取消的 token 会在建立连接前短路。
   Future<DebugResponse> send({
     required String method,
     required String url,
@@ -62,11 +105,15 @@ class DebugSender {
     Duration? timeout,
     bool useCookies = true,
     bool skipTlsVerify = false,
+    DebugCancellationToken? cancelToken,
   }) async {
     final effectiveTimeout = timeout ?? defaultTimeout;
     final stopwatch = Stopwatch()..start();
+    if (cancelToken != null && cancelToken.isCancelled) {
+      return DebugResponse.cancelled(durationMs: 0);
+    }
     try {
-      final response = await _perform(
+      final perform = _perform(
         method: method,
         url: url,
         headers: headers,
@@ -76,7 +123,26 @@ class DebugSender {
         followRedirects: followRedirects,
         useCookies: useCookies,
         skipTlsVerify: skipTlsVerify,
-      ).timeout(effectiveTimeout);
+        cancelToken: cancelToken,
+      );
+      final DebugResponse response;
+      if (cancelToken == null) {
+        response = await perform.timeout(effectiveTimeout);
+      } else {
+        // 观察 perform 的最终结果/错误，避免取消后它变成未处理的异步异常。
+        final observed = perform.catchError(
+          (Object error, StackTrace stack) =>
+              DebugResponse.error(_describeError(error)),
+        );
+        response = await Future.any<DebugResponse>(<Future<DebugResponse>>[
+          observed,
+          cancelToken.whenCancelled.then<DebugResponse>(
+            (_) => DebugResponse.cancelled(
+              durationMs: stopwatch.elapsedMilliseconds,
+            ),
+          ),
+        ]).timeout(effectiveTimeout);
+      }
       stopwatch.stop();
       return response;
     } on TimeoutException {
@@ -109,6 +175,7 @@ class DebugSender {
     required bool followRedirects,
     required bool useCookies,
     required bool skipTlsVerify,
+    DebugCancellationToken? cancelToken,
   }) async {
     final stopwatch = Stopwatch()..start();
     final uri = _buildUri(url, query);
@@ -146,14 +213,27 @@ class DebugSender {
 
     // skipTlsVerify 仅对该请求生效：用一次性 HttpClient 绕过证书校验，绝不复用/
     // 修改共享客户端，也绝不触碰进程级/全局安全设置。
+    // cancelToken 非空时同样使用一次性客户端，以便取消时 force-close 其底层
+    // socket（绝不关闭共享客户端）。
     http.Client? disposableClient;
     var client = _client;
-    if (skipTlsVerify) {
-      final inner = HttpClient()
-        ..badCertificateCallback =
+    if (skipTlsVerify || cancelToken != null) {
+      final inner = HttpClient();
+      if (skipTlsVerify) {
+        inner.badCertificateCallback =
             (X509Certificate cert, String host, int port) => true;
+      }
       disposableClient = IOClient(inner);
       client = disposableClient;
+      if (cancelToken != null) {
+        cancelToken.onCancel(() {
+          try {
+            disposableClient?.close();
+          } catch (_) {
+            // 客户端已释放 / 已取消时忽略。
+          }
+        });
+      }
     }
 
     try {
