@@ -1483,6 +1483,17 @@ pub(crate) fn delete_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
 pub(crate) const RULE_KIND_REPLACE: &str = "replace";
 pub(crate) const RULE_KIND_LOCAL: &str = "local";
 
+/// `capture.rules.set` `matchType` values (Todo 33). `exact` is the frozen
+/// default: an absent field (old clients / old on-disk rules) stays exact.
+pub(crate) const RULE_MATCH_EXACT: &str = "exact";
+pub(crate) const RULE_MATCH_PREFIX: &str = "prefix";
+pub(crate) const RULE_MATCH_GLOB: &str = "glob";
+pub(crate) const RULE_MATCH_REGEX: &str = "regex";
+
+fn default_match_type() -> String {
+    RULE_MATCH_EXACT.to_string()
+}
+
 /// Persisted rewrite-rule table filename, beside the other module JSON stores.
 const CAPTURE_RULES_FILE: &str = "capture_rules.json";
 /// On-disk schema version for `capture_rules.json`.
@@ -1500,7 +1511,7 @@ pub(crate) struct CaptureRule {
     pub enabled: bool,
     /// Optional request-method filter; `null` matches any method.
     pub method: Option<String>,
-    /// Exact-match request URL.
+    /// URL pattern; matched per [`CaptureRule::match_type`].
     pub url: String,
     /// `"replace"` | `"local"`.
     pub kind: String,
@@ -1513,12 +1524,16 @@ pub(crate) struct CaptureRule {
     pub delay_ms: u64,
     pub created_at_ms: u64,
     pub hit_count: u64,
+    /// URL match type (Todo 33): `exact` (default) | `prefix` | `glob` | `regex`.
+    #[serde(default = "default_match_type")]
+    pub match_type: String,
 }
 
 /// `capture.rules.set` request body:
-/// `{ "id"?, "enabled", "method"?, "url", "kind", "statusCode"?, "headers"?, "body"?, "remark"?, "delayMs"? }`.
+/// `{ "id"?, "enabled", "method"?, "url", "kind", "statusCode"?, "headers"?, "body"?, "remark"?, "delayMs"?, "matchType"? }`.
 /// `headers`/`body` are the *request* spellings of [`CaptureRule::resp_headers`] /
 /// [`CaptureRule::resp_body`] (the rule describes the response to serve).
+/// `matchType` is optional and defaults to `"exact"`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CaptureRuleSetRequest {
@@ -1539,6 +1554,8 @@ struct CaptureRuleSetRequest {
     remark: Option<String>,
     #[serde(default)]
     delay_ms: Option<u64>,
+    #[serde(default = "default_match_type")]
+    match_type: String,
 }
 
 /// `capture.rules.remove` request body: `{ "id": string }`.
@@ -1655,7 +1672,8 @@ impl RuleStore {
             rule_invalid(format!("capture.rules.set payload must be a JSON object: {e}"))
         })?;
         let url = req.url.trim().to_string();
-        validate_rule_url(&url)?;
+        let match_type = normalize_match_type(&req.match_type)?;
+        validate_rule_pattern(&match_type, &url)?;
         if req.kind != RULE_KIND_REPLACE && req.kind != RULE_KIND_LOCAL {
             return Err(rule_invalid(format!(
                 "kind must be \"replace\" or \"local\", got {:?}",
@@ -1709,6 +1727,7 @@ impl RuleStore {
             delay_ms: req.delay_ms.unwrap_or(0),
             created_at_ms,
             hit_count: hits,
+            match_type,
         };
         let size = serde_json::to_vec(&rule).map(|v| v.len()).unwrap_or(0);
         if size > CAPTURE_RULE_ENTRY_MAX_BYTES {
@@ -1879,6 +1898,41 @@ fn validate_rule_url(url: &str) -> Result<(), ModuleError> {
     Ok(())
 }
 
+fn normalize_match_type(raw: &str) -> Result<String, ModuleError> {
+    match raw {
+        RULE_MATCH_EXACT | RULE_MATCH_PREFIX | RULE_MATCH_GLOB | RULE_MATCH_REGEX => {
+            Ok(raw.to_string())
+        }
+        other => Err(rule_invalid(format!(
+            "matchType must be one of exact/prefix/glob/regex, got {other:?}"
+        ))),
+    }
+}
+
+/// Validate the rule's `url` as the pattern its `match_type` requires. `exact`
+/// and `prefix` are literal URLs; `glob` is an http(s)-prefixed wildcard; a
+/// `regex` must compile (rejected up front, never per request).
+fn validate_rule_pattern(match_type: &str, url: &str) -> Result<(), ModuleError> {
+    if url.trim().is_empty() {
+        return Err(rule_invalid("url must not be empty"));
+    }
+    match match_type {
+        RULE_MATCH_EXACT | RULE_MATCH_PREFIX => validate_rule_url(url),
+        RULE_MATCH_GLOB => {
+            let lower = url.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                Ok(())
+            } else {
+                Err(rule_invalid("glob url must start with http:// or https://"))
+            }
+        }
+        RULE_MATCH_REGEX => regex::Regex::new(url)
+            .map(|_| ())
+            .map_err(|e| rule_invalid(format!("invalid regex url: {e}"))),
+        _ => Err(rule_invalid(format!("unknown matchType {match_type:?}"))),
+    }
+}
+
 static RULE_STORE: OnceLock<RuleStore> = OnceLock::new();
 
 /// The one process-global rule table. Shipping and tests share it, so the
@@ -1953,16 +2007,80 @@ impl CaptureRuleSource for StoreRuleSource {
     }
 }
 
-/// An *enabled* rule matches on exact URL, plus the optional method filter
-/// (absent = any method; present = case-insensitive).
+/// An *enabled* rule matches its `url` **by `match_type`**, plus the optional
+/// method filter (absent = any method; present = case-insensitive).
 pub(crate) fn rule_matches(rule: &CaptureRule, method: &str, url: &str) -> bool {
     rule.enabled
-        && rule.url == url
         && rule
             .method
             .as_deref()
             .map(|m| m.eq_ignore_ascii_case(method))
             .unwrap_or(true)
+        && url_matches(&rule.match_type, &rule.url, url)
+}
+
+/// Match `url` against a rule pattern by [`CaptureRule::match_type`]. An unknown
+/// type degrades to `exact`, so a corrupt store can never match unexpectedly.
+fn url_matches(match_type: &str, pattern: &str, url: &str) -> bool {
+    match match_type {
+        RULE_MATCH_PREFIX => url.starts_with(pattern),
+        RULE_MATCH_GLOB => glob_matches(pattern, url),
+        RULE_MATCH_REGEX => compiled_regex(pattern)
+            .map(|re| re.is_match(url))
+            .unwrap_or(false),
+        _ => pattern == url,
+    }
+}
+
+/// `*` matches any run (including empty, across `/`); `?` matches exactly one
+/// character. Linear-time two-pointer match, no backtracking allocation.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_ti = 0usize;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            star_ti = ti;
+            pi += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Compile a rule regex behind a small bounded cache so the dataplane never
+/// recompiles a pattern on every hit. The `regex` crate is linear-time, so a
+/// user-supplied pattern cannot catastrophically backtrack.
+fn compiled_regex(pattern: &str) -> Option<std::sync::Arc<regex::Regex>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    const CACHE_CAP: usize = 256;
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<regex::Regex>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hit) = map.get(pattern) {
+        return hit.clone();
+    }
+    let compiled = regex::Regex::new(pattern).ok().map(Arc::new);
+    if map.len() >= CACHE_CAP {
+        map.clear();
+    }
+    map.insert(pattern.to_string(), compiled.clone());
+    compiled
 }
 
 /// Match the first enabled rule, bump its `hitCount`, and return a snapshot.
@@ -2783,6 +2901,7 @@ mod tests {
             delay_ms: 0,
             created_at_ms,
             hit_count: 0,
+            match_type: RULE_MATCH_EXACT.to_string(),
         }
     }
 
@@ -3008,6 +3127,130 @@ mod tests {
             .expect("an upsert must be visible to the next hit");
         assert_eq!(updated.kind, RULE_KIND_REPLACE);
         assert_eq!(updated.status_code, Some(201));
+    }
+
+    // ==================== Todo 33: matchType (exact/prefix/glob/regex) ====================
+
+    /// Todo 33: `matchType` defaults to `exact` (frozen) and round-trips through
+    /// `set` → `get` for every supported type.
+    #[test]
+    fn capture_rules_match_type_defaults_to_exact_and_round_trips() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+
+        let defaulted = set_rule(
+            r#"{"enabled":true,"url":"https://mt.test/exact","kind":"replace"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            defaulted.match_type, RULE_MATCH_EXACT,
+            "absent matchType defaults to exact"
+        );
+
+        for (mt, url) in [
+            (RULE_MATCH_PREFIX, "https://mt.test/pre/"),
+            (RULE_MATCH_GLOB, "https://mt.test/*/end"),
+            (RULE_MATCH_REGEX, r"^https://mt\\.test/re/[0-9]+$"),
+        ] {
+            let created = set_rule(&format!(
+                r#"{{"enabled":true,"url":"{url}","kind":"replace","matchType":"{mt}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(created.match_type, mt);
+            let echoed = rules_get()
+                .into_iter()
+                .find(|r| r.id == created.id)
+                .unwrap();
+            assert_eq!(echoed.match_type, mt, "matchType must round-trip through get");
+        }
+    }
+
+    /// Todo 33: the dataplane matcher honours each match type (exact / prefix /
+    /// glob / regex), still gated by `enabled` + the optional method filter.
+    #[test]
+    fn capture_rules_match_types_hit_expected_urls() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        set_rule(r#"{"enabled":true,"url":"https://mt.test/a","kind":"replace"}"#).unwrap();
+        set_rule(
+            r#"{"enabled":true,"url":"https://mt.test/pre/","kind":"replace","matchType":"prefix"}"#,
+        )
+        .unwrap();
+        set_rule(
+            r#"{"enabled":true,"url":"https://mt.test/glob/*/end","kind":"replace","matchType":"glob"}"#,
+        )
+        .unwrap();
+        set_rule(
+            r#"{"enabled":true,"url":"^https://mt\\.test/re/[0-9]+$","kind":"replace","matchType":"regex"}"#,
+        )
+        .unwrap();
+
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/a").is_some(),
+            "exact hit"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/a?x=1").is_none(),
+            "exact matches the whole url"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/pre/deep").is_some(),
+            "prefix hit"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/pre").is_none(),
+            "prefix needs the literal prefix"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/glob/mid/end").is_some(),
+            "glob hit"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/glob/mid/nope").is_none(),
+            "glob miss"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/re/123").is_some(),
+            "regex hit"
+        );
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/re/abc").is_none(),
+            "regex miss"
+        );
+
+        // A disabled regex rule never matches.
+        let regex_rule = rules_get()
+            .into_iter()
+            .find(|r| r.match_type == RULE_MATCH_REGEX)
+            .unwrap();
+        set_rule(&format!(
+            r#"{{"id":"{}","enabled":false,"url":"^https://mt\\.test/re/[0-9]+$","kind":"replace","matchType":"regex"}}"#,
+            regex_rule.id
+        ))
+        .unwrap();
+        assert!(
+            match_enabled_rule("GET", "https://mt.test/re/9").is_none(),
+            "a disabled regex rule does not match"
+        );
+    }
+
+    /// Failure QA: an unknown `matchType`, an invalid regex, or a non-http glob
+    /// is the frozen 422 and never stores a rule.
+    #[test]
+    fn capture_rules_invalid_match_type_and_regex_are_422() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        for payload in [
+            r#"{"enabled":true,"url":"https://x.example/f","kind":"replace","matchType":"bogus"}"#,
+            r#"{"enabled":true,"url":"(","kind":"replace","matchType":"regex"}"#,
+            r#"{"enabled":true,"url":"ftp://x.example/f","kind":"replace","matchType":"glob"}"#,
+            r#"{"enabled":true,"url":"","kind":"replace","matchType":"regex"}"#,
+        ] {
+            let err = set_rule(payload).unwrap_err();
+            assert_eq!(err.status, StatusCode::InvalidArgument, "{payload}");
+            assert_eq!(err.code, ERR_CAPTURE_RULE_INVALID, "{payload}");
+        }
+        assert_eq!(rules_count_for_tests(), 0, "no invalid rule is stored");
     }
 
     /// T16 hot-apply: `remove` invalidates on the very next hit.

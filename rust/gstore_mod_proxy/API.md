@@ -1427,14 +1427,14 @@ untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` b
 | method | request | data |
 |---|---|---|
 | `capture.rules.get` | *(none)* | `{ "rules": [CaptureRule] }` |
-| `capture.rules.set` | `{ "id"?: string, "enabled": bool, "method"?: string, "url": string, "kind": "replace"\|"local", "statusCode"?: number, "headers"?: string, "body"?: string, "remark"?: string, "delayMs"?: number }` | `CaptureRule` |
+| `capture.rules.set` | `{ "id"?: string, "enabled": bool, "method"?: string, "url": string, "kind": "replace"\|"local", "statusCode"?: number, "headers"?: string, "body"?: string, "remark"?: string, "delayMs"?: number, "matchType"?: "exact"\|"prefix"\|"glob"\|"regex" }` | `CaptureRule` |
 | `capture.rules.remove` | `{ "id": string }` | `{ "ok": true, "removed": true }` |
 
 `CaptureRule`:
 ```json
 { "id": "r1", "enabled": false, "method": null, "url": "https://example.com/p",
   "kind": "replace", "statusCode": null, "respHeaders": null, "respBody": null,
-  "remark": null, "delayMs": 0, "createdAtMs": 0, "hitCount": 0 }
+  "remark": null, "delayMs": 0, "matchType": "exact", "createdAtMs": 0, "hitCount": 0 }
 ```
 
 | field | type | notes |
@@ -1442,7 +1442,8 @@ untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` b
 | `id` | string | stable rule id (`[A-Za-z0-9_-]{1,64}`); absent in `set` → minted |
 | `enabled` | bool | rules are **OFF by default**; only a matched *enabled* rule rewrites |
 | `method` | string? | optional request-method filter; `null` = any method |
-| `url` | string | **exact** match URL (absolute `http`/`https`) |
+| `url` | string | URL **pattern**, interpreted by `matchType` (see below) |
+| `matchType` | string | `"exact"` (default) / `"prefix"` / `"glob"` / `"regex"`; absent → `"exact"` |
 | `kind` | string | `"replace"` (overwrite the upstream response) / `"local"` (no upstream dial) |
 | `statusCode` | number? | response status to set; `null` = keep the upstream status |
 | `respHeaders` | string? | response header text to set (body rewrites force `Content-Encoding: identity` + recomputed `Content-Length`) |
@@ -1455,7 +1456,9 @@ untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` b
 `capture.rules.get` returns the table ordered **`createdAtMs` ascending, then `id` ascending** (stable,
 independent of insertion order). `capture.rules.set` is an **upsert**: a present `id` updates in place
 (preserving `createdAtMs` and `hitCount`), an absent `id` mints a new one. A bad `url` (not an absolute
-`http(s)` URL) or `kind` (not `replace`/`local`) is `PROXY_CAPTURE_RULE_INVALID` (422). The table is
+`http(s)` URL for `exact`/`prefix`, not an `http(s)`-prefixed pattern for `glob`, an uncompilable regex
+for `regex`), a bad `matchType` (not `exact`/`prefix`/`glob`/`regex`), or `kind` (not
+`replace`/`local`) is `PROXY_CAPTURE_RULE_INVALID` (422). The table is
 bounded to `CAPTURE_RULE_CAP` (128) rules and `CAPTURE_RULE_ENTRY_MAX_BYTES` (2048) per rule —
 exceeding either is `PROXY_CAPTURE_RULE_LIMIT` (507); a rejected `set` never mutates or persists. The
 table persists to `<dataDir>/capture_rules.json` and is restored on module create.
@@ -1463,8 +1466,12 @@ table persists to `<dataDir>/capture_rules.json` and is restored on module creat
 live instance (structured `INSTANCE_NOT_FOUND` 410, never `METHOD_NOT_FOUND`).
 
 **Rewrite matching/execution (todo 15):** after a decrypted h1/h2 request is parsed, the MITM path
-matches the stored table on **exact `url`** plus the optional `method` filter, and only an **enabled**
-rule takes effect (rules default OFF). `kind:"local"` returns the rule's `statusCode` (default `200`) /
+matches the stored table on its `url` **by `matchType`** plus the optional `method` filter, and only an
+**enabled** rule takes effect (rules default OFF). `matchType` is `exact` (whole-URL equality, the
+default), `prefix` (the request URL starts with `url`), `glob` (`*` matches any run including empty and
+across `/`; `?` matches one character), or `regex` (an unanchored [Rust `regex`](https://docs.rs/regex)
+search; compile is cached, linear-time, no catastrophic backtracking). A regex rule is validated at
+`set` time, so the dataplane never compiles a broken pattern. `kind:"local"` returns the rule's `statusCode` (default `200`) /
 `respHeaders` / `respBody` **without dialing upstream**; `kind:"replace"` dials upstream normally then
 overlays status/headers/body (non-overridden headers keep their upstream values). A `respBody` is
 **decoded plaintext**, so any body override (either kind) forces `Content-Encoding: identity` and

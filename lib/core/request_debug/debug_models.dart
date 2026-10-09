@@ -108,6 +108,27 @@ enum DebugRewriteKind {
       );
 }
 
+/// 改写规则的 URL 匹配类型（镜像 Rust `CaptureRule.matchType`）。
+///
+/// `exact` 是**冻结默认**：旧规则 / 未提供该字段时按精确匹配处理。
+enum DebugRewriteMatch {
+  exact('exact'),
+  prefix('prefix'),
+  glob('glob'),
+  regex('regex');
+
+  const DebugRewriteMatch(this.wire);
+
+  /// 持久化 / 线缆值。
+  final String wire;
+
+  /// 未知值降级为 [DebugRewriteMatch.exact]。
+  static DebugRewriteMatch fromWire(Object? value) => values.firstWhere(
+        (e) => e.wire == value,
+        orElse: () => DebugRewriteMatch.exact,
+      );
+}
+
 // ==================== 值对象 ====================
 
 /// 请求 / 响应头（键值 + 启用开关，Postman 语义）。
@@ -844,6 +865,7 @@ class DebugRewriteRule {
     this.respBody,
     this.delayMs = 0,
     this.hitCount = 0,
+    this.matchType = DebugRewriteMatch.exact,
   });
 
   final String id;
@@ -852,7 +874,7 @@ class DebugRewriteRule {
   /// 精确匹配的方法（`null` = 不限方法）。
   final String? method;
 
-  /// 精确匹配的 URL。
+  /// URL 模式（含义由 [matchType] 决定）。
   final String url;
   final DebugRewriteKind kind;
   final String? remark;
@@ -864,6 +886,9 @@ class DebugRewriteRule {
   /// 本波仅存储 / 展示，MITM 注入尚未实现。
   final int delayMs;
   final int hitCount;
+
+  /// URL 匹配类型（默认 [DebugRewriteMatch.exact]）。
+  final DebugRewriteMatch matchType;
 
   DebugRewriteRule copyWith({
     String? id,
@@ -877,6 +902,7 @@ class DebugRewriteRule {
     String? respBody,
     int? delayMs,
     int? hitCount,
+    DebugRewriteMatch? matchType,
   }) =>
       DebugRewriteRule(
         id: id ?? this.id,
@@ -890,6 +916,7 @@ class DebugRewriteRule {
         respBody: respBody ?? this.respBody,
         delayMs: delayMs ?? this.delayMs,
         hitCount: hitCount ?? this.hitCount,
+        matchType: matchType ?? this.matchType,
       );
 
   Map<String, dynamic> toJson() => {
@@ -904,6 +931,7 @@ class DebugRewriteRule {
           'respHeaders': respHeaders!.map((e) => e.toJson()).toList(),
         if (respBody != null) 'respBody': respBody,
         if (delayMs != 0) 'delayMs': delayMs,
+        if (matchType != DebugRewriteMatch.exact) 'matchType': matchType.wire,
         'hitCount': hitCount,
       };
 
@@ -920,6 +948,7 @@ class DebugRewriteRule {
         respBody: _asStringOrNull(json['respBody']),
         delayMs: _asInt(json['delayMs']),
         hitCount: _asInt(json['hitCount']),
+        matchType: DebugRewriteMatch.fromWire(json['matchType']),
       );
 }
 

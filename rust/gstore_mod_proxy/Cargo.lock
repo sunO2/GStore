@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "gstore_mod_proxy"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -1260,6 +1260,7 @@ dependencies = [
  "meow-trie",
  "meow-tunnel",
  "rcgen",
+ "regex",
  "rusqlite",
  "rustls",
  "serde",

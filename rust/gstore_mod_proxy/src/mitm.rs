@@ -4793,6 +4793,7 @@ mod mitm_http_tests {
             delay_ms: 0,
             created_at_ms: 1,
             hit_count: 0,
+            match_type: "exact".to_string(),
         }
     }
 
@@ -4932,6 +4933,56 @@ mod mitm_http_tests {
                 proxy.recorded()
             );
             assert_eq!(source.hit_count("r1"), 2, "each request matches the local rule");
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_glob_and_regex_rules_hit_through_bridge() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-match-types");
+            let host = "flow.test";
+            let mut glob = rewrite_rule(
+                "glob",
+                "local",
+                "https://flow.test/glob/*/end",
+                Some(418),
+                None,
+                Some("glob-body"),
+            );
+            glob.match_type = "glob".to_string();
+            let mut regex = rewrite_rule(
+                "regex",
+                "local",
+                r"^https://flow\.test/re/[0-9]+$",
+                Some(419),
+                None,
+                Some("regex-body"),
+            );
+            regex.match_type = "regex".to_string();
+            let source = TestRuleSource::new(vec![glob, regex]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-match-types", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward = closed_forward().await;
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), 443);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let g = client_send_h1_keepalive(&ca, addr, host, &["/glob/mid/end", "/re/123"]).await;
+            assert_eq!(g.len(), 2, "both match-type requests must complete");
+            assert_eq!(g[0].status, 418, "glob rule must hit the mid path");
+            assert_eq!(g[0].body, b"glob-body");
+            assert_eq!(g[1].status, 419, "regex rule must hit the numeric path");
+            assert_eq!(g[1].body, b"regex-body");
+            assert!(
+                proxy.recorded().is_empty(),
+                "local match-type rules open ZERO upstream dials (saw {:?})",
+                proxy.recorded()
+            );
+            assert_eq!(source.hit_count("glob"), 1);
+            assert_eq!(source.hit_count("regex"), 1);
         });
     }
 

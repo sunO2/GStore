@@ -61,6 +61,7 @@ DebugRewriteRule debugRewriteRuleFromContract(CaptureRule rule) {
     respBody: rule.respBody,
     delayMs: rule.delayMs,
     hitCount: rule.hitCount,
+    matchType: DebugRewriteMatch.fromWire(rule.matchType),
   );
 }
 

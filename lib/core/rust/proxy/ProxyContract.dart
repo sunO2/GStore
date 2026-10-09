@@ -3436,6 +3436,7 @@ class CaptureRule {
     this.delayMs = 0,
     this.createdAtMs = 0,
     this.hitCount = 0,
+    this.matchType = 'exact',
   });
 
   factory CaptureRule.fromJson(Map<String, dynamic> json) => CaptureRule(
@@ -3451,6 +3452,7 @@ class CaptureRule {
         delayMs: _int(json['delayMs']),
         createdAtMs: _int(json['createdAtMs']),
         hitCount: _int(json['hitCount']),
+        matchType: _strOrNull(json['matchType']) ?? 'exact',
       );
 
   final String id;
@@ -3465,6 +3467,10 @@ class CaptureRule {
   final int delayMs;
   final int createdAtMs;
   final int hitCount;
+
+  /// URL match type (`API.md` §2.19): `exact` (default) | `prefix` | `glob` |
+  /// `regex`. An absent field (old module/rule) decodes to `exact`.
+  final String matchType;
 }
 
 /// `capture.rules.get` 响应（`API.md` §2.19 `{rules:[CaptureRule]}`）；已按
@@ -3507,6 +3513,7 @@ class CaptureRuleSetRequest {
     this.body,
     this.remark,
     this.delayMs,
+    this.matchType,
   });
 
   final String? id;
@@ -3520,6 +3527,9 @@ class CaptureRuleSetRequest {
   final String? remark;
   final int? delayMs;
 
+  /// URL match type; `null` omits the field so the Rust default (`exact`) applies.
+  final String? matchType;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
         if (id != null) 'id': id,
         'enabled': enabled,
@@ -3531,6 +3541,7 @@ class CaptureRuleSetRequest {
         if (body != null) 'body': body,
         if (remark != null) 'remark': remark,
         if (delayMs != null) 'delayMs': delayMs,
+        if (matchType != null) 'matchType': matchType,
       };
 }
 

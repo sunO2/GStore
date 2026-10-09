@@ -353,13 +353,14 @@ const _captureRuleFixture = <String, dynamic>{
   'id': 'r1',
   'enabled': true,
   'method': 'GET',
-  'url': 'https://api.example.com/p/1',
+  'url': 'https://api.example.com/*/p/1',
   'kind': 'replace',
   'statusCode': 201,
   'respHeaders': 'content-type: application/json',
   'respBody': '{"ok":true}',
   'remark': 'fixture note',
   'delayMs': 25,
+  'matchType': 'glob',
   'createdAtMs': 1700000000000,
   'hitCount': 3,
 };
@@ -1390,13 +1391,14 @@ void main() {
       expect(rule.id, 'r1');
       expect(rule.enabled, isTrue);
       expect(rule.method, 'GET');
-      expect(rule.url, 'https://api.example.com/p/1');
+      expect(rule.url, 'https://api.example.com/*/p/1');
       expect(rule.kind, 'replace');
       expect(rule.statusCode, 201);
       expect(rule.respHeaders, 'content-type: application/json');
       expect(rule.respBody, '{"ok":true}');
       expect(rule.remark, 'fixture note');
       expect(rule.delayMs, 25);
+      expect(rule.matchType, 'glob');
       expect(rule.createdAtMs, 1700000000000);
       expect(rule.hitCount, 3);
 
@@ -1419,13 +1421,14 @@ void main() {
         id: 'r1',
         enabled: true,
         method: 'GET',
-        url: 'https://api.example.com/p/1',
+        url: 'https://api.example.com/*/p/1',
         kind: 'local',
         statusCode: 200,
         headers: 'x-a: 1',
         body: 'hello',
         remark: 'a note',
         delayMs: 5,
+        matchType: 'glob',
       ).toJson();
       expect(encoded['id'], 'r1');
       expect(encoded['enabled'], isTrue);
@@ -1433,6 +1436,7 @@ void main() {
       expect(encoded['body'], 'hello');
       expect(encoded['remark'], 'a note');
       expect(encoded['delayMs'], 5);
+      expect(encoded['matchType'], 'glob');
       expect(
         const CaptureRuleSetRequest(
           enabled: false,
@@ -1441,6 +1445,14 @@ void main() {
         isFalse,
         reason: '缺省 id 不编码（后端铸 id）',
       );
+      expect(
+        const CaptureRuleSetRequest(
+          enabled: false,
+          url: 'https://example.com/',
+        ).toJson().containsKey('matchType'),
+        isFalse,
+        reason: '缺省 matchType 不编码（后端默认 exact）',
+      );
 
       // 宽容解码：空对象不抛错，kind 回退 replace。
       final empty = CaptureRule.fromJson(const <String, dynamic>{});
@@ -1448,6 +1460,7 @@ void main() {
       expect(empty.enabled, isFalse);
       expect(empty.kind, 'replace');
       expect(empty.delayMs, 0);
+      expect(empty.matchType, 'exact', reason: '缺省 matchType 解码为 exact');
       expect(CaptureRuleList.fromJson(const <String, dynamic>{}).rules, isEmpty);
     });
 

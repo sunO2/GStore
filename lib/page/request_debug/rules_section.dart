@@ -52,6 +52,36 @@ String debugRewriteKindWire(DebugRewriteKind kind) => switch (kind) {
       DebugRewriteKind.localResponse => 'local',
     };
 
+/// 改写规则 URL 匹配方式的中文展示名。
+String debugRewriteMatchLabel(DebugRewriteMatch match) => switch (match) {
+      DebugRewriteMatch.exact => '精确',
+      DebugRewriteMatch.prefix => '前缀',
+      DebugRewriteMatch.glob => '通配',
+      DebugRewriteMatch.regex => '正则',
+    };
+
+/// 校验规则 URL 模式（best-effort；Rust 侧为权威，非法仍有 422 兜底）。
+///
+/// 返回 `null` 表示通过，否则为面向用户的错误文案。
+String? validateRulePattern(DebugRewriteMatch match, String url) {
+  final lower = url.toLowerCase();
+  final isHttp = lower.startsWith('http://') || lower.startsWith('https://');
+  switch (match) {
+    case DebugRewriteMatch.exact:
+    case DebugRewriteMatch.prefix:
+      return isHttp ? null : 'URL 必须是绝对 http(s) 地址';
+    case DebugRewriteMatch.glob:
+      return isHttp ? null : '通配 URL 必须以 http:// 或 https:// 开头';
+    case DebugRewriteMatch.regex:
+      try {
+        RegExp(url);
+        return null;
+      } on FormatException catch (e) {
+        return '正则表达式无效：${e.message}';
+      }
+  }
+}
+
 /// 把 UI 规则模型映射为 `capture.rules.set` 请求载荷。
 ///
 /// **默认关**：[DebugRewriteRule.enabled] 缺省即为 `false`，此处原样下发，
@@ -79,6 +109,8 @@ CaptureRuleSetRequest debugRuleToSetRequest(DebugRewriteRule rule) {
     body: (body == null || body.isEmpty) ? null : body,
     remark: (remark == null || remark.isEmpty) ? null : remark,
     delayMs: rule.delayMs == 0 ? null : rule.delayMs,
+    matchType:
+        rule.matchType == DebugRewriteMatch.exact ? null : rule.matchType.wire,
   );
 }
 
@@ -432,6 +464,7 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
       ),
       subtitle: Text(
         '$method · ${debugRewriteKindLabel(rule.kind)} · '
+        '${debugRewriteMatchLabel(rule.matchType)} · '
         '${rule.enabled ? '已启用' : '未启用'} · 命中 ${rule.hitCount}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -592,6 +625,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
   late final TextEditingController _delay;
 
   late DebugRewriteKind _kind;
+  late DebugRewriteMatch _matchType;
 
   /// 启用开关（**默认关**）。
   late bool _enabled;
@@ -616,6 +650,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
       text: (rule?.delayMs ?? 0) == 0 ? '' : '${rule!.delayMs}',
     );
     _kind = rule?.kind ?? DebugRewriteKind.replaceResponse;
+    _matchType = rule?.matchType ?? DebugRewriteMatch.exact;
     _enabled = rule?.enabled ?? false;
   }
 
@@ -634,7 +669,12 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
   void _save() {
     final url = _url.text.trim();
     if (url.isEmpty) {
-      AppDialogs.showError('精确 URL 不能为空');
+      AppDialogs.showError('URL 不能为空');
+      return;
+    }
+    final patternError = validateRulePattern(_matchType, url);
+    if (patternError != null) {
+      AppDialogs.showError(patternError);
       return;
     }
     final method = _method.text.trim();
@@ -662,6 +702,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
           : null,
       respBody: isReplace && body.isNotEmpty ? body : null,
       delayMs: delay,
+      matchType: _matchType,
     ));
   }
 
@@ -683,13 +724,53 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
             ),
           ),
           const SizedBox(height: AppSpacing.md),
+          Text('匹配方式', style: theme.textTheme.titleSmall),
+          const SizedBox(height: AppSpacing.sm),
+          AppSegmentedButton<DebugRewriteMatch>(
+            value: _matchType,
+            density: AppSegmentedButton.mediumDensity,
+            segments: const <AppSegment<DebugRewriteMatch>>[
+              AppSegment(
+                value: DebugRewriteMatch.exact,
+                label: '精确',
+                key: Key('request-debug-rule-match-exact'),
+              ),
+              AppSegment(
+                value: DebugRewriteMatch.prefix,
+                label: '前缀',
+                key: Key('request-debug-rule-match-prefix'),
+              ),
+              AppSegment(
+                value: DebugRewriteMatch.glob,
+                label: '通配',
+                key: Key('request-debug-rule-match-glob'),
+              ),
+              AppSegment(
+                value: DebugRewriteMatch.regex,
+                label: '正则',
+                key: Key('request-debug-rule-match-regex'),
+              ),
+            ],
+            onChanged: (value) => setState(() => _matchType = value),
+          ),
+          const SizedBox(height: AppSpacing.md),
           TextField(
             key: const Key('request-debug-rule-url'),
             controller: _url,
-            decoration: const InputDecoration(
-              labelText: '精确 URL（绝对 http/https）',
-              hintText: 'https://api.example/path',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: switch (_matchType) {
+                DebugRewriteMatch.exact => '精确 URL（绝对 http/https）',
+                DebugRewriteMatch.prefix => 'URL 前缀（绝对 http/https）',
+                DebugRewriteMatch.glob => 'URL 通配（* 任意、? 单字符）',
+                DebugRewriteMatch.regex => 'URL 正则（Rust regex）',
+              },
+              hintText: switch (_matchType) {
+                DebugRewriteMatch.exact => 'https://api.example/path',
+                DebugRewriteMatch.prefix => 'https://api.example/v1/',
+                DebugRewriteMatch.glob => 'https://api.example/*/end',
+                DebugRewriteMatch.regex => r'^https://api\.example/\d+$',
+              },
+              border: const OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: AppSpacing.md),

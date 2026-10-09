@@ -282,6 +282,154 @@ void main() {
     });
   });
 
+  group('规则匹配方式 matchType', () {
+    test('debugRuleToSetRequest：非 exact 编码 matchType，exact 省略', () {
+      final glob = debugRuleToSetRequest(const DebugRewriteRule(
+        id: 'r1',
+        url: 'https://api.example/*/end',
+        kind: DebugRewriteKind.replaceResponse,
+        matchType: DebugRewriteMatch.glob,
+      ));
+      expect(glob.toJson()['matchType'], 'glob');
+
+      final exact = debugRuleToSetRequest(const DebugRewriteRule(
+        id: 'r2',
+        url: 'https://api.example/p',
+        kind: DebugRewriteKind.replaceResponse,
+      ));
+      expect(exact.toJson().containsKey('matchType'), isFalse);
+    });
+
+    test('DebugRewriteRule toJson/fromJson 保留 matchType；缺省 exact', () {
+      const rule = DebugRewriteRule(
+        id: 'r1',
+        url: r'^https://api\.example/\d+$',
+        kind: DebugRewriteKind.replaceResponse,
+        matchType: DebugRewriteMatch.regex,
+      );
+      final back = DebugRewriteRule.fromJson(rule.toJson());
+      expect(back.matchType, DebugRewriteMatch.regex);
+
+      final empty =
+          DebugRewriteRule.fromJson(const <String, dynamic>{'id': 'r2'});
+      expect(empty.matchType, DebugRewriteMatch.exact);
+      expect(empty.toJson().containsKey('matchType'), isFalse);
+    });
+
+    test('debugRewriteRuleFromContract 映射 matchType', () {
+      final rule = debugRewriteRuleFromContract(const CaptureRule(
+        id: 'r1',
+        enabled: true,
+        url: 'https://api.example/pre/',
+        kind: 'replace',
+        matchType: 'prefix',
+      ));
+      expect(rule.matchType, DebugRewriteMatch.prefix);
+    });
+
+    test('validateRulePattern：exact/prefix/glob 需 http(s)；regex 需可编译', () {
+      expect(
+        validateRulePattern(DebugRewriteMatch.exact, 'https://a.example/x'),
+        isNull,
+      );
+      expect(
+        validateRulePattern(DebugRewriteMatch.exact, 'ftp://a.example/x'),
+        isNotNull,
+      );
+      expect(
+        validateRulePattern(DebugRewriteMatch.prefix, 'https://a.example/v1/'),
+        isNull,
+      );
+      expect(
+        validateRulePattern(DebugRewriteMatch.glob, 'https://a.example/*/end'),
+        isNull,
+      );
+      expect(
+        validateRulePattern(DebugRewriteMatch.glob, 'ftp://a.example/*'),
+        isNotNull,
+      );
+      expect(
+        validateRulePattern(DebugRewriteMatch.regex, r'^https://a\.example/\d+$'),
+        isNull,
+      );
+      expect(validateRulePattern(DebugRewriteMatch.regex, '('), isNotNull);
+    });
+
+    testWidgets('编辑器：选择通配 → setRule(matchType: glob)', (tester) async {
+      final port = _FakeRulesPort();
+      final facade = _facade(captureRules: port);
+      await tester.pumpWidget(_host(RequestDebugRulesSection(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-debug-rules-add')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-debug-rule-match-glob')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-url')),
+        'https://api.example/*/end',
+      );
+      await tester.tap(find.byKey(const Key('request-debug-rule-save')));
+      await tester.pumpAndSettle();
+
+      expect(port.setCalls, hasLength(1));
+      expect(port.setCalls.single.matchType, DebugRewriteMatch.glob);
+      expect(
+        debugRuleToSetRequest(port.setCalls.single).toJson()['matchType'],
+        'glob',
+      );
+      expect(find.textContaining('通配'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('编辑器：正则无效 → showError 且不保存', (tester) async {
+      final port = _FakeRulesPort();
+      final facade = _facade(captureRules: port);
+      await tester.pumpWidget(_host(RequestDebugRulesSection(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-debug-rules-add')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-debug-rule-match-regex')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-url')),
+        '(',
+      );
+      await tester.tap(find.byKey(const Key('request-debug-rule-save')));
+      await tester.pumpAndSettle();
+
+      expect(port.setCalls, isEmpty);
+      expect(find.textContaining('正则表达式无效'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('编辑器：编辑时预填 matchType 并可保存', (tester) async {
+      final port = _FakeRulesPort()
+        ..rules = <DebugRewriteRule>[
+          const DebugRewriteRule(
+            id: 'r1',
+            url: 'https://api.example/pre/',
+            kind: DebugRewriteKind.replaceResponse,
+            matchType: DebugRewriteMatch.prefix,
+          ),
+        ];
+      final facade = _facade(captureRules: port);
+      await tester.pumpWidget(_host(RequestDebugRulesSection(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-debug-rule-r1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-debug-rule-save')));
+      await tester.pumpAndSettle();
+
+      expect(port.setCalls, hasLength(1));
+      expect(port.setCalls.single.id, 'r1');
+      expect(port.setCalls.single.matchType, DebugRewriteMatch.prefix);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('改写规则列表', () {
     testWidgets('列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数',
         (tester) async {

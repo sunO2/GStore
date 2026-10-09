@@ -1,6 +1,6 @@
 [package]
 name = "gstore_mod_proxy"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.89"
 description = "GStore proxy kernel module (meow-rs based) — Android cross-compile spike"
@@ -57,6 +57,10 @@ meow-transport = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f
 base64 = "0.22"
 # URL parsing + percent/IDNA handling for subscription URLs and share links.
 url = "2"
+# Todo 33: `capture.rules.*` regex URL matching. Linear-time (no catastrophic
+# backtracking); already in the transitive graph (pinned to the Cargo.lock
+# version), so declaring it directly adds no new compiled crate.
+regex = "1"
 # Todo 9: the Clash rule engine is meow's — we only parse + orchestrate. The
 # `meow-rules` crate supplies `parse_rule`/`RuleSet`/geo indexes; `serde_yaml`
 # deserialises the Clash config into meow-config's own `raw::RawConfig` schema;
