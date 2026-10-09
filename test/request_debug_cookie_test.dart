@@ -452,7 +452,7 @@ void main() {
           url: 'https://api.example/v1',
           cookies: const <DebugCookie>[DebugCookie(name: 'ed', value: '1')],
         ),
-      );
+      )!;
 
       await tester.pumpWidget(MaterialApp(
         navigatorKey: appNavigatorKey,

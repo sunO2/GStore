@@ -164,7 +164,7 @@ DebugRequest _seed(
       url: url,
       query: query,
     ),
-  );
+  )!;
 }
 
 void main() {

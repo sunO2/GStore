@@ -23,6 +23,9 @@
 /// sender / 规则端口的假实现。
 library;
 
+import 'package:flutter/foundation.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+
 import 'curl_codec.dart' as curl_codec;
 import 'debug_models.dart';
 import 'debug_response.dart';
@@ -233,7 +236,24 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
   Future<void> load() => store.load();
 
   @override
-  Future<bool> save() => store.save();
+  Future<bool> save() async {
+    final ok = await store.save();
+    if (!ok) {
+      // 失败必须可见：统一 Snackbar 入口（绝不静默丢改动）。
+      // 但上报本身绝不能反噬保存结果（无 UI 宿主 / 无 binding 时静默）。
+      try {
+        reportSaveError('保存失败，改动未写入磁盘');
+      } catch (_) {
+        // 无 UI 宿主（如纯 Dart 单测）时忽略呈现失败。
+      }
+    }
+    return ok;
+  }
+
+  /// 保存失败上报接缝：默认走统一 [AppDialogs.showError]；测试可覆盖以断言。
+  @protected
+  @visibleForTesting
+  void reportSaveError(String message) => AppDialogs.showError(message);
 
   @override
   Future<DebugResponse> send({
@@ -282,8 +302,13 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
     required String collectionId,
     required DebugRequest request,
   }) async {
-    // store.addRequest 会把 collectionId 回填进返回模型（单一真源在集合内）。
-    return store.addRequest(collectionId, request);
+    // store.addRequest 会把 collectionId 回填进返回模型（单一真源在集合内）；
+    // 未知集合返回 null —— 在此转为显式失败（调用方 / 绑定边界转 AppDialogs）。
+    final linked = store.addRequest(collectionId, request);
+    if (linked == null) {
+      throw StateError('未知集合 "$collectionId"，无法保存抓包请求');
+    }
+    return linked;
   }
 
   @override

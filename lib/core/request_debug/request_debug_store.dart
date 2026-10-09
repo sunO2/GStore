@@ -28,12 +28,22 @@ class RequestDebugStore {
     DebugStoreDirectoryProvider? directoryProvider,
     DebugSecureStorage? secureStorage,
     this.historyLimit = defaultHistoryLimit,
+    this.collectionLimit = defaultCollectionLimit,
+    this.requestLimit = defaultRequestLimit,
+    this.environmentLimit = defaultEnvironmentLimit,
+    this.ruleLimit = defaultRuleLimit,
+    this.maxFileBytes = defaultMaxFileBytes,
   })  : _directoryProvider =
             directoryProvider ?? getApplicationDocumentsDirectory,
         _codec = secureStorage == null
             ? null
             : DebugSecretCodec(secureStorage),
-        assert(historyLimit >= 0, 'historyLimit 不能为负');
+        assert(historyLimit >= 0, 'historyLimit 不能为负'),
+        assert(collectionLimit >= 0, 'collectionLimit 不能为负'),
+        assert(requestLimit >= 0, 'requestLimit 不能为负'),
+        assert(environmentLimit >= 0, 'environmentLimit 不能为负'),
+        assert(ruleLimit >= 0, 'ruleLimit 不能为负'),
+        assert(maxFileBytes >= 0, 'maxFileBytes 不能为负');
 
   /// 存储文件名（测试据此定位文件）。
   static const String fileName = 'request_debug_store.json';
@@ -41,8 +51,30 @@ class RequestDebugStore {
   /// 默认历史上限。
   static const int defaultHistoryLimit = 200;
 
-  /// 当前 schema 版本（为后续迁移预留）。
-  static const int schemaVersion = 1;
+  /// 当前 schema 版本。
+  ///
+  /// v2 相对 v1 引入了历史响应快照 / 每请求网络选项 / 环境密钥标记与密钥引用
+  /// （todos 3/4/6/9）；这些字段在 v2 由模型**容忍解码**处理，v1→v2 迁移只需
+  /// 规范化根节点结构并保留全部原始数据（见 [_migrateV1ToV2]）。
+  static const int schemaVersion = 2;
+
+  /// 无 `version` 字段（或非法值）时假定的旧版本。
+  static const int legacySchemaVersion = 1;
+
+  /// 默认集合数上限。
+  static const int defaultCollectionLimit = 1000;
+
+  /// 默认请求总数上限（跨全部集合）。
+  static const int defaultRequestLimit = 5000;
+
+  /// 默认环境数上限。
+  static const int defaultEnvironmentLimit = 100;
+
+  /// 默认改写规则数上限。
+  static const int defaultRuleLimit = 1000;
+
+  /// 默认单文件序列化体积上限（字节）。
+  static const int defaultMaxFileBytes = 16 * 1024 * 1024;
 
   final DebugStoreDirectoryProvider _directoryProvider;
 
@@ -55,6 +87,30 @@ class RequestDebugStore {
 
   /// 历史条数上限（`0` 表示不留历史）。
   final int historyLimit;
+
+  /// 集合数上限（加载时超出部分跳过）。
+  final int collectionLimit;
+
+  /// 请求总数上限（跨全部集合；加载时超出部分跳过）。
+  final int requestLimit;
+
+  /// 环境数上限（加载时超出部分跳过）。
+  final int environmentLimit;
+
+  /// 改写规则数上限（加载时超出部分跳过）。
+  final int ruleLimit;
+
+  /// 单文件序列化体积上限（字节）；超出时保存失败（可见），不写半成品。
+  final int maxFileBytes;
+
+  /// 磁盘上读到的 schema 版本（用于检测「未来版本」并拒绝降级写入）。
+  int? _loadedDiskVersion;
+
+  /// 未完成的保存（单飞）：并发 [save] 合并到同一个最终落盘。
+  Future<bool>? _activeSave;
+
+  /// 保存进行中是否又有新的保存请求（合并语义：最终以最新状态落盘）。
+  bool _resaveRequested = false;
 
   /// 集合（含嵌套请求）。
   final List<DebugCollection> collections = [];
@@ -95,12 +151,102 @@ class RequestDebugStore {
     history.clear();
     rules.clear();
     activeEnvironmentId = null;
+    _loadedDiskVersion = null;
+  }
+
+  /// 磁盘版本高于当前 schema（未知未来版本）：只读降级加载，且拒绝降级写入。
+  bool get hasUnsupportedVersion =>
+      _loadedDiskVersion != null && _loadedDiskVersion! > schemaVersion;
+
+  /// 迁移前原始文件备份路径（测试据此定位备份）。
+  static String migrationBackupPath(String storeFilePath, int fromVersion) =>
+      '$storeFilePath.v$fromVersion.bak';
+
+  /// 迁移表：`源版本 → 迁移函数`。新增版本时在此登记一步。
+  ///
+  /// 采用**逐步**迁移（`v1→v2→…`），每步只负责相邻版本间的结构变化；任何
+  /// 未知步骤都会停止迁移但仍保留全部数据（不丢用户内容）。
+  static final Map<int, Map<String, dynamic> Function(Map<String, dynamic>)>
+      _migrations =
+      <int, Map<String, dynamic> Function(Map<String, dynamic>)>{
+    1: _migrateV1ToV2,
+  };
+
+  /// v1 → v2 结构迁移。
+  ///
+  /// v2 新增的字段（历史响应快照 / 每请求网络选项 / `secretVars` / 密钥引用）
+  /// 都由模型**容忍解码**处理，因此本步只规范化根节点数组结构；所有原始数据
+  /// 原样保留（包括本步不认识的字段），绝不因迁移丢弃用户内容。
+  static Map<String, dynamic> _migrateV1ToV2(Map<String, dynamic> root) {
+    final out = Map<String, dynamic>.of(root);
+    for (final key
+        in const <String>['collections', 'environments', 'history', 'rules']) {
+      if (out[key] is! List) out[key] = <dynamic>[];
+    }
+    return out;
+  }
+
+  /// 读取并校验磁盘 `version` 字段。
+  ///
+  /// 缺失 / 非数字 / 小于 1 → 视为旧版 [legacySchemaVersion]（旧格式兼容）。
+  static int _readVersion(Map<String, dynamic> root) {
+    final raw = root['version'];
+    int? version;
+    if (raw is int) {
+      version = raw;
+    } else if (raw is num) {
+      version = raw.toInt();
+    } else if (raw is String) {
+      version = int.tryParse(raw);
+    }
+    if (version == null || version < 1) return legacySchemaVersion;
+    return version;
+  }
+
+  /// 执行 [fromVersion] → 当前版本的逐步迁移，并把结果标记为当前版本。
+  Map<String, dynamic> _migrate(Map<String, dynamic> root, int fromVersion) {
+    var current = root;
+    var version = fromVersion;
+    while (version < schemaVersion) {
+      final step = _migrations[version];
+      if (step == null) {
+        _warn('缺少 v$version → v${version + 1} 迁移步骤，停止结构迁移（数据保留）');
+        break;
+      }
+      current = step(current);
+      version++;
+    }
+    current['version'] = schemaVersion;
+    return current;
+  }
+
+  /// 迁移前备份原始文件（写一次，保留最早的原始内容）。
+  Future<void> _backupBeforeMigration(
+    File file,
+    String raw,
+    int fromVersion,
+  ) async {
+    try {
+      final backup = File(migrationBackupPath(file.path, fromVersion));
+      if (!await backup.exists()) {
+        await backup.writeAsString(raw, flush: true);
+      }
+    } catch (e) {
+      // 备份失败不阻断加载（内存数据仍在）；但会留下警告便于排查。
+      _warn('迁移前备份失败: $e');
+    }
   }
 
   /// 从磁盘加载。
   ///
   /// 文件不存在 / 为空 → 空 store；JSON 损坏 / 根类型错误 → 空 store + 警告；
   /// 单条脏数据被跳过。**任何情况下都不抛异常**。
+  ///
+  /// 版本处理（todo 10）：
+  /// - `version < schemaVersion`：先备份原始文件，再逐步迁移并立即落盘；
+  /// - `version == schemaVersion`：正常加载；
+  /// - `version > schemaVersion`（未知未来版本）：只读降级加载，不迁移、不重写、
+  ///   之后拒绝 [save]（避免用旧 schema 覆盖并抹除用户数据）。
   Future<void> load() async {
     _reset();
     try {
@@ -119,6 +265,19 @@ class RequestDebugStore {
         throw const FormatException('store 根节点不是 JSON 对象');
       }
       var map = decoded.cast<String, dynamic>();
+      final diskVersion = _readVersion(map);
+      _loadedDiskVersion = diskVersion;
+
+      var migratedStructure = false;
+      if (diskVersion > schemaVersion) {
+        _warn('检测到未知的未来版本 v$diskVersion（当前 v$schemaVersion）：'
+            '只读降级加载，不迁移、不重写、拒绝降级保存');
+      } else if (diskVersion < schemaVersion) {
+        await _backupBeforeMigration(file, raw, diskVersion);
+        map = _migrate(map, diskVersion);
+        migratedStructure = true;
+      }
+
       var migratedSecrets = false;
       final codec = _codec;
       if (codec != null) {
@@ -139,11 +298,12 @@ class RequestDebugStore {
       final active = map['activeEnvironmentId'];
       activeEnvironmentId =
           active is String && active.isNotEmpty ? active : null;
+      _applyCaps();
       _enforceHistoryCap();
       _backfillCollectionIds();
       loaded = true;
-      // 旧明文一次性迁移：发现明文密钥后立即改写文件为引用形式。
-      if (migratedSecrets) {
+      // 结构迁移 / 旧明文密钥迁移：一次性改写文件（未知未来版本除外）。
+      if (!hasUnsupportedVersion && (migratedStructure || migratedSecrets)) {
         await save();
       }
     } catch (e) {
@@ -153,20 +313,60 @@ class RequestDebugStore {
     }
   }
 
-  /// 原子写入磁盘（tmp + rename）。成功返回 `true`，失败返回 `false` 且不抛。
+  /// 原子写入磁盘（唯一临时文件 + rename）。
   ///
-  /// 配置了安全存储时，明文密钥在序列化前被替换为引用（[DebugSecretCodec.seal]）。
-  Future<bool> save() async {
+  /// **单飞（single-flight）**：并发调用被合并——若已有保存在进行，则标记需
+  /// 重写并复用同一 Future；进行中的保存在完成后若发现期间又有修改，会再写一次，
+  /// **保证最终以最新内存状态落盘**。成功返回 `true`，失败返回 `false` 且不抛。
+  ///
+  /// 配置了安全存储时，明文密钥在序列化前被替换为引用（[DebugSecretCodec.seal]）；
+  /// 序列化超过 [maxFileBytes] 时**跳过写入**并返回失败（不写半成品）。
+  /// 磁盘为未知未来版本时拒绝降级写入（不抹除用户数据）。
+  Future<bool> save() {
+    final active = _activeSave;
+    if (active != null) {
+      _resaveRequested = true;
+      return active;
+    }
+    final future = _runSaveLoop();
+    _activeSave = future;
+    return future;
+  }
+
+  Future<bool> _runSaveLoop() async {
+    var ok = true;
+    try {
+      do {
+        _resaveRequested = false;
+        ok = await _writeOnce();
+      } while (ok && _resaveRequested);
+      return ok;
+    } finally {
+      _activeSave = null;
+    }
+  }
+
+  Future<bool> _writeOnce() async {
     File? tmp;
     try {
-      final file = await _file();
+      if (hasUnsupportedVersion) {
+        _warn('磁盘版本 v$_loadedDiskVersion 高于当前 v$schemaVersion，'
+            '拒绝降级写入以免抹除用户数据');
+        return false;
+      }
       var root = _toJson();
       final codec = _codec;
       if (codec != null) {
         root = await codec.seal(root);
       }
       final data = jsonEncode(root);
-      tmp = File('${file.path}.tmp');
+      final bytes = utf8.encode(data).length;
+      if (bytes > maxFileBytes) {
+        _warn('序列化 $bytes 字节超过体积上限 $maxFileBytes，跳过写入');
+        return false;
+      }
+      final file = await _file();
+      tmp = await _createTemp(file);
       await tmp.writeAsString(data, flush: true);
       await tmp.rename(file.path);
       return true;
@@ -185,6 +385,25 @@ class RequestDebugStore {
     }
   }
 
+  /// 创建**唯一（独占）**的临时文件：O_EXCL 保证两个写入者绝不会共享同一临时
+  /// 文件；若该路径被目录 / 链接占用则创建失败 → 保存可见失败而非写坏数据。
+  ///
+  /// 先回收上次崩溃可能残留的**普通文件**临时（单飞保证本实例无并发写）。
+  Future<File> _createTemp(File target) async {
+    final path = '${target.path}.tmp';
+    final type = await FileSystemEntity.type(path, followLinks: false);
+    if (type == FileSystemEntityType.file) {
+      try {
+        await File(path).delete();
+      } catch (_) {
+        // 回收失败则交由随后的独占创建报错。
+      }
+    }
+    final tmp = File(path);
+    await tmp.create(exclusive: true);
+    return tmp;
+  }
+
   Map<String, dynamic> _toJson() => {
         'version': schemaVersion,
         'activeEnvironmentId': activeEnvironmentId,
@@ -195,6 +414,9 @@ class RequestDebugStore {
       };
 
   /// 逐条解析：非对象 / 脏条目跳过，不牵连整份数据。
+  ///
+  /// 集合内的损坏请求由模型层的逐项容错隔离（见 `debug_models.dart`），
+  /// 因此单个坏请求不会导致整个集合被丢弃。
   List<T> _parseList<T>(
     Object? raw,
     T Function(Map<String, dynamic>) parse,
@@ -213,6 +435,35 @@ class RequestDebugStore {
       }
     }
     return out;
+  }
+
+  /// 加载后裁剪到各上限：保留前 N、跳过其余（集合 / 请求总数 / 环境 / 规则）。
+  void _applyCaps() {
+    if (collections.length > collectionLimit) {
+      _warn('集合数 ${collections.length} 超过上限 $collectionLimit，跳过其余');
+      collections.removeRange(collectionLimit, collections.length);
+    }
+    var totalRequests = 0;
+    for (final c in collections) {
+      if (totalRequests >= requestLimit) {
+        c.requests.clear();
+        continue;
+      }
+      final allowed = requestLimit - totalRequests;
+      if (c.requests.length > allowed) {
+        _warn('请求总数超过上限 $requestLimit，跳过其余');
+        c.requests.removeRange(allowed, c.requests.length);
+      }
+      totalRequests += c.requests.length;
+    }
+    if (environments.length > environmentLimit) {
+      _warn('环境数 ${environments.length} 超过上限 $environmentLimit，跳过其余');
+      environments.removeRange(environmentLimit, environments.length);
+    }
+    if (rules.length > ruleLimit) {
+      _warn('规则数 ${rules.length} 超过上限 $ruleLimit，跳过其余');
+      rules.removeRange(ruleLimit, rules.length);
+    }
   }
 
   /// 嵌套请求回填 collectionId（磁盘缺省时补齐）。
@@ -287,11 +538,19 @@ class RequestDebugStore {
   }
 
   /// 向集合添加请求（自动回填 [DebugRequest.collectionId]）。
-  DebugRequest addRequest(String collectionId, DebugRequest request) {
+  ///
+  /// **未知集合返回 `null`（失败），绝不静默成功**（todo 10）；调用方应据此
+  /// 显式失败，而不是让请求无声消失。
+  DebugRequest? addRequest(String collectionId, DebugRequest request) {
+    final collection = collectionById(collectionId);
+    if (collection == null) {
+      _warn('未知集合 "$collectionId"，addRequest 返回失败');
+      return null;
+    }
     final linked = request.collectionId == collectionId
         ? request
         : request.copyWith(collectionId: collectionId);
-    collectionById(collectionId)?.requests.add(linked);
+    collection.requests.add(linked);
     return linked;
   }
 

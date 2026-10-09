@@ -162,7 +162,7 @@ void main() {
       final store = _storeFor(dir);
       final folder = store.addCollection(name: '用户模块');
       final leaf = store.addCollection(name: '列表', parentId: folder.id);
-      store.addRequest(leaf.id, _fullRequest(collectionId: leaf.id));
+      store.addRequest(leaf.id, _fullRequest(collectionId: leaf.id))!;
       store.addEnvironment(
         id: 'env-1',
         name: '本地',
@@ -231,11 +231,11 @@ void main() {
 
       final store = _storeFor(dir);
       final col = store.addCollection(name: 'A');
-      final req = store.addRequest(col.id, _fullRequest(id: 'r1'));
+      final req = store.addRequest(col.id, _fullRequest(id: 'r1'))!;
       store.updateRequest(req.copyWith(name: '改名后'));
       // 删除父集合应连带删除子集合与其请求
       final child = store.addCollection(name: '子', parentId: col.id);
-      store.addRequest(child.id, _fullRequest(id: 'r2'));
+      store.addRequest(child.id, _fullRequest(id: 'r2'))!;
       expect(store.removeCollection(col.id), true);
       expect(store.collectionById(col.id), isNull);
       expect(store.collectionById(child.id), isNull);

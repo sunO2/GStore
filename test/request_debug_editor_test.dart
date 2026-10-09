@@ -278,7 +278,7 @@ void main() {
       final request = facade.store.addRequest(
         collection.id,
         DebugRequest(id: 'r-del', name: 'del', url: 'https://a.example/x'),
-      );
+      )!;
       await tester.pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
       await tester.pumpAndSettle();
 
@@ -346,7 +346,7 @@ void main() {
           method: 'GET',
           url: '{{host}}/v1',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -393,7 +393,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/search',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -466,7 +466,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/a',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -497,7 +497,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/x',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -611,7 +611,7 @@ void main() {
           useCookieJar: false,
           skipTlsVerify: true,
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -644,7 +644,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/slow',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -749,7 +749,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/old',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -810,7 +810,7 @@ void main() {
           method: 'GET',
           url: '{{host}}/v1?m={{missing}}',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -862,7 +862,7 @@ void main() {
           method: 'GET',
           url: 'https://api.example/',
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,
@@ -954,7 +954,7 @@ void main() {
             password: 'pass',
           ),
         ),
-      );
+      )!;
 
       await _pumpEditor(
         tester,

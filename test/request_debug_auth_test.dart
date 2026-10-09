@@ -565,7 +565,7 @@ void main() {
             password: 's3cr3t',
           ),
         ),
-      );
+      )!;
 
       await tester.pumpWidget(MaterialApp(
         navigatorKey: appNavigatorKey,
@@ -610,7 +610,7 @@ void main() {
             apiKeyIn: 'query',
           ),
         ),
-      );
+      )!;
 
       await tester.pumpWidget(MaterialApp(
         navigatorKey: appNavigatorKey,

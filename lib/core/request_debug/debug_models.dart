@@ -915,50 +915,46 @@ DebugResponseSnapshot? _responseSnapshot(Object? value) {
   }
 }
 
-List<DebugHeader> _headers(Object? value) {
-  if (value is! List) return [];
-  return value
-      .whereType<Map>()
-      .map((e) => DebugHeader.fromJson(e.cast<String, dynamic>()))
-      .toList();
+/// 逐项容错解析：跳过非对象与单个解析失败（损坏）的条目。
+///
+/// 关键：一个损坏的嵌套条目（如集合内某个请求缺 `id`）**绝不牵连**同类其余
+/// 条目或外层集合——坏条目被隔离，其余照常加载（todo 10）。
+List<T> _tolerantList<T>(
+  Object? value,
+  T Function(Map<String, dynamic>) parse,
+) {
+  if (value is! List) return <T>[];
+  final out = <T>[];
+  for (final item in value) {
+    if (item is! Map) continue;
+    try {
+      out.add(parse(item.cast<String, dynamic>()));
+    } catch (_) {
+      // 单个损坏条目被隔离。
+    }
+  }
+  return out;
 }
+
+List<DebugHeader> _headers(Object? value) =>
+    _tolerantList(value, DebugHeader.fromJson);
 
 List<DebugHeader>? _headersOrNull(Object? value) {
   if (value is! List) return null;
   return _headers(value);
 }
 
-List<DebugQueryParam> _queries(Object? value) {
-  if (value is! List) return [];
-  return value
-      .whereType<Map>()
-      .map((e) => DebugQueryParam.fromJson(e.cast<String, dynamic>()))
-      .toList();
-}
+List<DebugQueryParam> _queries(Object? value) =>
+    _tolerantList(value, DebugQueryParam.fromJson);
 
-List<DebugCookie> _cookies(Object? value) {
-  if (value is! List) return [];
-  return value
-      .whereType<Map>()
-      .map((e) => DebugCookie.fromJson(e.cast<String, dynamic>()))
-      .toList();
-}
+List<DebugCookie> _cookies(Object? value) =>
+    _tolerantList(value, DebugCookie.fromJson);
 
-List<DebugMultipartField> _multipartFields(Object? value) {
-  if (value is! List) return [];
-  return value
-      .whereType<Map>()
-      .map((e) => DebugMultipartField.fromJson(e.cast<String, dynamic>()))
-      .toList();
-}
+List<DebugMultipartField> _multipartFields(Object? value) =>
+    _tolerantList(value, DebugMultipartField.fromJson);
 
-List<DebugRequest> _requests(Object? value) {
-  if (value is! List) return [];
-  return value
-      .whereType<Map>()
-      .map((e) => DebugRequest.fromJson(e.cast<String, dynamic>()))
-      .toList();
-}
+List<DebugRequest> _requests(Object? value) =>
+    _tolerantList(value, DebugRequest.fromJson);
 
 DebugAuth? _auth(Object? value) =>
     value is Map ? DebugAuth.fromJson(value.cast<String, dynamic>()) : null;
