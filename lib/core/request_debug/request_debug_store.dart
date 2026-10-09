@@ -587,6 +587,222 @@ class RequestDebugStore {
     return null;
   }
 
+  // ==================== 排序 / 移动 / 复制 ====================
+
+  /// 在集合内重排请求。
+  ///
+  /// 采用 Flutter `ReorderableListView.onReorderItem` 语义：`newIndex` 已按
+  /// 「移除 `oldIndex`」调整，因此直接 `removeAt(oldIndex)` 后 `insert(newIndex)`。
+  /// `oldIndex` / 未知集合越界返回 `false`（不修改）。
+  bool reorderRequest(String collectionId, int oldIndex, int newIndex) {
+    final collection = collectionById(collectionId);
+    if (collection == null) return false;
+    final requests = collection.requests;
+    if (oldIndex < 0 || oldIndex >= requests.length) return false;
+    final target = newIndex.clamp(0, requests.length - 1);
+    final request = requests.removeAt(oldIndex);
+    requests.insert(target, request);
+    return true;
+  }
+
+  /// 把请求移动到 [toCollectionId]（可指定插入位置 [index]，`null` = 追加）。
+  ///
+  /// - 同集合 = 重排（[index] 以**移除前**的列表为准）；
+  /// - 跨集合 = 从原集合移除、插入目标集合并回填 `collectionId`。
+  ///
+  /// 未知请求 / 未知目标集合返回 `false`（绝不静默成功）。
+  bool moveRequest(String requestId, String toCollectionId, {int? index}) {
+    final target = collectionById(toCollectionId);
+    if (target == null) return false;
+    final request = requestById(requestId);
+    if (request == null) return false;
+    DebugCollection? source;
+    var sourceIndex = -1;
+    for (final c in collections) {
+      final i = c.requests.indexWhere((e) => e.id == requestId);
+      if (i >= 0) {
+        source = c;
+        sourceIndex = i;
+        c.requests.removeAt(i);
+        break;
+      }
+    }
+    final linked = request.collectionId == toCollectionId
+        ? request
+        : request.copyWith(collectionId: toCollectionId);
+    var at = index ?? target.requests.length;
+    // 同集合内移动：index 以移除前列表为准，移除后需回退一位。
+    if (identical(source, target) && sourceIndex >= 0 && at > sourceIndex) {
+      at -= 1;
+    }
+    at = at.clamp(0, target.requests.length);
+    target.requests.insert(at, linked);
+    return true;
+  }
+
+  /// 在同一 [parentId] 的兄弟集合间重排（`parentId == null` = 顶层）。
+  ///
+  /// `newIndex` 语义同 [reorderRequest]（已按移除调整）。`oldIndex` 越界返回
+  /// `false`。
+  bool reorderCollection(String? parentId, int oldIndex, int newIndex) {
+    final siblings = <DebugCollection>[];
+    final slots = <int>[];
+    for (var i = 0; i < collections.length; i++) {
+      if (collections[i].parentId == parentId) {
+        siblings.add(collections[i]);
+        slots.add(i);
+      }
+    }
+    if (oldIndex < 0 || oldIndex >= siblings.length) return false;
+    final target = newIndex.clamp(0, siblings.length - 1);
+    final moved = siblings.removeAt(oldIndex);
+    siblings.insert(target, moved);
+    for (var k = 0; k < slots.length; k++) {
+      collections[slots[k]] = siblings[k];
+    }
+    return true;
+  }
+
+  /// 把集合移动到新的父级（`null` = 顶层），可指定同级插入位置 [index]。
+  ///
+  /// 拒绝把集合移入**自身或其任一后代**（防止环）；未知集合返回 `false`。
+  bool moveCollection(String collectionId, String? newParentId, {int? index}) {
+    final collection = collectionById(collectionId);
+    if (collection == null) return false;
+    if (newParentId != null) {
+      if (newParentId == collectionId) return false;
+      // 沿新父级的祖先链上溯：遇到自身即为「移入后代」，拒绝。
+      var cursor = collectionById(newParentId);
+      while (cursor != null) {
+        if (cursor.id == collectionId) return false;
+        cursor = cursor.parentId == null
+            ? null
+            : collectionById(cursor.parentId!);
+      }
+    }
+    final at = collections.indexOf(collection);
+    collections[at] = DebugCollection(
+      id: collection.id,
+      name: collection.name,
+      parentId: newParentId,
+      requests: collection.requests,
+    );
+    if (index != null) {
+      // 在新父级的兄弟序列中重新落位。
+      final siblings = <DebugCollection>[];
+      final slots = <int>[];
+      for (var k = 0; k < collections.length; k++) {
+        if (collections[k].parentId == newParentId) {
+          siblings.add(collections[k]);
+          slots.add(k);
+        }
+      }
+      final from = siblings.indexWhere((e) => e.id == collectionId);
+      if (from >= 0) {
+        final to = index.clamp(0, siblings.length - 1);
+        final moved = siblings.removeAt(from);
+        siblings.insert(to, moved);
+        for (var k = 0; k < slots.length; k++) {
+          collections[slots[k]] = siblings[k];
+        }
+      }
+    }
+    return true;
+  }
+
+  /// 深拷贝请求：列表逐项复制（headers / query / multipart / cookies），
+  /// 避免副本与原请求共享可变列表；可空字段保持哨兵语义。
+  DebugRequest _cloneRequest(
+    DebugRequest src, {
+    required String id,
+    required String? collectionId,
+    String? name,
+  }) =>
+      DebugRequest(
+        id: id,
+        name: name ?? src.name,
+        method: src.method,
+        url: src.url,
+        headers: src.headers.map((e) => e.copyWith()).toList(),
+        query: src.query.map((e) => e.copyWith()).toList(),
+        body: src.body,
+        bodyKind: src.bodyKind,
+        binarySource: src.binarySource,
+        binaryFilePath: src.binaryFilePath,
+        multipartFields: src.multipartFields.map((e) => e.copyWith()).toList(),
+        auth: src.auth?.copyWith(),
+        cookies: src.cookies.map((e) => e.copyWith()).toList(),
+        collectionId: collectionId,
+        overrides: src.overrides,
+        timeoutMs: src.timeoutMs,
+        followRedirects: src.followRedirects,
+        useCookieJar: src.useCookieJar,
+        skipTlsVerify: src.skipTlsVerify,
+      );
+
+  /// 复制请求：新 id、默认名称加 [suffix] 后缀，插入原请求之后（同一集合）。
+  DebugRequest? duplicateRequest(String requestId, {String suffix = ' 副本'}) {
+    for (final c in collections) {
+      final i = c.requests.indexWhere((e) => e.id == requestId);
+      if (i < 0) continue;
+      final src = c.requests[i];
+      final copy = _cloneRequest(
+        src,
+        id: generateDebugId('req'),
+        collectionId: c.id,
+        name: src.name.isEmpty ? src.name : '${src.name}$suffix',
+      );
+      c.requests.insert(i + 1, copy);
+      return copy;
+    }
+    return null;
+  }
+
+  /// 复制集合：连同全部后代集合与请求生成新 id（`parentId` 重映射），插入原
+  /// 集合之后。仅顶层副本名称加 [suffix]（后代保持原名）。
+  DebugCollection? duplicateCollection(String collectionId,
+      {String suffix = ' 副本'}) {
+    final src = collectionById(collectionId);
+    if (src == null) return null;
+    final insertAt = collections.indexOf(src) + 1;
+    final clones = <DebugCollection>[];
+    final rootId = _cloneCollectionTree(
+      src,
+      src.parentId,
+      clones,
+      rootName: '${src.name}$suffix',
+    );
+    collections.insertAll(insertAt, clones);
+    return collectionById(rootId);
+  }
+
+  /// 递归克隆集合树，返回新根 id；按 DFS 顺序把克隆追加到 [out]。
+  String _cloneCollectionTree(
+    DebugCollection src,
+    String? parentId,
+    List<DebugCollection> out, {
+    String? rootName,
+  }) {
+    final newId = generateDebugId('col');
+    final requests = src.requests
+        .map((r) => _cloneRequest(
+              r,
+              id: generateDebugId('req'),
+              collectionId: newId,
+            ))
+        .toList();
+    out.add(DebugCollection(
+      id: newId,
+      name: rootName ?? src.name,
+      parentId: parentId,
+      requests: requests,
+    ));
+    for (final child in collections.where((e) => e.parentId == src.id)) {
+      _cloneCollectionTree(child, newId, out);
+    }
+    return newId;
+  }
+
   // ==================== 环境 CRUD ====================
 
   DebugEnvironment addEnvironment({

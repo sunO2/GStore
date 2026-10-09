@@ -293,6 +293,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      // todo 17：删除请求需危险确认后才真正移除。
+      expect(find.text('删除请求'), findsOneWidget);
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+
       expect(facade.store.requestById(request.id), isNull);
       expect(find.text('暂无请求'), findsOneWidget);
       expect(tester.takeException(), isNull);

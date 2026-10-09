@@ -430,7 +430,7 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
             ],
           ),
           const SizedBox(height: AppSpacing.sm),
-          for (var i = 0; i < _rows.length; i++) _buildVarRow(context, i),
+          _buildVarRows(context),
         ],
       ),
       actions: [
@@ -447,13 +447,59 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
     );
   }
 
-  Widget _buildVarRow(BuildContext context, int index) {
+  /// 变量行区：≥2 行时可拖拽重排（仅移动行对象，**绝不 dispose 控制器**，
+  /// 避免拖拽后编辑触发 disposed-controller 异常）。
+  Widget _buildVarRows(BuildContext context) {
+    if (_rows.length < 2) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < _rows.length; i++) _buildVarRow(context, i),
+        ],
+      );
+    }
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      buildDefaultDragHandles: false,
+      onReorderItem: (oldIndex, newIndex) {
+        setState(() {
+          // `onReorderItem` 已为「移除 oldIndex」调整 newIndex。
+          final row = _rows.removeAt(oldIndex);
+          _rows.insert(newIndex, row);
+        });
+      },
+      children: [
+        for (var i = 0; i < _rows.length; i++)
+          _buildVarRow(context, i, key: ObjectKey(_rows[i])),
+      ],
+    );
+  }
+
+  Widget _buildVarRow(BuildContext context, int index, {Key? key}) {
     final row = _rows[index];
     return Padding(
+      key: key,
       padding: AppSpacing.onlyBottomSM,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          // 显式拖拽手柄：buildDefaultDragHandles:false 下唯一拖拽入口；
+          // 按下即先移除焦点，规避聚焦 TextField 参与拖拽时的 LeaderLayer 断言。
+          if (_rows.length >= 2)
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: Listener(
+                key: Key('request-debug-env-drag-$index'),
+                onPointerDown: (_) =>
+                    FocusManager.instance.primaryFocus?.unfocus(),
+                child: ReorderableDragStartListener(
+                  index: index,
+                  child: const Icon(TablerIcons.grip_vertical),
+                ),
+              ),
+            ),
           Expanded(
             child: TextField(
               key: Key('request-debug-env-key-$index'),

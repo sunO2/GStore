@@ -116,7 +116,35 @@ class _RequestDebugCollectionSectionState
   }
 
   Future<void> _deleteRequest(DebugRequest request) async {
+    final label = request.name.isEmpty ? request.url : request.name;
+    final ok = await AppDialogs.showConfirmSheet(
+      title: '删除请求',
+      message: '将删除请求「$label」，此操作无法撤销。',
+      confirmText: '删除',
+      isDangerous: true,
+    );
+    if (ok != true || !mounted) return;
     _facade.store.removeRequest(request.id);
+    await _persist();
+  }
+
+  /// 复制请求（新 id，插在原请求之后）。
+  Future<void> _duplicateRequest(DebugRequest request) async {
+    final copy = _facade.store.duplicateRequest(request.id);
+    if (copy == null) {
+      AppDialogs.showError('复制失败：未找到请求');
+      return;
+    }
+    await _persist();
+  }
+
+  /// 复制集合及其全部后代。
+  Future<void> _duplicateCollection(DebugCollection collection) async {
+    final copy = _facade.store.duplicateCollection(collection.id);
+    if (copy == null) {
+      AppDialogs.showError('复制失败：未找到集合');
+      return;
+    }
     await _persist();
   }
 
@@ -218,6 +246,10 @@ class _RequestDebugCollectionSectionState
       _sort,
     );
     final roots = displayed.where((c) => c.parentId == null).toList();
+    // 仅在「原序 + 无搜索」时允许拖拽重排：排序 / 过滤视图下的下标与 store
+    // 原序不一致，若在此拖拽会写坏顺序。
+    final canReorder =
+        _query.trim().isEmpty && _sort == DebugSortOrder.original;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -229,13 +261,28 @@ class _RequestDebugCollectionSectionState
               ? _buildEmpty(context)
               : displayed.isEmpty
                   ? _buildSearchEmpty(context)
-                  : ListView(
-                      padding: AppSpacing.onlyVerticalSM,
-                      children: [
-                        for (final c in roots)
-                          _buildFolder(context, c, 0, displayed),
-                      ],
-                    ),
+                  : canReorder
+                      ? ReorderableListView(
+                          padding: AppSpacing.onlyVerticalSM,
+                          buildDefaultDragHandles: false,
+                          onReorderItem: (oldIndex, newIndex) {
+                            _facade.store
+                                .reorderCollection(null, oldIndex, newIndex);
+                            _persist();
+                          },
+                          children: [
+                            for (var i = 0; i < roots.length; i++)
+                              _buildFolder(context, roots[i], 0, displayed,
+                                  siblingIndex: i, reorderable: true),
+                          ],
+                        )
+                      : ListView(
+                          padding: AppSpacing.onlyVerticalSM,
+                          children: [
+                            for (final c in roots)
+                              _buildFolder(context, c, 0, displayed),
+                          ],
+                        ),
         ),
       ],
     );
@@ -337,34 +384,50 @@ class _RequestDebugCollectionSectionState
     BuildContext context,
     DebugCollection collection,
     int depth,
-    List<DebugCollection> collections,
-  ) {
+    List<DebugCollection> collections, {
+    int siblingIndex = 0,
+    bool reorderable = false,
+  }) {
     final expanded = !_collapsed.contains(collection.id);
     final children =
         collections.where((c) => c.parentId == collection.id).toList();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        ListTile(
-          key: Key('request-debug-collection-${collection.id}'),
-          contentPadding: EdgeInsets.only(
-            left: AppSpacing.lg + depth * AppSpacing.lg,
-            right: AppSpacing.sm,
-          ),
-          leading: Icon(
-            expanded ? TablerIcons.chevron_down : TablerIcons.chevron_right,
-          ),
-          title: Text(collection.name),
-          subtitle: Text('${collection.requests.length} 个请求'),
-          onTap: () => setState(() {
-            if (expanded) {
-              _collapsed.add(collection.id);
-            } else {
-              _collapsed.remove(collection.id);
-            }
-          }),
-          trailing: PopupMenuButton<String>(
+    final tile = ListTile(
+      key: Key('request-debug-collection-${collection.id}'),
+      contentPadding: EdgeInsets.only(
+        left: AppSpacing.lg + depth * AppSpacing.lg,
+        right: AppSpacing.sm,
+      ),
+      leading: Icon(
+        expanded ? TablerIcons.chevron_down : TablerIcons.chevron_right,
+      ),
+      title: Text(collection.name),
+      subtitle: Text('${collection.requests.length} 个请求'),
+      onTap: () => setState(() {
+        if (expanded) {
+          _collapsed.add(collection.id);
+        } else {
+          _collapsed.remove(collection.id);
+        }
+      }),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (reorderable)
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: Listener(
+                key: Key('request-debug-collection-drag-${collection.id}'),
+                onPointerDown: (_) =>
+                    FocusManager.instance.primaryFocus?.unfocus(),
+                child: ReorderableDragStartListener(
+                  index: siblingIndex,
+                  child: const Icon(TablerIcons.grip_vertical),
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
             key: Key('request-debug-collection-menu-${collection.id}'),
             icon: const Icon(TablerIcons.dots),
             onSelected: (value) {
@@ -373,6 +436,8 @@ class _RequestDebugCollectionSectionState
                   _createRequest(collection);
                 case 'folder':
                   _createCollection(parentId: collection.id);
+                case 'duplicate':
+                  _duplicateCollection(collection);
                 case 'rename':
                   _rename(collection);
                 case 'delete':
@@ -391,6 +456,11 @@ class _RequestDebugCollectionSectionState
                 child: const Text('新建子文件夹'),
               ),
               PopupMenuItem<String>(
+                key: Key('request-debug-collection-duplicate-${collection.id}'),
+                value: 'duplicate',
+                child: const Text('复制'),
+              ),
+              PopupMenuItem<String>(
                 key: Key('request-debug-collection-rename-${collection.id}'),
                 value: 'rename',
                 child: const Text('重命名'),
@@ -402,12 +472,67 @@ class _RequestDebugCollectionSectionState
               ),
             ],
           ),
-        ),
+        ],
+      ),
+    );
+
+    // 跨文件夹拖拽移动：把请求拖到本文件夹标题即移入本集合。
+    final folderHeader = reorderable
+        ? DragTarget<DebugRequest>(
+            onWillAcceptWithDetails: (details) =>
+                details.data.collectionId != collection.id,
+            onAcceptWithDetails: (details) {
+              _facade.store.moveRequest(details.data.id, collection.id);
+              _persist();
+            },
+            builder: (context, candidate, rejected) => tile,
+          )
+        : tile;
+
+    return Column(
+      key: Key('request-debug-folder-node-${collection.id}'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        folderHeader,
         if (expanded) ...[
-          for (final child in children)
-            _buildFolder(context, child, depth + 1, collections),
-          for (final request in collection.requests)
-            _buildRequest(context, request, depth + 1),
+          if (reorderable && children.isNotEmpty)
+            ReorderableListView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              buildDefaultDragHandles: false,
+              onReorderItem: (oldIndex, newIndex) {
+                _facade.store
+                    .reorderCollection(collection.id, oldIndex, newIndex);
+                _persist();
+              },
+              children: [
+                for (var i = 0; i < children.length; i++)
+                  _buildFolder(context, children[i], depth + 1, collections,
+                      siblingIndex: i, reorderable: true),
+              ],
+            )
+          else
+            for (final child in children)
+              _buildFolder(context, child, depth + 1, collections),
+          if (reorderable && collection.requests.isNotEmpty)
+            ReorderableListView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              buildDefaultDragHandles: false,
+              onReorderItem: (oldIndex, newIndex) {
+                _facade.store
+                    .reorderRequest(collection.id, oldIndex, newIndex);
+                _persist();
+              },
+              children: [
+                for (var i = 0; i < collection.requests.length; i++)
+                  _buildRequest(context, collection.requests[i], depth + 1,
+                      index: i, reorderable: true),
+              ],
+            )
+          else
+            for (final request in collection.requests)
+              _buildRequest(context, request, depth + 1),
           if (collection.requests.isEmpty && children.isEmpty)
             Padding(
               key: Key('request-debug-collection-empty-${collection.id}'),
@@ -427,9 +552,47 @@ class _RequestDebugCollectionSectionState
     );
   }
 
-  Widget _buildRequest(BuildContext context, DebugRequest request, int depth) {
-    return ListTile(
+  Widget _buildRequest(
+    BuildContext context,
+    DebugRequest request,
+    int depth, {
+    int index = 0,
+    bool reorderable = false,
+  }) {
+    if (!reorderable) {
+      return KeyedSubtree(
+        key: Key('request-debug-request-${request.id}'),
+        child: _buildRequestTile(context, request, depth, index, false),
+      );
+    }
+    // 长按整行 = 跨文件夹拖拽移动；右侧手柄 = 本文件夹内拖拽排序。
+    return LongPressDraggable<DebugRequest>(
       key: Key('request-debug-request-${request.id}'),
+      data: request,
+      feedback: Material(
+        elevation: 4,
+        borderRadius: AppRadius.allSM,
+        child: Padding(
+          padding: AppSpacing.horizontalMD_verticalSM,
+          child: Text(request.name.isEmpty ? request.url : request.name),
+        ),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.4,
+        child: _buildRequestTile(context, request, depth, index, true),
+      ),
+      child: _buildRequestTile(context, request, depth, index, true),
+    );
+  }
+
+  Widget _buildRequestTile(
+    BuildContext context,
+    DebugRequest request,
+    int depth,
+    int index,
+    bool reorderable,
+  ) {
+    return ListTile(
       contentPadding: EdgeInsets.only(
         left: AppSpacing.xxl + depth * AppSpacing.lg,
         right: AppSpacing.sm,
@@ -449,17 +612,46 @@ class _RequestDebugCollectionSectionState
         collectionId: request.collectionId ?? '',
         request: request,
       ),
-      trailing: PopupMenuButton<String>(
-        key: Key('request-debug-request-menu-${request.id}'),
-        icon: const Icon(TablerIcons.dots),
-        onSelected: (value) {
-          if (value == 'delete') _deleteRequest(request);
-        },
-        itemBuilder: (_) => [
-          PopupMenuItem<String>(
-            key: Key('request-debug-request-delete-${request.id}'),
-            value: 'delete',
-            child: const Text('删除'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (reorderable)
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: Listener(
+                key: Key('request-debug-request-drag-${request.id}'),
+                onPointerDown: (_) =>
+                    FocusManager.instance.primaryFocus?.unfocus(),
+                child: ReorderableDragStartListener(
+                  index: index,
+                  child: const Icon(TablerIcons.grip_vertical),
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
+            key: Key('request-debug-request-menu-${request.id}'),
+            icon: const Icon(TablerIcons.dots),
+            onSelected: (value) {
+              switch (value) {
+                case 'duplicate':
+                  _duplicateRequest(request);
+                case 'delete':
+                  _deleteRequest(request);
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem<String>(
+                key: Key('request-debug-request-duplicate-${request.id}'),
+                value: 'duplicate',
+                child: const Text('复制'),
+              ),
+              PopupMenuItem<String>(
+                key: Key('request-debug-request-delete-${request.id}'),
+                value: 'delete',
+                child: const Text('删除'),
+              ),
+            ],
           ),
         ],
       ),
