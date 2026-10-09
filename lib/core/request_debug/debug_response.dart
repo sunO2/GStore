@@ -129,3 +129,40 @@ Map<String, List<String>> normalizeResponseHeaders(Map<String, String> headers) 
   });
   return result;
 }
+
+/// 响应快照转换（plan todo 6）：把一次发送的 [DebugResponse] 折叠为**有界**的
+/// 历史快照，供历史文件持久化与回看。
+extension DebugResponseSnapshotting on DebugResponse {
+  /// 生成历史快照：Body 文本超过 [maxBodyChars]（默认
+  /// [DebugResponseSnapshot.maxBodyChars]）时截断并置 `truncated`；[sizeBytes]
+  /// 始终保留截断前的真实值。
+  DebugResponseSnapshot toHistorySnapshot({int? maxBodyChars}) {
+    final cap = maxBodyChars ?? DebugResponseSnapshot.maxBodyChars;
+    final text = bodyText;
+    final truncated = text.length > cap;
+    return DebugResponseSnapshot(
+      statusCode: statusCode,
+      headers: headers,
+      bodyText: truncated ? text.substring(0, cap) : text,
+      cookies: cookies,
+      durationMs: durationMs,
+      sizeBytes: sizeBytes,
+      error: error,
+      truncated: truncated,
+    );
+  }
+}
+
+/// 历史快照还原：把 [DebugResponseSnapshot] 还原为响应查看器可消费的
+/// [DebugResponse]（原始字节不再保留，文本为快照内的有界预览）。
+extension DebugResponseSnapshotRestore on DebugResponseSnapshot {
+  DebugResponse toDebugResponse() => DebugResponse(
+        statusCode: statusCode,
+        headers: headers,
+        bodyText: bodyText,
+        cookies: cookies,
+        durationMs: durationMs,
+        sizeBytes: sizeBytes,
+        error: error,
+      );
+}

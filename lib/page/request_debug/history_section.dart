@@ -63,6 +63,7 @@ DebugHistoryEntry appendDebugHistory(
     tsMs: tsMs ?? DateTime.now().millisecondsSinceEpoch,
     request: request,
     responseSummary: summarizeDebugResponse(response),
+    responseSnapshot: response.toHistorySnapshot(),
   ));
 }
 
@@ -206,6 +207,7 @@ class _RequestDebugHistorySectionState
           facade: _facade,
           collectionId: entry.request.collectionId,
           request: entry.request,
+          initialResponseSnapshot: entry.responseSnapshot,
         ),
       ),
     );

@@ -25,6 +25,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'cookie_manager_sheet.dart';
+import 'history_section.dart';
 import 'response_viewer.dart';
 
 /// 编辑器分段。
@@ -44,6 +45,7 @@ class RequestEditorPage extends StatefulWidget {
     required this.facade,
     this.collectionId,
     this.request,
+    this.initialResponseSnapshot,
   });
 
   /// 窄门面（store CRUD + sender + cURL + env）。
@@ -54,6 +56,9 @@ class RequestEditorPage extends StatefulWidget {
 
   /// 待编辑请求；为 `null` 表示为新建草稿。
   final DebugRequest? request;
+
+  /// 从历史条目载入的响应快照；非空时响应分段直接展示该快照。
+  final DebugResponseSnapshot? initialResponseSnapshot;
 
   @override
   State<RequestEditorPage> createState() => _RequestEditorPageState();
@@ -127,6 +132,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   @override
   void initState() {
     super.initState();
+    // 历史回看：带上快照时直接落在响应分段并展示（不改动实时响应的既有行为）。
+    final snapshot = widget.initialResponseSnapshot;
+    if (snapshot != null) {
+      _response = snapshot.toDebugResponse();
+      _segment = RequestEditorSegment.response;
+    }
     final request = widget.request;
     _draftId = request?.id ?? generateDebugId('req');
     // 载入时**始终**解析 URL 查询：`request.query` 非空则以它为准合并（URL 独有
@@ -737,6 +748,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         _response = response;
       }
     });
+    // 发送成功（非取消）：写入历史并落盘，快照随条目一起持久化、随上限淘汰。
+    // 取消绝不落历史（保持 T5 语义）。
+    if (response.isCancelled) return;
+    appendDebugHistory(_facade, request: draft, response: response);
+    await _facade.save();
   }
 
   /// 取消进行中的请求（幂等：重复调用只生效一次）。

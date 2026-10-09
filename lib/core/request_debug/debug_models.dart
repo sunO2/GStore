@@ -591,13 +591,90 @@ class DebugResponseSummary {
       );
 }
 
-/// 历史条目（一次发送的请求 + 响应摘要，最新在前）。
+/// 历史条目里的响应快照：**可选**、有界、可 JSON 往返、可回看。
+///
+/// 与完整 [DebugResponse] 不同，本模型不保留原始字节（[DebugResponse.bodyBytes]），
+/// 仅保留**有界**的文本预览（超过 [maxBodyChars] 即截断并置 [truncated]）与
+/// 展示所需的状态码 / 头 / Cookie / 耗时 / 真实大小 / 错误。目的是让历史可回看
+/// 响应，同时避免历史文件无限膨胀。
+///
+/// **兼容**：旧 store 的历史没有该字段，[DebugHistoryEntry.responseSnapshot]
+/// 为 `null`；本模型**不单独升版**（版本 / 迁移由后续 todo 统一负责）。
+class DebugResponseSnapshot {
+  const DebugResponseSnapshot({
+    this.statusCode = 0,
+    this.headers = const <String, List<String>>{},
+    this.bodyText = '',
+    this.cookies = const <DebugCookie>[],
+    this.durationMs = 0,
+    this.sizeBytes = 0,
+    this.error,
+    this.truncated = false,
+  });
+
+  /// HTTP 状态码；失败 / 出错时为 0。
+  final int statusCode;
+
+  /// 归一化响应头（键小写；多值头为列表）。
+  final Map<String, List<String>> headers;
+
+  /// 有界文本预览（UTF-8，允许畸形字节）。
+  final String bodyText;
+
+  /// 响应携带的 Set-Cookie 解析结果（视图）。
+  final List<DebugCookie> cookies;
+
+  /// 端到端耗时（毫秒）。
+  final int durationMs;
+
+  /// 真实响应体字节数（截断前；截断不影响此值）。
+  final int sizeBytes;
+
+  /// 结构化错误（连接失败 / 超时为非 null）。
+  final String? error;
+
+  /// 是否因超过 [maxBodyChars] 而截断了 [bodyText]。
+  final bool truncated;
+
+  /// Body 文本快照上限（字符）：超出即截断并置 [truncated]。
+  static const int maxBodyChars = 100000;
+
+  Map<String, dynamic> toJson() => {
+        'statusCode': statusCode,
+        if (headers.isNotEmpty)
+          'headers': headers.map(
+            (key, values) => MapEntry(key, List<String>.of(values)),
+          ),
+        if (bodyText.isNotEmpty) 'bodyText': bodyText,
+        if (cookies.isNotEmpty)
+          'cookies': cookies.map((e) => e.toJson()).toList(),
+        'durationMs': durationMs,
+        'sizeBytes': sizeBytes,
+        if (error != null) 'error': error,
+        if (truncated) 'truncated': truncated,
+      };
+
+  factory DebugResponseSnapshot.fromJson(Map<String, dynamic> json) =>
+      DebugResponseSnapshot(
+        statusCode: _asInt(json['statusCode']),
+        headers: _stringListMap(json['headers']),
+        bodyText: _asString(json['bodyText']),
+        cookies: _cookies(json['cookies']),
+        durationMs: _asInt(json['durationMs']),
+        sizeBytes: _asInt(json['sizeBytes']),
+        error: _asStringOrNull(json['error']),
+        truncated: _asBool(json['truncated'], fallback: false),
+      );
+}
+
+/// 历史条目（一次发送的请求 + 响应摘要 + 可选响应快照，最新在前）。
 class DebugHistoryEntry {
   DebugHistoryEntry({
     required this.id,
     required this.tsMs,
     required this.request,
     required this.responseSummary,
+    this.responseSnapshot,
   });
 
   final String id;
@@ -605,11 +682,16 @@ class DebugHistoryEntry {
   final DebugRequest request;
   final DebugResponseSummary responseSummary;
 
+  /// 可选响应快照（旧数据 / 未记录时为 `null`）。
+  final DebugResponseSnapshot? responseSnapshot;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'tsMs': tsMs,
         'request': request.toJson(),
         'responseSummary': responseSummary.toJson(),
+        if (responseSnapshot != null)
+          'responseSnapshot': responseSnapshot!.toJson(),
       };
 
   factory DebugHistoryEntry.fromJson(Map<String, dynamic> json) {
@@ -622,6 +704,7 @@ class DebugHistoryEntry {
       tsMs: _requireInt(json, 'tsMs'),
       request: DebugRequest.fromJson(request.cast<String, dynamic>()),
       responseSummary: _summary(json['responseSummary']),
+      responseSnapshot: _responseSnapshot(json['responseSnapshot']),
     );
   }
 }
@@ -789,6 +872,30 @@ int _requireInt(Map<String, dynamic> json, String key) {
 Map<String, String> _stringMap(Object? value) {
   if (value is! Map) return {};
   return value.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ''));
+}
+
+/// 容忍解码多值头映射：非 Map → 空；值非 List → 单元素列表。
+Map<String, List<String>> _stringListMap(Object? value) {
+  if (value is! Map) return {};
+  final out = <String, List<String>>{};
+  value.forEach((k, v) {
+    if (v is List) {
+      out[k.toString()] = v.map((e) => e?.toString() ?? '').toList();
+    } else if (v != null) {
+      out[k.toString()] = <String>[v.toString()];
+    }
+  });
+  return out;
+}
+
+/// 容忍解码历史响应快照：非对象 / 损坏 → `null`（不牵连条目主体）。
+DebugResponseSnapshot? _responseSnapshot(Object? value) {
+  if (value is! Map) return null;
+  try {
+    return DebugResponseSnapshot.fromJson(value.cast<String, dynamic>());
+  } catch (_) {
+    return null;
+  }
 }
 
 List<DebugHeader> _headers(Object? value) {
