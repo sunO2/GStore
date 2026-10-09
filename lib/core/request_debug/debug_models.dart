@@ -842,6 +842,7 @@ class DebugRewriteRule {
     this.statusCode,
     this.respHeaders,
     this.respBody,
+    this.delayMs = 0,
     this.hitCount = 0,
   });
 
@@ -858,6 +859,10 @@ class DebugRewriteRule {
   final int? statusCode;
   final List<DebugHeader>? respHeaders;
   final String? respBody;
+
+  /// 命中后注入的延迟毫秒（`0` = 不延迟）。镜像 Rust `CaptureRule.delayMs`；
+  /// 本波仅存储 / 展示，MITM 注入尚未实现。
+  final int delayMs;
   final int hitCount;
 
   DebugRewriteRule copyWith({
@@ -870,6 +875,7 @@ class DebugRewriteRule {
     int? statusCode,
     List<DebugHeader>? respHeaders,
     String? respBody,
+    int? delayMs,
     int? hitCount,
   }) =>
       DebugRewriteRule(
@@ -882,6 +888,7 @@ class DebugRewriteRule {
         statusCode: statusCode ?? this.statusCode,
         respHeaders: respHeaders ?? this.respHeaders,
         respBody: respBody ?? this.respBody,
+        delayMs: delayMs ?? this.delayMs,
         hitCount: hitCount ?? this.hitCount,
       );
 
@@ -896,6 +903,7 @@ class DebugRewriteRule {
         if (respHeaders != null)
           'respHeaders': respHeaders!.map((e) => e.toJson()).toList(),
         if (respBody != null) 'respBody': respBody,
+        if (delayMs != 0) 'delayMs': delayMs,
         'hitCount': hitCount,
       };
 
@@ -910,6 +918,7 @@ class DebugRewriteRule {
         statusCode: _asIntOrNull(json['statusCode']),
         respHeaders: _headersOrNull(json['respHeaders']),
         respBody: _asStringOrNull(json['respBody']),
+        delayMs: _asInt(json['delayMs']),
         hitCount: _asInt(json['hitCount']),
       );
 }

@@ -358,6 +358,7 @@ const _captureRuleFixture = <String, dynamic>{
   'statusCode': 201,
   'respHeaders': 'content-type: application/json',
   'respBody': '{"ok":true}',
+  'remark': 'fixture note',
   'delayMs': 25,
   'createdAtMs': 1700000000000,
   'hitCount': 3,
@@ -1049,6 +1050,29 @@ void main() {
       );
     });
 
+    test('DISPATCH_METHODS ↔ ProxyMethods.all 双向一致（任一侧漏改即红）', () {
+      final rustSrc =
+          File('rust/gstore_mod_proxy/src/lib.rs').readAsStringSync();
+      final dispatch = _rustDispatchMethods(rustSrc);
+      final dartMethods = ProxyMethods.all.toSet();
+
+      expect(dispatch, isNotEmpty, reason: 'DISPATCH_METHODS 必须可解析且非空');
+      // 方向一：Rust dispatch 的每个方法都必须在 Dart `ProxyMethods.all`。
+      expect(
+        dispatch.difference(dartMethods),
+        isEmpty,
+        reason: 'Rust DISPATCH_METHODS 有但 Dart ProxyMethods.all 缺失的方法: '
+            '${dispatch.difference(dartMethods)}',
+      );
+      // 方向二：Dart `ProxyMethods.all` 的每个方法都必须在 Rust dispatch。
+      expect(
+        dartMethods.difference(dispatch),
+        isEmpty,
+        reason: 'Dart ProxyMethods.all 有但 Rust DISPATCH_METHODS 缺失的方法: '
+            '${dartMethods.difference(dispatch)}',
+      );
+    });
+
     test('反向：每个请求型方法都有 encoder（漏编码器即红）', () {
       final apiMd = File('rust/gstore_mod_proxy/API.md').readAsStringSync();
       final requestTypes = _documentedRequestMethods(apiMd);
@@ -1371,6 +1395,7 @@ void main() {
       expect(rule.statusCode, 201);
       expect(rule.respHeaders, 'content-type: application/json');
       expect(rule.respBody, '{"ok":true}');
+      expect(rule.remark, 'fixture note');
       expect(rule.delayMs, 25);
       expect(rule.createdAtMs, 1700000000000);
       expect(rule.hitCount, 3);
@@ -1399,12 +1424,14 @@ void main() {
         statusCode: 200,
         headers: 'x-a: 1',
         body: 'hello',
+        remark: 'a note',
         delayMs: 5,
       ).toJson();
       expect(encoded['id'], 'r1');
       expect(encoded['enabled'], isTrue);
       expect(encoded['headers'], 'x-a: 1');
       expect(encoded['body'], 'hello');
+      expect(encoded['remark'], 'a note');
       expect(encoded['delayMs'], 5);
       expect(
         const CaptureRuleSetRequest(

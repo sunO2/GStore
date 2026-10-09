@@ -24,7 +24,9 @@ import 'package:gstore/core/request_debug/debug_response.dart';
 import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
+import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/page/request_debug/environment_section.dart';
+import 'package:gstore/page/request_debug/proxy_capture_rules_port.dart';
 import 'package:gstore/page/request_debug/rules_section.dart';
 
 // ==================== 假实现 ====================
@@ -197,6 +199,87 @@ void main() {
         'body': 'local',
       });
     });
+
+    test('remark + delayMs 编码进 set；缺省（remark 空 / delayMs 0）则不编码', () {
+      final withFields = debugRuleToSetRequest(const DebugRewriteRule(
+        id: 'r1',
+        url: 'https://api.example/z',
+        kind: DebugRewriteKind.replaceResponse,
+        remark: 'a note',
+        delayMs: 250,
+      ));
+      final json = withFields.toJson();
+      expect(json['remark'], 'a note');
+      expect(json['delayMs'], 250);
+
+      final without = debugRuleToSetRequest(const DebugRewriteRule(
+        id: '',
+        url: 'https://api.example/z',
+        kind: DebugRewriteKind.replaceResponse,
+      ));
+      expect(without.toJson().containsKey('remark'), isFalse);
+      expect(without.toJson().containsKey('delayMs'), isFalse);
+    });
+  });
+
+  group('规则字段 remark / delayMs 往返', () {
+    test('DebugRewriteRule toJson/fromJson 保留 delayMs + remark；缺省 0/null', () {
+      const rule = DebugRewriteRule(
+        id: 'r1',
+        url: 'https://api.example/p',
+        kind: DebugRewriteKind.replaceResponse,
+        remark: 'note',
+        delayMs: 123,
+      );
+      final back = DebugRewriteRule.fromJson(rule.toJson());
+      expect(back.delayMs, 123);
+      expect(back.remark, 'note');
+
+      final empty = DebugRewriteRule.fromJson(const <String, dynamic>{'id': 'r2'});
+      expect(empty.delayMs, 0);
+      expect(empty.remark, isNull);
+    });
+
+    test('debugRewriteRuleFromContract 映射 remark + delayMs（UI 视图）', () {
+      final rule = debugRewriteRuleFromContract(const CaptureRule(
+        id: 'r1',
+        enabled: true,
+        url: 'https://api.example/p',
+        kind: 'replace',
+        remark: 'hello',
+        delayMs: 300,
+        hitCount: 2,
+      ));
+      expect(rule.id, 'r1');
+      expect(rule.remark, 'hello');
+      expect(rule.delayMs, 300);
+      expect(rule.hitCount, 2);
+    });
+
+    test('契约 round-trip：set 请求 → CaptureRule → UI 保留 remark/delayMs', () {
+      final request = debugRuleToSetRequest(const DebugRewriteRule(
+        id: 'r9',
+        url: 'https://api.example/rt',
+        kind: DebugRewriteKind.replaceResponse,
+        remark: 'rt',
+        delayMs: 42,
+      ));
+      final json = request.toJson();
+      // Rust 侧回显形状（set 响应即 CaptureRule）。
+      final echoed = CaptureRule.fromJson(<String, dynamic>{
+        'id': json['id'],
+        'enabled': json['enabled'],
+        'url': json['url'],
+        'kind': json['kind'],
+        'remark': json['remark'],
+        'delayMs': json['delayMs'],
+        'createdAtMs': 1,
+        'hitCount': 0,
+      });
+      final ui = debugRewriteRuleFromContract(echoed);
+      expect(ui.remark, 'rt');
+      expect(ui.delayMs, 42);
+    });
   });
 
   group('改写规则列表', () {
@@ -321,6 +404,80 @@ void main() {
 
       // 保存后列表刷新出现新规则。
       expect(find.text('https://api.example/new'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('新建：delayMs + 备注经编辑器写入并回读', (tester) async {
+      final port = _FakeRulesPort();
+      final facade = _facade(captureRules: port);
+
+      await tester.pumpWidget(_host(RequestDebugRulesSection(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-debug-rules-add')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-url')),
+        'https://api.example/delayed',
+      );
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-delay')),
+        '250',
+      );
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-remark')),
+        'a note',
+      );
+      await tester.tap(find.byKey(const Key('request-debug-rule-save')));
+      await tester.pumpAndSettle();
+
+      expect(port.setCalls, hasLength(1));
+      expect(port.setCalls.single.delayMs, 250);
+      expect(port.setCalls.single.remark, 'a note');
+      expect(debugRuleToSetRequest(port.setCalls.single).toJson(), <String, dynamic>{
+        'enabled': false,
+        'url': 'https://api.example/delayed',
+        'kind': 'replace',
+        'remark': 'a note',
+        'delayMs': 250,
+      });
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('编辑：delayMs 预填并可保存（保留 id）', (tester) async {
+      final port = _FakeRulesPort()
+        ..rules = <DebugRewriteRule>[
+          const DebugRewriteRule(
+            id: 'r1',
+            url: 'https://api.example/old',
+            kind: DebugRewriteKind.replaceResponse,
+            delayMs: 500,
+          ),
+        ];
+      final facade = _facade(captureRules: port);
+
+      await tester.pumpWidget(_host(RequestDebugRulesSection(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('request-debug-rule-r1')));
+      await tester.pumpAndSettle();
+
+      final delayField = tester.widget<TextField>(
+        find.byKey(const Key('request-debug-rule-delay')),
+      );
+      expect(delayField.controller!.text, '500');
+
+      await tester.enterText(
+        find.byKey(const Key('request-debug-rule-delay')),
+        '750',
+      );
+      await tester.tap(find.byKey(const Key('request-debug-rule-save')));
+      await tester.pumpAndSettle();
+
+      expect(port.setCalls, hasLength(1));
+      expect(port.setCalls.single.id, 'r1');
+      expect(port.setCalls.single.delayMs, 750);
       expect(tester.takeException(), isNull);
     });
 

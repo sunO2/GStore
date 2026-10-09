@@ -4789,6 +4789,7 @@ mod mitm_http_tests {
             status_code: status,
             resp_headers: headers.map(str::to_string),
             resp_body: body.map(str::to_string),
+            remark: None,
             delay_ms: 0,
             created_at_ms: 1,
             hit_count: 0,

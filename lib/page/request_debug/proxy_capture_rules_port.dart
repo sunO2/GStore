@@ -53,11 +53,13 @@ DebugRewriteRule debugRewriteRuleFromContract(CaptureRule rule) {
     method: rule.method,
     url: rule.url,
     kind: _debugRewriteKindFromWire(rule.kind),
+    remark: rule.remark,
     statusCode: rule.statusCode,
     respHeaders: (headers == null || headers.trim().isEmpty)
         ? null
         : parseRuleHeaderLines(headers),
     respBody: rule.respBody,
+    delayMs: rule.delayMs,
     hitCount: rule.hitCount,
   );
 }

@@ -1427,14 +1427,14 @@ untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` b
 | method | request | data |
 |---|---|---|
 | `capture.rules.get` | *(none)* | `{ "rules": [CaptureRule] }` |
-| `capture.rules.set` | `{ "id"?: string, "enabled": bool, "method"?: string, "url": string, "kind": "replace"\|"local", "statusCode"?: number, "headers"?: string, "body"?: string, "delayMs"?: number }` | `CaptureRule` |
+| `capture.rules.set` | `{ "id"?: string, "enabled": bool, "method"?: string, "url": string, "kind": "replace"\|"local", "statusCode"?: number, "headers"?: string, "body"?: string, "remark"?: string, "delayMs"?: number }` | `CaptureRule` |
 | `capture.rules.remove` | `{ "id": string }` | `{ "ok": true, "removed": true }` |
 
 `CaptureRule`:
 ```json
 { "id": "r1", "enabled": false, "method": null, "url": "https://example.com/p",
   "kind": "replace", "statusCode": null, "respHeaders": null, "respBody": null,
-  "delayMs": 0, "createdAtMs": 0, "hitCount": 0 }
+  "remark": null, "delayMs": 0, "createdAtMs": 0, "hitCount": 0 }
 ```
 
 | field | type | notes |
@@ -1447,6 +1447,7 @@ untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` b
 | `statusCode` | number? | response status to set; `null` = keep the upstream status |
 | `respHeaders` | string? | response header text to set (body rewrites force `Content-Encoding: identity` + recomputed `Content-Length`) |
 | `respBody` | string? | response body, as decoded plaintext |
+| `remark` | string? | free-form operator note; stored and echoed, empty string normalizes to `null` |
 | `delayMs` | u64 | stored only; injection is not implemented in this wave |
 | `createdAtMs` | u64 | creation time (preserved across upserts) |
 | `hitCount` | u64 | matched count; `0` on create, preserved on update |

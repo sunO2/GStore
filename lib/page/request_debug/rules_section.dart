@@ -66,6 +66,7 @@ CaptureRuleSetRequest debugRuleToSetRequest(DebugRewriteRule rule) {
       .toList();
   final body = rule.respBody;
   final method = rule.method;
+  final remark = rule.remark;
   return CaptureRuleSetRequest(
     id: rule.id.isEmpty ? null : rule.id,
     enabled: rule.enabled,
@@ -76,6 +77,8 @@ CaptureRuleSetRequest debugRuleToSetRequest(DebugRewriteRule rule) {
     headers:
         (headers == null || headers.isEmpty) ? null : headers.join('\n'),
     body: (body == null || body.isEmpty) ? null : body,
+    remark: (remark == null || remark.isEmpty) ? null : remark,
+    delayMs: rule.delayMs == 0 ? null : rule.delayMs,
   );
 }
 
@@ -586,6 +589,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
   late final TextEditingController _headers;
   late final TextEditingController _body;
   late final TextEditingController _remark;
+  late final TextEditingController _delay;
 
   late DebugRewriteKind _kind;
 
@@ -608,6 +612,9 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
     );
     _body = TextEditingController(text: rule?.respBody ?? '');
     _remark = TextEditingController(text: rule?.remark ?? '');
+    _delay = TextEditingController(
+      text: (rule?.delayMs ?? 0) == 0 ? '' : '${rule!.delayMs}',
+    );
     _kind = rule?.kind ?? DebugRewriteKind.replaceResponse;
     _enabled = rule?.enabled ?? false;
   }
@@ -620,6 +627,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
     _headers.dispose();
     _body.dispose();
     _remark.dispose();
+    _delay.dispose();
     super.dispose();
   }
 
@@ -631,6 +639,12 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
     }
     final method = _method.text.trim();
     final remark = _remark.text.trim();
+    final delayText = _delay.text.trim();
+    final delay = delayText.isEmpty ? 0 : int.tryParse(delayText);
+    if (delay == null || delay < 0) {
+      AppDialogs.showError('延迟毫秒必须是非负整数');
+      return;
+    }
     final isReplace = _kind == DebugRewriteKind.replaceResponse;
     final status = int.tryParse(_status.text.trim());
     final headersText = _headers.text.trim();
@@ -647,6 +661,7 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
           ? parseRuleHeaderLines(headersText)
           : null,
       respBody: isReplace && body.isNotEmpty ? body : null,
+      delayMs: delay,
     ));
   }
 
@@ -757,6 +772,17 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
               ),
             ),
           ],
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            key: const Key('request-debug-rule-delay'),
+            controller: _delay,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '延迟毫秒（可选，0 = 不延迟）',
+              hintText: '0',
+              border: OutlineInputBorder(),
+            ),
+          ),
           const SizedBox(height: AppSpacing.md),
           TextField(
             key: const Key('request-debug-rule-remark'),

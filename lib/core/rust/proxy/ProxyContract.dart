@@ -3432,6 +3432,7 @@ class CaptureRule {
     this.statusCode,
     this.respHeaders,
     this.respBody,
+    this.remark,
     this.delayMs = 0,
     this.createdAtMs = 0,
     this.hitCount = 0,
@@ -3446,6 +3447,7 @@ class CaptureRule {
         statusCode: _intOrNull(json['statusCode']),
         respHeaders: _strOrNull(json['respHeaders']),
         respBody: _strOrNull(json['respBody']),
+        remark: _strOrNull(json['remark']),
         delayMs: _int(json['delayMs']),
         createdAtMs: _int(json['createdAtMs']),
         hitCount: _int(json['hitCount']),
@@ -3459,6 +3461,7 @@ class CaptureRule {
   final int? statusCode;
   final String? respHeaders;
   final String? respBody;
+  final String? remark;
   final int delayMs;
   final int createdAtMs;
   final int hitCount;
@@ -3502,6 +3505,7 @@ class CaptureRuleSetRequest {
     this.statusCode,
     this.headers,
     this.body,
+    this.remark,
     this.delayMs,
   });
 
@@ -3513,6 +3517,7 @@ class CaptureRuleSetRequest {
   final int? statusCode;
   final String? headers;
   final String? body;
+  final String? remark;
   final int? delayMs;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -3524,6 +3529,7 @@ class CaptureRuleSetRequest {
         if (statusCode != null) 'statusCode': statusCode,
         if (headers != null) 'headers': headers,
         if (body != null) 'body': body,
+        if (remark != null) 'remark': remark,
         if (delayMs != null) 'delayMs': delayMs,
       };
 }

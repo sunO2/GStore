@@ -1507,6 +1507,8 @@ pub(crate) struct CaptureRule {
     pub status_code: Option<u16>,
     pub resp_headers: Option<String>,
     pub resp_body: Option<String>,
+    /// Free-form operator note (plan task 32); stored and echoed only.
+    pub remark: Option<String>,
     /// Stored only; the MITM rewrite path (todo 15) does not inject it yet.
     pub delay_ms: u64,
     pub created_at_ms: u64,
@@ -1514,7 +1516,7 @@ pub(crate) struct CaptureRule {
 }
 
 /// `capture.rules.set` request body:
-/// `{ "id"?, "enabled", "method"?, "url", "kind", "statusCode"?, "headers"?, "body"?, "delayMs"? }`.
+/// `{ "id"?, "enabled", "method"?, "url", "kind", "statusCode"?, "headers"?, "body"?, "remark"?, "delayMs"? }`.
 /// `headers`/`body` are the *request* spellings of [`CaptureRule::resp_headers`] /
 /// [`CaptureRule::resp_body`] (the rule describes the response to serve).
 #[derive(Debug, Deserialize)]
@@ -1533,6 +1535,8 @@ struct CaptureRuleSetRequest {
     headers: Option<String>,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    remark: Option<String>,
     #[serde(default)]
     delay_ms: Option<u64>,
 }
@@ -1701,6 +1705,7 @@ impl RuleStore {
             status_code: req.status_code,
             resp_headers: req.headers,
             resp_body: req.body,
+            remark: req.remark.filter(|r| !r.is_empty()),
             delay_ms: req.delay_ms.unwrap_or(0),
             created_at_ms,
             hit_count: hits,
@@ -2774,6 +2779,7 @@ mod tests {
             status_code: None,
             resp_headers: None,
             resp_body: None,
+            remark: None,
             delay_ms: 0,
             created_at_ms,
             hit_count: 0,
@@ -2787,7 +2793,7 @@ mod tests {
         let _g = rules_test_guard();
         rules_reset_for_tests();
         let created = set_rule(
-            r#"{"enabled":true,"method":"get","url":"https://api.example.com/p/1","kind":"replace","statusCode":201,"headers":"content-type: application/json","body":"{\"ok\":true}"}"#,
+            r#"{"enabled":true,"method":"get","url":"https://api.example.com/p/1","kind":"replace","statusCode":201,"headers":"content-type: application/json","body":"{\"ok\":true}","remark":"note","delayMs":250}"#,
         )
         .unwrap();
         assert!(created.enabled);
@@ -2800,8 +2806,9 @@ mod tests {
             Some("content-type: application/json")
         );
         assert_eq!(created.resp_body.as_deref(), Some("{\"ok\":true}"));
+        assert_eq!(created.remark.as_deref(), Some("note"));
         assert_eq!(created.hit_count, 0);
-        assert_eq!(created.delay_ms, 0);
+        assert_eq!(created.delay_ms, 250);
 
         let out = rules_get_arm().unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -2809,6 +2816,8 @@ mod tests {
         assert_eq!(v["data"]["rules"].as_array().unwrap().len(), 1);
         assert_eq!(v["data"]["rules"][0]["id"], created.id);
         assert_eq!(v["data"]["rules"][0]["respBody"], "{\"ok\":true}");
+        assert_eq!(v["data"]["rules"][0]["remark"], "note");
+        assert_eq!(v["data"]["rules"][0]["delayMs"], 250);
 
         let updated = set_rule(&format!(
             r#"{{"id":"{}","enabled":false,"url":"https://api.example.com/p/1","kind":"local","statusCode":200}}"#,
@@ -2824,6 +2833,8 @@ mod tests {
         );
         assert_eq!(updated.hit_count, created.hit_count);
         assert!(updated.method.is_none(), "an upsert replaces optional fields");
+        assert!(updated.remark.is_none(), "remark is replaced on upsert");
+        assert_eq!(updated.delay_ms, 0, "delayMs defaults to 0 when omitted");
         assert_eq!(rules_count_for_tests(), 1, "upsert must not duplicate");
 
         let out = rules_remove_arm(format!(r#"{{"id":"{}"}}"#, created.id).as_bytes()).unwrap();
