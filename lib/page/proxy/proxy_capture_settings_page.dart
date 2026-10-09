@@ -22,8 +22,10 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
@@ -33,7 +35,9 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_gate.dart';
 import 'package:gstore/page/proxy/proxy_capture_ca_page.dart';
+import 'package:gstore/page/proxy/proxy_capture_settings_parsing.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 允许在白名单中保留的条目数上限（镜像 Rust `capture.rs::MAX_ALLOWLIST_ENTRIES`）。
@@ -85,7 +89,11 @@ abstract class ProxyCaptureSettingsFacade {
 }
 
 /// 生产适配器：[ProxyModule] → [ProxyCaptureSettingsFacade] 的薄转发。
-class ProxyModuleCaptureSettingsFacade implements ProxyCaptureSettingsFacade {
+///
+/// 同时实现 [ProxyCaptureCaGate]：抓包开关开启前复核 MITM 根证书（与首页同一
+/// `capture.ca.get`）。
+class ProxyModuleCaptureSettingsFacade
+    implements ProxyCaptureSettingsFacade, ProxyCaptureCaGate {
   ProxyModuleCaptureSettingsFacade([ProxyModule? module])
       : _module = module ?? ProxyModule.instance;
 
@@ -103,9 +111,14 @@ class ProxyModuleCaptureSettingsFacade implements ProxyCaptureSettingsFacade {
       );
 
   @override
+  Future<CaptureCaInfo> captureCaGet() => _module.captureCaGet();
+
+  @override
   Future<CaptureStorageStats> storageStats() async {
+    // 抓包设置的存储统计采用**抓包环**语义（`captures.get` 的保留 / 容量 /
+    // 淘汰 / 丢弃），与「请求流骨架环」(`requests.get`, capacity 4096) 独立。
     // `limit: 1` 即可拿到环计数（records 无关，计数随页返回）。
-    final page = await _module.requestsGet(const RequestGetRequest(limit: 1));
+    final page = await _module.capturesGet(const CapturesGetRequest(limit: 1));
     return CaptureStorageStats(
       retained: page.retained,
       capacity: page.capacity,
@@ -158,11 +171,22 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
   late final ProxySplitTunnelFacade _routing;
 
   final TextEditingController _domainInput = TextEditingController();
+  final TextEditingController _maxBodyBytesInput = TextEditingController();
+
+  /// CA 门控接缝：门面实现 [ProxyCaptureCaGate] 时启用（生产恒启用）。
+  ProxyCaptureCaGate? _caGate;
 
   bool _loading = true;
   bool _saving = false;
   String? _error;
   CaptureConfig _config = const CaptureConfig();
+
+  /// 最近一次加载 / 保存后的配置，用于「未保存修改」判定。
+  CaptureConfig? _originalConfig;
+
+  /// `maxBodyBytes` 输入非法时的提示（非空则阻止保存）。
+  String? _maxBodyBytesError;
+
   CaptureStorageStats? _stats;
 
   /// 已安装应用缓存（`null` = 尚未加载；首次打开选择器时按需枚举）。
@@ -175,13 +199,32 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     _facade = widget.facade ?? ProxyModuleCaptureSettingsFacade();
     _installedApps = widget.installedApps ?? const PlatformInstalledAppsProvider();
     _routing = widget.routing ?? ProxyModuleSettingsFacade();
+    _caGate = _facade is ProxyCaptureCaGate
+        ? _facade as ProxyCaptureCaGate
+        : null;
     _load();
   }
 
   @override
   void dispose() {
     _domainInput.dispose();
+    _maxBodyBytesInput.dispose();
     super.dispose();
+  }
+
+  /// 采纳一份配置为当前值 + 基准值（刷新输入框，清空未保存判定）。
+  void _adoptConfig(CaptureConfig config) {
+    _config = config;
+    _originalConfig = config;
+    _maxBodyBytesInput.text = '${config.maxBodyBytes}';
+    _maxBodyBytesError = null;
+  }
+
+  /// 是否存在未保存的本地修改（用于返回拦截）。
+  bool get _dirty {
+    final original = _originalConfig;
+    if (original == null) return false;
+    return jsonEncode(_config.toJson()) != jsonEncode(original.toJson());
   }
 
   Future<void> _load() async {
@@ -193,7 +236,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
       final config = await _facade.configGet();
       if (!mounted) return;
       setState(() {
-        _config = config;
+        _adoptConfig(config);
         _loading = false;
       });
       unawaited(_reconcileRoutingDrift(config));
@@ -232,8 +275,113 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
   }
 
   // ==================== 编辑动作（本地，保存时一次性提交） ====================
-  void _setEnabled(bool value) =>
-      setState(() => _config = _config.copyWith(enabled: value));
+
+  /// 切换 MITM 总开关。开启前复核 CA（与首页 / 列表页同一门控）：
+  /// 无根证书则拦截并引导到「证书管理」，**绝不默默开启**。
+  Future<void> _setEnabled(bool value) async {
+    if (!value) {
+      setState(() => _config = _config.copyWith(enabled: false));
+      return;
+    }
+    final gate = _caGate;
+    if (gate != null) {
+      final ok = await ensureCaptureCaGate(
+        captureCaGet: gate.captureCaGet,
+        onOpenCaptureSettings: _openCaManagement,
+      );
+      if (!mounted || !ok) return;
+    }
+    setState(() => _config = _config.copyWith(enabled: true));
+  }
+
+  /// 批量粘贴 / 导入域名白名单（解析 + 去重 + 上限）。
+  Future<void> _openDomainBulk() async {
+    final raw = await AppSheet.showCustom<String>(
+      context: context,
+      builder: (sheetContext) => _DomainBulkPasteSheet(
+        initial: _config.domainAllowlist,
+      ),
+    );
+    if (!mounted || raw == null) return;
+    final result = parseDomainBulk(
+      raw,
+      maxEntries: kCaptureMaxAllowlistEntries,
+      maxEntryBytes: kCaptureMaxAllowlistEntryBytes,
+      existing: _config.domainAllowlist,
+    );
+    if (result.accepted.isEmpty) {
+      if (result.rejected.isNotEmpty) {
+        AppDialogs.showError(
+          '没有可添加的域名：${result.rejected.length} 条超过 '
+          '$kCaptureMaxAllowlistEntryBytes 字节',
+        );
+      } else if (result.overLimit > 0) {
+        AppDialogs.showError('域名白名单已达上限 $kCaptureMaxAllowlistEntries 条');
+      } else {
+        AppDialogs.showWarning('没有新增域名（可能全部重复或为空）');
+      }
+      return;
+    }
+    setState(() {
+      _config = _config.copyWith(
+        domainAllowlist: <String>[
+          ..._config.domainAllowlist,
+          ...result.accepted,
+        ],
+      );
+    });
+    final skipped = <String>[
+      if (result.duplicates > 0) '${result.duplicates} 条重复',
+      if (result.rejected.isNotEmpty) '${result.rejected.length} 条超长',
+      if (result.overLimit > 0) '${result.overLimit} 条超上限',
+    ];
+    AppDialogs.showSuccess(
+      '已添加 ${result.accepted.length} 个域名'
+      '${skipped.isEmpty ? '' : '（跳过 ${skipped.join('、')}）'}',
+    );
+  }
+
+  /// 导出域名白名单（换行分隔文本到剪贴板）。
+  Future<void> _exportDomains() async {
+    final domains = _config.domainAllowlist;
+    if (domains.isEmpty) {
+      AppDialogs.showWarning('域名白名单为空，无可导出内容');
+      return;
+    }
+    try {
+      await Clipboard.setData(ClipboardData(text: domains.join('\n')));
+      if (!mounted) return;
+      AppDialogs.showSuccess('已复制 ${domains.length} 个域名');
+    } catch (_) {
+      if (!mounted) return;
+      AppDialogs.showError('导出失败');
+    }
+  }
+
+  /// 编辑 TLS 端口集合（解析校验通过才提交）。
+  Future<void> _openTlsPortsEditor() async {
+    final ports = await AppSheet.showCustom<List<int>>(
+      context: context,
+      builder: (sheetContext) => _TlsPortsEditSheet(
+        initial: _config.tlsPorts,
+      ),
+    );
+    if (!mounted || ports == null) return;
+    setState(() => _config = _config.copyWith(tlsPorts: ports));
+  }
+
+  /// `maxBodyBytes` 输入变化：合法则采纳，非法则记录错误并阻止保存。
+  void _onMaxBodyBytesChanged(String raw) {
+    final value = parseMaxBodyBytes(raw);
+    setState(() {
+      if (value == null) {
+        _maxBodyBytesError = '需为 1 ~ $kCaptureMaxBodyBytes 的整数';
+      } else {
+        _maxBodyBytesError = null;
+        _config = _config.copyWith(maxBodyBytes: value);
+      }
+    });
+  }
 
   void _addDomain() {
     final raw = _domainInput.text.trim();
@@ -396,7 +544,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     try {
       final saved = await _facade.configSet(config.copyWith(enabled: false));
       if (!mounted) return;
-      setState(() => _config = saved);
+      setState(() => _adoptConfig(saved));
       AppDialogs.showWarning('VPN 分流已变更，应用范围抓包已自动关闭');
     } catch (_) {
       // best-effort：关闭失败不崩，下次加载重试。
@@ -405,6 +553,12 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
 
   Future<void> _save() async {
     if (_saving) return;
+    // 非法 `maxBodyBytes` 一律拒绝提交（绝不把坏值下发）。
+    final invalidBody = _maxBodyBytesError;
+    if (invalidBody != null) {
+      AppDialogs.showError('Body 上限无效：$invalidBody');
+      return;
+    }
     setState(() => _saving = true);
     try {
       var next = _config;
@@ -419,7 +573,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
       final saved = await _facade.configSet(next);
       if (!mounted) return;
       setState(() {
-        _config = saved;
+        _adoptConfig(saved);
         _saving = false;
       });
       switch (outcome) {
@@ -439,19 +593,37 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('抓包设置'),
-        actions: [
-          IconButton(
-            tooltip: '刷新',
-            key: const Key('capture_settings_refresh'),
-            icon: const Icon(TablerIcons.refresh),
-            onPressed: _loading ? null : _load,
-          ),
-        ],
+    return PopScope(
+      // 有未保存修改时拦截返回，先经统一确认弹层征求「放弃 / 继续编辑」。
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final discard = await AppDialogs.showConfirmSheet(
+          title: '放弃未保存的修改？',
+          message: '当前抓包设置尚未保存，返回将丢失这些修改。',
+          confirmText: '放弃',
+          cancelText: '继续编辑',
+          isDangerous: true,
+          icon: const Icon(TablerIcons.alert_triangle),
+        );
+        if (discard == true && context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('抓包设置'),
+          actions: [
+            IconButton(
+              tooltip: '刷新',
+              key: const Key('capture_settings_refresh'),
+              icon: const Icon(TablerIcons.refresh),
+              onPressed: _loading ? null : _load,
+            ),
+          ],
+        ),
+        body: _buildBody(context),
       ),
-      body: _buildBody(context),
     );
   }
 
@@ -672,6 +844,26 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
             ),
           ],
         ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.xs,
+          children: [
+            TextButton.icon(
+              key: const Key('capture_domain_bulk'),
+              onPressed: _saving ? null : _openDomainBulk,
+              icon: const Icon(TablerIcons.clipboard_text,
+                  size: AppTypography.iconSM),
+              label: const Text('批量粘贴 / 导入'),
+            ),
+            TextButton.icon(
+              key: const Key('capture_domain_export'),
+              onPressed: _saving ? null : _exportDomains,
+              icon: const Icon(TablerIcons.download, size: AppTypography.iconSM),
+              label: const Text('导出'),
+            ),
+          ],
+        ),
         const SizedBox(height: AppSpacing.md),
         if (domains.isEmpty)
           Text(
@@ -806,6 +998,8 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
 
   Widget _buildPortsCard(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final bodyError = _maxBodyBytesError;
     return _CaptureSectionCard(
       icon: TablerIcons.plug,
       title: 'TLS 端口集合',
@@ -817,9 +1011,37 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
         ),
         const SizedBox(height: AppSpacing.xs),
         Text(
-          '仅这些目的端口会被 MITM 终止；集合由内核契约固定，本页只读。',
+          '仅这些目的端口会被 MITM 终止；可编辑（每项 ∈ 1~65535，逗号 / 空格分隔）。',
           style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key: const Key('capture_tls_ports_edit'),
+            onPressed: _saving ? null : _openTlsPortsEditor,
+            icon: const Icon(TablerIcons.edit, size: AppTypography.iconSM),
+            label: const Text('编辑端口'),
+          ),
+        ),
+        const Divider(height: AppSpacing.xl),
+        TextField(
+          key: const Key('capture_max_body_bytes_field'),
+          controller: _maxBodyBytesInput,
+          enabled: !_saving,
+          keyboardType: TextInputType.number,
+          onChanged: _onMaxBodyBytesChanged,
+          decoration: InputDecoration(
+            labelText: 'Body 落盘上限（字节）',
+            hintText: '1048576',
+            helperText: bodyError == null
+                ? '范围 1 ~ $kCaptureMaxBodyBytes（仅 SQLite，不驻留内存）。'
+                : null,
+            error: bodyError == null
+                ? null
+                : Text(bodyError, key: const Key('capture_max_body_bytes_error')),
           ),
         ),
       ],
@@ -851,7 +1073,8 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
           ),
         const SizedBox(height: AppSpacing.xs),
         Text(
-          '淘汰 = 超出容量被回收；丢弃 = 背压期间未能入环。',
+          '统计口径 = 抓包环（captures ring）：淘汰 = 超出容量被回收；'
+          '丢弃 = 背压期间未能入环。',
           style: theme.textTheme.bodySmall?.copyWith(
             color: scheme.onSurfaceVariant,
           ),
@@ -945,6 +1168,18 @@ class _CaptureAppPickerSheetState extends State<_CaptureAppPickerSheet> {
     });
   }
 
+  /// 全选当前筛选结果（不含被搜索过滤掉的应用）。
+  void _selectAll() {
+    setState(() {
+      _selected.addAll(_filtered.map((app) => app.packageName));
+    });
+  }
+
+  /// 清空选择。
+  void _clear() {
+    setState(() => _selected.clear());
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -979,6 +1214,31 @@ class _CaptureAppPickerSheetState extends State<_CaptureAppPickerSheet> {
               hintText: '应用名 / 包名',
               prefixIcon: Icon(TablerIcons.search),
             ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Row(
+            children: [
+              TextButton.icon(
+                key: const Key('capture_apps_select_all'),
+                onPressed: widget.apps.isEmpty ? null : _selectAll,
+                icon: const Icon(TablerIcons.checks, size: AppTypography.iconSM),
+                label: const Text('全选'),
+              ),
+              TextButton.icon(
+                key: const Key('capture_apps_clear'),
+                onPressed: _selected.isEmpty ? null : _clear,
+                icon: const Icon(TablerIcons.eraser, size: AppTypography.iconSM),
+                label: const Text('清空'),
+              ),
+              const Spacer(),
+              Text(
+                '已选 ${_selected.length}',
+                key: const Key('capture_apps_sheet_count'),
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: AppSpacing.md),
           if (widget.apps.isEmpty)
@@ -1017,6 +1277,7 @@ class _CaptureAppPickerSheetState extends State<_CaptureAppPickerSheet> {
                   return InkWell(
                     key: Key('capture_app_${app.packageName}'),
                     onTap: () => _toggle(app.packageName),
+
                     child: Padding(
                       padding: AppSpacing.onlyVerticalXS,
                       child: Row(
@@ -1053,6 +1314,136 @@ class _CaptureAppPickerSheetState extends State<_CaptureAppPickerSheet> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// 域名「批量粘贴 / 导入」弹层：多行文本 → 返回原始字符串由页面解析。
+class _DomainBulkPasteSheet extends StatefulWidget {
+  const _DomainBulkPasteSheet({required this.initial});
+
+  final List<String> initial;
+
+  @override
+  State<_DomainBulkPasteSheet> createState() => _DomainBulkPasteSheetState();
+}
+
+class _DomainBulkPasteSheetState extends State<_DomainBulkPasteSheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return AppSheetScaffold(
+      title: '批量粘贴 / 导入域名',
+      subtitle: '每行一个，或用逗号 / 空格 / 分号分隔；自动去重（大小写不敏感）。',
+      icon: const Icon(TablerIcons.clipboard_text),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      actions: [
+        TextButton(
+          key: const Key('capture_domain_bulk_cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('capture_domain_bulk_confirm'),
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('导入'),
+        ),
+      ],
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('capture_domain_bulk_field'),
+            controller: _controller,
+            minLines: 4,
+            maxLines: 8,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'api.example.com\ncdn.example.com, static.test',
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            '当前已选 ${widget.initial.length} 个域名（上限 $kCaptureMaxAllowlistEntries）。',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TLS 端口集合编辑弹层：解析校验通过才 `pop(List<int>)`。
+class _TlsPortsEditSheet extends StatefulWidget {
+  const _TlsPortsEditSheet({required this.initial});
+
+  final List<int> initial;
+
+  @override
+  State<_TlsPortsEditSheet> createState() => _TlsPortsEditSheetState();
+}
+
+class _TlsPortsEditSheetState extends State<_TlsPortsEditSheet> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initial.join(', '));
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final ports = parseTlsPorts(_controller.text);
+    if (ports == null) {
+      setState(() => _error = '端口需为 1~65535 的整数，且集合不得为空');
+      return;
+    }
+    Navigator.of(context).pop(ports);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: '编辑 TLS 端口集合',
+      subtitle: '仅这些目的端口会被 MITM 终止。',
+      icon: const Icon(TablerIcons.plug),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      actions: [
+        TextButton(
+          key: const Key('capture_tls_ports_cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('capture_tls_ports_confirm'),
+          onPressed: _submit,
+          child: const Text('保存'),
+        ),
+      ],
+      content: TextField(
+        key: const Key('capture_tls_ports_field'),
+        controller: _controller,
+        keyboardType: TextInputType.number,
+        autofocus: true,
+        decoration: InputDecoration(
+          labelText: '端口（逗号 / 空格分隔）',
+          hintText: '443, 8443',
+          errorText: _error,
+        ),
       ),
     );
   }

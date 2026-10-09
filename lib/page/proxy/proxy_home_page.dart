@@ -8,6 +8,7 @@ import 'package:gstore/core/service/proxy_connect_controller.dart';
 
 import 'proxy_active_node_store.dart';
 import 'proxy_active_profile_store.dart';
+import 'proxy_capture_ca_gate.dart';
 import 'proxy_capture_settings_page.dart';
 import 'proxy_connections_page.dart';
 import 'proxy_engine_settings_store.dart';
@@ -2019,14 +2020,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       return;
     }
     // 首次开启前实时复核（不信任加载期缓存，避免 CA 被重置后仍放行）。
-    final ca = await _safe(() => _facade.captureCaGet());
-    if (ca != null && ca.generated) {
-      _captureCaGenerated = true;
-      await _applyCaptureEnabled(true);
-      return;
-    }
-    if (!mounted) return;
-    await _promptCaptureNeedsCa();
+    // 门控逻辑与文案集中在校验通过的 [ensureCaptureCaGate]，供首页 / 设置页 /
+    // 列表页复用（无 CA 则拦截并引导，绝不默默开启）。
+    final ok = await ensureCaptureCaGate(
+      captureCaGet: () => _facade.captureCaGet(),
+      onOpenCaptureSettings: _openCaptureSettings,
+    );
+    if (!mounted || !ok) return;
+    _captureCaGenerated = true;
+    await _applyCaptureEnabled(true);
   }
 
   /// 下发 `capture.config.set`（仅改 `enabled`，其余字段原样保留）。
@@ -2049,20 +2051,6 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       setState(() => _captureBusy = false);
       AppDialogs.showError('抓包开关下发失败：$error');
     }
-  }
-
-  /// 无 CA 时开启被拦截：提示需先生成根证书，并引导到抓包设置入口。
-  ///
-  /// 生产兜底恒存在（见 [_openCaptureSettings]），因此引导始终提供「去设置」。
-  Future<void> _promptCaptureNeedsCa() async {
-    await AppDialogs.showConfirmSheet(
-      title: '需要先生成根证书',
-      message: '抓取 HTTPS 流量需要 MITM 根证书。请先在「抓包设置 › 证书管理」'
-          '生成并信任证书，再开启抓包；仅 HTTP 明文流量无需证书。',
-      confirmText: '去设置',
-      cancelText: '取消',
-      onConfirm: _openCaptureSettings,
-    );
   }
 
   /// 「抓包设置 ›」：优先经注入缝跳转（测试可注入计数回调）；否则生产兜底打开

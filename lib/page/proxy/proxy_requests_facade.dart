@@ -15,6 +15,7 @@ library;
 
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_gate.dart';
 
 /// 收集页所需的模块能力（`requests.*` + `captures.get` + `capture.config.*`）。
 ///
@@ -55,11 +56,18 @@ abstract class ProxyRequestsFacade {
 }
 
 /// 生产适配器：[ProxyModule] → [ProxyRequestsFacade] 的薄转发。
-class ProxyModuleRequestsFacade implements ProxyRequestsFacade {
+///
+/// 同时实现 [ProxyCaptureCaGate]：列表页「抓包」迷你开关开启前复核 MITM 根证书
+/// （复用首页同一 `capture.ca.get` 门控）。
+class ProxyModuleRequestsFacade
+    implements ProxyRequestsFacade, ProxyCaptureCaGate {
   ProxyModuleRequestsFacade([ProxyModule? module])
       : _module = module ?? ProxyModule.instance;
 
   final ProxyModule _module;
+
+  @override
+  Future<CaptureCaInfo> captureCaGet() => _module.captureCaGet();
 
   @override
   Future<RequestPage> requestsGet(RequestGetRequest request) =>

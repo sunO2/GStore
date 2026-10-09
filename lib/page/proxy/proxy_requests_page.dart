@@ -22,8 +22,10 @@ import 'package:gstore/core/utils/unit.dart';
 
 import 'proxy_app_identity.dart';
 import 'proxy_capture_bridge.dart';
+import 'proxy_capture_ca_gate.dart';
 import 'proxy_capture_debug_bridge.dart';
 import 'proxy_capture_detail_page.dart';
+import 'proxy_capture_settings_page.dart';
 import 'proxy_requests_facade.dart';
 import 'proxy_requests_paging.dart';
 
@@ -264,6 +266,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   late final ProxyRequestsSaveFile _saveFile;
   late final ProxyRequestsReadFile _readFile;
 
+  /// CA 门控接缝：门面实现 [ProxyCaptureCaGate] 时启用（生产恒启用）。
+  ProxyCaptureCaGate? _caGate;
+
   /// 列表单条删除门面（`captures.delete`）：详情页与长按菜单共用。
   late final ProxyCaptureDeleteFacade _deleteFacade;
 
@@ -330,6 +335,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _facade = widget.facade ?? ProxyModuleRequestsFacade();
+    _caGate = _facade is ProxyCaptureCaGate
+        ? _facade as ProxyCaptureCaGate
+        : null;
     _deleteFacade =
         widget.captureDeleteFacade ?? ProxyModuleCaptureDeleteFacade();
     _events = widget.events ?? ProxyModule.instance.events;
@@ -668,10 +676,30 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
 
   // ==================== 抓包开关（迷你） ====================
 
+  /// CA 拦截弹层「去设置」：打开抓包设置页（可进入「证书管理」）。
+  void _openCaptureSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ProxyCaptureSettingsPage(),
+      ),
+    );
+  }
+
+  /// 列表页「抓包」迷你开关：开启前复用首页 CA 门控（无根证书则拦截并引导）。
   Future<void> _toggleCapture() async {
     if (_captureBusy) return;
     final current = _captureEnabled ?? false;
     final next = !current;
+    if (next) {
+      final gate = _caGate;
+      if (gate != null) {
+        final ok = await ensureCaptureCaGate(
+          captureCaGet: gate.captureCaGet,
+          onOpenCaptureSettings: _openCaptureSettings,
+        );
+        if (!mounted || !ok) return;
+      }
+    }
     setState(() {
       _captureBusy = true;
       _captureEnabled = next;
