@@ -882,7 +882,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   Future<void> _exportCurl() async {
-    final curl = _facade.toCurl(_composeDraft());
+    // 导出前脱敏：auth 密钥替换为掩码，绝不把明文密钥写进可复制文本。
+    final curl = _facade.toCurl(redactRequest(_composeDraft()));
     await AppSheet.showCustom<void>(
       context: context,
       builder: (sheetContext) => AppSheetScaffold(

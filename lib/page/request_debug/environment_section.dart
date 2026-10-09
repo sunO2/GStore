@@ -251,8 +251,14 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
     super.initState();
     _name = TextEditingController(text: widget.environment?.name ?? '');
     final vars = widget.environment?.vars ?? const <String, String>{};
+    final secretVars =
+        widget.environment?.secretVars ?? const <String>{};
     for (final entry in vars.entries) {
-      _rows.add(_EnvVarRow(key: entry.key, value: entry.value));
+      _rows.add(_EnvVarRow(
+        key: entry.key,
+        value: entry.value,
+        secret: secretVars.contains(entry.key),
+      ));
     }
     if (_rows.isEmpty) _rows.add(_EnvVarRow());
   }
@@ -282,15 +288,18 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
       return;
     }
     final vars = <String, String>{};
+    final secretVars = <String>{};
     for (final row in _rows) {
       final key = row.key.text.trim();
       if (key.isEmpty) continue;
       vars[key] = row.value.text;
+      if (row.secret) secretVars.add(key);
     }
     Navigator.of(context).pop(DebugEnvironment(
       id: widget.environment?.id ?? '',
       name: name,
       vars: vars,
+      secretVars: secretVars,
     ));
   }
 
@@ -375,6 +384,13 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
             ),
           ),
           IconButton(
+            key: Key('request-debug-env-secret-$index'),
+            tooltip: row.secret ? '取消密钥标记' : '标记为密钥（加密存储）',
+            icon: Icon(row.secret ? TablerIcons.lock : TablerIcons.lock_open),
+            color: row.secret ? Theme.of(context).colorScheme.primary : null,
+            onPressed: () => setState(() => row.secret = !row.secret),
+          ),
+          IconButton(
             key: Key('request-debug-env-remove-$index'),
             tooltip: '删除变量',
             icon: const Icon(TablerIcons.trash),
@@ -386,14 +402,17 @@ class _EnvironmentEditorSheetState extends State<_EnvironmentEditorSheet> {
   }
 }
 
-/// 环境变量行（一对 key/value 控制器）。
+/// 环境变量行（一对 key/value 控制器 + 是否密钥标记）。
 class _EnvVarRow {
-  _EnvVarRow({String key = '', String value = ''})
+  _EnvVarRow({String key = '', String value = '', this.secret = false})
       : key = TextEditingController(text: key),
         value = TextEditingController(text: value);
 
   final TextEditingController key;
   final TextEditingController value;
+
+  /// 是否标记为密钥（值走安全存储，见 todo 9）。
+  bool secret;
 
   void dispose() {
     key.dispose();

@@ -710,21 +710,31 @@ class DebugHistoryEntry {
 }
 
 /// 环境（键值变量，供 `{{var}}` 替换）。
+///
+/// [secretVars] 标记哪些变量名为**密钥**（值走安全存储，见 todo 9）：这些键
+/// 的值不落明文于 store 文件，仅存引用。未标记的变量按普通明文持久化。
+/// 该字段可选，缺省为空集合（旧数据 / 无密钥用户安全降级）。
 class DebugEnvironment {
   DebugEnvironment({
     required this.id,
     required this.name,
     Map<String, String>? vars,
-  }) : vars = vars ?? {};
+    Set<String>? secretVars,
+  })  : vars = vars ?? {},
+        secretVars = secretVars ?? <String>{};
 
   final String id;
   final String name;
   final Map<String, String> vars;
 
+  /// 密钥变量名集合（其值经安全存储，store 只存引用）。
+  final Set<String> secretVars;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'vars': vars,
+        if (secretVars.isNotEmpty) 'secretVars': secretVars.toList(),
       };
 
   factory DebugEnvironment.fromJson(Map<String, dynamic> json) =>
@@ -732,6 +742,7 @@ class DebugEnvironment {
         id: _requireString(json, 'id'),
         name: _asString(json['name']),
         vars: _stringMap(json['vars']),
+        secretVars: _stringSet(json['secretVars']),
       );
 }
 
@@ -872,6 +883,12 @@ int _requireInt(Map<String, dynamic> json, String key) {
 Map<String, String> _stringMap(Object? value) {
   if (value is! Map) return {};
   return value.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ''));
+}
+
+/// 容忍解码字符串集合：非 List → 空；元素非字符串 → 跳过。
+Set<String> _stringSet(Object? value) {
+  if (value is! List) return <String>{};
+  return value.whereType<String>().toSet();
 }
 
 /// 容忍解码多值头映射：非 Map → 空；值非 List → 单元素列表。

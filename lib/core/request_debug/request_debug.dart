@@ -12,6 +12,7 @@ export 'curl_codec.dart';
 export 'debug_cookie_jar.dart';
 export 'debug_models.dart';
 export 'debug_response.dart';
+export 'debug_secrets.dart';
 export 'debug_sender.dart';
 export 'env_resolver.dart';
 export 'query_codec.dart';

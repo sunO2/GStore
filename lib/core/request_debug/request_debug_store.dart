@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'debug_models.dart';
+import 'debug_secrets.dart';
 
 /// 目录提供者接缝：生产用应用文档目录，测试注入临时目录。
 typedef DebugStoreDirectoryProvider = Future<Directory> Function();
@@ -25,9 +26,13 @@ typedef DebugStoreDirectoryProvider = Future<Directory> Function();
 class RequestDebugStore {
   RequestDebugStore({
     DebugStoreDirectoryProvider? directoryProvider,
+    DebugSecureStorage? secureStorage,
     this.historyLimit = defaultHistoryLimit,
   })  : _directoryProvider =
             directoryProvider ?? getApplicationDocumentsDirectory,
+        _codec = secureStorage == null
+            ? null
+            : DebugSecretCodec(secureStorage),
         assert(historyLimit >= 0, 'historyLimit 不能为负');
 
   /// 存储文件名（测试据此定位文件）。
@@ -40,6 +45,13 @@ class RequestDebugStore {
   static const int schemaVersion = 1;
 
   final DebugStoreDirectoryProvider _directoryProvider;
+
+  /// 密钥编解码接缝：`null` 表示未配置安全存储（旧行为：密钥明文随文件存）。
+  ///
+  /// 生产装配（[DefaultRequestDebugFacade.production]）注入
+  /// [FlutterDebugSecureStorage]；测试可注入内存假实现。未注入时保持向后
+  /// 兼容（既有测试 / 无密钥用户不受影响）。
+  final DebugSecretCodec? _codec;
 
   /// 历史条数上限（`0` 表示不留历史）。
   final int historyLimit;
@@ -106,7 +118,19 @@ class RequestDebugStore {
       if (decoded is! Map) {
         throw const FormatException('store 根节点不是 JSON 对象');
       }
-      final map = decoded.cast<String, dynamic>();
+      var map = decoded.cast<String, dynamic>();
+      var migratedSecrets = false;
+      final codec = _codec;
+      if (codec != null) {
+        try {
+          final opened = await codec.open(map);
+          map = opened.root;
+          migratedSecrets = opened.migrated;
+        } catch (e) {
+          // 安全存储解析失败不阻断加载：按原始 JSON（明文 / 引用）继续。
+          _warn('密钥解析失败，按原始内容加载: $e');
+        }
+      }
       collections.addAll(_parseList(map['collections'], DebugCollection.fromJson));
       environments.addAll(
           _parseList(map['environments'], DebugEnvironment.fromJson));
@@ -118,6 +142,10 @@ class RequestDebugStore {
       _enforceHistoryCap();
       _backfillCollectionIds();
       loaded = true;
+      // 旧明文一次性迁移：发现明文密钥后立即改写文件为引用形式。
+      if (migratedSecrets) {
+        await save();
+      }
     } catch (e) {
       _warn('读取失败，使用空存储: $e');
       _reset();
@@ -126,11 +154,18 @@ class RequestDebugStore {
   }
 
   /// 原子写入磁盘（tmp + rename）。成功返回 `true`，失败返回 `false` 且不抛。
+  ///
+  /// 配置了安全存储时，明文密钥在序列化前被替换为引用（[DebugSecretCodec.seal]）。
   Future<bool> save() async {
     File? tmp;
     try {
       final file = await _file();
-      final data = jsonEncode(_toJson());
+      var root = _toJson();
+      final codec = _codec;
+      if (codec != null) {
+        root = await codec.seal(root);
+      }
+      final data = jsonEncode(root);
       tmp = File('${file.path}.tmp');
       await tmp.writeAsString(data, flush: true);
       await tmp.rename(file.path);
@@ -299,11 +334,13 @@ class RequestDebugStore {
     String? id,
     required String name,
     Map<String, String>? vars,
+    Set<String>? secretVars,
   }) {
     final e = DebugEnvironment(
       id: id ?? generateDebugId('env'),
       name: name,
       vars: vars,
+      secretVars: secretVars,
     );
     environments.add(e);
     return e;

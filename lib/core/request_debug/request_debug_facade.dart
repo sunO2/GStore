@@ -26,6 +26,7 @@ library;
 import 'curl_codec.dart' as curl_codec;
 import 'debug_models.dart';
 import 'debug_response.dart';
+import 'debug_secrets.dart';
 import 'debug_sender.dart';
 import 'env_resolver.dart' as env;
 import 'request_debug_store.dart';
@@ -201,13 +202,20 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
   ///
   /// 规则端口的生产适配器在 todo 35 接线，本工厂暂用
   /// [UnavailableCaptureRulesPort]（调用即显式失败）。
+  ///
+  /// 密钥安全存储：默认注入 [FlutterDebugSecureStorage]（auth 密码 / token /
+  /// apiKey、标记为密钥的环境变量值只以引用形式落盘，见 todo 9）。
   factory DefaultRequestDebugFacade.production({
     DebugStoreDirectoryProvider? directoryProvider,
+    DebugSecureStorage? secureStorage,
     DebugSender? sender,
     CaptureRulesPort? captureRules,
   }) =>
       DefaultRequestDebugFacade(
-        store: RequestDebugStore(directoryProvider: directoryProvider),
+        store: RequestDebugStore(
+          directoryProvider: directoryProvider,
+          secureStorage: secureStorage ?? const FlutterDebugSecureStorage(),
+        ),
         sender: sender ?? DebugSender(),
         captureRules: captureRules,
       );
