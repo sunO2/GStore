@@ -313,6 +313,70 @@ ProxyShaperDirection? buildCustomShaperDirection({
   return isValidShaperDirection(direction) ? direction : null;
 }
 
+/// 用**输入框字符串**构造一个已校验的单方向参数（Todo 29：完整参数面）。
+///
+/// 覆盖 `DirectionConfig` 的全部字段：限速（输入单位 kbps，换算为 bps）、burst、
+/// 延迟、抖动、抖动分布、丢包模型（含 Gilbert-Elliot 双概率）、复制、重排
+/// （order / pct / gap）。任一字段为空 / 非数字，或 [buildCustomShaperDirection]
+/// 判定越界 / 非法枚举 / 违反跨字段规则时返回 `null`。
+///
+/// **lossModel 由调用方显式给出**（不再从 `lossPct > 0` 反推），因此编辑
+/// Gilbert-Elliot 配置时不会被静默重置为 `random` / `none`。
+ProxyShaperDirection? buildShaperDirectionFromStrings({
+  required String rateKbps,
+  required String delayMs,
+  required String jitterMs,
+  required String burstBytes,
+  required String jitterDistribution,
+  required String lossPct,
+  required String lossModel,
+  required String lossGoodToBadPct,
+  required String lossBadToGoodPct,
+  required String duplicatePct,
+  required String reorderPct,
+  required String reorderGap,
+  required String order,
+}) {
+  final rate = int.tryParse(rateKbps.trim());
+  final burst = int.tryParse(burstBytes.trim());
+  final delay = int.tryParse(delayMs.trim());
+  final jitter = int.tryParse(jitterMs.trim());
+  final loss = double.tryParse(lossPct.trim());
+  final goodToBad = double.tryParse(lossGoodToBadPct.trim());
+  final badToGood = double.tryParse(lossBadToGoodPct.trim());
+  final duplicate = double.tryParse(duplicatePct.trim());
+  final reorder = double.tryParse(reorderPct.trim());
+  final gap = int.tryParse(reorderGap.trim());
+  if (rate == null ||
+      burst == null ||
+      delay == null ||
+      jitter == null ||
+      loss == null ||
+      goodToBad == null ||
+      badToGood == null ||
+      duplicate == null ||
+      reorder == null ||
+      gap == null) {
+    return null;
+  }
+  return buildCustomShaperDirection(
+    // 输入框单位为 kbps，契约单位为 bps，此处换算。
+    rateBps: rate * 1000,
+    burstBytes: burst,
+    delayMs: delay,
+    jitterMs: jitter,
+    jitterDistribution: jitterDistribution,
+    lossPct: loss,
+    lossModel: lossModel,
+    lossGoodToBadPct: goodToBad,
+    lossBadToGoodPct: badToGood,
+    duplicatePct: duplicate,
+    reorderPct: reorder,
+    reorderGap: gap,
+    order: order,
+  );
+}
+
 /// 用调用方输入构造一个**已校验**的完整配置（双向独立）。
 ///
 /// 任一方向越界返回 `null`；调用方**不得**在 `null` 时下发 `net.shaper.set`。

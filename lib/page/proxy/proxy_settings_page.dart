@@ -100,6 +100,13 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   final TextEditingController _shaperDelay = TextEditingController();
   final TextEditingController _shaperJitter = TextEditingController();
   final TextEditingController _shaperLoss = TextEditingController();
+  final TextEditingController _shaperBurst = TextEditingController();
+  final TextEditingController _shaperLossGoodToBad = TextEditingController();
+  final TextEditingController _shaperLossBadToGood = TextEditingController();
+  final TextEditingController _shaperDuplicate = TextEditingController();
+  final TextEditingController _shaperReorderPct = TextEditingController();
+  final TextEditingController _shaperReorderGap = TextEditingController();
+  final TextEditingController _shaperSeed = TextEditingController();
 
   /// 各独立小节的就绪标志：加载中为 `true`，该小节解析完成（含回退默认值）后
   /// 立即清为 `false`。用于「渐进式渲染」——页面外壳先出，各小节用骨架占位。
@@ -148,6 +155,11 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   ProxyShaperDirection _shaperUplink = const ProxyShaperDirection();
   ProxyShaperDirection _shaperDownlink = const ProxyShaperDirection();
 
+  /// 自定义编辑的枚举选择（与当前编辑方向同步；编辑时显式下发，不再反推）。
+  String _shaperJitterDistribution = 'uniform';
+  String _shaperLossModel = 'none';
+  String _shaperOrder = 'preserve';
+
   /// 自定义输入框当前编辑的方向。
   String _shaperCustomDirection = _kShaperDirUplink;
 
@@ -173,6 +185,13 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _shaperDelay.dispose();
     _shaperJitter.dispose();
     _shaperLoss.dispose();
+    _shaperBurst.dispose();
+    _shaperLossGoodToBad.dispose();
+    _shaperLossBadToGood.dispose();
+    _shaperDuplicate.dispose();
+    _shaperReorderPct.dispose();
+    _shaperReorderGap.dispose();
+    _shaperSeed.dispose();
     super.dispose();
   }
 
@@ -210,6 +229,16 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _shaperDelay.text = '${direction.delayMs}';
     _shaperJitter.text = '${direction.jitterMs}';
     _shaperLoss.text = _formatPct(direction.lossPct);
+    _shaperBurst.text = '${direction.burstBytes}';
+    _shaperJitterDistribution = direction.jitterDistribution;
+    _shaperLossModel = direction.lossModel;
+    _shaperLossGoodToBad.text = _formatPct(direction.lossGoodToBadPct);
+    _shaperLossBadToGood.text = _formatPct(direction.lossBadToGoodPct);
+    _shaperDuplicate.text = _formatPct(direction.duplicatePct);
+    _shaperReorderPct.text = _formatPct(direction.reorderPct);
+    _shaperReorderGap.text = '${direction.reorderGap}';
+    _shaperOrder = direction.order;
+    _shaperSeed.text = _shaper.config.seed?.toString() ?? '';
   }
 
   /// 百分比回填：整数省略小数位（`2.0` → `2`，`2.5` → `2.5`）。
@@ -699,7 +728,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
 
   /// 把当前输入框内容提交到当前编辑方向（合法才写入；非法静默忽略）。
   void _commitShaperFields() {
-    final built = _buildShaperDirectionFromFields(_activeShaperDirection);
+    final built = _buildShaperDirectionFromFields();
     if (built == null) return;
     setState(() {
       if (_shaperCustomDirection == _kShaperDirDownlink) {
@@ -710,35 +739,33 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     });
   }
 
-  /// 用输入框内容 + [base] 的非编辑字段构造已校验的单方向参数。
+  /// 用输入框内容构造已校验的单方向参数（完整参数面，Todo 29）。
   ///
-  /// 空值 / 非数字 / 越界（[buildCustomShaperDirection] 返回 `null`）→ `null`，
-  /// 调用方**不得**下发 `net.shaper.set`。
-  ProxyShaperDirection? _buildShaperDirectionFromFields(
-    ProxyShaperDirection base,
-  ) {
-    final rate = int.tryParse(_shaperRate.text.trim());
-    final delay = int.tryParse(_shaperDelay.text.trim());
-    final jitter = int.tryParse(_shaperJitter.text.trim());
-    final loss = double.tryParse(_shaperLoss.text.trim());
-    if (rate == null || delay == null || jitter == null || loss == null) {
-      return null;
-    }
-    return buildCustomShaperDirection(
-      // 输入框单位为 kbps，契约单位为 bps，此处换算。
-      rateBps: rate * 1000,
-      burstBytes: base.burstBytes,
-      delayMs: delay,
-      jitterMs: jitter,
-      jitterDistribution: base.jitterDistribution,
-      lossPct: loss,
-      lossModel: loss > 0 ? 'random' : 'none',
-      lossGoodToBadPct: base.lossGoodToBadPct,
-      lossBadToGoodPct: base.lossBadToGoodPct,
-      duplicatePct: base.duplicatePct,
-      reorderPct: base.reorderPct,
-      reorderGap: base.reorderGap,
-      order: base.order,
+  /// 空值 / 非数字 / 越界（[buildShaperDirectionFromStrings] 返回 `null`）→
+  /// `null`，调用方**不得**下发 `net.shaper.set`。
+  ///
+  /// `lossModel` 由选择器显式给出；仅当模型为 `none` 且丢包 > 0 时沿用历史
+  /// 行为自动按 `random` 下发——**绝不**在模型已是 `gilbertElliot` / `random`
+  /// 时把它重置。
+  ProxyShaperDirection? _buildShaperDirectionFromFields() {
+    final loss = double.tryParse(_shaperLoss.text.trim()) ?? 0;
+    final lossModel = _shaperLossModel == 'none' && loss > 0
+        ? 'random'
+        : _shaperLossModel;
+    return buildShaperDirectionFromStrings(
+      rateKbps: _shaperRate.text,
+      delayMs: _shaperDelay.text,
+      jitterMs: _shaperJitter.text,
+      burstBytes: _shaperBurst.text,
+      jitterDistribution: _shaperJitterDistribution,
+      lossPct: _shaperLoss.text,
+      lossModel: lossModel,
+      lossGoodToBadPct: _shaperLossGoodToBad.text,
+      lossBadToGoodPct: _shaperLossBadToGood.text,
+      duplicatePct: _shaperDuplicate.text,
+      reorderPct: _shaperReorderPct.text,
+      reorderGap: _shaperReorderGap.text,
+      order: _shaperOrder,
     );
   }
 
@@ -763,12 +790,18 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       ));
       return;
     }
-    final built = _buildShaperDirectionFromFields(_activeShaperDirection);
+    final built = _buildShaperDirectionFromFields();
     if (built == null) {
       AppDialogs.showError(
-        '请填写有效数值：限速 0 或 1–1000000 kbps，延迟 ≤ 60000 ms，'
-        '抖动 ≤ 30000 ms，丢包 0–100%',
+        '请填写有效数值：限速 0 或 1–1000000 kbps，burst 1500–65535，'
+        '延迟 ≤ 60000 ms，抖动 ≤ 30000 ms，各百分比 0–100%，重排 gap ≤ 255',
       );
+      return;
+    }
+    final seedText = _shaperSeed.text.trim();
+    final int? seed = seedText.isEmpty ? null : int.tryParse(seedText);
+    if (seedText.isNotEmpty && (seed == null || seed < 0)) {
+      AppDialogs.showError('seed 必须是非负整数（留空表示按时间熵自动派生）');
       return;
     }
     final uplink =
@@ -777,7 +810,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         _shaperCustomDirection == _kShaperDirDownlink ? built : _shaperDownlink;
     final config = buildCustomShaperConfig(
       enabled: _shaperEnabled,
-      seed: _shaper.config.seed,
+      seed: seed,
       uplink: uplink,
       downlink: downlink,
     );
@@ -1342,19 +1375,235 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
               const SizedBox(width: AppSpacing.md),
               Expanded(
                 child: TextField(
-                  key: const Key('shaper_loss_field'),
-                  controller: _shaperLoss,
+                  key: const Key('shaper_burst_field'),
+                  controller: _shaperBurst,
                   enabled: !_busy,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
+                  keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
-                    labelText: '丢包 (%)',
-                    hintText: '0',
+                    labelText: '突发桶 (字节)',
+                    hintText: '32768',
                   ),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          if (_shaperLossModel != 'gilbertElliot')
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_loss_field'),
+                    controller: _shaperLoss,
+                    enabled: !_busy,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '丢包 (%)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_duplicate_field'),
+                    controller: _shaperDuplicate,
+                    enabled: !_busy,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '复制 (%)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_loss_good_to_bad_field'),
+                    controller: _shaperLossGoodToBad,
+                    enabled: !_busy,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'GE 好→坏 (%)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_loss_bad_to_good_field'),
+                    controller: _shaperLossBadToGood,
+                    enabled: !_busy,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'GE 坏→好 (%)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '抖动分布',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: AppSegmentedButton<String>(
+              key: const Key('shaper_jitter_dist_selector'),
+              value: _shaperJitterDistribution,
+              enabled: !_busy,
+              density: AppSegmentedButton.mediumDensity,
+              segments: const <AppSegment<String>>[
+                AppSegment(
+                  value: 'uniform',
+                  label: '均匀',
+                  key: Key('shaper_jitter_dist_uniform'),
+                ),
+                AppSegment(
+                  value: 'normal',
+                  label: '正态',
+                  key: Key('shaper_jitter_dist_normal'),
+                ),
+                AppSegment(
+                  value: 'pareto',
+                  label: '帕累托',
+                  key: Key('shaper_jitter_dist_pareto'),
+                ),
+              ],
+              onChanged: (value) =>
+                  setState(() => _shaperJitterDistribution = value),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '丢包模型',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: AppSegmentedButton<String>(
+              key: const Key('shaper_loss_model_selector'),
+              value: _shaperLossModel,
+              enabled: !_busy,
+              density: AppSegmentedButton.mediumDensity,
+              segments: const <AppSegment<String>>[
+                AppSegment(
+                  value: 'none',
+                  label: '无',
+                  key: Key('shaper_loss_model_none'),
+                ),
+                AppSegment(
+                  value: 'random',
+                  label: '随机',
+                  key: Key('shaper_loss_model_random'),
+                ),
+                AppSegment(
+                  value: 'gilbertElliot',
+                  label: 'GE',
+                  key: Key('shaper_loss_model_gilbert_elliot'),
+                ),
+              ],
+              onChanged: (value) => setState(() => _shaperLossModel = value),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '包序',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: AppSegmentedButton<String>(
+              key: const Key('shaper_order_selector'),
+              value: _shaperOrder,
+              enabled: !_busy,
+              density: AppSegmentedButton.mediumDensity,
+              segments: const <AppSegment<String>>[
+                AppSegment(
+                  value: 'preserve',
+                  label: '保持',
+                  key: Key('shaper_order_preserve'),
+                ),
+                AppSegment(
+                  value: 'reorder',
+                  label: '乱序',
+                  key: Key('shaper_order_reorder'),
+                ),
+              ],
+              onChanged: (value) => setState(() => _shaperOrder = value),
+            ),
+          ),
+          if (_shaperOrder == 'reorder') ...[
+            const SizedBox(height: AppSpacing.md),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_reorder_pct_field'),
+                    controller: _shaperReorderPct,
+                    enabled: !_busy,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '乱序 (%)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: TextField(
+                    key: const Key('shaper_reorder_gap_field'),
+                    controller: _shaperReorderGap,
+                    enabled: !_busy,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '乱序窗口 (帧)',
+                      hintText: '0',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            key: const Key('shaper_seed_field'),
+            controller: _shaperSeed,
+            enabled: !_busy,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '随机种子 (seed)',
+              hintText: '留空 = 按时间熵派生',
+            ),
           ),
         ],
         const SizedBox(height: AppSpacing.md),
@@ -1375,6 +1624,59 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
             color: scheme.onSurfaceVariant,
           ),
         ),
+        const SizedBox(height: AppSpacing.md),
+        Text(
+          '运行计数',
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        _buildShaperCounters(theme, scheme),
+      ],
+    );
+  }
+
+  /// 进程级整形计数器（`net.shaper.get` 的 `counters`，只读展示）。
+  Widget _buildShaperCounters(ThemeData theme, ColorScheme scheme) {
+    final counters = _shaper.counters;
+    final rows = <(String, String, int)>[
+      ('up_frames', '上行整形帧', counters.upFramesShaped),
+      ('down_frames', '下行整形帧', counters.downFramesShaped),
+      ('up_bytes', '上行整形字节', counters.upBytesShaped),
+      ('down_bytes', '下行整形字节', counters.downBytesShaped),
+      ('loss_dropped', '丢包', counters.lossDropped),
+      ('buffer_dropped', '队列丢弃', counters.bufferDropped),
+      ('duplicated', '复制', counters.duplicated),
+      ('reordered', '重排', counters.reordered),
+      ('buffered_frames', '缓冲帧', counters.bufferedFrames),
+      ('buffered_bytes', '缓冲字节', counters.bufferedBytes),
+      ('max_buffered_frames', '缓冲帧水位', counters.maxBufferedFrames),
+    ];
+    return Column(
+      children: [
+        for (final row in rows)
+          Padding(
+            padding: AppSpacing.onlyVerticalXS,
+            child: Row(
+              key: Key('shaper_counter_${row.$1}'),
+              children: [
+                Expanded(
+                  child: Text(
+                    row.$2,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${row.$3}',
+                  key: Key('shaper_counter_${row.$1}_value'),
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
       ],
     );
   }
