@@ -14,6 +14,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_dns_page.dart';
+import 'package:gstore/page/proxy/proxy_diagnostics_page.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_shaper_presets.dart';
 
@@ -964,6 +965,8 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           const _RegionHeader(title: '维护与诊断'),
           _buildStatsCard(context),
           const SizedBox(height: AppSpacing.lg),
+          _buildDiagnosticsTile(context),
+          const SizedBox(height: AppSpacing.lg),
           if (_engineLoading)
             const _SectionSkeleton(
               key: Key('section_skeleton_engine'),
@@ -1751,6 +1754,28 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           ),
         ),
       ],
+    );
+  }
+
+  /// 诊断 / 日志 / 规则查看器 / config 触发入口（Todo 30）。
+  Widget _buildDiagnosticsTile(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: ListTile(
+        key: const Key('diagnostics_entry_tile'),
+        leading: const Icon(TablerIcons.activity),
+        title: const Text('诊断与日志'),
+        subtitle: const Text('Clash 诊断控制器、日志 / 规则查看器、配置生成'),
+        trailing: const Icon(TablerIcons.chevron_right),
+        onTap: _openDiagnosticsPage,
+      ),
+    );
+  }
+
+  /// 打开诊断页（Todo 30）；返回后无需刷新本页状态。
+  void _openDiagnosticsPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyDiagnosticsPage()),
     );
   }
 
