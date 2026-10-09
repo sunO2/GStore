@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/page/page.dart';
 import 'package:gstore/page/app_snapshot/apps_list.dart';
+import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
 
 import '../routers.dart';
 
@@ -36,6 +38,34 @@ Object? goRouterExtraOf(BuildContext context) {
   } catch (_) {
     return null;
   }
+}
+
+/// 解析「请求调试」路由 extra 目标分区 + 改写规则预填（plan todo 7）。
+///
+/// 抓包详情「创建改写规则」经 `appRouter.go(..., extra: CaptureRulePrefill)`
+/// 传入预填；此时落到「改写规则」分区并把预填透传给页面。无 extra（普通入口）
+/// 或非预填 extra → 返回 `null`，由页面取默认分区（行为不变）。
+({RequestDebugSection? section, CaptureRulePrefill? rulePrefill})
+    requestDebugRouteArgs(Object? extra) {
+  if (extra is CaptureRulePrefill) {
+    return (section: RequestDebugSection.rules, rulePrefill: extra);
+  }
+  return (section: null, rulePrefill: null);
+}
+
+/// 构造「请求调试」页：读取 `state.extra` 并透传抓包改写规则预填。
+///
+/// [facade] 仅供测试注入；生产走页面默认装配。
+Widget buildRequestDebugRoute(
+  GoRouterState state, {
+  RequestDebugFacade? facade,
+}) {
+  final args = requestDebugRouteArgs(state.extra);
+  return RequestDebugPage(
+    facade: facade,
+    initialSection: args.section,
+    rulePrefill: args.rulePrefill,
+  );
 }
 
 /// 全局 GoRouter 实例（logic/service/通知/深链无 context 导航统一入口）。
@@ -102,7 +132,7 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: AppRoute.requestDebug,
-      builder: (context, state) => const RequestDebugPage(),
+      builder: (context, state) => buildRequestDebugRoute(state),
     ),
     GoRoute(
       path: AppRoute.appSnapshotList,

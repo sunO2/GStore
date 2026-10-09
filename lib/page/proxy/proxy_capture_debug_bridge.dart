@@ -23,15 +23,29 @@ import 'proxy_capture_bridge.dart';
 /// 抓包保存的默认集合名（集合不存在时自动创建）。
 const String kCaptureDebugCollectionName = '抓包';
 
+/// 打开改写规则编辑器的导航接缝（默认经全局路由；测试可注入断言载荷）。
+typedef RewriteRuleEditorOpener = void Function(CaptureRulePrefill prefill);
+
 /// 生产抓包动作桥：映射 + 经请求调试门面落库。
 class RequestDebugCaptureBridge implements CaptureBridge {
-  RequestDebugCaptureBridge({RequestDebugFacade? facade})
-      : _facade = facade ?? DefaultRequestDebugFacade.production();
+  RequestDebugCaptureBridge({
+    RequestDebugFacade? facade,
+    RewriteRuleEditorOpener? openRuleEditor,
+  })  : _facade = facade ?? DefaultRequestDebugFacade.production(),
+        _openRuleEditor = openRuleEditor ?? _openViaRouter;
 
   final RequestDebugFacade _facade;
 
+  /// 打开改写规则编辑器的导航接缝（默认 `appRouter.go`，测试可注入）。
+  final RewriteRuleEditorOpener _openRuleEditor;
+
   /// 注入的门面（测试可断言调用）。
   RequestDebugFacade get facade => _facade;
+
+  /// 默认导航：把预填经路由 extra 交给「请求调试」工作台（落到改写规则分区）。
+  static void _openViaRouter(CaptureRulePrefill prefill) {
+    appRouter.go(AppRoute.requestDebug, extra: prefill);
+  }
 
   @override
   Future<void> saveToCollection(CaptureDetail detail) async {
@@ -51,7 +65,7 @@ class RequestDebugCaptureBridge implements CaptureBridge {
   @override
   Future<void> openRewriteRuleEditor(CaptureRulePrefill prefill) async {
     // 改写规则编辑器在「请求调试」工作台内；预填值经路由 extra 传递。
-    appRouter.go(AppRoute.requestDebug, extra: prefill);
+    _openRuleEditor(prefill);
   }
 
   /// 取「抓包」集合 id；不存在则创建。

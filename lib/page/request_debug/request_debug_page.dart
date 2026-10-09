@@ -11,6 +11,7 @@ import 'environment_section.dart';
 import 'history_section.dart';
 import 'proxy_capture_rules_port.dart';
 import 'rules_section.dart';
+import '../proxy/proxy_capture_bridge.dart';
 
 /// 「请求调试」工作台分区（plan todo 30）。
 enum RequestDebugSection {
@@ -38,10 +39,21 @@ enum RequestDebugSection {
 /// 设计约束：全部取主题令牌（[Theme.of]），颜色 / 字号零硬编码；空态图标用
 /// [ColoredAliIcon] 染色以适配夜间模式。
 class RequestDebugPage extends StatefulWidget {
-  const RequestDebugPage({super.key, this.facade});
+  const RequestDebugPage({
+    super.key,
+    this.facade,
+    this.initialSection,
+    this.rulePrefill,
+  });
 
   /// 窄门面（测试可注入；为空时用生产组合）。
   final RequestDebugFacade? facade;
+
+  /// 初始分区（抓包透传时落到「改写规则」）；`null` = 默认「集合」。
+  final RequestDebugSection? initialSection;
+
+  /// 抓包透传的改写规则预填（plan todo 7）；`null` = 无预填，行为不变。
+  final CaptureRulePrefill? rulePrefill;
 
   @override
   State<RequestDebugPage> createState() => _RequestDebugPageState();
@@ -50,12 +62,18 @@ class RequestDebugPage extends StatefulWidget {
 class _RequestDebugPageState extends State<RequestDebugPage> {
   late final RequestDebugFacade _facade;
 
-  RequestDebugSection _section = RequestDebugSection.collections;
+  late RequestDebugSection _section;
+
+  /// 待消费的抓包预填（构造后只生效一次，避免切换分区后重复弹出编辑器）。
+  CaptureRulePrefill? _rulePrefill;
+
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
+    _section = widget.initialSection ?? RequestDebugSection.collections;
+    _rulePrefill = widget.rulePrefill;
     _facade = widget.facade ??
         DefaultRequestDebugFacade.production(
           captureRules: ProxyModuleCaptureRulesPort(),
@@ -137,7 +155,11 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
         return RequestDebugEnvironmentSection(facade: _facade);
 
       case RequestDebugSection.rules:
-        return RequestDebugRulesSection(facade: _facade);
+        // 消费一次抓包预填：仅首次构建「改写规则」分区时透传，避免切换分区
+        // 回来后重复弹出预填编辑器。
+        final prefill = _rulePrefill;
+        _rulePrefill = null;
+        return RequestDebugRulesSection(facade: _facade, prefill: prefill);
     }
   }
 }

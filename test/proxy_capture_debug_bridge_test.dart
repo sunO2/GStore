@@ -13,6 +13,7 @@ import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
 import 'package:gstore/page/proxy/proxy_capture_debug_bridge.dart';
 
 /// 空规则端口（不触碰 FFI）。
@@ -115,5 +116,25 @@ void main() {
       bridge.saveToCollection(_detail()),
       throwsA(isA<StateError>()),
     );
+  });
+
+  test('openRewriteRuleEditor：预填经注入 opener 透传（路由 extra 语义）', () async {
+    final store = RequestDebugStore(directoryProvider: () async => dir);
+    CaptureRulePrefill? opened;
+    final bridge = RequestDebugCaptureBridge(
+      facade: facadeFor(store),
+      openRuleEditor: (prefill) => opened = prefill,
+    );
+
+    const prefill = CaptureRulePrefill(
+      method: 'PUT',
+      url: 'https://api.test/v2/item',
+      replaceBody: '{"ok":true}',
+      statusCode: 201,
+      responseHeaders: 'X-Resp: 1',
+    );
+    await bridge.openRewriteRuleEditor(prefill);
+
+    expect(opened, same(prefill));
   });
 }

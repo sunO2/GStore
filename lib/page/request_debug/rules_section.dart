@@ -33,6 +33,7 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
 
 // ==================== 映射 / 展示辅助 ====================
 
@@ -91,14 +92,44 @@ List<DebugHeader> parseRuleHeaderLines(String text) {
   return out;
 }
 
+/// 由抓包改写规则预填派生**新建**规则种子（id 空 = 新建）。
+///
+/// 映射 method/url + 当前响应（状态码 / 头 / Body）为 `替换响应` 初值；
+/// `enabled` 保持默认关，**不**隐式开启。供「请求调试」页消费路由 extra 后
+/// 打开预填编辑器（plan todo 7）。
+DebugRewriteRule debugRewriteRuleFromPrefill(CaptureRulePrefill prefill) {
+  final headers = prefill.responseHeaders;
+  return DebugRewriteRule(
+    id: '',
+    method: prefill.method.isEmpty ? null : prefill.method,
+    url: prefill.url,
+    kind: DebugRewriteKind.replaceResponse,
+    statusCode: prefill.statusCode,
+    respHeaders: (headers == null || headers.isEmpty)
+        ? null
+        : parseRuleHeaderLines(headers),
+    respBody: prefill.replaceBody.isEmpty ? null : prefill.replaceBody,
+  );
+}
+
 // ==================== 分区组件 ====================
 
 /// 改写规则分区：列表 + 新建 / 编辑 / 开关 / 删除。
 class RequestDebugRulesSection extends StatefulWidget {
-  const RequestDebugRulesSection({super.key, required this.facade});
+  const RequestDebugRulesSection({
+    super.key,
+    required this.facade,
+    this.prefill,
+  });
 
   /// 窄门面（Seam 2：`capture.rules.*`）。
   final RequestDebugFacade facade;
+
+  /// 抓包透传的改写规则预填（plan todo 7）。
+  ///
+  /// 非空时在首帧后自动打开**新建**规则编辑器并预填其字段；`null`（默认入口）
+  /// 行为不变，不弹任何编辑器。
+  final CaptureRulePrefill? prefill;
 
   @override
   State<RequestDebugRulesSection> createState() =>
@@ -119,6 +150,13 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
   void initState() {
     super.initState();
     unawaited(_loadRules());
+    final prefill = widget.prefill;
+    if (prefill != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(_openPrefilled(debugRewriteRuleFromPrefill(prefill)));
+      });
+    }
   }
 
   Future<void> _loadRules({bool silent = false}) async {
@@ -150,6 +188,18 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
     final created = await AppSheet.showCustom<DebugRewriteRule>(
       context: context,
       builder: (_) => const _RuleEditorSheet(rule: null),
+    );
+    if (created == null || !mounted) return;
+    await _save(created, successMessage: '规则已创建');
+  }
+
+  /// 打开抓包预填的**新建**规则编辑器（plan todo 7）。
+  ///
+  /// 仅预填字段，保存仍由用户在编辑器内确认；`enabled` 保持默认关。
+  Future<void> _openPrefilled(DebugRewriteRule seed) async {
+    final created = await AppSheet.showCustom<DebugRewriteRule>(
+      context: context,
+      builder: (_) => _RuleEditorSheet(rule: null, seed: seed),
     );
     if (created == null || !mounted) return;
     await _save(created, successMessage: '规则已创建');
@@ -430,10 +480,16 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
 
 /// 规则编辑器弹层：精确 URL、可选方法、类型、开关（默认关）、备注。
 class _RuleEditorSheet extends StatefulWidget {
-  const _RuleEditorSheet({required this.rule});
+  const _RuleEditorSheet({required this.rule, this.seed});
 
   /// 待编辑规则；`null` = 新建。
   final DebugRewriteRule? rule;
+
+  /// 新建时的预填种子（`rule == null` 时生效）；`null` = 空表单。
+  ///
+  /// 与 [rule] 的区别：种子不携带既有 id，标题仍为「新建改写规则」，保存
+  /// 走新建路径（由 Rust 铸造 id）。用于抓包「创建改写规则」透传（todo 7）。
+  final DebugRewriteRule? seed;
 
   @override
   State<_RuleEditorSheet> createState() => _RuleEditorSheetState();
@@ -455,7 +511,8 @@ class _RuleEditorSheetState extends State<_RuleEditorSheet> {
   @override
   void initState() {
     super.initState();
-    final rule = widget.rule;
+    // 预填种子：编辑既有规则时用 `rule`，否则用 `seed`（新建预填）。
+    final rule = widget.rule ?? widget.seed;
     _url = TextEditingController(text: rule?.url ?? '');
     _method = TextEditingController(text: rule?.method ?? '');
     _status = TextEditingController(text: rule?.statusCode?.toString() ?? '');
