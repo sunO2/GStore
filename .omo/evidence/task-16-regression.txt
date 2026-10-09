@@ -1,0 +1,119 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart
+00:00 +0: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: HAR 1.2 集合树 round-trip 等价
+00:00 +1: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: HAR 1.2 导出样例含关键字段（method/url/headers/body）
+00:00 +2: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: Postman v2.1 集合树 round-trip 等价（含嵌套文件夹）
+00:00 +3: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: Postman v2.1 导出样例含关键字段
+00:00 +4: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: OpenAPI 3 集合树 round-trip 等价
+00:00 +5: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: OpenAPI 3 导出样例含关键字段（paths/operation/requestBody）
+00:00 +6: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: OpenAPI 3 外部 OpenAPI（无扩展）也能解码出请求
+00:00 +7: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 原始 HTTP 请求列表 round-trip 等价
+00:00 +8: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 原始 HTTP 导出样例含关键字段
+00:00 +9: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 环境 / 规则 JSON 导出导入 环境 round-trip 等价
+00:00 +10: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 环境 / 规则 JSON 导出导入 改写规则 round-trip 等价
+00:00 +11: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 非法 / 截断文件返回结构化错误 har: 空 / 截断 / 非法 JSON 返回 failure
+00:00 +12: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 非法 / 截断文件返回结构化错误 postman: 空 / 截断 / 非法 JSON 返回 failure
+00:00 +13: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 非法 / 截断文件返回结构化错误 openapi: 空 / 截断 / 非法 JSON 返回 failure
+00:00 +14: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 非法 / 截断文件返回结构化错误 原始 HTTP：空 / 无请求行返回 failure
+00:00 +15: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: 非法 / 截断文件返回结构化错误 环境 / 规则：非法 JSON 返回 failure
+00:00 +16: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: detectFormat 按内容识别四种格式
+00:00 +17: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_import_export_test.dart: detectFormat 无法识别返回 null
+00:03 +18: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 空查询返回全部（副本，不改输入）
+00:03 +19: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 请求命中：只剩该请求与所属集合
+00:03 +20: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 集合名命中：保留集合并保留其全部请求
+00:03 +21: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 子文件夹命中：保留祖先链（层级）
+00:03 +22: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 无匹配返回空，不抛
+00:03 +23: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: sortDebugCollections original 返回输入副本（原顺序）
+00:03 +24: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: sortDebugCollections nameAsc：同级排序且保持父子层级
+00:03 +25: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: sortDebugCollections nameDesc：同级降序
+00:03 +26: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugHistory / sortDebugHistory 过滤：URL 命中；空查询返回全部；无匹配为空
+00:03 +27: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugHistory / sortDebugHistory 排序：original 保持（最新在前）；nameAsc 按 URL
+00:03 +28: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugEnvironments / sortDebugEnvironments 过滤：名称 / 变量键命中；无匹配为空
+00:03 +29: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugEnvironments / sortDebugEnvironments 排序：nameAsc / nameDesc
+00:03 +30: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugRules / sortDebugRules 过滤：URL / 方法 / 备注命中；无匹配为空
+00:03 +31: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugRules / sortDebugRules 排序：nameAsc 按 URL
+00:03 +32: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +33: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +34: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +35: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +36: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +37: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +38: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +39: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +40: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +41: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +42: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +43: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +44: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +45: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +46: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +47: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +48: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +49: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +50: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +51: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +52: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +53: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +54: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +55: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +56: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +57: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +58: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +59: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +60: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +61: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +62: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +63: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +64: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +65: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:03 +66: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +67: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +68: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +69: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +70: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +71: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +72: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +73: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:04 +74: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:04 +75: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:04 +76: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 排序菜单切换：名称升序改变根集合顺序
+00:04 +77: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: 集合分区搜索 排序菜单切换：名称升序改变根集合顺序
+00:04 +78: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:04 +79: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:04 +80: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:05 +81: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:05 +82: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:05 +83: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:05 +84: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 编辑：预填并可保存（保留 id）
+00:05 +85: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 删除请求 → 从集合移除
+00:05 +86: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 开关：默认关 → 切换后调用 setRule(enabled:true)
+00:05 +87: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 导入 cURL → 解析并写入集合（方法 / URL / Body 精确）
+00:05 +88: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 删除：需二次确认，确认后调用 removeRule
+00:06 +89: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 删除：需二次确认，确认后调用 removeRule
+00:06 +90: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 发送 仅一个发送入口：底部 request-editor-send，无顶部按钮
+00:06 +91: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 capture.rules.set 失败 → showError 且不崩
+00:06 +92: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 发送 URL 弹层 done：先同步新查询参数再发送，且仅发送一次
+00:06 +93: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 环境 CRUD 新建环境 + 键值对编辑 → store 更新并落盘
+00:06 +94: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 保存写入精确字段，且保存后离开不再二次确认
+00:06 +95: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 保存写入精确字段，且保存后离开不再二次确认
+00:06 +96: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 保存写入精确字段，且保存后离开不再二次确认
+00:06 +97: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 环境 CRUD 删除环境：需确认，确认后移除（当前环境一并清空）
+00:07 +98: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 另存为生成副本（新 id、名称含副本）
+00:07 +99: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 导出 cURL → 展示等价命令
+00:07 +100: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 网络选项 弹层暴露 4 项；跳过 TLS 仅在危险确认后开启
+00:07 +101: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 网络选项 保存后网络选项随模型持久化并可回读
+00:07 +102: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 网络选项 发送时把网络选项透传给 sender
+00:08 +103: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 取消 发送中显示取消入口；取消后回到就绪且不追加历史
+00:08 +104: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 取消 重复取消幂等：无异常、无重复副作用
+00:08 +105: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 取消 发送中返回：先警告；确认后取消请求并离开
+00:08 +106: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 未保存离开二次确认 有未保存编辑时返回 → 确认拦截；继续编辑不离开；放弃才离开
+00:08 +107: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 已定义解析、未定义保留并标记、且不递归
+00:08 +108: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 弹层内插入变量 → 命中弹层草稿（不写旧选区）
+00:09 +109: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 AppSuggestionChips 含 store.history 派生的最近值
+00:09 +110: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 工具栏 prev/next 在编辑器字段间移动焦点
+00:09 +111: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 字段保真与脏标记 保存保留 overrides（_composeDraft 不丢失）
+00:09 +112: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 字段保真与脏标记 非标准 HTTP 方法（PROPFIND）保留并可保存
+00:09 +113: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 字段保真与脏标记 将认证改为 none 并保存 → 已存认证被清空
+00:10 +114: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 字段保真与脏标记 body 工具栏清空后标记脏值：返回弹出未保存确认
+00:10 +115: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 设计系统约束 编辑器分区使用 AppSegmentedButton（分段 参数/头/体/认证/Cookie/响应）
+00:10 +116: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 设计系统约束 窄屏 360x640：外壳渲染无异常且动作齐备
+00:10 +117: All tests passed!

@@ -19,18 +19,31 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
+import 'package:gstore/core/request_debug/import_export/import_export.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'import_export_actions.dart';
 import 'request_editor_page.dart';
 import 'request_sheets.dart';
 import 'search_sort_bar.dart';
 
 /// 集合分区：文件夹树 + 请求列表。
 class RequestDebugCollectionSection extends StatefulWidget {
-  const RequestDebugCollectionSection({super.key, required this.facade});
+  const RequestDebugCollectionSection({
+    super.key,
+    required this.facade,
+    this.pickFile,
+    this.saveFile,
+  });
 
   /// 窄门面（store CRUD + cURL 解析 + 发送）。
   final RequestDebugFacade facade;
+
+  /// 导入文件选择接缝（测试注入；为空时走 [FilePicker]）。
+  final DebugPickFile? pickFile;
+
+  /// 导出文件保存接缝（测试注入；为空时走 [FilePicker]）。
+  final DebugSaveFile? saveFile;
 
   @override
   State<RequestDebugCollectionSection> createState() =>
@@ -142,9 +155,21 @@ class _RequestDebugCollectionSectionState
     );
   }
 
+  /// 从文件导入集合（自动识别 HAR / Postman / OpenAPI / 原始 HTTP）。
+  Future<void> _importCollections() =>
+      importDebugCollections(context, _facade, pickFile: widget.pickFile);
+
+  /// 把当前集合树导出为指定格式。
+  Future<void> _exportCollections(DebugTransferFormat format) =>
+      exportDebugCollections(
+        context,
+        _facade.store.collections,
+        format,
+        saveFile: widget.saveFile,
+      );
+
   /// 导入目标：复用名为「导入」的顶层集合；不存在则新建。
-  DebugCollection _importTarget() {
-    for (final c in _facade.store.collections) {
+  DebugCollection _importTarget() {    for (final c in _facade.store.collections) {
       if (c.parentId == null && c.name == '导入') return c;
     }
     return _facade.store.addCollection(name: '导入');
@@ -238,6 +263,53 @@ class _RequestDebugCollectionSectionState
                 tooltip: '导入 cURL',
                 icon: const Icon(TablerIcons.file_import),
                 onPressed: _importCurl,
+              ),
+              PopupMenuButton<String>(
+                key: const Key('request-debug-collection-transfer'),
+                tooltip: '导入 / 导出集合',
+                icon: const Icon(TablerIcons.dots),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'import':
+                      _importCollections();
+                    case 'export-har':
+                      _exportCollections(DebugTransferFormat.har);
+                    case 'export-postman':
+                      _exportCollections(DebugTransferFormat.postman);
+                    case 'export-openapi':
+                      _exportCollections(DebugTransferFormat.openapi);
+                    case 'export-raw':
+                      _exportCollections(DebugTransferFormat.rawHttp);
+                  }
+                },
+                itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    key: Key('request-debug-collection-import-file'),
+                    value: 'import',
+                    child: Text('导入集合文件…'),
+                  ),
+                  PopupMenuDivider(),
+                  PopupMenuItem<String>(
+                    key: Key('request-debug-collection-export-har'),
+                    value: 'export-har',
+                    child: Text('导出为 HAR 1.2'),
+                  ),
+                  PopupMenuItem<String>(
+                    key: Key('request-debug-collection-export-postman'),
+                    value: 'export-postman',
+                    child: Text('导出为 Postman v2.1'),
+                  ),
+                  PopupMenuItem<String>(
+                    key: Key('request-debug-collection-export-openapi'),
+                    value: 'export-openapi',
+                    child: Text('导出为 OpenAPI 3'),
+                  ),
+                  PopupMenuItem<String>(
+                    key: Key('request-debug-collection-export-raw'),
+                    value: 'export-raw',
+                    child: Text('导出为原始 HTTP'),
+                  ),
+                ],
               ),
               IconButton(
                 key: const Key('request-debug-collection-add'),

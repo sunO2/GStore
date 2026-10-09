@@ -23,16 +23,24 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'import_export_actions.dart';
 import 'search_sort_bar.dart';
 
 // ==================== 分区组件 ====================
 
 /// 环境分区：环境列表 + 当前环境切换 + 键值对编辑。
 class RequestDebugEnvironmentSection extends StatefulWidget {
-  const RequestDebugEnvironmentSection({super.key, required this.facade});
+  const RequestDebugEnvironmentSection({
+    super.key,
+    required this.facade,
+    this.saveFile,
+  });
 
   /// 窄门面（store CRUD + 落盘）。
   final RequestDebugFacade facade;
+
+  /// 导出文件保存接缝（测试注入；为空时走 [FilePicker]）。
+  final DebugSaveFile? saveFile;
 
   @override
   State<RequestDebugEnvironmentSection> createState() =>
@@ -104,6 +112,13 @@ class _RequestDebugEnvironmentSectionState
     return ok;
   }
 
+  /// 把当前环境导出为 JSON 文件。
+  Future<void> _exportEnvironments() => exportDebugEnvironments(
+        context,
+        _facade.store.environments,
+        saveFile: widget.saveFile,
+      );
+
   // ==================== 构建 ====================
 
   @override
@@ -164,6 +179,12 @@ class _RequestDebugEnvironmentSectionState
                     ),
                   ],
                 ),
+              ),
+              IconButton(
+                key: const Key('request-debug-environment-export'),
+                tooltip: '导出环境 JSON',
+                icon: const Icon(TablerIcons.file_download),
+                onPressed: _exportEnvironments,
               ),
               IconButton(
                 key: const Key('request-debug-environment-add'),

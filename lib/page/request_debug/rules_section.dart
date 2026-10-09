@@ -35,6 +35,7 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
 
+import 'import_export_actions.dart';
 import 'search_sort_bar.dart';
 
 // ==================== 映射 / 展示辅助 ====================
@@ -122,6 +123,7 @@ class RequestDebugRulesSection extends StatefulWidget {
     super.key,
     required this.facade,
     this.prefill,
+    this.saveFile,
   });
 
   /// 窄门面（Seam 2：`capture.rules.*`）。
@@ -132,6 +134,9 @@ class RequestDebugRulesSection extends StatefulWidget {
   /// 非空时在首帧后自动打开**新建**规则编辑器并预填其字段；`null`（默认入口）
   /// 行为不变，不弹任何编辑器。
   final CaptureRulePrefill? prefill;
+
+  /// 导出文件保存接缝（测试注入；为空时走 [FilePicker]）。
+  final DebugSaveFile? saveFile;
 
   @override
   State<RequestDebugRulesSection> createState() =>
@@ -275,6 +280,10 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
     await _loadRules(silent: true);
   }
 
+  /// 把当前规则导出为 JSON 文件。
+  Future<void> _exportRules() =>
+      exportDebugRules(context, _rules, saveFile: widget.saveFile);
+
   // ==================== 构建 ====================
 
   @override
@@ -312,6 +321,12 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
                 tooltip: '刷新',
                 icon: const Icon(TablerIcons.refresh),
                 onPressed: () => _loadRules(),
+              ),
+              IconButton(
+                key: const Key('request-debug-rules-export'),
+                tooltip: '导出规则 JSON',
+                icon: const Icon(TablerIcons.file_download),
+                onPressed: _exportRules,
               ),
               IconButton(
                 key: const Key('request-debug-rules-add'),
