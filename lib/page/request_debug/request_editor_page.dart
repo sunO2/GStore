@@ -26,6 +26,7 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'cookie_manager_sheet.dart';
 import 'history_section.dart';
+import 'raw_request_view.dart';
 import 'response_viewer.dart';
 
 /// 编辑器分段。
@@ -895,6 +896,26 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     }
     setState(() => _dirty = false);
     AppDialogs.showSuccess('已另存为新请求');
+  }
+
+  /// 打开「原始请求」底部弹层：展示当前草稿的方法 / URL / 头 / 体。
+  Future<void> _openRawRequest() async {
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (sheetContext) => AppSheetScaffold(
+        title: '原始请求',
+        subtitle: '发送前核对：方法 / URL / 头 / 体',
+        scrollable: false,
+        content: RawRequestView(request: _composeDraft()),
+        actions: [
+          FilledButton(
+            key: const Key('request-editor-raw-request-close'),
+            onPressed: () => Navigator.of(sheetContext).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _exportCurl() async {
@@ -1768,6 +1789,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 switch (value) {
                   case 'network-options':
                     _openNetworkOptions();
+                  case 'raw-request':
+                    _openRawRequest();
                   case 'save':
                     _save();
                   case 'save-as':
@@ -1781,6 +1804,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                   key: Key('request-editor-network-options'),
                   value: 'network-options',
                   child: Text('网络选项'),
+                ),
+                PopupMenuItem<String>(
+                  key: Key('request-editor-raw-request'),
+                  value: 'raw-request',
+                  child: Text('原始请求'),
                 ),
                 PopupMenuItem<String>(
                   key: Key('request-editor-save'),

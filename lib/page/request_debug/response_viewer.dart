@@ -26,6 +26,8 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/core/utils/unit.dart';
 
+import 'response_save_actions.dart';
+
 /// 响应体的语义类型（由 `Content-Type` 推断）。
 enum ResponseBodyKind {
   json,
@@ -51,6 +53,7 @@ class ResponseViewer extends StatefulWidget {
     this.method,
     this.url,
     this.onSaveAsRewrite,
+    this.saveFile,
   });
 
   /// 待展示的响应快照。
@@ -66,6 +69,9 @@ class ResponseViewer extends StatefulWidget {
   final Future<CaptureRulesResult<DebugRewriteRule>> Function(
     DebugRewriteRule rule,
   )? onSaveAsRewrite;
+
+  /// 「保存响应体」的文件保存接缝（测试注入；为空时走 [FilePicker]）。
+  final DebugSaveFile? saveFile;
 
   /// 单个文本分块的字符上限（超出即折叠，避免一次性布局超长文本）。
   static const int chunkChars = 20000;
@@ -157,6 +163,10 @@ class _ResponseViewerState extends State<ResponseViewer> {
     if (!mounted) return;
     AppDialogs.showSuccess('已复制响应体');
   }
+
+  /// 保存响应体到磁盘（含二进制：以原始字节逐字节写出）。
+  Future<void> _saveBody() =>
+      saveDebugResponseBody(context, _response, saveFile: widget.saveFile);
 
   /// 错误 / 取消结果不可保存为改写响应（无有效状态码与响应体）。
   bool get _canSaveAsRewrite =>
@@ -264,6 +274,12 @@ class _ResponseViewerState extends State<ResponseViewer> {
             tooltip: '复制',
             icon: const Icon(TablerIcons.copy),
             onPressed: _copyBody,
+          ),
+          IconButton(
+            key: const Key('response-save-body'),
+            tooltip: '保存响应体',
+            icon: const Icon(TablerIcons.download),
+            onPressed: _saveBody,
           ),
           TextButton.icon(
             key: const Key('response-save-rewrite'),

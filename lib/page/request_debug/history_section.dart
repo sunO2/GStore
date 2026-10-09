@@ -27,6 +27,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'request_editor_page.dart';
+import 'response_diff_view.dart';
 import 'search_sort_bar.dart';
 
 // ==================== 追加接缝 ====================
@@ -229,6 +230,34 @@ class _RequestDebugHistorySectionState
     setState(() {});
   }
 
+  /// 对比最近两条带快照的历史响应（旧 → 新）；不足两条时展示空态。
+  Future<void> _showDiff() async {
+    final withSnapshot = _facade.store.history
+        .where((entry) => entry.responseSnapshot != null)
+        .toList();
+    final hasTwo = withSnapshot.length >= 2;
+    final DebugResponseSnapshot? before =
+        hasTwo ? withSnapshot[1].responseSnapshot : null;
+    final DebugResponseSnapshot? after =
+        hasTwo ? withSnapshot[0].responseSnapshot : null;
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (sheetContext) => AppSheetScaffold(
+        title: '响应对比',
+        subtitle: '最近两条历史响应（旧 → 新）',
+        scrollable: false,
+        content: ResponseDiffView(before: before, after: after),
+        actions: [
+          FilledButton(
+            key: const Key('request-debug-history-diff-close'),
+            onPressed: () => Navigator.of(sheetContext).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<bool> _persist() async {
     final ok = await _facade.save();
     if (!mounted) return ok;
@@ -295,6 +324,12 @@ class _RequestDebugHistorySectionState
                 ),
               ),
               const SizedBox(width: AppSpacing.xs),
+              IconButton(
+                key: const Key('request-debug-history-diff'),
+                tooltip: '对比最近两条',
+                icon: const Icon(TablerIcons.arrows_diff),
+                onPressed: _showDiff,
+              ),
               IconButton(
                 key: const Key('request-debug-history-clear'),
                 tooltip: '清空历史',
