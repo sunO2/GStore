@@ -4,6 +4,7 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/core/service/proxy_ca_service.dart';
 import 'package:gstore/core/service/proxy_connect_controller.dart';
 
 import 'proxy_active_node_store.dart';
@@ -60,6 +61,7 @@ class ProxyHomePage extends StatefulWidget {
     this.onOpenLanSettings,
     this.onOpenCaptureSettings,
     this.splitTunnelFacade,
+    this.caService,
     this.vpnConfigJson = '{}',
   });
 
@@ -127,6 +129,12 @@ class ProxyHomePage extends StatefulWidget {
   /// 为空时用生产 [ProxyModuleSettingsFacade]；测试注入内存假实现即可密闭。
   final ProxySplitTunnelFacade? splitTunnelFacade;
 
+  /// CA 安装 / 信任探测能力（测试可注入假实现；为空时走平台通道）。
+  ///
+  /// 仅用于把 `HTTP+HTTPS` 摘要从「已生成」细化到「是否已安装」；探测失败 /
+  /// 平台不支持时**保持未知**，绝不谎报为「未安装」。
+  final ProxyCaService? caService;
+
   /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
   /// Dart 侧**不生成**该配置，仅透传。
   final String vpnConfigJson;
@@ -144,6 +152,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyRoutingModeStore _routingStore;
   late final ProxyEngineSettingsStore _engineStore;
   late final ProxyGeoProvisionerFactory _geoFactory;
+  late final ProxyCaService _caService;
 
   /// 懒创建并缓存的生产 provisioner（清单异步加载，创建完成后回填给协调器）。
   ProxyGeoProvisioner? _geoProvisioner;
@@ -212,6 +221,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// `仅 HTTP` / `HTTP+HTTPS`；开启动作前仍会实时复核（绝不凭缓存放行）。
   bool _captureCaGenerated = false;
 
+  /// 最近一次 `capture.ca.get` 的完整信息（best-effort；供安装状态探测使用）。
+  CaptureCaInfo? _captureCaInfo;
+
+  /// 系统证书是否已安装（`systemCaInstalled`，best-effort）。
+  ///
+  /// `null` = 未知 / 探测失败 / 平台不支持；`false` 时摘要如实降级为
+  /// `HTTP+HTTPS（CA 未安装）`。绝不谎报。
+  bool? _captureCaInstalled;
+
   /// 抓包总开关下发中（防抖；期间开关禁用）。
   bool _captureBusy = false;
 
@@ -234,6 +252,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         widget.engineSettingsStore ?? const ConfigStoreProxyEngineSettingsStore();
     _geoFactory =
         widget.geoProvisionerFactory ?? ProxyGeoProvisionerFactory.instance;
+    _caService = widget.caService ?? MethodChannelProxyCaService();
     _controller = ProxyConnectController(
       facade: _facade,
       vpnConsent: _vpnConsent,
@@ -306,6 +325,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             ? capture
             : capture?.copyWith(enabled: false);
         _captureCaGenerated = captureCa?.generated ?? false;
+        _captureCaInfo = captureCa;
         _selectedProfileId = selected?.id;
         _profileName = selected?.name;
         _profileNodeCount = selected?.nodeCount;
@@ -332,6 +352,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         if (nodeList != null) _nodeList = nodeList;
         _loading = false;
       });
+      // 安装状态探测（best-effort，不阻塞主状态）：把摘要从「已生成」细化到
+      // 「是否已安装」；失败 / 平台不支持时保持未知，绝不谎报为未安装。
+      unawaited(_probeCaptureCaInstalled());
       if (captureDrift != null) {
         AppDialogs.showWarning(captureDrift);
       }
@@ -351,6 +374,26 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _loadError = '调试模块加载失败：$error';
         _loading = false;
       });
+    }
+  }
+
+  /// 探测系统证书存储是否已安装当前根 CA（best-effort）。
+  ///
+  /// 仅在 CA 已生成时探测；通道不可用（平台不支持）或探测失败时保持
+  /// `null`（未知），标签回退到 `HTTP+HTTPS`，**不**谎报为「未安装」。
+  Future<void> _probeCaptureCaInstalled() async {
+    final info = _captureCaInfo;
+    if (info == null || !info.generated) return;
+    try {
+      final installed = await _caService.systemCaInstalled(
+        pem: info.pem.isEmpty ? null : info.pem,
+      );
+      if (!mounted) return;
+      setState(() => _captureCaInstalled = installed);
+    } on ProxyCaException {
+      // 平台不支持检测 / 探测失败：保持未知。
+    } catch (_) {
+      // best-effort：探测失败不影响主流程。
     }
   }
 
@@ -1915,11 +1958,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ///
   /// 「仅 HTTP vs HTTP+HTTPS」由 **CA 是否已生成** 决定（`capture.config` 无
   /// HTTPS 字段）：无 CA 时 HTTPS 无法 MITM 终止，如实显示「仅 HTTP」。
+  /// CA 已生成但**已确认未安装**到系统证书存储时，进一步如实标注
+  /// 「（CA 未安装）」；未知 / 平台不支持检测时保持 `HTTP+HTTPS`（不谎报）。
   String get _captureStatusLabel {
     final config = _captureConfig;
     if (config == null) return '抓包能力不可用';
     if (!config.enabled) return '已关闭';
-    return _captureCaGenerated ? 'HTTP+HTTPS' : '仅 HTTP';
+    if (!_captureCaGenerated) return '仅 HTTP';
+    if (_captureCaInstalled == false) return 'HTTP+HTTPS（CA 未安装）';
+    return 'HTTP+HTTPS';
   }
 
   Widget _buildCaptureCard(BuildContext context) {

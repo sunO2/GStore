@@ -24,10 +24,15 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
+import 'package:gstore/core/design/app_colors.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_radius.dart';
+import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
@@ -90,6 +95,24 @@ enum CaptureCaExportFormat {
   crt,
 }
 
+/// 系统证书存储的安装 / 信任状态（[ProxyCaService.systemCaInstalled] 探测结果）。
+///
+/// [unsupported] 与 [unknown] 严格区分：前者表示**当前平台不支持检测**（通道
+/// 不可用），后者表示检测失败。两者都**不得**谎报为「已安装 / 未安装」。
+enum CaptureCaTrustStatus {
+  /// 尚未探测 / 探测失败（不展示为已安装或未安装）。
+  unknown,
+
+  /// 系统证书存储已存在该 CA。
+  installed,
+
+  /// 系统证书存储未安装该 CA。
+  notInstalled,
+
+  /// 当前平台不支持证书安装状态检测（通道不可用）。
+  unsupported,
+}
+
 /// 抓包 CA 管理页。
 class ProxyCaptureCaPage extends StatefulWidget {
   const ProxyCaptureCaPage({
@@ -123,6 +146,9 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
   CaptureCaInfo _info = const CaptureCaInfo();
   CaptureCaExportFormat _exportFormat = CaptureCaExportFormat.pem;
 
+  /// 系统证书安装 / 信任状态（best-effort；仅已生成时探测）。
+  CaptureCaTrustStatus _trust = CaptureCaTrustStatus.unknown;
+
   @override
   void initState() {
     super.initState();
@@ -136,6 +162,7 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
     setState(() {
       _loading = true;
       _loadError = null;
+      _trust = CaptureCaTrustStatus.unknown;
     });
     try {
       final info = await _facade.caGet();
@@ -144,12 +171,41 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
         _info = info;
         _loading = false;
       });
+      // 安装 / 信任状态（best-effort）：仅在已生成时探测；平台不支持时明确标记，
+      // 绝不把「无法检测」谎报成「未安装」。
+      if (info.generated) {
+        final trust = await _probeTrust(info);
+        if (!mounted) return;
+        setState(() => _trust = trust);
+      }
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _loadError = '$error';
         _loading = false;
       });
+    }
+  }
+
+  /// 探测系统证书存储是否已安装该 CA。
+  ///
+  /// 通道不可用（[CaInstallResult.channelUnavailableCode]）→ [CaptureCaTrustStatus.unsupported]；
+  /// 其它探测失败 → [CaptureCaTrustStatus.unknown]。两者都不谎报为「未安装」。
+  Future<CaptureCaTrustStatus> _probeTrust(CaptureCaInfo info) async {
+    try {
+      final installed = await _caService.systemCaInstalled(
+        pem: info.pem.isEmpty ? null : info.pem,
+      );
+      return installed
+          ? CaptureCaTrustStatus.installed
+          : CaptureCaTrustStatus.notInstalled;
+    } on ProxyCaException catch (error) {
+      if (error.code == CaInstallResult.channelUnavailableCode) {
+        return CaptureCaTrustStatus.unsupported;
+      }
+      return CaptureCaTrustStatus.unknown;
+    } catch (_) {
+      return CaptureCaTrustStatus.unknown;
     }
   }
 
@@ -279,6 +335,67 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
       type: FileType.custom,
       allowedExtensions: allowedExtensions,
       bytes: bytes,
+    );
+  }
+
+  // ==================== 分享（复制指纹 / 二维码）====================
+
+  /// 一键复制 SHA-256 指纹（用于跨设备核对 / 粘贴到系统安装向导）。
+  Future<void> _copyFingerprint() async {
+    final fingerprint = _info.fingerprintSha256;
+    if (fingerprint.isEmpty) {
+      AppDialogs.showError('暂无指纹可复制');
+      return;
+    }
+    try {
+      await Clipboard.setData(ClipboardData(text: fingerprint));
+      if (!mounted) return;
+      AppDialogs.showSuccess('指纹已复制');
+    } catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError('复制指纹失败：$error');
+    }
+  }
+
+  /// 展示证书二维码（底部弹层）：扫码即可把指纹带到另一台设备核对 / 安装。
+  ///
+  /// 仅编码**指纹**（不包含私钥 / PEM），避免二维码泄露敏感材料。
+  Future<void> _showQr() async {
+    final fingerprint = _info.fingerprintSha256;
+    if (fingerprint.isEmpty) {
+      AppDialogs.showError('暂无指纹可生成二维码');
+      return;
+    }
+    await AppSheet.show<void>(
+      context: context,
+      title: '证书二维码',
+      subtitle: '扫码核对 SHA-256 指纹（不含私钥）',
+      icon: const Icon(TablerIcons.qrcode),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _QrCodeView(data: fingerprint),
+          const SizedBox(height: AppSpacing.md),
+          SelectableText(
+            fingerprint,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('capture_ca_qr_copy'),
+          onPressed: _copyFingerprint,
+          child: const Text('复制指纹'),
+        ),
+        FilledButton.tonal(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
     );
   }
 
@@ -483,6 +600,8 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
         ),
         const SizedBox(height: AppSpacing.sm),
         if (generated) ...[
+          _buildTrustRow(context),
+          const SizedBox(height: AppSpacing.md),
           Text(
             '指纹 (SHA-256)',
             style: theme.textTheme.labelMedium?.copyWith(
@@ -490,11 +609,43 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
             ),
           ),
           const SizedBox(height: AppSpacing.xs),
-          SelectableText(
-            _info.fingerprintSha256.isEmpty ? '（未提供）' : _info.fingerprintSha256,
-            key: const Key('capture_ca_fingerprint'),
-            style: theme.textTheme.bodySmall,
+          Row(
+            children: [
+              Expanded(
+                child: SelectableText(
+                  _info.fingerprintSha256.isEmpty
+                      ? '（未提供）'
+                      : _info.fingerprintSha256,
+                  key: const Key('capture_ca_fingerprint'),
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+              IconButton(
+                key: const Key('capture_ca_copy_fingerprint'),
+                tooltip: '复制指纹',
+                onPressed: _busy || _info.fingerprintSha256.isEmpty
+                    ? null
+                    : _copyFingerprint,
+                icon: const Icon(TablerIcons.copy,
+                    size: AppTypography.iconSM),
+              ),
+            ],
           ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('capture_ca_show_qr'),
+              onPressed: _busy || _info.fingerprintSha256.isEmpty
+                  ? null
+                  : _showQr,
+              icon: const Icon(TablerIcons.qrcode,
+                  size: AppTypography.iconSM),
+              label: const Text('证书二维码 / 分享'),
+            ),
+          ),
+          // TODO(C5): CaptureCaInfo 目前无有效期字段；待 C5 契约波新增
+          // notBefore / notAfter（或 validFrom / validTo）后在此展示有效期。
         ] else
           Text(
             '尚未生成抓包证书。启用 HTTPS 解密前需先生成根 CA，'
@@ -504,6 +655,55 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
               color: scheme.onSurfaceVariant,
             ),
           ),
+      ],
+    );
+  }
+
+  /// 系统证书安装 / 信任状态行。
+  ///
+  /// [CaptureCaTrustStatus.unsupported] 与 [CaptureCaTrustStatus.unknown] 只描述
+  /// 「无法确认」，**绝不**谎报为「未安装」。
+  Widget _buildTrustRow(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final Key key;
+    final IconData icon;
+    final Color color;
+    final String text;
+    switch (_trust) {
+      case CaptureCaTrustStatus.installed:
+        key = const Key('capture_ca_trust_installed');
+        icon = TablerIcons.circle_check_filled;
+        color = scheme.primary;
+        text = '已安装到系统证书存储';
+      case CaptureCaTrustStatus.notInstalled:
+        key = const Key('capture_ca_trust_not_installed');
+        icon = TablerIcons.alert_triangle;
+        color = scheme.error;
+        text = '尚未安装到系统证书存储：HTTPS 抓包需先安装并信任证书';
+      case CaptureCaTrustStatus.unsupported:
+        key = const Key('capture_ca_trust_unsupported');
+        icon = TablerIcons.info_circle;
+        color = scheme.onSurfaceVariant;
+        text = '当前平台不支持证书安装状态检测，无法确认是否已信任';
+      case CaptureCaTrustStatus.unknown:
+        key = const Key('capture_ca_trust_unknown');
+        icon = TablerIcons.help_circle;
+        color = scheme.onSurfaceVariant;
+        text = '证书安装状态未知（检测失败）';
+    }
+    return Row(
+      key: key,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: AppTypography.iconSM, color: color),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Text(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(color: color),
+          ),
+        ),
       ],
     );
   }
@@ -734,6 +934,30 @@ class _CaptureCaSectionCard extends StatelessWidget {
             ...children,
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 二维码视图：白底衬板保证夜间模式可扫（与下载二维码弹窗同一处理）。
+class _QrCodeView extends StatelessWidget {
+  const _QrCodeView({required this.data});
+
+  final String data;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: AppSpacing.allMD,
+      decoration: const BoxDecoration(
+        color: AppColors.white,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: QrImageView(
+        data: data,
+        version: QrVersions.auto,
+        size: 200,
+        errorCorrectionLevel: QrErrorCorrectLevel.M,
       ),
     );
   }
