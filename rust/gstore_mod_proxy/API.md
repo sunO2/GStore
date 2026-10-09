@@ -437,7 +437,7 @@ Template guarantees are in §13.
 | method | request | data |
 |---|---|---|
 | `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string, "active": string }` |
-| `node.delay_test` | `{ "node"?: string, "group"?: string, "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
+| `node.delay_test` | `{ "node"?: string, "group"?: string, "targets"?: [string], "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
 | `node.list` | *(none)* | `{ "engineRunning": bool, "groups": [NodeGroupInfo], "current": NodeCurrent\|null }` |
 
 `node.list` is the **read-only live selection view** used by the home status
@@ -505,6 +505,12 @@ unreachable node is a **per-node result**, not a call error:
 
 `error` is `"timeout"` for a dial/response timeout or the transport message for
 any other failure. Each result also emits a `proxy.node.delay` event.
+
+Selector precedence for the probe set: `group` (optionally narrowed by `node`) →
+`node` → `targets`. `targets` is an explicit list of node names (the UI's
+「测试全部」 path); a name that does not resolve to a live proxy still yields its
+own per-node `not found` result rather than failing the whole call, and a call
+with an empty/absent probe selector is `INVALID_ARGUMENT` (422).
 
 ### 2.7 `dns.*` — resolver settings & cache (Todo 8)
 

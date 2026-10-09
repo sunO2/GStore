@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
@@ -9,6 +10,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_active_node_store.dart';
+import 'proxy_node_favorites_store.dart';
 import 'proxy_nodes_facade.dart';
 
 /// 延迟徽章淡色背景的透明度。
@@ -50,6 +52,7 @@ class ProxyNodesPage extends StatefulWidget {
     this.facade,
     this.initialActiveByGroup = const <String, String>{},
     this.nodeStore,
+    this.favoritesStore,
   });
 
   /// 可直接展示的节点集合（未传 [profileId] 时生效）。
@@ -73,6 +76,10 @@ class ProxyNodesPage extends StatefulWidget {
   /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   /// `_selectNode` 成功后写入，重入时用于高亮回显。
   final ProxyActiveNodeStore? nodeStore;
+
+  /// 收藏节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  /// 收藏的节点在列表中置顶。
+  final ProxyNodeFavoritesStore? favoritesStore;
 
   @override
   State<ProxyNodesPage> createState() => _ProxyNodesPageState();
@@ -125,14 +132,23 @@ class _DelayState {
 class _ProxyNodesPageState extends State<ProxyNodesPage> {
   late final ProxyNodesFacade _facade;
   late final ProxyActiveNodeStore _nodeStore;
+  late final ProxyNodeFavoritesStore _favoritesStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = false;
   String? _loadError;
 
-  Map<String, ProxyNode> _nodesByName = <String, ProxyNode>{};
+  /// 全部节点（**保留重复名**：不同分组可各有一个同名但不同服务器的节点）。
+  List<ProxyNode> _nodes = const <ProxyNode>[];
   List<ProxyGroup> _groups = const <ProxyGroup>[];
   bool _hasProxyGroups = true;
+
+  /// 搜索关键字（小写、trim）。空串 = 不过滤。
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  /// 收藏键集合（`分组\u0000节点名`）；命中的节点在列表中置顶。
+  Set<String> _favorites = <String>{};
 
   /// 引擎运行时的实时组信息（`node.list`，best-effort）：用于「当前」回显与
   /// 可选性判定。为空时退回配置类型 + 持久化选择。
@@ -160,9 +176,12 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     super.initState();
     _facade = widget.facade ?? ProxyModuleNodesFacade();
     _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
+    _favoritesStore =
+        widget.favoritesStore ?? const ConfigStoreProxyNodeFavoritesStore();
     _activeByGroup.addAll(widget.initialActiveByGroup);
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
     _restoreActiveSelection();
+    _restoreFavorites();
 
     final String? profileId = widget.profileId;
     if (profileId == null || profileId.isEmpty) {
@@ -176,7 +195,16 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   void dispose() {
     _eventSub?.cancel();
     _latencyTick.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  /// 重入回显：从持久化接缝读取收藏（best-effort，失败静默保持为空）。
+  Future<void> _restoreFavorites() async {
+    final Set<String>? stored =
+        await _safe<Set<String>>(() => _favoritesStore.read());
+    if (!mounted || stored == null || stored.isEmpty) return;
+    setState(() => _favorites = Set<String>.from(stored));
   }
 
   /// 重入回显：调用方未显式传初始映射时，从持久化接缝读取上次选择
@@ -216,11 +244,56 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     List<ProxyGroup> groups,
     bool hasProxyGroups,
   ) {
-    _nodesByName = <String, ProxyNode>{
-      for (final ProxyNode node in nodes) node.name: node,
-    };
+    _nodes = List<ProxyNode>.unmodifiable(nodes);
     _groups = groups;
     _hasProxyGroups = hasProxyGroups;
+  }
+
+  /// 某名字的第一个节点（用于「这个名字是不是节点」判定等无分组上下文场景）。
+  ProxyNode? _nodeByName(String name) {
+    for (final ProxyNode node in _nodes) {
+      if (node.name == name) return node;
+    }
+    return null;
+  }
+
+  bool _isNodeName(String name) => _nodeByName(name) != null;
+
+  /// 在 [groupName] 作用域内解析成员对应的节点（重名不跨组串用）。
+  ///
+  /// 优先 [ProxyNode.groups] 声明的归属；否则退回该名字的第一个节点；
+  /// 无同名节点时返回 null（该成员是组引用）。
+  ProxyNode? _resolveMemberNode(String groupName, String member) {
+    ProxyNode? fallback;
+    for (final ProxyNode node in _nodes) {
+      if (node.name != member) continue;
+      if (node.groups.contains(groupName)) return node;
+      fallback ??= node;
+    }
+    return fallback;
+  }
+
+  // ==================== 搜索 / 收藏 ====================
+
+  /// 节点是否匹配当前搜索（名称 / 服务器 / 类型 / 端口）。
+  bool _matchesNode(ProxyNode node) {
+    if (_searchQuery.isEmpty) return true;
+    final String haystack =
+        '${node.name} ${node.server} ${node.type} ${node.port}'.toLowerCase();
+    return haystack.contains(_searchQuery);
+  }
+
+  bool _isFavorite(String group, String node) =>
+      _favorites.contains(proxyNodeFavoriteKey(group, node));
+
+  /// 切换收藏（乐观更新 + best-effort 持久化）；弹层随 [_latencyTick] 重建。
+  Future<void> _toggleFavorite(String group, String node) async {
+    final String key = proxyNodeFavoriteKey(group, node);
+    setState(() {
+      if (!_favorites.add(key)) _favorites.remove(key);
+    });
+    _latencyTick.value++;
+    await _safe<void>(() => _favoritesStore.write(_favorites));
   }
 
   /// `profile.get`：加载订阅节点；失败降级为显式错误态（绝不崩溃）。
@@ -328,18 +401,26 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     return list;
   }
 
-  /// 某个分组内的成员名：组引用在前、叶子节点在后，各组内按 [_sort] 排序。
+  /// 某个分组内的成员名：收藏节点最前、组引用其次、其余叶子节点最后，
+  /// 各组内按 [_sort] 排序。
   List<String> _sortedMembers(ProxyGroup group) {
+    final List<String> favoriteNodes = <String>[];
     final List<String> groupRefs = <String>[];
     final List<String> nodes = <String>[];
     for (final String member in group.members) {
-      if (_nodesByName.containsKey(member)) {
-        nodes.add(member);
-      } else {
+      if (!_isNodeName(member)) {
         groupRefs.add(member);
+      } else if (_isFavorite(group.name, member)) {
+        favoriteNodes.add(member);
+      } else {
+        nodes.add(member);
       }
     }
-    return <String>[..._sortedNames(groupRefs), ..._sortedNames(nodes)];
+    return <String>[
+      ..._sortedNames(favoriteNodes),
+      ..._sortedNames(groupRefs),
+      ..._sortedNames(nodes),
+    ];
   }
 
   // ==================== 选择 / 测试 ====================
@@ -404,11 +485,11 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   ///
   /// 无声明分组（引擎合成 `PROXY`）时直接返回全部节点名。
   List<String> get _testTargets {
-    if (_groups.isEmpty) return _nodesByName.keys.toList();
+    if (_groups.isEmpty) return _nodes.map((ProxyNode n) => n.name).toSet().toList();
     final Set<String> names = <String>{};
     for (final ProxyGroup group in _groups) {
       for (final String member in group.members) {
-        if (_nodesByName.containsKey(member)) names.add(member);
+        if (_isNodeName(member)) names.add(member);
       }
     }
     return names.toList();
@@ -517,16 +598,15 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   /// 不会触发 `node.select`。
   Future<void> _openGroupSheet(ProxyGroup group) async {
     final List<String> members = _sortedMembers(group);
-    final List<String> targets =
-        members.where(_nodesByName.containsKey).toList();
+    final List<String> targets = members.where(_isNodeName).toList();
     final List<_PickerEntry> entries = <_PickerEntry>[
       for (final String name in members)
         _PickerEntry(
           name: name,
-          subtitle: _nodesByName[name] == null
+          subtitle: _resolveMemberNode(group.name, name) == null
               ? '端子组'
-              : _nodeSubtitle(_nodesByName[name]!),
-          isGroupRef: _nodesByName[name] == null,
+              : _nodeSubtitle(_resolveMemberNode(group.name, name)!),
+          isGroupRef: _resolveMemberNode(group.name, name) == null,
         ),
     ];
     await AppSheet.showCustom<void>(
@@ -542,13 +622,15 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _pending.contains,
+        favoriteOf: (String n) => _isFavorite(group.name, n),
+        onToggleFavorite: (String n) => _toggleFavorite(group.name, n),
         onTest: () => _runDelayTest(targets: targets, pending: targets),
         onSelect: (String n) => _selectNode(group.name, n),
       ),
     );
   }
 
-  /// 打开节点弹层：展示节点信息 + 单节点测速 + 底部「选择」动作。
+  /// 打开节点弹层：展示节点信息 + 收藏 / 复制地址 / 详情 + 单节点测速 + 「选择」。
   ///
   /// [parentGroup] 是该节点所在分节的分组名（同名节点可属多组，必须显式传入）。
   Future<void> _openNodeSheet(ProxyNode node, String parentGroup) async {
@@ -573,9 +655,42 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _pending.contains,
+        favoriteOf: (String n) => _isFavorite(parentGroup, n),
+        onToggleFavorite: (String n) => _toggleFavorite(parentGroup, n),
+        onDetail: () => _openNodeDetail(node),
+        onCopy: () => _copyNodeAddress(node),
         onTest: () =>
             _runDelayTest(node: node.name, pending: <String>[node.name]),
         onSelect: (String n) => _selectNode(parentGroup, n),
+      ),
+    );
+  }
+
+  /// 复制节点地址（`server:port`；端口为 0 时只复制服务器）。
+  Future<void> _copyNodeAddress(ProxyNode node) async {
+    final String address = node.port > 0
+        ? '${node.server}:${node.port}'
+        : node.server;
+    if (address.isEmpty) {
+      AppDialogs.showInfo('该端子没有可复制的地址');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: address));
+    if (!mounted) return;
+    AppDialogs.showSuccess('已复制节点地址');
+  }
+
+  /// 节点详情：只展示契约 [ProxyNode] 已有字段（不新增编辑）。
+  ///
+  /// 密码 / UUID / obfs 密码等凭据只显示「已设置 / 未设置」，不回显明文。
+  Future<void> _openNodeDetail(ProxyNode node) async {
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (BuildContext sheetContext) => AppSheetScaffold(
+        title: node.name,
+        subtitle: _nodeSubtitle(node),
+        icon: const Icon(TablerIcons.server),
+        content: _NodeDetailView(node: node),
       ),
     );
   }
@@ -614,7 +729,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     if (error != null) {
       return _buildError(context, error);
     }
-    if (_nodesByName.isEmpty) {
+    if (_nodes.isEmpty) {
       return _buildEmpty(context);
     }
 
@@ -622,12 +737,10 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     final List<ProxyGroup> groups =
         groupsMode ? _visibleGroups : const <ProxyGroup>[];
     final List<String> names = groupsMode ? const <String>[] : _visibleNodeNames;
-    if (groupsMode ? groups.isEmpty : names.isEmpty) {
-      return _buildEmpty(context);
-    }
 
     return CustomScrollView(
       slivers: <Widget>[
+        SliverToBoxAdapter(child: _buildSearchBar(context)),
         if (_testing)
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(
@@ -641,22 +754,27 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         // 声明了 proxy-groups：仅 2 列分组宫格（成员在弹层内列出）。
         // 未声明：仅 2 列节点宫格（作用域为引擎合成的隐式组）。
         if (groupsMode)
-          SliverPadding(
-            padding: AppSpacing.pageHorizontalPadding,
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: AppSpacing.md,
-                crossAxisSpacing: AppSpacing.md,
-                mainAxisExtent: 120,
+          if (groups.isEmpty)
+            _buildNoResultsSliver(context)
+          else
+            SliverPadding(
+              padding: AppSpacing.pageHorizontalPadding,
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: AppSpacing.md,
+                  crossAxisSpacing: AppSpacing.md,
+                  mainAxisExtent: 120,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (BuildContext context, int index) =>
+                      _buildGroupTile(groups[index]),
+                  childCount: groups.length,
+                ),
               ),
-              delegate: SliverChildBuilderDelegate(
-                (BuildContext context, int index) =>
-                    _buildGroupTile(groups[index]),
-                childCount: groups.length,
-              ),
-            ),
-          )
+            )
+        else if (names.isEmpty)
+          _buildNoResultsSliver(context)
         else
           SliverPadding(
             padding: AppSpacing.pageHorizontalPadding,
@@ -668,7 +786,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
                 mainAxisExtent: 120,
               ),
               delegate: SliverChildBuilderDelegate(
-                // 作用域为隐式组；names 均来自 _nodesByName，必分派到节点磁贴。
+                // 作用域为隐式组；names 均来自 _nodes，必分派到节点磁贴。
                 (BuildContext context, int index) =>
                     _buildMemberTile(_implicitGroupName, names[index]),
                 childCount: names.length,
@@ -679,8 +797,78 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 可见节点名：全部节点，按 [_sort] 排序。
-  List<String> get _visibleNodeNames => _sortedNames(_nodesByName.keys);
+  /// 搜索栏：按节点名 / 服务器 / 类型 / 端口过滤（空串 = 不过滤）。
+  Widget _buildSearchBar(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.lg,
+        0,
+      ),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: TextField(
+              key: const Key('proxy_nodes_search'),
+              controller: _searchController,
+              onChanged: (String value) => setState(
+                () => _searchQuery = value.trim().toLowerCase(),
+              ),
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: '节点名 / 服务器 / 类型',
+                prefixIcon: Icon(TablerIcons.search),
+              ),
+            ),
+          ),
+          if (_searchQuery.isNotEmpty)
+            IconButton(
+              key: const Key('proxy_nodes_search_clear'),
+              tooltip: '清除',
+              icon: const Icon(TablerIcons.x),
+              onPressed: () {
+                _searchController.clear();
+                setState(() => _searchQuery = '');
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 无匹配结果的空态 sliver（搜索过滤后）。
+  Widget _buildNoResultsSliver(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: AppSpacing.allXXL,
+        child: Center(
+          child: Text('未找到匹配的端子', style: theme.textTheme.bodyMedium),
+        ),
+      ),
+    );
+  }
+
+  /// 可见节点名：匹配搜索的节点，收藏置顶，其余按 [_sort] 排序。
+  List<String> get _visibleNodeNames {
+    final String implicit = _implicitGroupName;
+    final Set<String> matched = <String>{
+      for (final ProxyNode node in _nodes)
+        if (_matchesNode(node)) node.name,
+    };
+    final List<String> sorted = _sortedNames(matched);
+    final List<String> favorites = <String>[];
+    final List<String> rest = <String>[];
+    for (final String name in sorted) {
+      if (_isFavorite(implicit, name)) {
+        favorites.add(name);
+      } else {
+        rest.add(name);
+      }
+    }
+    return <String>[...favorites, ...rest];
+  }
 
   /// 分组磁贴：点击打开该组成员弹层（含测速与（可选）选择）。
   Widget _buildGroupTile(ProxyGroup group) {
@@ -696,8 +884,18 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 可见分组：全部声明分组。
-  List<ProxyGroup> get _visibleGroups => _groups;
+  /// 可见分组：匹配搜索的分组（分组名或其成员节点命中）。
+  List<ProxyGroup> get _visibleGroups {
+    if (_searchQuery.isEmpty) return _groups;
+    return _groups.where((ProxyGroup group) {
+      if (group.name.toLowerCase().contains(_searchQuery)) return true;
+      for (final String member in group.members) {
+        final ProxyNode? node = _resolveMemberNode(group.name, member);
+        if (node != null && _matchesNode(node)) return true;
+      }
+      return false;
+    }).toList();
+  }
 
   /// 按名字查找分组（子分组条目跳转用）。
   ProxyGroup? _groupByName(String name) {
@@ -847,7 +1045,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
   /// 组内成员磁贴：按父分组分派到节点 / 子分组磁贴。
   Widget _buildMemberTile(String parentGroup, String member) {
-    final ProxyNode? node = _nodesByName[member];
+    final ProxyNode? node = _resolveMemberNode(parentGroup, member);
     if (node != null) return _buildNodeTile(node, parentGroup);
     return _buildSubGroupTile(parentGroup, member);
   }
@@ -1026,6 +1224,10 @@ class _NodePickerSheet extends StatelessWidget {
     required this.isPending,
     required this.onTest,
     required this.onSelect,
+    this.favoriteOf,
+    this.onToggleFavorite,
+    this.onDetail,
+    this.onCopy,
     this.selectable = true,
     this.nodeMode = false,
   });
@@ -1040,6 +1242,18 @@ class _NodePickerSheet extends StatelessWidget {
   final bool Function(String node) isPending;
   final Future<void> Function() onTest;
   final Future<void> Function(String name) onSelect;
+
+  /// 该节点是否已收藏（分组弹层内联星标 + 节点弹层动作共用）。
+  final bool Function(String name)? favoriteOf;
+
+  /// 切换收藏。
+  final Future<void> Function(String name)? onToggleFavorite;
+
+  /// 节点弹层「详情」动作（只读展示契约字段）。
+  final Future<void> Function()? onDetail;
+
+  /// 节点弹层「复制地址」动作。
+  final Future<void> Function()? onCopy;
 
   /// 组是否允许手动选择：只读组（load-balance / relay / 未知）为 false，
   /// 此时成员仅可查看 / 测速，点击不触发选择也不关闭弹层。
@@ -1088,10 +1302,47 @@ class _NodePickerSheet extends StatelessWidget {
             children: <Widget>[
               for (final _PickerEntry entry in entries)
                 _buildEntry(context, entry),
+              if (nodeMode) _buildNodeActions(context),
             ],
           ),
         );
       },
+    );
+  }
+
+  /// 节点弹层动作行：收藏 / 复制地址 / 详情（均不触发选择）。
+  Widget _buildNodeActions(BuildContext context) {
+    final String name = entries.first.name;
+    final bool favorite = favoriteOf?.call(name) ?? false;
+    return Padding(
+      padding: AppSpacing.onlyVerticalSM,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: <Widget>[
+          if (favoriteOf != null && onToggleFavorite != null)
+            _SheetAction(
+              key: const Key('proxy_nodes_node_favorite'),
+              icon: favorite ? TablerIcons.star_filled : TablerIcons.star,
+              label: favorite ? '已收藏' : '收藏',
+              highlighted: favorite,
+              onTap: () => onToggleFavorite!(name),
+            ),
+          if (onCopy != null)
+            _SheetAction(
+              key: const Key('proxy_nodes_node_copy'),
+              icon: TablerIcons.copy,
+              label: '复制地址',
+              onTap: onCopy!,
+            ),
+          if (onDetail != null)
+            _SheetAction(
+              key: const Key('proxy_nodes_node_detail'),
+              icon: TablerIcons.info_circle,
+              label: '详情',
+              onTap: onDetail!,
+            ),
+        ],
+      ),
     );
   }
 
@@ -1154,6 +1405,24 @@ class _NodePickerSheet extends StatelessWidget {
                 state: delayOf(entry.name),
                 pending: isPending(entry.name),
               ),
+            // 分组弹层内联收藏星标（节点弹层用底部动作行，避免重复键）。
+            if (!nodeMode && !entry.isGroupRef && favoriteOf != null)
+              IconButton(
+                key: Key('proxy_nodes_favorite_${entry.name}'),
+                tooltip: favoriteOf!(entry.name) ? '取消收藏' : '收藏',
+                icon: Icon(
+                  favoriteOf!(entry.name)
+                      ? TablerIcons.star_filled
+                      : TablerIcons.star,
+                  size: AppTypography.iconMD,
+                ),
+                color: favoriteOf!(entry.name)
+                    ? scheme.primary
+                    : scheme.onSurfaceVariant,
+                onPressed: onToggleFavorite == null
+                    ? null
+                    : () => onToggleFavorite!(entry.name),
+              ),
             if (selected && selectable)
               Padding(
                 padding: AppSpacing.onlyLeftSM,
@@ -1168,6 +1437,154 @@ class _NodePickerSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 节点弹层内的动作按钮（图标 + 文案的紧凑竖排）。
+class _SheetAction extends StatelessWidget {
+  const _SheetAction({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.highlighted = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final Future<void> Function() onTap;
+
+  /// 高亮（如已收藏）用主题 primary。
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final Color color =
+        highlighted ? scheme.primary : scheme.onSurfaceVariant;
+    return InkWell(
+      onTap: () => onTap(),
+      borderRadius: AppRadius.allSM,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(icon, size: AppTypography.iconLG, color: color),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              label,
+              style: theme.textTheme.labelMedium?.copyWith(color: color),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 节点详情：只读展示契约 [ProxyNode] 已有字段（无编辑）。
+///
+/// 凭据类字段（password / uuid / obfsPassword）只显示「已设置」，不回显明文。
+class _NodeDetailView extends StatelessWidget {
+  const _NodeDetailView({required this.node});
+
+  final ProxyNode node;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<_DetailRow> rows = <_DetailRow>[
+      _DetailRow(keyName: 'type', label: '类型', value: node.type),
+      _DetailRow(keyName: 'server', label: '服务器', value: node.server),
+      if (node.port > 0)
+        _DetailRow(keyName: 'port', label: '端口', value: '${node.port}'),
+      if ((node.cipher ?? '').isNotEmpty)
+        _DetailRow(keyName: 'cipher', label: '加密', value: node.cipher!),
+      if ((node.network ?? '').isNotEmpty)
+        _DetailRow(keyName: 'network', label: '传输', value: node.network!),
+      if (node.tls != null)
+        _DetailRow(
+          keyName: 'tls',
+          label: 'TLS',
+          value: node.tls! ? '开启' : '关闭',
+        ),
+      if ((node.sni ?? '').isNotEmpty)
+        _DetailRow(keyName: 'sni', label: 'SNI', value: node.sni!),
+      if ((node.flow ?? '').isNotEmpty)
+        _DetailRow(keyName: 'flow', label: 'Flow', value: node.flow!),
+      if ((node.security ?? '').isNotEmpty)
+        _DetailRow(keyName: 'security', label: 'Security', value: node.security!),
+      if (node.alterId != null)
+        _DetailRow(keyName: 'alterId', label: 'AlterId', value: '${node.alterId}'),
+      if ((node.fingerprint ?? '').isNotEmpty)
+        _DetailRow(
+          keyName: 'fingerprint',
+          label: '指纹',
+          value: node.fingerprint!,
+        ),
+      if (node.alpn.isNotEmpty)
+        _DetailRow(keyName: 'alpn', label: 'ALPN', value: node.alpn.join(', ')),
+      if ((node.obfs ?? '').isNotEmpty)
+        _DetailRow(keyName: 'obfs', label: 'Obfs', value: node.obfs!),
+      if ((node.password ?? '').isNotEmpty ||
+          (node.uuid ?? '').isNotEmpty ||
+          (node.obfsPassword ?? '').isNotEmpty)
+        const _DetailRow(keyName: 'credentials', label: '凭据', value: '已设置'),
+    ];
+    return Column(
+      key: const Key('proxy_nodes_detail'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        for (final _DetailRow row in rows) _buildRow(context, row),
+      ],
+    );
+  }
+
+  Widget _buildRow(BuildContext context, _DetailRow row) {
+    final ThemeData theme = Theme.of(context);
+    return Padding(
+      key: Key('proxy_nodes_detail_${row.keyName}'),
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SizedBox(
+            width: 96,
+            child: Text(
+              row.label,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              row.value.isEmpty ? '—' : row.value,
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 详情行数据（键名用于测试定位）。
+class _DetailRow {
+  const _DetailRow({
+    required this.keyName,
+    required this.label,
+    required this.value,
+  });
+
+  final String keyName;
+  final String label;
+  final String value;
 }
 
 /// 逐节点延迟徽标：按阈值映射到主题色；超时显式文案（不是 spinner）。
