@@ -12,13 +12,16 @@ class RhttpAdapter implements HttpClientAdapter {
   late final RhttpCompatibleClient _client;
   bool _initialized = false;
 
+  /// 是否允许坏证书（`true` = 跳过 TLS 证书校验；`false` = 正常校验）。
+  final bool allowBadCertificate;
+
   /// 工厂构造函数
   factory RhttpAdapter({bool allowBadCertificate = true}) {
     return RhttpAdapter._internal(allowBadCertificate);
   }
 
   /// 私有命名构造函数 - 异步初始化
-  RhttpAdapter._internal(bool allowBadCertificate) {
+  RhttpAdapter._internal(this.allowBadCertificate) {
     _initClient(allowBadCertificate);
   }
 
@@ -26,12 +29,12 @@ class RhttpAdapter implements HttpClientAdapter {
   void _initClient(bool allowBadCertificate) async {
     try {
       _client = await RhttpCompatibleClient.create(
-        settings: const ClientSettings(
-          // 配置 TLS 设置，是否验证证书
+        settings: ClientSettings(
+          // 配置 TLS 设置：按 allowBadCertificate 决定是否校验证书。
           tlsSettings: TlsSettings(
             trustRootCertificates: true,
-            trustedRootCertificates: [],
-            verifyCertificates: false, // 允许自签名证书
+            trustedRootCertificates: const [],
+            verifyCertificates: !allowBadCertificate,
             sni: true,
           ),
         ),

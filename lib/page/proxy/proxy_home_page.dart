@@ -236,6 +236,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 当前选中的节点（持久化；节点页写入，首页展示 + 节点页高亮回显）。
   ProxyActiveNode? _activeNode;
 
+  /// 最近一条订阅事件的非阻塞 UI 反馈（`null` = 无）。
+  String? _subscriptionNotice;
+
+  /// [_subscriptionNotice] 是否为错误反馈（决定配色）。
+  bool _subscriptionNoticeIsError = false;
+
+  /// `proxy.config.applied` 的非阻塞反馈（`null` = 无）。
+  String? _configAppliedNotice;
+
   @override
   void initState() {
     super.initState();
@@ -268,6 +277,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   @override
   void dispose() {
     _eventSub?.cancel();
+    // 页面销毁：取消 geo 后台轮询，避免销毁后仍有定时轮询。
+    _geoProvisioner?.cancelWaitReady();
     super.dispose();
   }
 
@@ -689,6 +700,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   void _onEvent(ProxyEvent event) {
     if (!mounted) return;
     var refreshNodes = false;
+    var refreshProfiles = false;
     setState(() {
       switch (event) {
         case ProxyStateEvent():
@@ -712,14 +724,42 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _applyTopDomains(event.topDomains);
           if (_isRunning) refreshNodes = true;
         case ProxyConfigAppliedEvent():
-          break;
+          _configAppliedNotice = event.template.isEmpty
+              ? '配置已应用'
+              : '配置已应用（${event.template}）';
         case ProxyNodeDelayEvent():
           _nodeDelay = event;
         case ProxySubscriptionUpdatedEvent():
+          _subscriptionNotice = '订阅已更新 · ${event.nodeCount} 个节点';
+          _subscriptionNoticeIsError = false;
         case ProxySubscriptionProgressEvent():
+          switch (event.state) {
+            case ProxySubscriptionProgressState.started:
+              _subscriptionNotice = '正在刷新订阅…';
+              _subscriptionNoticeIsError = false;
+            case ProxySubscriptionProgressState.succeeded:
+              _subscriptionNotice = '订阅刷新完成';
+              _subscriptionNoticeIsError = false;
+            case ProxySubscriptionProgressState.failed:
+              _subscriptionNotice = '订阅刷新失败';
+              _subscriptionNoticeIsError = true;
+            case ProxySubscriptionProgressState.unknown:
+              break;
+          }
         case ProxySubscriptionFailedEvent():
+          final message = event.error?.message ?? '';
+          _subscriptionNotice =
+              message.isEmpty ? '订阅刷新失败' : '订阅刷新失败：$message';
+          _subscriptionNoticeIsError = true;
         case ProxySubscriptionAddedEvent():
+          _subscriptionNotice =
+              event.name.isEmpty ? '已添加订阅' : '已添加订阅：${event.name}';
+          _subscriptionNoticeIsError = false;
+          refreshProfiles = true;
         case ProxySubscriptionRemovedEvent():
+          _subscriptionNotice = '订阅已移除';
+          _subscriptionNoticeIsError = false;
+          refreshProfiles = true;
         case ProxyConnEvent():
         case ProxyDnsEvent():
         case ProxyTunReleasedEvent():
@@ -728,6 +768,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       }
     });
     if (refreshNodes) _refreshNodeList();
+    if (refreshProfiles) unawaited(_reloadSelectedProfile());
   }
 
   /// 与 stats 同节奏刷新实时选中节点：best-effort，失败保持旧值（不崩溃）。
@@ -1179,6 +1220,24 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
         _buildQuickEntries(context),
+        if (_subscriptionNotice != null) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _buildNoticeBanner(
+            context,
+            key: const Key('proxy-subscription-notice'),
+            text: _subscriptionNotice!,
+            error: _subscriptionNoticeIsError,
+          ),
+        ],
+        if (_configAppliedNotice != null) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _buildNoticeBanner(
+            context,
+            key: const Key('proxy-config-applied-notice'),
+            text: _configAppliedNotice!,
+            error: false,
+          ),
+        ],
         if (_geoStatus == _GeoStatus.preparing ||
             _geoStatus == _GeoStatus.failed) ...[
           const SizedBox(height: AppSpacing.lg),
@@ -1595,6 +1654,47 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ///
   /// 颜色全部取自主题令牌（`tertiaryContainer` 准备中 / `errorContainer` 失败），
   /// 不阻塞连接、不用弹框。
+  /// 非阻塞事件反馈横幅（订阅 / 配置应用）：错误态用 error 容器，正常用
+  /// secondary 容器；颜色 / 字号全部取自主题令牌。
+  Widget _buildNoticeBanner(
+    BuildContext context, {
+    required Key key,
+    required String text,
+    required bool error,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final containerColor =
+        error ? scheme.errorContainer : scheme.secondaryContainer;
+    final contentColor =
+        error ? scheme.onErrorContainer : scheme.onSecondaryContainer;
+    return Container(
+      key: key,
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: containerColor,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Row(
+        children: [
+          Icon(
+            error ? TablerIcons.alert_circle : TablerIcons.info_circle,
+            size: AppTypography.iconMD,
+            color: contentColor,
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall?.copyWith(color: contentColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildGeoStatusBanner(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;

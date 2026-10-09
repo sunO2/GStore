@@ -14,7 +14,7 @@
 library;
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:gstore/core/core.dart' show getProxy;
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/utils/unit.dart' show applyProxyIfNeeded;
@@ -79,6 +79,17 @@ class ProxyGeoProvisioner {
   Future<bool>? _inflight;
   DateTime? _lastFailureAt;
 
+  /// 取消令牌：页面销毁时置 `true`，使 [waitReady] 在下一次检查点退出，
+  /// 不再继续轮询（避免销毁后仍有定时轮询 / 无谓的 `rulesGet`）。
+  bool _waitReadyCancelled = false;
+
+  /// 请求取消当前 / 后续 [waitReady] 轮询（页面 `dispose` 时调用）。
+  ///
+  /// 幂等；[waitReady] 每次调用开始时会复位，以便同一实例后续可再次等待。
+  void cancelWaitReady() {
+    _waitReadyCancelled = true;
+  }
+
   /// 快速 kickoff：探测 geo → 生成配置 → 拉校验和 → 触发下载。
   ///
   /// 返回 `true` 表示「geo 已就绪」或「下载已成功触发」。任何失败返回 `false`，
@@ -103,17 +114,20 @@ class ProxyGeoProvisioner {
     });
   }
 
-  /// 轮询 `rules.get().geo.status` 直到 ready/failed/超时。
+  /// 轮询 `rules.get().geo.status` 直到 ready/failed/超时/取消。
   ///
   /// * ready → `true`
   /// * failed → `false`
   /// * 超时（或 [rulesGet] 持续异常）→ `false`
+  /// * [cancelWaitReady] 被调用 → 下一次检查点立即 `false`（不再轮询）
   Future<bool> waitReady({Duration? timeout}) async {
+    _waitReadyCancelled = false;
     final limit = timeout ?? this.timeout;
     final start = _clock();
     final deadline = start.add(limit);
 
     while (true) {
+      if (_waitReadyCancelled) return false;
       try {
         final snapshot = await _facade.rulesGet();
         final status = snapshot.geo.status;
@@ -123,6 +137,8 @@ class ProxyGeoProvisioner {
         debugPrint('ProxyGeoProvisioner: waitReady 轮询失败 - $error');
       }
 
+      // `rulesGet` 期间可能被取消：完成一次读取后再次检查，避免多发一次请求。
+      if (_waitReadyCancelled) return false;
       if (!_clock().isBefore(deadline)) return false;
       await Future<void>.delayed(pollInterval);
     }
@@ -231,9 +247,13 @@ class DioProxyGeoChecksumClient implements ProxyGeoChecksumClient {
         receiveTimeout: const Duration(seconds: 20),
         sendTimeout: const Duration(seconds: 30),
       ),
-    )..httpClientAdapter = RhttpAdapter(allowBadCertificate: true);
+    )..httpClientAdapter = RhttpAdapter(allowBadCertificate: false);
     return dio;
   }
+
+  /// 测试接缝：构造生产默认 [Dio]（启用 TLS 证书校验），供断言不使用坏证书。
+  @visibleForTesting
+  static Dio buildDefaultDio() => _rhttpDio();
 
   @override
   Future<String?> fetchSha256(String assetUrl) async {
