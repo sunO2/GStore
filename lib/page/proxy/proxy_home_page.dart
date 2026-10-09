@@ -9,6 +9,7 @@ import 'package:gstore/core/service/proxy_connect_controller.dart';
 import 'proxy_active_node_store.dart';
 import 'proxy_active_profile_store.dart';
 import 'proxy_capture_settings_page.dart';
+import 'proxy_connections_page.dart';
 import 'proxy_engine_settings_store.dart';
 import 'proxy_geo_provisioner.dart';
 import 'proxy_home_facade.dart';
@@ -54,6 +55,7 @@ class ProxyHomePage extends StatefulWidget {
     this.siteProbe,
     this.onOpenRequests,
     this.onOpenStats,
+    this.onOpenConnections,
     this.onOpenLanSettings,
     this.onOpenCaptureSettings,
     this.splitTunnelFacade,
@@ -102,6 +104,10 @@ class ProxyHomePage extends StatefulWidget {
 
   /// 「流量统计」快捷入口；为空时打开 [ProxyStatsPage]。
   final VoidCallback? onOpenStats;
+
+  /// 「活动连接」快捷入口（显示当前活动连接数）；为空时打开
+  /// [ProxyConnectionsPage]。
+  final VoidCallback? onOpenConnections;
 
   /// 「局域网设置」快捷入口（模式选择为 `lanProxy` 但 LAN 未启用时的跳转）。
   /// 为空时直接打开 [ProxySettingsPage]。
@@ -2098,6 +2104,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             trailing: const Icon(TablerIcons.chevron_right),
             onTap: _openStats,
           ),
+          const Divider(height: 1),
+          ListTile(
+            key: const Key('proxy-connections-tile'),
+            leading: const Icon(TablerIcons.plug_connected),
+            title: const Text('活动连接'),
+            subtitle: Text('${_stats?.activeConns ?? 0} 个活动连接'),
+            trailing: const Icon(TablerIcons.chevron_right),
+            onTap: _openConnections,
+          ),
         ],
       ),
     );
@@ -2122,6 +2137,17 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const ProxyStatsPage()),
+    );
+  }
+
+  void _openConnections() {
+    final callback = widget.onOpenConnections;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyConnectionsPage()),
     );
   }
 
