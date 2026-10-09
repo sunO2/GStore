@@ -214,6 +214,7 @@ class ProxyRequestsPage extends StatefulWidget {
     this.captureDetailFacade,
     this.captureDeleteFacade,
     this.captureActionBinder,
+    this.initialDomain,
   });
 
   /// 收集页门面（测试可注入假实现；为空时用生产适配器）。
@@ -248,6 +249,9 @@ class ProxyRequestsPage extends StatefulWidget {
   /// `null` = 使用生产装配 [productionCaptureActionBinder]（仅在首次点击抓包行
   /// 时惰性构建，避免页面初始化即触碰请求调试 store）。
   final CaptureDetailActionBinder? captureActionBinder;
+
+  /// 初始域名筛选（下钻接缝）：非空时预填搜索框并按该域名本地过滤。
+  final String? initialDomain;
 
   @override
   State<ProxyRequestsPage> createState() => _ProxyRequestsPageState();
@@ -332,6 +336,11 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     _saveFile = widget.saveFile ?? _defaultSaveFile;
     _readFile = widget.readFile ?? _defaultReadFile;
     _live = widget.initialLive;
+    final initialDomain = widget.initialDomain?.trim() ?? '';
+    if (initialDomain.isNotEmpty) {
+      _searchController.text = initialDomain;
+      _searchQuery = initialDomain.toLowerCase();
+    }
     _eventSub = _events.listen(_onEvent);
     if (_live) _startFallback();
     unawaited(_load());

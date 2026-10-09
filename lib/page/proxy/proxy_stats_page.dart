@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
@@ -12,25 +16,16 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
 
+import 'proxy_requests_page.dart';
 import 'proxy_stats_facade.dart';
+import 'proxy_stats_helpers.dart';
 
-/// 统计排序键（`stats.domain.get` 的 `sort` + 本地列方向）。
-enum _StatSort {
-  bytes('流量', 'bytes'),
-  connections('连接数', 'connections'),
-  upload('上传', 'bytes'),
-  download('下载', 'bytes'),
-  lastSeen('最近', 'lastSeen'),
-  outbound('策略', 'bytes'),
-  domain('域名', 'domain');
-
-  const _StatSort(this.label, this.wire);
-
-  final String label;
-
-  /// 转发给 Rust 的排序键（`bytes|connections|lastSeen|domain`）。
-  final String wire;
-}
+/// 统计 CSV 另存接缝（测试注入；为空时走 [FilePicker.platform.saveFile]）。
+typedef ProxyStatsSaveFile = Future<String?> Function({
+  required String fileName,
+  required Uint8List bytes,
+  required List<String> allowedExtensions,
+});
 
 /// 时间范围选项。
 class _RangeOption {
@@ -68,10 +63,16 @@ const Duration _liveInterval = Duration(seconds: 2);
 ///
 /// 字节等口径由 Rust 计算，Dart 仅用 [byteSize] 格式化单值。
 class ProxyStatsPage extends StatefulWidget {
-  const ProxyStatsPage({super.key, this.facade});
+  const ProxyStatsPage({super.key, this.facade, this.onDrilldown, this.saveFile});
 
   /// 统计门面（测试可注入假实现；为空时用生产适配器）。
   final ProxyStatsFacade? facade;
+
+  /// 域名下钻接缝（测试可注入假实现；为空时推入按域名筛选的请求列表页）。
+  final void Function(DomainStat stat)? onDrilldown;
+
+  /// CSV 另存接缝（测试可注入；为空时走 [FilePicker.platform.saveFile]）。
+  final ProxyStatsSaveFile? saveFile;
 
   @override
   State<ProxyStatsPage> createState() => _ProxyStatsPageState();
@@ -85,9 +86,11 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
   String? _trafficError;
   DomainPage? _page;
   String? _domainError;
-  _StatSort _sort = _StatSort.bytes;
+  ProxyStatSort _sort = ProxyStatSort.bytes;
   bool _ascending = false;
   int _rangeMs = 0;
+
+  bool _exporting = false;
 
   bool _live = false;
   Timer? _liveTimer;
@@ -147,7 +150,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
       final page = await _facade.statsDomainGet(
         StatsDomainGetRequest(
           rangeMs: _rangeMs == 0 ? null : _rangeMs,
-          sort: _sort.wire,
+          sort: proxyStatsServerSortFor(_sort),
           limit: _domainLimit,
         ),
       );
@@ -178,7 +181,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
     }
   }
 
-  void _onSortSelected(_StatSort sort) {
+  void _onSortSelected(ProxyStatSort sort) {
     setState(() {
       if (_sort == sort) {
         _ascending = !_ascending;
@@ -202,21 +205,21 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
     final domains = List<DomainStat>.of(_page?.domains ?? const <DomainStat>[]);
     if (domains.isEmpty) return domains;
     switch (_sort) {
-      case _StatSort.bytes:
+      case ProxyStatSort.bytes:
         return _ascending ? domains.reversed.toList() : domains;
-      case _StatSort.connections:
+      case ProxyStatSort.connections:
         domains.sort((a, b) => a.connections.compareTo(b.connections));
-      case _StatSort.upload:
+      case ProxyStatSort.upload:
         domains.sort((a, b) => a.uploadBytes.compareTo(b.uploadBytes));
-      case _StatSort.download:
+      case ProxyStatSort.download:
         domains.sort((a, b) => a.downloadBytes.compareTo(b.downloadBytes));
-      case _StatSort.lastSeen:
+      case ProxyStatSort.lastSeen:
         domains.sort((a, b) => a.lastSeenMs.compareTo(b.lastSeenMs));
-      case _StatSort.domain:
+      case ProxyStatSort.domain:
         domains.sort((a, b) => a.domain.toLowerCase().compareTo(
               b.domain.toLowerCase(),
             ));
-      case _StatSort.outbound:
+      case ProxyStatSort.outbound:
         domains.sort((a, b) {
           final byOutbound = a.outbound.compareTo(b.outbound);
           if (byOutbound != 0) return byOutbound;
@@ -248,12 +251,91 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
     }
   }
 
+  /// 域名下钻：推入按该域名筛选的请求列表页（测试经 [ProxyStatsPage.onDrilldown]）。
+  void _openDomainRequests(DomainStat stat) {
+    final drilldown = widget.onDrilldown;
+    if (drilldown != null) {
+      drilldown(stat);
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProxyRequestsPage(initialDomain: stat.domain),
+      ),
+    );
+  }
+
+  Future<void> _copyText(String text, String label) async {
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    AppDialogs.showSuccess('已复制$label');
+  }
+
+  /// 导出当前页统计为 CSV（经 [ProxyStatsPage.saveFile] 接缝落盘）。
+  Future<void> _exportCsv() async {
+    if (_exporting) return;
+    final domains = _page?.domains ?? const <DomainStat>[];
+    if (domains.isEmpty) {
+      AppDialogs.showError('暂无统计数据可导出', title: '导出失败');
+      return;
+    }
+    setState(() => _exporting = true);
+    final saveFile = widget.saveFile ?? _defaultSaveFile;
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(buildStatsCsv(domains)));
+      final output = await saveFile(
+        fileName: 'gstore_stats_${_exportTimestamp()}.csv',
+        bytes: bytes,
+        allowedExtensions: const <String>['csv'],
+      );
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      if (output == null || output.isEmpty) return; // 用户取消：静默
+      AppDialogs.showSuccess('已导出 ${domains.length} 条域名统计');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      AppDialogs.showError('导出失败：$error', title: '导出失败');
+    }
+  }
+
+  static Future<String?> _defaultSaveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowedExtensions,
+  }) {
+    return FilePicker.platform.saveFile(
+      dialogTitle: '保存域名统计',
+      fileName: fileName,
+      lockParentWindow: true,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
+      bytes: bytes,
+    );
+  }
+
+  String _exportTimestamp() {
+    final now = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('域名统计'),
         actions: [
+          IconButton(
+            key: const Key('stats_export'),
+            tooltip: '导出 CSV',
+            icon: _exporting
+                ? const AppLoading(size: AppLoadingSize.small)
+                : const Icon(TablerIcons.file_download),
+            onPressed: (_page == null || _exporting) ? null : _exportCsv,
+          ),
           IconButton(
             tooltip: '重置统计',
             icon: const Icon(TablerIcons.trash),
@@ -396,7 +478,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
             spacing: AppSpacing.xs,
             runSpacing: AppSpacing.xs,
             children: [
-              for (final sort in _StatSort.values)
+              for (final sort in ProxyStatSort.values)
                 ChoiceChip(
                   key: Key('stats_sort_${sort.name}'),
                   label: Text(sort.label),
@@ -448,6 +530,9 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
           itemBuilder: (context, index) => _DomainStatCard(
             key: ValueKey('stat_row_${domains[index].domain}'),
             stat: domains[index],
+            onOpen: () => _openDomainRequests(domains[index]),
+            onCopyDomain: () => _copyText(domains[index].domain, '域名'),
+            onCopyOutbound: () => _copyText(domains[index].outbound, '出站'),
           ),
         ),
       ),
@@ -644,9 +729,18 @@ class _OverviewError extends StatelessWidget {
 }
 
 class _DomainStatCard extends StatelessWidget {
-  const _DomainStatCard({super.key, required this.stat});
+  const _DomainStatCard({
+    super.key,
+    required this.stat,
+    required this.onOpen,
+    required this.onCopyDomain,
+    required this.onCopyOutbound,
+  });
 
   final DomainStat stat;
+  final VoidCallback onOpen;
+  final VoidCallback onCopyDomain;
+  final VoidCallback onCopyOutbound;
 
   @override
   Widget build(BuildContext context) {
@@ -654,62 +748,94 @@ class _DomainStatCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     return Card(
       margin: AppSpacing.onlyVerticalXS,
-      child: Padding(
-        padding: AppSpacing.allMD,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    stat.domain.isEmpty ? '(未知域名)' : stat.domain,
-                    style: theme.textTheme.titleSmall,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (!stat.domainKnown)
-                  Container(
-                    padding: AppSpacing.horizontalSM_verticalXS,
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest,
-                      borderRadius: AppRadius.allMD,
-                    ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: AppSpacing.allMD,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
                     child: Text(
-                      '未知',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                      stat.domain.isEmpty ? '(未知域名)' : stat.domain,
+                      style: theme.textTheme.titleSmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (!stat.domainKnown)
+                    Container(
+                      padding: AppSpacing.horizontalSM_verticalXS,
+                      decoration: BoxDecoration(
+                        color: scheme.surfaceContainerHighest,
+                        borderRadius: AppRadius.allMD,
+                      ),
+                      child: Text(
+                        '未知',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
+                  _copyButton(
+                    context,
+                    key: Key('stat_copy_domain_${stat.domain}'),
+                    tooltip: '复制域名',
+                    onPressed: onCopyDomain,
                   ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
-              _strategyText(stat),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
+                  _copyButton(
+                    context,
+                    key: Key('stat_copy_outbound_${stat.domain}'),
+                    tooltip: '复制出站',
+                    onPressed: onCopyOutbound,
+                  ),
+                ],
               ),
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            Wrap(
-              spacing: AppSpacing.lg,
-              runSpacing: AppSpacing.xs,
-              children: [
-                _metric(context, TablerIcons.arrows_up_down, '${stat.connections} 连接'),
-                _metric(context, TablerIcons.arrow_up, byteSize(stat.uploadBytes)),
-                _metric(
-                  context,
-                  TablerIcons.arrow_down,
-                  byteSize(stat.downloadBytes),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                _strategyText(stat),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
                 ),
-                _metric(context, TablerIcons.clock, _formatSeen(stat.lastSeenMs)),
-              ],
-            ),
-          ],
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Wrap(
+                spacing: AppSpacing.lg,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  _metric(context, TablerIcons.arrows_up_down, '${stat.connections} 连接'),
+                  _metric(context, TablerIcons.arrow_up, byteSize(stat.uploadBytes)),
+                  _metric(
+                    context,
+                    TablerIcons.arrow_down,
+                    byteSize(stat.downloadBytes),
+                  ),
+                  _metric(context, TablerIcons.clock, _formatSeen(stat.lastSeenMs)),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _copyButton(
+    BuildContext context, {
+    required Key key,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      key: key,
+      tooltip: tooltip,
+      iconSize: AppTypography.iconSM,
+      visualDensity: VisualDensity.compact,
+      onPressed: onPressed,
+      icon: Icon(TablerIcons.copy, color: Theme.of(context).colorScheme.primary),
     );
   }
 

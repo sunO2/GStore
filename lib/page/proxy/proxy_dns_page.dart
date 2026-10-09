@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
@@ -33,9 +34,16 @@ class ProxyDnsPage extends StatefulWidget {
 class _ProxyDnsPageState extends State<ProxyDnsPage> {
   late final ProxyDnsFacade _facade;
 
+  /// 近期查询 / 映射每次展开的增量（初始即展示这么多，之后按需累加）。
+  static const int _pageChunk = 20;
+
   bool _loading = true;
   String? _error;
   DnsSnapshot? _snapshot;
+
+  /// 已展开的条数（去除 20 条硬截断；「显示更多」累加）。
+  int _queryVisible = _pageChunk;
+  int _mappingVisible = _pageChunk;
 
   @override
   void initState() {
@@ -103,6 +111,13 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
     } catch (error) {
       AppDialogs.showError('清空缓存失败：$error');
     }
+  }
+
+  Future<void> _copyText(String text, String label) async {
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    AppDialogs.showSuccess('已复制$label');
   }
 
   @override
@@ -254,6 +269,8 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
 
   Widget _buildRecentQueries(BuildContext context, DnsSnapshot snapshot) {
     final theme = Theme.of(context);
+    final queries = snapshot.recentQueries;
+    final shown = queries.take(_queryVisible).toList();
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -261,18 +278,50 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('近期查询', style: theme.textTheme.titleSmall),
+            Row(
+              children: [
+                Expanded(
+                  child: Text('近期查询', style: theme.textTheme.titleSmall),
+                ),
+                Text(
+                  '共 ${queries.length} 条',
+                  key: const Key('dns_query_count'),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: AppSpacing.sm),
-            if (snapshot.recentQueries.isEmpty)
+            if (queries.isEmpty)
               Text(
                 '暂无 DNS 查询记录',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               )
-            else
-              for (final record in snapshot.recentQueries.take(20))
-                _DnsQueryTile(record: record),
+            else ...[
+              for (var i = 0; i < shown.length; i++)
+                _DnsQueryTile(
+                  key: Key('dns_query_$i'),
+                  index: i,
+                  record: shown[i],
+                  onCopy: () => _copyText(shown[i].domain, '查询域名'),
+                ),
+              if (queries.length > shown.length)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: const Key('dns_queries_more'),
+                    onPressed: () => setState(
+                      () => _queryVisible += _pageChunk,
+                    ),
+                    child: Text(
+                      '显示更多（已显示 ${shown.length} / 共 ${queries.length}）',
+                    ),
+                  ),
+                ),
+            ],
           ],
         ),
       ),
@@ -281,6 +330,8 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
 
   Widget _buildMappings(BuildContext context, DnsSnapshot snapshot) {
     final theme = Theme.of(context);
+    final mappings = snapshot.mappings;
+    final shown = mappings.take(_mappingVisible).toList();
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -288,36 +339,52 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('域名映射', style: theme.textTheme.titleSmall),
+            Row(
+              children: [
+                Expanded(
+                  child: Text('域名映射', style: theme.textTheme.titleSmall),
+                ),
+                Text(
+                  '共 ${mappings.length} 条',
+                  key: const Key('dns_mapping_count'),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: AppSpacing.sm),
-            if (snapshot.mappings.isEmpty)
+            if (mappings.isEmpty)
               Text(
                 '暂无域名映射',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               )
-            else
-              for (final mapping in snapshot.mappings.take(20))
+            else ...[
+              for (var i = 0; i < shown.length; i++)
                 Padding(
+                  key: Key('dns_mapping_$i'),
                   padding: AppSpacing.onlyVerticalXS,
                   child: Row(
                     children: [
                       Expanded(
                         child: Text(
-                          mapping.domain.isEmpty ? mapping.ip : mapping.domain,
+                          shown[i].domain.isEmpty
+                              ? shown[i].ip
+                              : shown[i].domain,
                           style: theme.textTheme.bodyMedium,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       const SizedBox(width: AppSpacing.sm),
                       Text(
-                        mapping.ip,
+                        shown[i].ip,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
-                      if (mapping.fake) ...[
+                      if (shown[i].fake) ...[
                         const SizedBox(width: AppSpacing.sm),
                         Text(
                           'fake',
@@ -326,9 +393,39 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
                           ),
                         ),
                       ],
+                      IconButton(
+                        key: Key('dns_copy_mapping_$i'),
+                        tooltip: '复制映射',
+                        iconSize: AppTypography.iconSM,
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _copyText(
+                          shown[i].domain.isEmpty
+                              ? shown[i].ip
+                              : '${shown[i].domain} ${shown[i].ip}',
+                          '映射',
+                        ),
+                        icon: Icon(
+                          TablerIcons.copy,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
                     ],
                   ),
                 ),
+              if (mappings.length > shown.length)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: const Key('dns_mappings_more'),
+                    onPressed: () => setState(
+                      () => _mappingVisible += _pageChunk,
+                    ),
+                    child: Text(
+                      '显示更多（已显示 ${shown.length} / 共 ${mappings.length}）',
+                    ),
+                  ),
+                ),
+            ],
           ],
         ),
       ),
@@ -418,9 +515,16 @@ class _ModeBadge extends StatelessWidget {
 }
 
 class _DnsQueryTile extends StatelessWidget {
-  const _DnsQueryTile({required this.record});
+  const _DnsQueryTile({
+    super.key,
+    required this.index,
+    required this.record,
+    required this.onCopy,
+  });
 
+  final int index;
   final DnsQueryRecord record;
+  final VoidCallback onCopy;
 
   @override
   Widget build(BuildContext context) {
@@ -457,6 +561,15 @@ class _DnsQueryTile extends StatelessWidget {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
+                if (record.answers.isNotEmpty)
+                  Text(
+                    record.answers.join(', '),
+                    key: Key('dns_query_answers_$index'),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
               ],
             ),
           ),
@@ -466,6 +579,14 @@ class _DnsQueryTile extends StatelessWidget {
             style: theme.textTheme.labelSmall?.copyWith(
               color: scheme.onSurfaceVariant,
             ),
+          ),
+          IconButton(
+            key: Key('dns_copy_query_$index'),
+            tooltip: '复制查询',
+            iconSize: AppTypography.iconSM,
+            visualDensity: VisualDensity.compact,
+            onPressed: onCopy,
+            icon: Icon(TablerIcons.copy, color: scheme.primary),
           ),
         ],
       ),
