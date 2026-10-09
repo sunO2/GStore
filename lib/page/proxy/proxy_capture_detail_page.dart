@@ -46,6 +46,8 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
 
+import 'proxy_har_export.dart';
+
 /// 详情页所需的模块能力：按 `recordId` 拉一条完整抓包。
 ///
 /// 窄接口（不改动冻结契约）：生产用 [ProxyModuleCaptureDetailFacade] 适配
@@ -437,6 +439,15 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
             },
           ),
           _ActionTile(
+            key: const Key('action_export_har'),
+            icon: TablerIcons.file_download,
+            title: '导出为 HAR',
+            onTap: () {
+              AppDialogs.popSheet<void>(null);
+              unawaited(_exportHar());
+            },
+          ),
+          _ActionTile(
             key: const Key('detail_delete_record'),
             icon: TablerIcons.trash,
             title: '删除该记录',
@@ -505,6 +516,36 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
     } catch (error) {
       if (!mounted) return null;
       AppDialogs.showError('保存失败：$error');
+      return null;
+    }
+  }
+
+  /// 「导出为 HAR」：把当前抓包编码为单条 HAR 1.2 并另存。
+  ///
+  /// 纯 Dart 拼装（[encodeCaptureHar]，不重复请求 Tree），经与 Body 存盘同一
+  /// [CaptureSaveFile] 接缝落地；取消（返回 `null` / 空路径）静默，成功 / 失败
+  /// 走统一 [AppDialogs]。
+  Future<String?> _exportHar() async {
+    final detail = _detail;
+    if (detail == null) return null;
+    final fileName = 'capture_${widget.recordId}.har';
+    try {
+      final bytes = Uint8List.fromList(
+        utf8.encode(encodeCaptureHar(<CaptureDetail>[detail])),
+      );
+      final path = await _saveFile(
+        fileName: fileName,
+        bytes: bytes,
+        allowedExtensions: const <String>['har'],
+      );
+      if (!mounted) return path;
+      if (path != null && path.isNotEmpty) {
+        AppDialogs.showSuccess('已导出 $fileName');
+      }
+      return path;
+    } catch (error) {
+      if (!mounted) return null;
+      AppDialogs.showError('导出失败：$error');
       return null;
     }
   }
