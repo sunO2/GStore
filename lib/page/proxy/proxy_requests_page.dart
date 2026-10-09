@@ -14,6 +14,8 @@ import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
+import 'package:gstore/core/router/app_router.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
@@ -491,6 +493,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         _requestsHasMore = page.records.length >= _pageLimit &&
             mergedCursor != null &&
             mergedCursor < page.nextCursor;
+        // 首次整页加载失败后，若后续实时 / 兜底拉取成功，必须清除错误态，
+        // 否则列表永久冻结在「请求列表不可用」。
+        _error = null;
       });
       await _pollCaptures();
     } on ProxyModuleException catch (_) {
@@ -1771,9 +1776,22 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           onSaveToDebug: binder.onSaveToDebug,
           onCreateRewriteRule: binder.onCreateRewriteRule,
           onUseAsRewriteResponse: binder.onUseAsRewriteResponse,
+          onResendToDebug: (detail) =>
+              unawaited(_resendToRequestDebug(detail)),
         ),
       ),
     );
+  }
+
+  /// 「重发到请求调试」：复用抓包落库桥保存请求，再跳转「请求调试」工作台。
+  ///
+  /// 保存为尽力而为（失败已由 [CaptureDetailActionBinder] 经 `showError`
+  /// 提示，不抛异常）；随后经 [appRouter] 落到默认「集合」分区，便于用户查看 /
+  /// 重发。
+  Future<void> _resendToRequestDebug(CaptureDetail detail) async {
+    await _captureActionBinder.saveToDebug(detail);
+    if (!mounted) return;
+    appRouter.go(AppRoute.requestDebug);
   }
 
   Future<void> _showDetail(RequestRecord record) async {

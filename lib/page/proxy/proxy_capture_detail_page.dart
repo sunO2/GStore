@@ -29,7 +29,9 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
@@ -96,6 +98,23 @@ typedef CaptureDetailAction = void Function(CaptureDetail detail);
 /// Body 级动作接缝：以待操作文本为参数（Todo 24 桥接「作为改写响应」）。
 typedef CaptureBodyAction = void Function(String body);
 
+/// Body 存盘接缝：`(id, 原始字节, contentType) → 落地路径（取消 → null）`。
+typedef CaptureBodySaver = Future<String?> Function(
+  String id,
+  List<int> bytes,
+  String contentType,
+);
+
+/// 另存接缝：调用系统保存对话框并返回落地路径（取消 → `null`）。
+///
+/// 生产默认走 [FilePicker.platform.saveFile]；测试注入假实现断言「写入字节
+/// 与原字节逐字节一致」。
+typedef CaptureSaveFile = Future<String?> Function({
+  required String fileName,
+  required Uint8List bytes,
+  required List<String> allowedExtensions,
+});
+
 /// 分段。
 enum CaptureDetailSegment {
   overview('概览'),
@@ -124,6 +143,8 @@ class ProxyCaptureDetailPage extends StatefulWidget {
     this.onSaveToDebug,
     this.onCreateRewriteRule,
     this.onUseAsRewriteResponse,
+    this.onResendToDebug,
+    this.saveFile,
   });
 
   /// 抓包记录 ID（`captures.detail` 入参；来自列表行点击接缝）。
@@ -151,6 +172,15 @@ class ProxyCaptureDetailPage extends StatefulWidget {
   /// Body 区：作为改写响应（`null` = 空实现）。
   final CaptureBodyAction? onUseAsRewriteResponse;
 
+  /// 动作菜单：重发到请求调试（`null` = 空实现）。
+  ///
+  /// 生产装配应经 T7 的落库桥保存该请求再跳转「请求调试」工作台；本页
+  /// 只暴露接缝，不直接触碰请求调试 store / 路由。
+  final CaptureDetailAction? onResendToDebug;
+
+  /// Body 存盘接缝（测试可注入；为空时走 [FilePicker.platform.saveFile]）。
+  final CaptureSaveFile? saveFile;
+
   @override
   State<ProxyCaptureDetailPage> createState() => _ProxyCaptureDetailPageState();
 }
@@ -158,6 +188,7 @@ class ProxyCaptureDetailPage extends StatefulWidget {
 class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
   late final ProxyCaptureDetailFacade _facade;
   late final ProxyCaptureDeleteFacade _deleteFacade;
+  late final CaptureSaveFile _saveFile;
 
   CaptureDetailSegment _segment = CaptureDetailSegment.overview;
   bool _loading = true;
@@ -169,6 +200,7 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
     super.initState();
     _facade = widget.facade ?? ProxyModuleCaptureDetailFacade();
     _deleteFacade = widget.deleteFacade ?? ProxyModuleCaptureDeleteFacade();
+    _saveFile = widget.saveFile ?? _defaultSaveFile;
     _load();
   }
 
@@ -335,12 +367,14 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
           key: const Key('detail_segment_request'),
           detail: detail,
           onUseAsRewriteResponse: widget.onUseAsRewriteResponse,
+          onSaveBody: _saveBody,
         );
       case CaptureDetailSegment.response:
         return _ResponseSegment(
           key: const Key('detail_segment_response'),
           detail: detail,
           onUseAsRewriteResponse: widget.onUseAsRewriteResponse,
+          onSaveBody: _saveBody,
         );
       case CaptureDetailSegment.timeline:
         return _TimelineSegment(
@@ -382,6 +416,15 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
             onTap: () {
               AppDialogs.popSheet<void>(null);
               widget.onSaveToDebug?.call(detail);
+            },
+          ),
+          _ActionTile(
+            key: const Key('action_resend_debug'),
+            icon: TablerIcons.send,
+            title: '重发到请求调试',
+            onTap: () {
+              AppDialogs.popSheet<void>(null);
+              widget.onResendToDebug?.call(detail);
             },
           ),
           _ActionTile(
@@ -436,6 +479,50 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
       if (!mounted) return;
       AppDialogs.showError('删除失败：$error');
     }
+  }
+
+  /// Body 存盘：以 `capture_<recordId>_<req|resp>.<ext>` 另存**原始字节**。
+  ///
+  /// 取消（返回 `null` / 空路径）静默；成功 / 失败走统一 [AppDialogs]。
+  Future<String?> _saveBody(
+    String id,
+    List<int> bytes,
+    String contentType,
+  ) async {
+    final ext = _extensionFor(contentType);
+    final fileName = 'capture_${widget.recordId}_$id.$ext';
+    try {
+      final path = await _saveFile(
+        fileName: fileName,
+        bytes: Uint8List.fromList(bytes),
+        allowedExtensions: <String>[ext],
+      );
+      if (!mounted) return path;
+      if (path != null && path.isNotEmpty) {
+        AppDialogs.showSuccess('已保存 $fileName');
+      }
+      return path;
+    } catch (error) {
+      if (!mounted) return null;
+      AppDialogs.showError('保存失败：$error');
+      return null;
+    }
+  }
+
+  /// 生产默认另存：系统保存对话框（与列表导出同机制）。
+  static Future<String?> _defaultSaveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowedExtensions,
+  }) {
+    return FilePicker.platform.saveFile(
+      dialogTitle: '保存正文',
+      fileName: fileName,
+      lockParentWindow: true,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
+      bytes: bytes,
+    );
   }
 }
 
@@ -681,16 +768,19 @@ class _RequestSegment extends StatelessWidget {
     super.key,
     required this.detail,
     required this.onUseAsRewriteResponse,
+    required this.onSaveBody,
   });
 
   final CaptureDetail? detail;
   final CaptureBodyAction? onUseAsRewriteResponse;
+  final CaptureBodySaver? onSaveBody;
 
   @override
   Widget build(BuildContext context) {
     final d = detail;
     final url = d?.url ?? '';
     final query = Uri.tryParse(url)?.queryParametersAll ?? const {};
+    final reqHeaders = d?.reqHeaders ?? '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -717,7 +807,7 @@ class _RequestSegment extends StatelessWidget {
         _CollapsibleSection(
           sectionKey: 'req_headers',
           title: '请求头',
-          child: _HeaderList(raw: d?.reqHeaders ?? ''),
+          child: _HeaderList(raw: reqHeaders),
         ),
         _CollapsibleSection(
           sectionKey: 'req_body',
@@ -727,7 +817,9 @@ class _RequestSegment extends StatelessWidget {
             id: 'req',
             bytes: d?.reqBody ?? const <int>[],
             contentType: d?.contentType ?? '',
+            contentEncoding: _headerValue(reqHeaders, 'content-encoding'),
             onUseAsRewriteResponse: onUseAsRewriteResponse,
+            onSaveBody: onSaveBody,
           ),
         ),
       ],
@@ -742,16 +834,19 @@ class _ResponseSegment extends StatelessWidget {
     super.key,
     required this.detail,
     required this.onUseAsRewriteResponse,
+    required this.onSaveBody,
   });
 
   final CaptureDetail? detail;
   final CaptureBodyAction? onUseAsRewriteResponse;
+  final CaptureBodySaver? onSaveBody;
 
   @override
   Widget build(BuildContext context) {
     final d = detail;
     final cookies = _parseCookies(d?.respHeaders ?? '');
     final frames = d?.wsFrames ?? const <CaptureWsFrame>[];
+    final respHeaders = d?.respHeaders ?? '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -762,7 +857,7 @@ class _ResponseSegment extends StatelessWidget {
         _CollapsibleSection(
           sectionKey: 'resp_headers',
           title: '响应头',
-          child: _HeaderList(raw: d?.respHeaders ?? ''),
+          child: _HeaderList(raw: respHeaders),
         ),
         _CollapsibleSection(
           sectionKey: 'resp_body',
@@ -772,7 +867,9 @@ class _ResponseSegment extends StatelessWidget {
             id: 'resp',
             bytes: d?.respBody ?? const <int>[],
             contentType: d?.contentType ?? '',
+            contentEncoding: _headerValue(respHeaders, 'content-encoding'),
             onUseAsRewriteResponse: onUseAsRewriteResponse,
+            onSaveBody: onSaveBody,
           ),
         ),
         _CollapsibleSection(
@@ -806,6 +903,12 @@ class _TimelineSegment extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _FieldRow(label: '连接', value: d?.connId ?? ''),
+        _CollapsibleSection(
+          sectionKey: 'timeline_waterfall',
+          title: '时间线瀑布',
+          initiallyExpanded: true,
+          child: _TimelineWaterfall(detail: d),
+        ),
         _FieldRow(
           label: '首字节',
           value: d == null ? '' : _formatDateTime(d.startedAtMs),
@@ -821,6 +924,83 @@ class _TimelineSegment extends StatelessWidget {
         _FieldRow(
           label: '结束',
           value: d == null ? '' : _formatDateTime(d.finishedAtMs),
+        ),
+      ],
+    );
+  }
+}
+
+/// 时间线瀑布：用可用字段（startedAt/finishedAt/durationMs）画一条占比条。
+class _TimelineWaterfall extends StatelessWidget {
+  const _TimelineWaterfall({required this.detail});
+
+  final CaptureDetail? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final d = detail;
+    final span = d == null ? 0 : d.finishedAtMs - d.startedAtMs;
+    final total = span > 0 ? span : (d?.durationMs ?? 0);
+    final duration = d?.durationMs ?? 0;
+    final factor = (total <= 0 || duration <= 0)
+        ? 0.0
+        : (duration / total).clamp(0.0, 1.0).toDouble();
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+
+    return Column(
+      key: const Key('timeline_waterfall'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            return Stack(
+              children: [
+                Container(
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: AppRadius.allSM,
+                  ),
+                ),
+                if (factor > 0)
+                  FractionallySizedBox(
+                    widthFactor: factor,
+                    child: Container(
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: scheme.primary,
+                        borderRadius: AppRadius.allSM,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _formatDateTime(d?.startedAtMs ?? 0),
+                style: labelStyle,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Text(_formatMs(duration), style: labelStyle),
+            Expanded(
+              child: Text(
+                _formatDateTime(d?.finishedAtMs ?? 0),
+                style: labelStyle,
+                textAlign: TextAlign.right,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -1107,38 +1287,66 @@ class _WsFrameList extends StatelessWidget {
   }
 }
 
-/// Body 区：`原始 / 格式化 / 复制 / 作为改写响应`，限高内部滚动。
+/// Body 展示模式。
+enum _BodyView { raw, formatted, hex }
+
+/// Body 区：`原始 / 格式化 / 十六进制 / 图片预览 / 搜索 / 复制 / 存盘 /
+/// 作为改写响应`，限高内部滚动。
+///
+/// * 按 [contentEncoding] 解码展示（gzip / deflate；未知编码回退原始字节）；
+/// * 图片（`image/*`）额外渲染预览（解码失败降级为占位，不崩）；
+/// * 存盘写**原始抓包字节**（byte-identical），不做任何重编码。
 class _BodyBlock extends StatefulWidget {
   const _BodyBlock({
     required this.id,
     required this.bytes,
     required this.contentType,
+    required this.contentEncoding,
     required this.onUseAsRewriteResponse,
+    required this.onSaveBody,
   });
 
   /// `req` / `resp`（用于测试定位 key）。
   final String id;
   final List<int> bytes;
   final String contentType;
+
+  /// 该侧 `Content-Encoding` 头值（空 = 未声明）。
+  final String contentEncoding;
   final CaptureBodyAction? onUseAsRewriteResponse;
+  final CaptureBodySaver? onSaveBody;
 
   @override
   State<_BodyBlock> createState() => _BodyBlockState();
 }
 
 class _BodyBlockState extends State<_BodyBlock> {
-  bool _formatted = false;
+  _BodyView _view = _BodyView.raw;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final bytes = widget.bytes;
-    final isBinary = _looksBinary(bytes);
-    final raw = _decodeBody(bytes);
-    final display = (isBinary || !_formatted)
-        ? raw
-        : _formatBody(bytes, widget.contentType);
+    final decoded = _decodeContentEncoding(widget.bytes, widget.contentEncoding);
+    final viewBytes = decoded.bytes;
+    final decodedText = _decodeBody(viewBytes);
+    final isBinary = _looksBinary(viewBytes);
+    final isImage = widget.contentType.toLowerCase().startsWith('image/') &&
+        viewBytes.isNotEmpty;
+    final display = isBinary
+        ? '${base64Encode(viewBytes)}\n\n（二进制内容，base64 预览）'
+        : (_view == _BodyView.formatted
+            ? _formatBody(viewBytes, widget.contentType)
+            : decodedText);
+    final hits = _countOccurrences(decodedText, _searchQuery.trim());
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1148,15 +1356,22 @@ class _BodyBlockState extends State<_BodyBlock> {
             _BodyActionChip(
               actionKey: 'body_raw_${widget.id}',
               label: '原始',
-              selected: !_formatted,
-              onTap: () => setState(() => _formatted = false),
+              selected: _view == _BodyView.raw,
+              onTap: () => setState(() => _view = _BodyView.raw),
             ),
             const SizedBox(width: AppSpacing.xs),
             _BodyActionChip(
               actionKey: 'body_format_${widget.id}',
               label: '格式化',
-              selected: _formatted,
-              onTap: () => setState(() => _formatted = true),
+              selected: _view == _BodyView.formatted,
+              onTap: () => setState(() => _view = _BodyView.formatted),
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            _BodyActionChip(
+              actionKey: 'body_hex_${widget.id}',
+              label: '十六进制',
+              selected: _view == _BodyView.hex,
+              onTap: () => setState(() => _view = _BodyView.hex),
             ),
             const Spacer(),
             IconButton(
@@ -1168,10 +1383,83 @@ class _BodyBlockState extends State<_BodyBlock> {
                 size: AppTypography.iconMD,
                 color: scheme.onSurfaceVariant,
               ),
-              onPressed: () => _copy(context, raw),
+              onPressed: () => _copy(context, decodedText),
+            ),
+            IconButton(
+              key: Key('body_save_${widget.id}'),
+              tooltip: '保存到文件',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                TablerIcons.download,
+                size: AppTypography.iconMD,
+                color: scheme.onSurfaceVariant,
+              ),
+              onPressed: () => widget.onSaveBody?.call(
+                widget.id,
+                widget.bytes,
+                widget.contentType,
+              ),
             ),
           ],
         ),
+        if (decoded.encoding.isNotEmpty)
+          Padding(
+            padding: AppSpacing.onlyBottomXS,
+            child: Text(
+              '解码后 ${viewBytes.length} B · ${decoded.encoding}',
+              key: Key('body_decoded_size_${widget.id}'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        Padding(
+          padding: AppSpacing.onlyBottomXS,
+          child: TextField(
+            key: Key('body_search_${widget.id}'),
+            controller: _searchController,
+            style: theme.textTheme.bodySmall,
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: '搜索正文',
+              prefixIcon: Icon(
+                TablerIcons.search,
+                size: AppTypography.iconMD,
+                color: scheme.onSurfaceVariant,
+              ),
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (value) => setState(() => _searchQuery = value),
+          ),
+        ),
+        if (_searchQuery.trim().isNotEmpty)
+          Padding(
+            padding: AppSpacing.onlyBottomXS,
+            child: Text(
+              hits == 0 ? '无匹配' : '命中 $hits 处',
+              key: Key('body_search_hit_${widget.id}'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: hits == 0 ? scheme.error : scheme.primary,
+              ),
+            ),
+          ),
+        if (isImage)
+          Container(
+            key: Key('body_image_${widget.id}'),
+            constraints: const BoxConstraints(maxHeight: 240),
+            alignment: Alignment.center,
+            padding: AppSpacing.allSM,
+            decoration: BoxDecoration(
+              color: scheme.surface,
+              borderRadius: AppRadius.allSM,
+            ),
+            child: Image.memory(
+              Uint8List.fromList(viewBytes),
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) =>
+                  const _EmptyHint(text: '（图片无法预览）'),
+            ),
+          ),
         const SizedBox(height: AppSpacing.xs),
         Container(
           key: Key('body_scroll_${widget.id}'),
@@ -1183,23 +1471,30 @@ class _BodyBlockState extends State<_BodyBlock> {
             borderRadius: AppRadius.allSM,
           ),
           child: SingleChildScrollView(
-            child: bytes.isEmpty
+            child: viewBytes.isEmpty
                 ? const _EmptyHint(text: '（空）')
-                : Text(
-                    isBinary
-                        ? '${base64Encode(bytes)}\n\n（二进制内容，base64 预览）'
-                        : display,
-                    style: AppTypography.code.copyWith(
-                      color: scheme.onSurface,
-                    ),
-                  ),
+                : (_view == _BodyView.hex
+                    ? Text(
+                        _toHexDump(viewBytes),
+                        key: Key('body_hex_view_${widget.id}'),
+                        style: AppTypography.code.copyWith(
+                          color: scheme.onSurface,
+                        ),
+                      )
+                    : Text(
+                        display,
+                        style: AppTypography.code.copyWith(
+                          color: scheme.onSurface,
+                        ),
+                      )),
           ),
         ),
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(
             key: Key('body_rewrite_${widget.id}'),
-            onPressed: () => widget.onUseAsRewriteResponse?.call(raw),
+            onPressed: () =>
+                widget.onUseAsRewriteResponse?.call(decodedText),
             icon: const Icon(TablerIcons.file_pencil, size: AppTypography.iconMD),
             label: const Text('作为改写响应'),
           ),
@@ -1359,6 +1654,108 @@ List<_Cookie> _parseCookies(String respHeaders) {
 String _decodeBody(List<int> bytes) {
   if (bytes.isEmpty) return '';
   return utf8.decode(bytes, allowMalformed: true);
+}
+
+/// 按 `Content-Encoding` 解码后的结果。
+///
+/// [encoding] 为**实际成功应用**的编码名（`''` = 未解码 / 未知编码回退原文）。
+class _DecodedBody {
+  const _DecodedBody(this.bytes, this.encoding);
+
+  final List<int> bytes;
+  final String encoding;
+}
+
+/// 按 `Content-Encoding` 解码（`gzip` / `deflate`）。
+///
+/// * 空 / `identity` → 原字节；
+/// * `gzip` / `x-gzip` → [gzip].decode；
+/// * `deflate` → 先试 zlib 包裹，失败再试 gzip 包裹；
+/// * 未知编码（`br` / `zstd` / …）或解压失败 → **原字节回退**（绝不抛）。
+_DecodedBody _decodeContentEncoding(List<int> bytes, String rawEncoding) {
+  if (bytes.isEmpty) return _DecodedBody(bytes, '');
+  final encoding = rawEncoding.trim().toLowerCase();
+  if (encoding.isEmpty || encoding == 'identity') {
+    return _DecodedBody(bytes, '');
+  }
+  try {
+    if (encoding == 'gzip' || encoding == 'x-gzip') {
+      return _DecodedBody(gzip.decode(bytes), encoding);
+    }
+    if (encoding == 'deflate') {
+      try {
+        return _DecodedBody(zlib.decode(bytes), encoding);
+      } catch (_) {
+        return _DecodedBody(gzip.decode(bytes), encoding);
+      }
+    }
+  } catch (_) {
+    // 未知 / 损坏编码 → 原文回退。
+  }
+  return _DecodedBody(bytes, '');
+}
+
+/// 从头部原文取某个（大小写不敏感）头的值；缺省返回 `''`。
+String _headerValue(String raw, String lowerName) {
+  for (final entry in _parseHeaders(raw)) {
+    if (entry.$1.toLowerCase() == lowerName) return entry.$2;
+  }
+  return '';
+}
+
+/// 按内容类型给出存盘扩展名（缺省 `bin`）。
+String _extensionFor(String contentType) {
+  final ct = contentType.toLowerCase();
+  if (ct.contains('json')) return 'json';
+  if (ct.contains('xml')) return 'xml';
+  if (ct.contains('html')) return 'html';
+  if (ct.contains('css')) return 'css';
+  if (ct.contains('javascript')) return 'js';
+  if (ct.contains('plain') || ct.startsWith('text/')) return 'txt';
+  if (ct.contains('png')) return 'png';
+  if (ct.contains('jpeg') || ct.contains('jpg')) return 'jpg';
+  if (ct.contains('gif')) return 'gif';
+  if (ct.contains('webp')) return 'webp';
+  if (ct.contains('svg')) return 'svg';
+  if (ct.contains('pdf')) return 'pdf';
+  return 'bin';
+}
+
+/// 子串出现次数（大小写不敏感；空串 → 0）。
+int _countOccurrences(String haystack, String needle) {
+  if (needle.isEmpty || haystack.isEmpty) return 0;
+  final lowerHaystack = haystack.toLowerCase();
+  final lowerNeedle = needle.toLowerCase();
+  var count = 0;
+  var index = lowerHaystack.indexOf(lowerNeedle);
+  while (index != -1) {
+    count++;
+    index = lowerHaystack.indexOf(lowerNeedle, index + lowerNeedle.length);
+  }
+  return count;
+}
+
+/// 生成 `offset  hex…  ascii` 的十六进制转储（每行 16 字节）。
+String _toHexDump(List<int> bytes) {
+  const perLine = 16;
+  final buffer = StringBuffer();
+  for (var offset = 0; offset < bytes.length; offset += perLine) {
+    final end =
+        (offset + perLine < bytes.length) ? offset + perLine : bytes.length;
+    final hex = StringBuffer();
+    final ascii = StringBuffer();
+    for (var i = offset; i < end; i++) {
+      final b = bytes[i];
+      hex.write(b.toRadixString(16).padLeft(2, '0'));
+      if (i != end - 1) hex.write(' ');
+      ascii.write(b >= 32 && b < 127 ? String.fromCharCode(b) : '.');
+    }
+    buffer.writeln(
+      '${offset.toRadixString(16).padLeft(8, '0')}  '
+      '${hex.toString().padRight(perLine * 3 - 1)}  $ascii',
+    );
+  }
+  return buffer.toString().trimRight();
 }
 
 /// 是否疑似二进制（含 NUL，或控制字符占比 > 10%）。
