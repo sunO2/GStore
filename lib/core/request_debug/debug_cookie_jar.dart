@@ -6,15 +6,18 @@
 ///
 /// 采用 `DebugCookie{name,value,domain,path}`（todo 25 模型，不重定义）作为
 /// 对外视图；解析到的 `Expires` / `Max-Age` 仅用于**过期剔除**（过期或
-/// `Max-Age<=0` 即删除），不落库（模型无该字段）。`Domain` / `Path` /
-/// `Secure` / `HttpOnly` 在内部按 RFC 6265 校验：
+/// `Max-Age<=0` 即删除），不落库（模型无该字段）。按 RFC 6265：
+/// `Max-Age` **优先于** `Expires`（与属性顺序无关）。`Domain` / `Path` /
+/// `Secure` / `HttpOnly` / `SameSite` 在内部按 RFC 6265 校验/存储：
 ///
 /// * **Domain**：无 `Domain` = host-only（仅回发到原 host）；有 `Domain` 时
-///   必须与请求 host domain-match，否则**拒绝**（防跨站注入），并拒绝
-///   单标签 / TLD 级 Domain。
+///   必须与请求 host domain-match，否则**拒绝**（防跨站注入）；拒绝
+///   单标签 / 已知两段公共后缀（`.com` / `.co.uk`）防 supercookie；
+///   `Domain=localhost`（与 host 相等）、尾点、IDN 会被规范化。
 /// * **Path**：按 RFC 6265 默认路径与路径匹配，只回发到匹配路径。
 /// * **Secure**：仅经 https 回发；`HttpOnly` 服务端语义（不在 JS 暴露），
-///   对发送无影响（解析后忽略）。
+///   对发送无影响（解析后忽略）；`SameSite` 解析并存储（模型无字段，内部保留）。
+/// * **跨子域同名**：回发时按「名 + Path」去重，避免重复发送。
 library;
 
 import 'dart:io' show HttpDate;
@@ -28,6 +31,7 @@ class _StoredCookie {
     this.expiresAt, {
     this.hostOnly = false,
     this.secure = false,
+    this.sameSite,
   });
 
   final DebugCookie cookie;
@@ -40,6 +44,11 @@ class _StoredCookie {
 
   /// 带 `Secure` 属性 → 仅经 https 回发。
   final bool secure;
+
+  /// `SameSite` 属性（规范化为 `Strict` / `Lax` / `None`）；无 / 非法为 `null`。
+  ///
+  /// 模型 [DebugCookie] 无该字段，故仅内部存储，供诊断 / 未来回发策略使用。
+  final String? sameSite;
 
   bool get isExpired {
     final at = expiresAt;
@@ -72,7 +81,7 @@ class DebugCookieJar {
   }) {
     final rawValues = _headerValues(responseHeaders, 'set-cookie');
     if (rawValues.isEmpty) return;
-    final hostKey = host.toLowerCase();
+    final hostKey = _canonicalHost(host);
     final defaultPath = _defaultPath(path);
     final bucket = _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
     for (final raw in rawValues) {
@@ -99,12 +108,33 @@ class DebugCookieJar {
   /// [secure] 表示本次请求是否 https；非 https 时不回发 `Secure` cookie。
   /// 无匹配 / 全部过期时返回空串。
   String cookieHeaderFor(String host, {String path = '/', bool secure = false}) {
-    final pairs = <String>[];
+    // 跨子域同名去重：同名 + 同 Path 只保留一个（最新存储者胜出，等价于
+    // RFC 6265 单存储覆盖语义）；同名但不同 Path 仍各自保留。
+    final order = <String>[];
+    final byKey = <String, String>{};
     for (final stored in _collect(host, includeSecure: secure)) {
-      if (!_pathMatches(path, _cookiePath(stored.cookie))) continue;
-      pairs.add('${stored.cookie.name}=${stored.cookie.value}');
+      final cookiePath = _cookiePath(stored.cookie);
+      if (!_pathMatches(path, cookiePath)) continue;
+      final dedupKey = '${stored.cookie.name}\u0000$cookiePath';
+      if (!byKey.containsKey(dedupKey)) order.add(dedupKey);
+      byKey[dedupKey] = '${stored.cookie.name}=${stored.cookie.value}';
     }
-    return pairs.join('; ');
+    return order.map((key) => byKey[key]!).join('; ');
+  }
+
+  /// 返回已存 cookie 的 `SameSite` 值（`Strict` / `Lax` / `None`）；无则 `null`。
+  ///
+  /// 模型 [DebugCookie] 无该字段，此访问器用于诊断与测试（T12）。
+  String? sameSiteFor(String host, String name) {
+    final hostKey = _canonicalHost(host);
+    for (final bucket in _byHost.values) {
+      for (final stored in bucket.values) {
+        if (stored.cookie.name != name) continue;
+        if (!_hostMatches(stored, hostKey)) continue;
+        return stored.sameSite;
+      }
+    }
+    return null;
   }
 
   /// 匹配 [host] 的全部未过期 cookie（host 后缀 / domain 匹配）。
@@ -127,7 +157,7 @@ class DebugCookieJar {
   /// 清除某个 host 桶内的全部 cookie（Cookie 管理界面用）。
   ///
   /// 仅移除以 [host] 为**存储键**的桶（与 [snapshot] 的分组一致）。
-  void clearHost(String host) => _byHost.remove(host.toLowerCase());
+  void clearHost(String host) => _byHost.remove(_canonicalHost(host));
 
   /// 可列出的快照：host → 未过期 cookie 列表（Cookie 管理界面用）。
   ///
@@ -201,9 +231,43 @@ class DebugCookieJar {
   static String _cookieKey(DebugCookie cookie) =>
       '${cookie.domain ?? ''}|${cookie.path ?? '/'}|${cookie.name}';
 
-  /// 规范化 domain：小写、去除前导 `.`。
-  static String _normalizeDomain(String domain) =>
-      domain.toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+  /// 规范化 host / domain：小写、去前导与尾随 `.`、IDN 百分号编码对齐。
+  static String _normalizeDomain(String domain) => _canonicalHost(domain);
+
+  /// host / domain 的规范形态（供存储键与匹配统一使用）。
+  ///
+  /// * 小写；
+  /// * 去掉前导 / 尾随 `.`（`Domain=.example.com.` → `example.com`）；
+  /// * 非 ASCII（IDN）按 UTF-8 百分号编码，与 `Uri.host` 对齐（Dart 的
+  ///   `Uri.host` 不做 punycode，仅百分号编码；故二者可比较）。
+  static String _canonicalHost(String host) {
+    var value = host.trim();
+    while (value.startsWith('.')) {
+      value = value.substring(1);
+    }
+    while (value.endsWith('.')) {
+      value = value.substring(0, value.length - 1);
+    }
+    if (value.isEmpty) return value;
+    if (!_isAscii(value)) {
+      try {
+        // 复用 Uri 的 host 规范化（UTF-8 百分号编码），保证两侧一致。
+        value = Uri.parse('http://$value').host;
+      } catch (_) {
+        // 非法字符：保留原值，后续 domain-match 阶段会被拒，不抛。
+      }
+    }
+    // 最后统一小写：规范化 %XX 转义的大小写（十六进制大小写不敏感），
+    // 使 Unicode 域与百分号编码 host 两侧得到同一形态。
+    return value.toLowerCase();
+  }
+
+  static bool _isAscii(String value) {
+    for (var i = 0; i < value.length; i++) {
+      if (value.codeUnitAt(i) > 0x7F) return false;
+    }
+    return true;
+  }
 
   /// RFC 6265 domain-match：host 等于 domain 或以 `.domain` 结尾。
   static bool _domainMatches(String cookieDomain, String host) {
@@ -215,14 +279,34 @@ class DebugCookieJar {
   /// 是否允许把该 cookie 绑定到 [host]（即设置它的请求 host）。
   ///
   /// * host-only（无 `Domain`）：总是允许——它已限定在原 host。
-  /// * 有 `Domain`：必须与 [host] domain-match；且拒绝单标签 / TLD 级
-  ///   Domain（无内嵌点）以免形成 supercookie。
+  /// * `Domain` 与 [host] 完全相等：允许（覆盖 `Domain=localhost` 等开发场景）。
+  /// * 单标签 / 已知两段公共后缀（`.com` / `.co.uk`）：拒绝，防 supercookie。
+  /// * 其余：必须与 [host] domain-match。
   static bool _isAllowedForHost(_StoredCookie stored, String host) {
     if (stored.hostOnly) return true;
     final domain = _normalizeDomain(stored.cookie.domain ?? '');
-    if (domain.isEmpty || !domain.contains('.')) return false;
+    if (domain.isEmpty) return false;
+    if (domain == host) return true;
+    if (!domain.contains('.')) return false;
+    if (_isKnownPublicSuffix(domain)) return false;
     return _domainMatches(domain, host);
   }
+
+  /// 精简公共后缀集合（**非完整 PSL**，无第三方依赖）。
+  ///
+  /// 仅覆盖常见易被用作 supercookie 的后缀；单标签 TLD 已由上一步拒绝。
+  /// 未收录的公共后缀无法识别——不要在安全边界上依赖本集合的完备性。
+  static bool _isKnownPublicSuffix(String domain) =>
+      _knownPublicSuffixes.contains(_normalizeDomain(domain));
+
+  static const Set<String> _knownPublicSuffixes = <String>{
+    // 多标签公共后缀（两段 / 三段）。
+    'co.uk', 'org.uk', 'ac.uk', 'gov.uk',
+    'com.cn', 'net.cn', 'org.cn', 'gov.cn',
+    'com.tw', 'com.hk', 'co.jp', 'co.kr',
+    'com.au', 'com.br', 'com.mx',
+    'github.io', 'pages.dev', 'vercel.app', 'netlify.app',
+  };
 
   /// 判断已存 cookie 是否对请求 [host] 生效。
   static bool _hostMatches(_StoredCookie stored, String host) {
@@ -235,7 +319,7 @@ class DebugCookieJar {
   /// 收集对 [host] 生效的未过期 cookie；[includeSecure] 为 false 时排除
   /// `Secure` cookie（http 请求）。
   List<_StoredCookie> _collect(String host, {required bool includeSecure}) {
-    final hostKey = host.toLowerCase();
+    final hostKey = _canonicalHost(host);
     final result = <_StoredCookie>[];
     _byHost.forEach((_, bucket) {
       bucket.removeWhere((_, value) => value.isExpired);
@@ -304,8 +388,11 @@ class DebugCookieJar {
 
     String? domain;
     String? path;
+    String? sameSite;
     DateTime? expiresAt;
+    DateTime? maxAgeAt;
     var domainSpecified = false;
+    var maxAgeSpecified = false;
     var secure = false;
 
     for (var i = 1; i < segments.length; i++) {
@@ -332,10 +419,14 @@ class DebugCookieJar {
         case 'httponly':
           // 服务端语义（不在 JS 暴露），对回发无影响：解析后忽略。
           break;
+        case 'samesite':
+          sameSite = _normalizeSameSite(attrValue);
+          break;
         case 'max-age':
           final seconds = int.tryParse(attrValue);
           if (seconds != null) {
-            expiresAt = seconds <= 0
+            maxAgeSpecified = true;
+            maxAgeAt = seconds <= 0
                 ? DateTime.fromMillisecondsSinceEpoch(0)
                 : DateTime.now().add(Duration(seconds: seconds));
           }
@@ -349,6 +440,9 @@ class DebugCookieJar {
       }
     }
 
+    // RFC 6265 §4.1.2.2：`Max-Age` 优先于 `Expires`，与属性出现顺序无关。
+    final effectiveExpiresAt = maxAgeSpecified ? maxAgeAt : expiresAt;
+
     // 无 Domain → host-only，domain 绑定到设置它的请求 host；有 Domain 时
     // 保留原始声明（store 阶段再做 domain-match 校验）。
     final hostOnly = !domainSpecified;
@@ -356,10 +450,26 @@ class DebugCookieJar {
     path ??= defaultPath;
     return _StoredCookie(
       DebugCookie(name: name, value: value, domain: domain, path: path),
-      expiresAt,
+      effectiveExpiresAt,
       hostOnly: hostOnly,
       secure: secure,
+      sameSite: sameSite,
     );
+  }
+
+  /// 规范化 `SameSite` 取值（大小写不敏感）为 `Strict` / `Lax` / `None`；
+  /// 未知 / 空值返回 `null`。
+  static String? _normalizeSameSite(String value) {
+    switch (value.trim().toLowerCase()) {
+      case 'strict':
+        return 'Strict';
+      case 'lax':
+        return 'Lax';
+      case 'none':
+        return 'None';
+      default:
+        return null;
+    }
   }
 
   static DateTime? _tryParseHttpDate(String value) {

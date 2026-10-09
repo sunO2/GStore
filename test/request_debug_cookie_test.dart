@@ -286,6 +286,61 @@ void main() {
       expect(jar.isEmpty, isTrue, reason: 'TLD 级 Domain 不得作为 supercookie 接受');
     });
 
+    test('rejects two-part public-suffix Domain (.co.uk)', () {
+      final jar = DebugCookieJar();
+      jar.store('a.co.uk', <String, List<String>>{
+        'set-cookie': <String>['super=1; Domain=.co.uk; Path=/'],
+      });
+      expect(jar.isEmpty, isTrue,
+          reason: '两段公共后缀（.co.uk）不得作为 supercookie 接受');
+      expect(jar.cookieHeaderFor('b.co.uk'), isEmpty);
+    });
+
+    test('Domain=localhost equal to request host is accepted', () {
+      final jar = DebugCookieJar();
+      jar.store('localhost', <String, List<String>>{
+        'set-cookie': <String>['l=1; Domain=localhost; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('localhost'), contains('l=1'),
+          reason: 'Domain 与请求 host 完全相等时即使是单标签也应接受');
+    });
+
+    test('normalizes a trailing-dot Domain', () {
+      final jar = DebugCookieJar();
+      jar.store('api.example.com', <String, List<String>>{
+        'set-cookie': <String>['d=1; Domain=.example.com.; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('www.example.com'), contains('d=1'),
+          reason: '尾点必须被规范化后参与 domain-match');
+    });
+
+    test('normalizes IDN Domain against percent-encoded Uri host', () {
+      final jar = DebugCookieJar();
+      // Uri.host 对非 ASCII 域做 UTF-8 百分号编码（`b%C3%BCcher...`）。
+      jar.store('b%C3%BCcher.example.com', <String, List<String>>{
+        'set-cookie': <String>['i=1; Domain=bücher.example.com; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('b%C3%BCcher.example.com'), contains('i=1'),
+          reason: 'Unicode Domain 与百分号编码 host 规范化后应匹配');
+    });
+
+    test('rejects an illegal Domain without throwing', () {
+      final jar = DebugCookieJar();
+      expect(
+        () => jar.store('example.com', <String, List<String>>{
+          'set-cookie': <String>['bad=1; Domain=exa mple.com; Path=/'],
+        }),
+        returnsNormally,
+      );
+      expect(
+        () => jar.store('example.com', <String, List<String>>{
+          'set-cookie': <String>['bad2=1; Domain=%; Path=/'],
+        }),
+        returnsNormally,
+      );
+      expect(jar.isEmpty, isTrue, reason: '非法 Domain 必须被丢弃且不崩溃');
+    });
+
     test('path scoping: cookie only sent to a matching request path', () {
       final jar = DebugCookieJar();
       jar.store(
@@ -314,19 +369,127 @@ void main() {
     });
   });
 
+  // ==================== T12：跨子域同名去重 / SameSite / 重定向归属 ====================
+
+  group('DebugCookieJar 跨子域同名去重', () {
+    test('不同子域设置的同名 Domain cookie 只回发一次（最新胜出）', () {
+      final jar = DebugCookieJar();
+      jar.store('a.example.com', <String, List<String>>{
+        'set-cookie': <String>['x=1; Domain=.example.com; Path=/'],
+      });
+      jar.store('b.example.com', <String, List<String>>{
+        'set-cookie': <String>['x=2; Domain=.example.com; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('a.example.com'), 'x=2',
+          reason: '跨子域重复的同名 cookie 只回发一次，最新存储者胜出');
+      expect(jar.cookieHeaderFor('c.example.com'), 'x=2');
+    });
+
+    test('同名但不同 Path 的 cookie 各自保留（不误去重）', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>['p=1; Path=/', 'p=2; Path=/admin'],
+      });
+      final header = jar.cookieHeaderFor('example.com', path: '/admin/x');
+      expect(header, contains('p=1'));
+      expect(header, contains('p=2'));
+    });
+  });
+
+  group('DebugCookieJar SameSite 解析与存储', () {
+    test('解析并存储 SameSite（大小写不敏感，规范化为 Strict/Lax/None）', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>[
+          'a=1; Path=/; SameSite=Lax',
+          'b=2; Path=/; SameSite=strict',
+          'c=3; Path=/; SameSite=None',
+        ],
+      });
+      expect(jar.sameSiteFor('example.com', 'a'), 'Lax');
+      expect(jar.sameSiteFor('example.com', 'b'), 'Strict');
+      expect(jar.sameSiteFor('example.com', 'c'), 'None');
+      expect(jar.sameSiteFor('example.com', 'missing'), isNull);
+    });
+  });
+
+
+  group('跨主机重定向：Set-Cookie 归属最终 URI', () {
+    test('重定向后 cookie 记在最终 host，而非原始 host', () async {
+      final target = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      target.listen((request) async {
+        await request.toList();
+        request.response.headers.add('Set-Cookie', 'r=1; Path=/');
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write('ok');
+        await request.response.close();
+      });
+      final redirector = await HttpServer.bind(InternetAddress('127.0.0.2'), 0);
+      redirector.listen((request) async {
+        await request.toList();
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers
+            .set('Location', 'http://127.0.0.1:${target.port}/final');
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await redirector.close(force: true);
+        await target.close(force: true);
+      });
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      final response = await sender.send(
+        method: 'GET',
+        url: 'http://127.0.0.2:${redirector.port}/start',
+      );
+
+      expect(response.statusCode, 200);
+      expect(sender.cookieJar.cookieHeaderFor('127.0.0.1'), contains('r=1'),
+          reason: 'Set-Cookie 必须归属最终 host');
+      expect(sender.cookieJar.cookieHeaderFor('127.0.0.2'), isEmpty,
+          reason: '不得把 Set-Cookie 归属原始 host');
+    });
+  });
+
   // ==================== plan todo 2：编辑器 Cookie 生效 + jar 管理 ====================
 
-  group('DebugCookieJar 特征化基线（供 T12 合成 RFC 修复锁定现状）', () {
-    test('当前按属性出现顺序取后出现的过期时间（非 RFC Max-Age 优先）', () {
+  group('DebugCookieJar 特征化基线（T12 已合成 RFC 修复并更新）', () {
+    // 行为锁定：T12 前此处锁定「按属性出现顺序取后者」的错误现状；T12 按
+    // RFC 6265 §4.1.2.2 改为 **Max-Age 优先于 Expires**，故基线同步更新，
+    // 保留「同一输入、同一断言点」以便回归。
+    test('Max-Age 优先于 Expires：Max-Age 在 Expires 之前也生效', () {
       final jar = DebugCookieJar();
       jar.store('example.com', <String, List<String>>{
         'set-cookie': <String>[
           'a=1; Path=/; Max-Age=3600; Expires=Wed, 21 Oct 2015 07:28:00 GMT',
         ],
       });
-      // 现状：Expires 在 Max-Age 之后出现 → 覆盖为过去时间 → 立即过期。
-      // RFC 6265 要求 Max-Age 优先，T12 修复后此断言将更新为命中。
-      expect(jar.cookieHeaderFor('example.com'), isEmpty);
+      expect(jar.cookieHeaderFor('example.com'), 'a=1',
+          reason: 'Max-Age 为正且存在时必须压过过去的 Expires');
+    });
+
+    test('Max-Age 优先于 Expires：Max-Age 在 Expires 之后同样生效', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>[
+          'b=2; Path=/; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600',
+        ],
+      });
+      expect(jar.cookieHeaderFor('example.com'), 'b=2',
+          reason: '属性顺序不得影响 Max-Age 优先级');
+    });
+
+    test('Max-Age=0 压过未来的 Expires（删除）', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>[
+          'c=3; Path=/; Max-Age=0; Expires=Wed, 21 Oct 2099 07:28:00 GMT',
+        ],
+      });
+      expect(jar.cookieHeaderFor('example.com'), isEmpty,
+          reason: 'Max-Age=0 必须删除，即使 Expires 在未来');
     });
   });
 

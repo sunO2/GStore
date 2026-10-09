@@ -249,7 +249,14 @@ class DebugSender {
       );
 
       if (useCookies) {
-        cookieJar.store(uri.host, response.headers, path: uri.path);
+        // 重定向由 `package:http` 在传输层跟随，响应头来自**最终** URL；把
+        // `Set-Cookie` 归属最终 URI（`BaseResponseWithUrl.url`）而非原始请求，
+        // 否则跨主机重定向会把 cookie 记到错误 host。客户端未提供最终 URL 时
+        //（如测试替身）回退原始 URI，保持既有行为。
+        final finalUri = streamed is http.BaseResponseWithUrl
+            ? (streamed as http.BaseResponseWithUrl).url
+            : uri;
+        cookieJar.store(finalUri.host, response.headers, path: finalUri.path);
       }
       return response;
     } finally {
