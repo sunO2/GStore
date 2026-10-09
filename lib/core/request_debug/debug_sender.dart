@@ -238,14 +238,15 @@ class DebugSender {
 
     try {
       final streamed = await client.send(request);
-      final bytes = await _readBounded(streamed.stream);
+      final bounded = await _readBounded(streamed.stream);
       stopwatch.stop();
 
       final response = DebugResponse.fromStreamed(
         statusCode: streamed.statusCode,
         headers: streamed.headers,
-        bodyBytes: bytes,
+        bodyBytes: bounded.bytes,
         durationMs: stopwatch.elapsedMilliseconds,
+        truncated: bounded.truncated,
       );
 
       if (useCookies) {
@@ -274,20 +275,29 @@ class DebugSender {
       buildUri(url, query);
 
   /// 读取响应流，最多 [maxBodyBytes] 字节（超出即停止读取）。
-  static Future<List<int>> _readBounded(Stream<List<int>> stream) async {
+  ///
+  /// 返回字节与是否发生截断：只有确实还有未读数据时才置 `truncated`（读取到
+  /// 恰好等于上限且流已结束时不算截断）。
+  static Future<_BoundedBody> _readBounded(Stream<List<int>> stream) async {
     final builder = BytesBuilder(copy: false);
     var total = 0;
+    var truncated = false;
     await for (final chunk in stream) {
       final remaining = maxBodyBytes - total;
-      if (remaining <= 0) break;
+      if (remaining <= 0) {
+        // 已填满上限却仍有后续分块 → 确有更多数据被丢弃。
+        truncated = true;
+        break;
+      }
       if (chunk.length > remaining) {
         builder.add(chunk.sublist(0, remaining));
+        truncated = true;
         break;
       }
       builder.add(chunk);
       total += chunk.length;
     }
-    return builder.takeBytes();
+    return _BoundedBody(builder.takeBytes(), truncated);
   }
 
   static String _describeError(Object error) {
@@ -311,4 +321,12 @@ class DebugSender {
     }
     return error.toString();
   }
+}
+
+/// [_readBounded] 的结果：读取到的字节 + 是否因超过上限发生截断。
+class _BoundedBody {
+  const _BoundedBody(this.bytes, this.truncated);
+
+  final List<int> bytes;
+  final bool truncated;
 }

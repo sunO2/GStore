@@ -24,6 +24,7 @@ class DebugResponse {
     this.sizeBytes = 0,
     this.error,
     this.cancelled = false,
+    this.truncated = false,
   });
 
   /// HTTP 状态码；失败 / 出错时为 0。
@@ -44,8 +45,17 @@ class DebugResponse {
   /// 端到端耗时（毫秒）。
   final int durationMs;
 
-  /// 实际收到的响应体字节数（截断前的已读长度即此值）。
+  /// 实际收到的响应体字节数。
+  ///
+  /// 优先采用 `Content-Length` 声明的**真实大小**；响应未声明长度（如分块
+  /// 传输）时才回退为已读字节数（[bodyBytes] 的长度，截断时即读取上限）。
   final int sizeBytes;
+
+  /// 响应体是否因超过读取上限（`DebugSender.maxBodyBytes`）而被截断。
+  ///
+  /// 截断后 [bodyBytes] / [bodyText] 只含前 N 字节，但 [sizeBytes] 仍为真实
+  /// 大小；UI 据此标注「已截断」。
+  final bool truncated;
 
   /// 结构化错误（连接失败 / 超时为非 null；出错时不抛异常）。
   final String? error;
@@ -78,12 +88,18 @@ class DebugResponse {
     required Map<String, String> headers,
     required List<int> bodyBytes,
     int durationMs = 0,
+    bool truncated = false,
   }) {
     final normalized = normalizeResponseHeaders(headers);
     final cookies = <DebugCookie>[];
     for (final raw in normalized['set-cookie'] ?? const <String>[]) {
       cookies.addAll(DebugCookieJar.parseSetCookie(raw));
     }
+    // `Content-Length` 是响应声明的真实实体大小；若它大于实际读到的字节数，
+    // 说明发生了截断（即使调用方未显式标记）。
+    final declaredLength = _parseContentLength(normalized);
+    final isTruncated =
+        truncated || (declaredLength != null && declaredLength > bodyBytes.length);
     return DebugResponse(
       statusCode: statusCode,
       headers: normalized,
@@ -91,7 +107,8 @@ class DebugResponse {
       bodyText: textPreview(bodyBytes),
       cookies: cookies,
       durationMs: durationMs,
-      sizeBytes: bodyBytes.length,
+      sizeBytes: declaredLength ?? bodyBytes.length,
+      truncated: isTruncated,
     );
   }
 
@@ -130,6 +147,71 @@ Map<String, List<String>> normalizeResponseHeaders(Map<String, String> headers) 
   return result;
 }
 
+/// 从归一化响应头解析 `Content-Length`（首个可解析的非负整数）。
+int? _parseContentLength(Map<String, List<String>> headers) {
+  final values = headers['content-length'];
+  if (values == null) return null;
+  for (final value in values) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed != null && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+// ==================== 改写响应头卫生（plan todo 14） ====================
+
+/// 保存为改写响应时**必须剥离**的头（小写）。
+///
+/// * hop-by-hop（RFC 7230 §6.1）：`Connection` / `Keep-Alive` /
+///   `Proxy-Authenticate` / `Proxy-Authorization` / `TE` / `Trailer` /
+///   `Transfer-Encoding` / `Upgrade`——只属于单跳连接，不能固化进改写规则；
+/// * 实体派生头：`Content-Encoding` / `Content-Length`——改写后的响应体由引擎
+///   重新编码/计长，沿用上游值会导致响应损坏。
+const Set<String> rewriteStrippedResponseHeaders = <String>{
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'content-encoding',
+  'content-length',
+};
+
+/// 改写响应头卫生：把响应头转换为可安全固化进 `replaceResponse` 规则的
+/// [DebugHeader] 列表，剥离 hop-by-hop 头与 `Content-Encoding` /
+/// `Content-Length` / `Transfer-Encoding`。
+///
+/// 另外遵循 RFC 7230：`Connection` 头中列出的自定义 token（如
+/// `Connection: x-custom-hop`）同样是 hop-by-hop，一并剥离。
+extension DebugResponseRewriteHeaders on DebugResponse {
+  List<DebugHeader> rewriteRuleHeaders() {
+    final connectionTokens = <String>{};
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() != 'connection') continue;
+      for (final value in entry.value) {
+        for (final token in value.split(',')) {
+          final normalized = token.trim().toLowerCase();
+          if (normalized.isNotEmpty) connectionTokens.add(normalized);
+        }
+      }
+    }
+
+    final result = <DebugHeader>[];
+    for (final entry in headers.entries) {
+      final name = entry.key.toLowerCase();
+      if (rewriteStrippedResponseHeaders.contains(name)) continue;
+      if (connectionTokens.contains(name)) continue;
+      for (final value in entry.value) {
+        result.add(DebugHeader(name: entry.key, value: value));
+      }
+    }
+    return result;
+  }
+}
+
 /// 响应快照转换（plan todo 6）：把一次发送的 [DebugResponse] 折叠为**有界**的
 /// 历史快照，供历史文件持久化与回看。
 extension DebugResponseSnapshotting on DebugResponse {
@@ -164,5 +246,6 @@ extension DebugResponseSnapshotRestore on DebugResponseSnapshot {
         durationMs: durationMs,
         sizeBytes: sizeBytes,
         error: error,
+        truncated: truncated,
       );
 }

@@ -148,18 +148,30 @@ class _ResponseViewerState extends State<ResponseViewer> {
   // ==================== 动作 ====================
 
   Future<void> _copyBody() async {
+    // 二进制体不能按（有损的）UTF-8 预览复制：以 base64 复制**原始字节**，
+    // 保证接收方解码后字节完全一致（`dart:convert` 的 base64）。
     final text = _bodyKind == ResponseBodyKind.binary
-        ? _response.bodyText
+        ? base64.encode(_response.bodyBytes)
         : _displayText;
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     AppDialogs.showSuccess('已复制响应体');
   }
 
+  /// 错误 / 取消结果不可保存为改写响应（无有效状态码与响应体）。
+  bool get _canSaveAsRewrite =>
+      widget.onSaveAsRewrite != null &&
+      (widget.url ?? '').isNotEmpty &&
+      !_saving &&
+      !_response.hasError &&
+      !_response.isCancelled;
+
   Future<void> _saveAsRewrite() async {
     final callback = widget.onSaveAsRewrite;
     final url = widget.url;
-    if (callback == null || url == null || url.isEmpty || _saving) return;
+    if (!_canSaveAsRewrite || callback == null || url == null || url.isEmpty) {
+      return;
+    }
     final confirmed = await AppDialogs.showConfirmSheet(
       title: '保存为改写响应？',
       message: '将把当前响应保存为**全局**改写规则：命中精确 URL 的请求会被此响应替换。'
@@ -174,13 +186,9 @@ class _ResponseViewerState extends State<ResponseViewer> {
       url: url,
       kind: DebugRewriteKind.replaceResponse,
       statusCode: _response.statusCode,
-      respHeaders: _response.headers.entries
-          .expand(
-            (e) => e.value.map(
-              (v) => DebugHeader(name: e.key, value: v),
-            ),
-          )
-          .toList(),
+      // 头卫生：剥离 hop-by-hop 与 content-encoding/length/transfer-encoding，
+      // 改写后的响应体由引擎重新编码/计长，沿用上游值会损坏响应。
+      respHeaders: _response.rewriteRuleHeaders(),
       respBody: _response.bodyText,
       remark: '来自请求调试响应',
     );
@@ -232,6 +240,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
+          if (_response.truncated) _buildTruncatedBadge(context),
           AppPillToggle<ResponseBodyFormat>(
             value: _format,
             segments: const <AppSegment<ResponseBodyFormat>>[
@@ -258,15 +267,32 @@ class _ResponseViewerState extends State<ResponseViewer> {
           ),
           TextButton.icon(
             key: const Key('response-save-rewrite'),
-            onPressed: widget.onSaveAsRewrite == null ||
-                    (widget.url ?? '').isEmpty ||
-                    _saving
-                ? null
-                : _saveAsRewrite,
+            onPressed: _canSaveAsRewrite ? _saveAsRewrite : null,
             icon: const Icon(TablerIcons.device_floppy),
             label: const Text('保存为改写响应'),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 「已截断」标记：响应体超过读取上限时展示（大小仍为真实值）。
+  Widget _buildTruncatedBadge(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('response-truncated'),
+      padding: AppSpacing.horizontalSM_verticalXS,
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: AppRadius.allSM,
+      ),
+      child: Text(
+        '已截断',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: scheme.onErrorContainer,
+          fontWeight: AppTypography.weightMedium,
+        ),
       ),
     );
   }
@@ -433,6 +459,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
       sizeBytes: _response.sizeBytes,
       keyPrefix: 'response-body',
       onFullscreen: _openFullScreenBody,
+      onCopy: _copyBody,
     );
   }
 
@@ -445,6 +472,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
       sizeBytes: _response.sizeBytes,
       keyPrefix: 'response-raw',
       forceRaw: true,
+      onCopy: _copyBody,
     );
   }
 
@@ -458,6 +486,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
           bodyKind: _bodyKind,
           format: _format,
           sizeBytes: _response.sizeBytes,
+          onCopy: _copyBody,
         ),
       ),
     );
@@ -564,6 +593,7 @@ class _ResponseBodyPane extends StatefulWidget {
     this.showSearch = false,
     this.forceRaw = false,
     this.onFullscreen,
+    this.onCopy,
     this.scale = 1.0,
   });
 
@@ -584,6 +614,9 @@ class _ResponseBodyPane extends StatefulWidget {
 
   /// 非空时渲染「全屏查看」按钮并作为其动作。
   final VoidCallback? onFullscreen;
+
+  /// 非空时二进制占位卡片可点击并触发复制（base64 原始字节）。
+  final Future<void> Function()? onCopy;
 
   /// 正文内容缩放系数（仅全屏页可 != 1.0；行内 Body / Raw 固定 1.0）。
   final double scale;
@@ -1077,41 +1110,50 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
   Widget _buildBinary(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    return ListView(
-      padding: AppSpacing.allLG,
+    final onCopy = widget.onCopy;
+    final content = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          key: Key('${widget.keyPrefix}-binary'),
-          padding: AppSpacing.allLG,
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest,
-            borderRadius: AppRadius.allMD,
-          ),
-          child: Row(
+        Icon(TablerIcons.file_zip, color: scheme.onSurfaceVariant),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(TablerIcons.file_zip, color: scheme.onSurfaceVariant),
-              const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '二进制 / 非文本内容',
-                      style: theme.textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      '${byteSize(widget.sizeBytes)} · 不显示为文本（可点击复制原始预览）',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+              Text(
+                '二进制 / 非文本内容',
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                onCopy == null
+                    ? '${byteSize(widget.sizeBytes)} · 不显示为文本'
+                    : '${byteSize(widget.sizeBytes)} · 不显示为文本'
+                        '（点击复制 base64 原始字节）',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
                 ),
               ),
             ],
           ),
+        ),
+      ],
+    );
+    return ListView(
+      padding: AppSpacing.allLG,
+      children: [
+        Material(
+          key: Key('${widget.keyPrefix}-binary'),
+          color: scheme.surfaceContainerHighest,
+          borderRadius: AppRadius.allMD,
+          clipBehavior: Clip.antiAlias,
+          child: onCopy == null
+              ? Padding(padding: AppSpacing.allLG, child: content)
+              : InkWell(
+                  borderRadius: AppRadius.allMD,
+                  onTap: () => onCopy(),
+                  child: Padding(padding: AppSpacing.allLG, child: content),
+                ),
         ),
       ],
     );
@@ -1130,12 +1172,14 @@ class _ResponseBodyFullScreen extends StatefulWidget {
     required this.bodyKind,
     required this.format,
     required this.sizeBytes,
+    this.onCopy,
   });
 
   final String rawText;
   final ResponseBodyKind bodyKind;
   final ResponseBodyFormat format;
   final int sizeBytes;
+  final Future<void> Function()? onCopy;
 
   @override
   State<_ResponseBodyFullScreen> createState() =>
@@ -1216,6 +1260,7 @@ class _ResponseBodyFullScreenState extends State<_ResponseBodyFullScreen> {
           keyPrefix: 'response-fullscreen',
           showSearch: true,
           scale: _scale,
+          onCopy: widget.onCopy,
         ),
       ),
     );

@@ -13,6 +13,10 @@
 /// - `复制` 写入剪贴板；`保存为改写响应` 生成的规则字段精确。
 library;
 
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,7 +26,9 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
 import 'package:gstore/core/request_debug/debug_response.dart';
+import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
+import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/page/request_debug/response_viewer.dart';
 
 DebugResponse _response({
@@ -34,6 +40,7 @@ DebugResponse _response({
   int durationMs = 0,
   int? sizeBytes,
   String? error,
+  bool truncated = false,
 }) =>
     DebugResponse(
       statusCode: statusCode,
@@ -44,10 +51,10 @@ DebugResponse _response({
       durationMs: durationMs,
       sizeBytes: sizeBytes ?? body.length,
       error: error,
+      truncated: truncated,
     );
 
-Widget _host(Widget child) => MaterialApp(
-      navigatorKey: appNavigatorKey,
+Widget _host(Widget child) => MaterialApp(      navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: Scaffold(body: child),
     );
@@ -129,6 +136,10 @@ Set<Color?> _treeTokenColors(WidgetTester tester) {
   }
   return colors;
 }
+
+/// 真实 loopback 客户端覆盖：绕过 `TestWidgetsFlutterBinding` 注入的假客户端
+/// （它会让所有 `HttpClient` 请求返回 400）。空子类沿用基类的真实客户端实现。
+class _RealHttpOverrides extends HttpOverrides {}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -893,6 +904,217 @@ void main() {
       expect(find.byKey(const Key('response-body-text')), findsNothing);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('二进制复制 → base64，解码后字节完全一致；卡片可点击', (tester) async {
+      final bytes = <int>[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF,
+      ];
+      final copied = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        tester.binding.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
+
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['image/png'],
+          },
+          body: DebugResponse.textPreview(bytes),
+          bytes: bytes,
+          sizeBytes: bytes.length,
+        ),
+      );
+
+      // 卡片必须真正可点（旧实现无任何手势，点击不产生复制）。
+      await tester.tap(find.byKey(const Key('response-body-binary')));
+      await tester.pumpAndSettle();
+
+      expect(copied, isNotEmpty, reason: '点击二进制卡片必须触发复制');
+      // 复制内容必须是 base64，解码后与原始字节逐字节一致（旧实现走 UTF-8
+      // 预览会损坏任意二进制）。
+      expect(base64.decode(copied.last), bytes);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('截断 / 真实大小', () {
+    test('>cap 响应：truncated=true 且 size 为 Content-Length 真实值', () async {
+      final total = DebugSender.maxBodyBytes + 8192;
+      final body = Uint8List(total)..fillRange(0, total, 0x41);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.headers.contentType = ContentType.text;
+        request.response.contentLength = total;
+        try {
+          request.response.add(body);
+          await request.response.close();
+        } catch (_) {
+          // 客户端达到上限后停止读取，服务端写入可能抛错，属预期。
+        }
+      });
+
+      // `TestWidgetsFlutterBinding` 会把 `HttpOverrides` 换成返回 400 的假客户端；
+      // 本用例需要真实 loopback 连接。注意 `IOClient` 在**构造时**就创建
+      // `HttpClient`，故 sender 必须在真实覆盖的 zone 内创建（仅作用于本 zone）。
+      late final DebugSender sender;
+      final response = await HttpOverrides.runWithHttpOverrides(
+        () {
+          sender = DebugSender();
+          return sender.send(
+            method: 'GET',
+            url: 'http://127.0.0.1:${server.port}/big',
+            timeout: const Duration(seconds: 30),
+          );
+        },
+        _RealHttpOverrides(),
+      );
+      addTearDown(sender.close);
+
+      expect(response.error, isNull);
+      expect(response.statusCode, 200);
+      expect(response.truncated, isTrue, reason: '超过读取上限必须标记 truncated');
+      expect(response.bodyBytes.length, DebugSender.maxBodyBytes,
+          reason: '原始字节必须在 cap 处截断');
+      expect(response.sizeBytes, total,
+          reason: 'sizeBytes 必须是 Content-Length 声明的真实大小，而非截断后长度');
+    });
+
+    testWidgets('UI 标注「已截断」且大小显示真实值', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+            'content-length': <String>['9000000'],
+          },
+          body: 'A' * 100,
+          sizeBytes: 9000000,
+          truncated: true,
+        ),
+      );
+
+      expect(find.byKey(const Key('response-truncated')), findsOneWidget);
+      expect(find.text('已截断'), findsOneWidget);
+      final size = tester.widget<Text>(find.byKey(const Key('response-size')));
+      expect(size.data, byteSize(9000000));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('未截断响应不显示「已截断」', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+          },
+          body: 'small',
+        ),
+      );
+      expect(find.byKey(const Key('response-truncated')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('大响应回退分块渲染且无异常', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+          },
+          body: 'A' * 120000,
+        ),
+      );
+      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('保存为改写响应 · 头卫生 / 错误禁存', () {
+    test('剥离 hop-by-hop / content-encoding / content-length / transfer-encoding', () {
+      final response = _response(
+        headers: const <String, List<String>>{
+          'content-type': <String>['application/json'],
+          'content-encoding': <String>['gzip'],
+          'content-length': <String>['123'],
+          'transfer-encoding': <String>['chunked'],
+          'connection': <String>['keep-alive, x-custom-hop'],
+          'keep-alive': <String>['timeout=5'],
+          'x-custom-hop': <String>['secret'],
+          'x-extra': <String>['v1'],
+        },
+        body: '{}',
+      );
+
+      final headers = response.rewriteRuleHeaders();
+      final names = headers.map((h) => h.name.toLowerCase()).toSet();
+      for (final banned in const <String>[
+        'content-encoding',
+        'content-length',
+        'transfer-encoding',
+        'connection',
+        'keep-alive',
+        'x-custom-hop',
+      ]) {
+        expect(names.contains(banned), isFalse, reason: '$banned 必须被剥离');
+      }
+      expect(
+        headers.any((h) =>
+            h.name.toLowerCase() == 'content-type' &&
+            h.value == 'application/json'),
+        isTrue,
+        reason: '语义头必须保留',
+      );
+      expect(
+        headers.any(
+            (h) => h.name.toLowerCase() == 'x-extra' && h.value == 'v1'),
+        isTrue,
+        reason: '普通头必须保留',
+      );
+    });
+
+    testWidgets('错误响应禁用保存为改写', (tester) async {
+      DebugRewriteRule? captured;
+      final response = _response(error: '连接失败', statusCode: 0);
+      await _pump(
+        tester,
+        response,
+        viewer: ResponseViewer(
+          response: response,
+          method: 'GET',
+          url: 'https://api.example/x',
+          onSaveAsRewrite: (rule) async {
+            captured = rule;
+            return CaptureRulesResult<DebugRewriteRule>.success(rule);
+          },
+        ),
+      );
+
+      final button = tester.widget<TextButton>(
+        find.byKey(const Key('response-save-rewrite')),
+      );
+      expect(button.onPressed, isNull, reason: '错误响应必须禁用保存');
+      await tester.tap(
+        find.byKey(const Key('response-save-rewrite')),
+        warnIfMissed: false,
+      );
+      await tester.pumpAndSettle();
+      expect(captured, isNull);
+      expect(find.text('保存为改写响应？'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('动作', () {
@@ -935,6 +1157,10 @@ void main() {
         durationMs: 12,
         headers: const <String, List<String>>{
           'content-type': <String>['application/json'],
+          'content-encoding': <String>['gzip'],
+          'content-length': <String>['17'],
+          'transfer-encoding': <String>['chunked'],
+          'connection': <String>['keep-alive'],
           'x-extra': <String>['v1'],
         },
         body: '{"error":"down"}',
@@ -971,6 +1197,17 @@ void main() {
         ),
         isTrue,
       );
+      final rewriteNames =
+          captured!.respHeaders!.map((h) => h.name.toLowerCase()).toSet();
+      for (final banned in const <String>[
+        'content-encoding',
+        'content-length',
+        'transfer-encoding',
+        'connection',
+      ]) {
+        expect(rewriteNames.contains(banned), isFalse,
+            reason: '$banned 不得出现在改写响应头中');
+      }
       expect(tester.takeException(), isNull);
     });
   });
