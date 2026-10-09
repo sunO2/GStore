@@ -139,6 +139,18 @@ void main() {
       expect(rebuildUrl('', null, [q('a&b', 'v')]), '?a%26b=v');
     });
 
+    test('literal percent encodes to %25 (round-trip safe)', () {
+      expect(rebuildUrl('', null, [q('a', '100%')]), '?a=100%25');
+      expect(rebuildUrl('', null, [q('a', '50%off')]), '?a=50%25off');
+    });
+
+    test('literal percent round-trips through parse + rebuild', () {
+      final r = parseUrlQuery('?a=100%25&b=50%25off');
+      expect(r.params[0].value, '100%');
+      expect(r.params[1].value, '50%off');
+      expect(rebuildUrl(r.base, r.fragment, r.params), '?a=100%25&b=50%25off');
+    });
+
     test('order and repeated names are preserved', () {
       expect(
         rebuildUrl('', null, [q('a', '1'), q('b', '2'), q('a', '3')]),

@@ -104,6 +104,28 @@ class _RequestDebugCollectionSectionState
     final target = _importTarget();
     _facade.store.addRequest(target.id, result.request!);
     await _persist();
+    if (!mounted) return;
+    await _reportIgnoredOptions(result.ignoredOptions);
+  }
+
+  /// 把被忽略 / 未处理的 cURL 选项汇总回传 UI（成功导入后可见，避免静默丢弃）。
+  Future<void> _reportIgnoredOptions(List<String> ignored) async {
+    if (ignored.isEmpty || !mounted) return;
+    final theme = Theme.of(context);
+    await AppDialogs.showAlertSheet(
+      title: '部分选项被忽略',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final item in ignored)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+              child: Text('• $item', style: theme.textTheme.bodyMedium),
+            ),
+        ],
+      ),
+    );
   }
 
   /// 导入目标：复用名为「导入」的顶层集合；不存在则新建。

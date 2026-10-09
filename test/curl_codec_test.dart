@@ -336,4 +336,87 @@ void main() {
       );
     });
   });
+
+  // plan todo 11：cURL 编解码边界修复（取值标记 / -G 片段 / Cookie 去重 /
+  // 忽略项回传）。
+  group('边界修复（todo 11）', () {
+    test('--data-urlencode 消费其值，不把值误当 URL', () {
+      final r = parseCurl(
+        "curl --data-urlencode 'q=hello world' 'https://x.test/api'",
+      );
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/api');
+    });
+
+    test('-o 消费其值，不把输出文件名误当 URL', () {
+      final r = parseCurl("curl -o out.txt 'https://x.test/api'");
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/api');
+    });
+
+    test('--json 消费其值，不把 JSON 误当 URL', () {
+      final r = parseCurl(
+        "curl --json '{\"a\":1}' 'https://x.test/api'",
+      );
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/api');
+    });
+
+    test('--tlsv1.2 不取值，其后 URL 仍能解析', () {
+      final r = parseCurl("curl --tlsv1.2 'https://x.test/secure'");
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/secure');
+    });
+
+    test('-G 查询串插在 #fragment 之前（无原查询）', () {
+      final r = parseCurl("curl -G -d 'a=2' 'https://x.test/p#frag'");
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/p?a=2#frag');
+      expect(r.request!.method, 'GET');
+      expect(r.request!.url.contains('#frag?a=2'), isFalse,
+          reason: 'fragment 之后绝不能出现查询串');
+    });
+
+    test('-G 保留 URL 原有查询并追加（仍在 fragment 之前）', () {
+      final r = parseCurl("curl -G -d 'a=2' 'https://x.test/p?b=1#frag'");
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/p?b=1&a=2#frag');
+    });
+
+    test('忽略项列表可断言且 URL 不受影响', () {
+      final r = parseCurl(
+        "curl --compressed -o out.txt 'https://x.test/api'",
+      );
+      expect(r.isSuccess, isTrue, reason: r.error);
+      expect(r.request!.url, 'https://x.test/api');
+      expect(r.ignoredOptions.any((e) => e.contains('--compressed')), isTrue);
+      expect(r.ignoredOptions.any((e) => e.contains('-o')), isTrue);
+    });
+
+    test('toCurl：Cookie 头与 cookies 同时存在时只输出一次', () {
+      final req = DebugRequest(
+        id: 'r',
+        name: 'n',
+        method: 'GET',
+        url: 'https://x.test/',
+        headers: const [DebugHeader(name: 'Cookie', value: 'sid=x')],
+        cookies: const [DebugCookie(name: 'sid', value: 'x')],
+      );
+      final out = toCurl(req);
+      expect(out, contains("-b 'sid=x'"));
+      expect(out.contains('Cookie'), isFalse,
+          reason: 'cookies 已在 -b 中输出，不得再重复 Cookie 头');
+    });
+
+    test('effectiveUrl：含 % 的查询值往返不损坏', () {
+      final req = DebugRequest(
+        id: 'r',
+        name: 'n',
+        method: 'GET',
+        url: 'https://x/p?a=100%25',
+        query: [_q('a', '100%')],
+      );
+      expect(effectiveUrl(req), 'https://x/p?a=100%25');
+    });
+  });
 }

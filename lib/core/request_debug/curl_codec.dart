@@ -306,13 +306,13 @@ CurlParseResult _parse(String curl) {
     i++;
   }
 
-  // -G：体数据转查询串附加到 URL。
+  // -G：体数据转查询串附加到 URL；必须插在 `#fragment` **之前**。
+  // 复用 parseUrlQuery / rebuildUrl（绝不在此处重新实现百分号编码）。
   if (getFlag && bodyParts.isNotEmpty) {
-    final qs = bodyParts.join('&');
-    final baseUrl = url ?? '';
-    url = baseUrl.isEmpty
-        ? '?$qs'
-        : (baseUrl.contains('?') ? '$baseUrl&$qs' : '$baseUrl?$qs');
+    final parsed = parseUrlQuery(url ?? '');
+    final extra = parseUrlQuery('?${bodyParts.join('&')}');
+    final merged = <DebugQueryParam>[...parsed.params, ...extra.params];
+    url = rebuildUrl(parsed.base, parsed.fragment, merged);
     bodyParts.clear();
     hadData = false;
   }
@@ -433,12 +433,30 @@ DebugBodyKind _inferBodyKind(String body, List<DebugHeader> headers) {
   return DebugBodyKind.text;
 }
 
-/// 已知「取值型」长选项集合：用于在忽略它们时正确消费其值，避免后续错位。
+/// 已知「取值型」选项集合：用于在忽略它们时正确消费其值，避免后续错位
+/// （否则选项的**值**会被误当作位置 URL，吞掉真正的 URL）。
+///
+/// 注意：**不取值**的开关（如 `--tlsv1.2` / `--tlsv1` / `--compressed` /
+/// `-k` / `-s` / `-L` 等）**绝不**列入此处，否则会把 URL 当作它们的值消费。
 const Set<String> _valueTakingFlags = {
+  // 短选项（短选项在此统一按 2 字符名匹配）。
+  '-o', // --output
+  '-x', // --proxy
+  '-E', // --cert
+  '-K', // --config
+  '-T', // --upload-file
+  '-w', // --write-out
+  '-D', // --dump-header
+  '-c', // --cookie-jar
+  '-m', // --max-time
+  // 长选项。
   '--connect-timeout',
   '--max-time',
   '--output',
+  '--output-dir',
   '--proxy',
+  '--proxy-user',
+  '--connect-to',
   '--cacert',
   '--cert',
   '--key',
@@ -457,7 +475,10 @@ const Set<String> _valueTakingFlags = {
   '--key-type',
   '--pass',
   '--ciphers',
-  '--tlsv1.2',
+  '--data-urlencode',
+  '--json',
+  '--upload-file',
+  '--config',
 };
 
 /// 把 [DebugRequest] 序列化为等价 cURL 命令（单引号转义）。
@@ -486,9 +507,17 @@ String toCurl(DebugRequest req) {
     b.write(' ${_shellQuote(url)}');
   }
 
+  // Cookie 规范化：`req.cookies` 是权威来源；若其存在，则不再输出重复的
+  // `Cookie` 头，保证 Cookie 至多出现一次（抓包映射会同时产出头与 cookies）。
+  final cookieParts = req.cookies
+      .where((c) => c.name.isNotEmpty)
+      .map((c) => '${c.name}=${c.value}')
+      .toList();
+
   for (final h in applied.headers) {
     if (!h.enabled || h.name.isEmpty) continue;
     if (useAuthFlag && h.name.toLowerCase() == 'authorization') continue;
+    if (cookieParts.isNotEmpty && h.name.toLowerCase() == 'cookie') continue;
     b.write(' -H ${_shellQuote('${h.name}: ${h.value}')}');
   }
 
@@ -506,10 +535,6 @@ String toCurl(DebugRequest req) {
       break;
   }
 
-  final cookieParts = req.cookies
-      .where((c) => c.name.isNotEmpty)
-      .map((c) => '${c.name}=${c.value}')
-      .toList();
   if (cookieParts.isNotEmpty) {
     b.write(' -b ${_shellQuote(cookieParts.join('; '))}');
   }

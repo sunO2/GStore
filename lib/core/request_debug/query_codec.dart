@@ -8,7 +8,7 @@
 /// 关键不变量：
 /// - [parseUrlQuery] / [rebuildUrl] **绝不抛异常**、**绝不使用 `Uri.parse`**、
 ///   **绝不解析 `{{var}}`**；仅百分号解码/编码，`+` 一律按字面量处理。
-/// - [rebuildUrl] 仅编码保留字符 `&` `=` `#` 与空格（→ `%20`），其余原样，
+/// - [rebuildUrl] 仅编码保留字符 `&` `=` `#` `%` 与空格（→ `%20`），其余原样，
 ///   因此 `{{host}}` 原样保留、可被 [resolveEnv] 在发送前替换。
 /// - [mergeParams] 按名分组：覆盖组**顶替**基础组并**保留基础位置**，未覆盖的
 ///   基础名保持原值/位置，覆盖中新出现的名字按 override 顺序**追加**。
@@ -80,8 +80,8 @@ QueryParseResult parseUrlQuery(String url) {
 ///
 /// - 查询参数按给定顺序输出，重复名保留；
 /// - 值为空时输出无值键（仅 `name`），非空时输出 `name=value`；
-/// - `{{...}}` 原样输出；仅百分号编码保留字符 `&` `=` `#` 与空格（→ `%20`），
-///   `+` 保持字面量；
+/// - `{{...}}` 原样输出；仅百分号编码保留字符 `&` `=` `#` `%` 与空格
+///   （→ `%20`），`+` 保持字面量；
 /// - 查询串永远在 fragment **之前**。
 String rebuildUrl(
   String base,
@@ -246,12 +246,19 @@ int _hexValue(int code) {
   return -1;
 }
 
-/// 仅编码保留字符 `&` `=` `#` 与空格（→ `%20`）；其余（含 `+`、`{` `}`）原样。
+/// 仅编码保留字符 `&` `=` `#` `%` 与空格（→ `%20`）；其余（含 `+`、`{` `}`）原样。
+///
+/// `%` 必须编码为 `%25`：否则值中的字面 `%` 会与后续解析的百分号转义冲突，
+/// 导致 `parseUrlQuery` 回退（丢失全部参数）。修复此点保证含 `%` 的值往返不损坏。
 String _encode(String input) {
   if (!input.contains(_reservedPattern)) return input;
   final buffer = StringBuffer();
   for (final rune in input.runes) {
-    if (rune == 0x26 || rune == 0x3D || rune == 0x23 || rune == 0x20) {
+    if (rune == 0x26 /* & */ ||
+        rune == 0x3D /* = */ ||
+        rune == 0x23 /* # */ ||
+        rune == 0x25 /* % */ ||
+        rune == 0x20 /* space */) {
       buffer.write('%');
       buffer.write(rune.toRadixString(16).toUpperCase().padLeft(2, '0'));
     } else {
@@ -261,4 +268,4 @@ String _encode(String input) {
   return buffer.toString();
 }
 
-final RegExp _reservedPattern = RegExp(r'[&=# ]');
+final RegExp _reservedPattern = RegExp(r'[%=&# ]');
