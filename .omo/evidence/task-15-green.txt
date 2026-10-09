@@ -1,0 +1,21 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart
+00:00 +0: filterDebugCollections 空查询返回全部（副本，不改输入）
+00:00 +1: filterDebugCollections 请求命中：只剩该请求与所属集合
+00:00 +2: filterDebugCollections 集合名命中：保留集合并保留其全部请求
+00:00 +3: filterDebugCollections 子文件夹命中：保留祖先链（层级）
+00:00 +4: filterDebugCollections 无匹配返回空，不抛
+00:00 +5: sortDebugCollections original 返回输入副本（原顺序）
+00:00 +6: sortDebugCollections nameAsc：同级排序且保持父子层级
+00:00 +7: sortDebugCollections nameDesc：同级降序
+00:00 +8: filterDebugHistory / sortDebugHistory 过滤：URL 命中；空查询返回全部；无匹配为空
+00:00 +9: filterDebugHistory / sortDebugHistory 排序：original 保持（最新在前）；nameAsc 按 URL
+00:00 +10: filterDebugEnvironments / sortDebugEnvironments 过滤：名称 / 变量键命中；无匹配为空
+00:00 +11: filterDebugEnvironments / sortDebugEnvironments 排序：nameAsc / nameDesc
+00:00 +12: filterDebugRules / sortDebugRules 过滤：URL / 方法 / 备注命中；无匹配为空
+00:00 +13: filterDebugRules / sortDebugRules 排序：nameAsc 按 URL
+00:00 +14: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:00 +15: 集合分区搜索 排序菜单切换：名称升序改变根集合顺序
+00:01 +16: 历史分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:01 +17: 环境分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:01 +18: 改写规则分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+00:01 +19: All tests passed!

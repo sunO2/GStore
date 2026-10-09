@@ -23,6 +23,7 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'request_editor_page.dart';
 import 'request_sheets.dart';
+import 'search_sort_bar.dart';
 
 /// 集合分区：文件夹树 + 请求列表。
 class RequestDebugCollectionSection extends StatefulWidget {
@@ -41,7 +42,20 @@ class _RequestDebugCollectionSectionState
   /// 处于折叠状态的集合 id（默认全部展开）。
   final Set<String> _collapsed = <String>{};
 
+  /// 搜索查询串（空 = 不过滤）。
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  /// 排序顺序（默认原序）。
+  DebugSortOrder _sort = DebugSortOrder.original;
+
   RequestDebugFacade get _facade => widget.facade;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   // ==================== 变更 ====================
 
@@ -172,7 +186,13 @@ class _RequestDebugCollectionSectionState
   @override
   Widget build(BuildContext context) {
     final store = _facade.store;
-    final roots = store.collections.where((c) => c.parentId == null).toList();
+    // 过滤 + 排序为纯函数（lib/core/request_debug/debug_search.dart），
+    // 不改动 store 的 CRUD 语义。
+    final displayed = sortDebugCollections(
+      filterDebugCollections(store.collections, _query),
+      _sort,
+    );
+    final roots = displayed.where((c) => c.parentId == null).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -182,12 +202,15 @@ class _RequestDebugCollectionSectionState
         Expanded(
           child: store.collections.isEmpty
               ? _buildEmpty(context)
-              : ListView(
-                  padding: AppSpacing.onlyVerticalSM,
-                  children: [
-                    for (final c in roots) _buildFolder(context, c, 0),
-                  ],
-                ),
+              : displayed.isEmpty
+                  ? _buildSearchEmpty(context)
+                  : ListView(
+                      padding: AppSpacing.onlyVerticalSM,
+                      children: [
+                        for (final c in roots)
+                          _buildFolder(context, c, 0, displayed),
+                      ],
+                    ),
         ),
       ],
     );
@@ -195,39 +218,58 @@ class _RequestDebugCollectionSectionState
 
   Widget _buildHeader(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.sm,
-        AppSpacing.sm,
-        AppSpacing.sm,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text('集合树', style: theme.textTheme.titleMedium),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.sm,
+            AppSpacing.sm,
+            AppSpacing.sm,
           ),
-          IconButton(
-            key: const Key('request-debug-curl-import'),
-            tooltip: '导入 cURL',
-            icon: const Icon(TablerIcons.file_import),
-            onPressed: _importCurl,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text('集合树', style: theme.textTheme.titleMedium),
+              ),
+              IconButton(
+                key: const Key('request-debug-curl-import'),
+                tooltip: '导入 cURL',
+                icon: const Icon(TablerIcons.file_import),
+                onPressed: _importCurl,
+              ),
+              IconButton(
+                key: const Key('request-debug-collection-add'),
+                tooltip: '新建集合',
+                icon: const Icon(TablerIcons.plus),
+                onPressed: () => _createCollection(),
+              ),
+            ],
           ),
-          IconButton(
-            key: const Key('request-debug-collection-add'),
-            tooltip: '新建集合',
-            icon: const Icon(TablerIcons.plus),
-            onPressed: () => _createCollection(),
-          ),
-        ],
-      ),
+        ),
+        DebugSearchSortBar(
+          sectionId: 'request-debug-collection',
+          hint: '搜索集合 / 请求',
+          controller: _searchCtrl,
+          query: _query,
+          sort: _sort,
+          onQueryChanged: (value) => setState(() => _query = value),
+          onSortChanged: (value) => setState(() => _sort = value),
+        ),
+      ],
     );
   }
 
-  Widget _buildFolder(BuildContext context, DebugCollection collection, int depth) {
+  Widget _buildFolder(
+    BuildContext context,
+    DebugCollection collection,
+    int depth,
+    List<DebugCollection> collections,
+  ) {
     final expanded = !_collapsed.contains(collection.id);
     final children =
-        _facade.store.collections.where((c) => c.parentId == collection.id).toList();
+        collections.where((c) => c.parentId == collection.id).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -290,7 +332,8 @@ class _RequestDebugCollectionSectionState
           ),
         ),
         if (expanded) ...[
-          for (final child in children) _buildFolder(context, child, depth + 1),
+          for (final child in children)
+            _buildFolder(context, child, depth + 1, collections),
           for (final request in collection.requests)
             _buildRequest(context, request, depth + 1),
           if (collection.requests.isEmpty && children.isEmpty)
@@ -365,6 +408,37 @@ class _RequestDebugCollectionSectionState
         style: theme.textTheme.labelSmall?.copyWith(
           color: scheme.onSecondaryContainer,
           fontWeight: AppTypography.weightSemiBold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchEmpty(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      key: const Key('request-debug-collection-search-empty'),
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              TablerIcons.search_off,
+              size: AppTypography.iconXXXL,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('未找到匹配的集合', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '试试其他关键字，或清空搜索查看全部。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
       ),
     );

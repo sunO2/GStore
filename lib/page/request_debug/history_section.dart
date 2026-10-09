@@ -27,6 +27,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'request_editor_page.dart';
+import 'search_sort_bar.dart';
 
 // ==================== 追加接缝 ====================
 
@@ -84,6 +85,19 @@ class RequestDebugHistorySection extends StatefulWidget {
 class _RequestDebugHistorySectionState
     extends State<RequestDebugHistorySection> {
   RequestDebugFacade get _facade => widget.facade;
+
+  /// 搜索查询串（空 = 不过滤）。
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  /// 排序顺序（默认原序 = 最新在前）。
+  DebugSortOrder _sort = DebugSortOrder.original;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   // ==================== 动作 ====================
 
@@ -230,6 +244,11 @@ class _RequestDebugHistorySectionState
   @override
   Widget build(BuildContext context) {
     final store = _facade.store;
+    // 过滤 + 排序为纯函数，不改动 store 的 CRUD 语义。
+    final displayed = sortDebugHistory(
+      filterDebugHistory(store.history, _query),
+      _sort,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -238,12 +257,14 @@ class _RequestDebugHistorySectionState
         Expanded(
           child: store.history.isEmpty
               ? _buildEmpty(context)
-              : ListView.builder(
-                  padding: AppSpacing.onlyVerticalSM,
-                  itemCount: store.history.length,
-                  itemBuilder: (context, index) =>
-                      _buildEntry(context, store.history[index]),
-                ),
+              : displayed.isEmpty
+                  ? _buildSearchEmpty(context)
+                  : ListView.builder(
+                      padding: AppSpacing.onlyVerticalSM,
+                      itemCount: displayed.length,
+                      itemBuilder: (context, index) =>
+                          _buildEntry(context, displayed[index]),
+                    ),
         ),
       ],
     );
@@ -252,33 +273,47 @@ class _RequestDebugHistorySectionState
   Widget _buildHeader(BuildContext context) {
     final theme = Theme.of(context);
     final store = _facade.store;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.sm,
-        AppSpacing.sm,
-        AppSpacing.sm,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text('发送历史', style: theme.textTheme.titleMedium),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.sm,
+            AppSpacing.sm,
+            AppSpacing.sm,
           ),
-          Text(
-            '${store.history.length}/${store.historyLimit}',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text('发送历史', style: theme.textTheme.titleMedium),
+              ),
+              Text(
+                '${store.history.length}/${store.historyLimit}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              IconButton(
+                key: const Key('request-debug-history-clear'),
+                tooltip: '清空历史',
+                icon: const Icon(TablerIcons.clear_all),
+                onPressed: store.history.isEmpty ? null : _clear,
+              ),
+            ],
           ),
-          const SizedBox(width: AppSpacing.xs),
-          IconButton(
-            key: const Key('request-debug-history-clear'),
-            tooltip: '清空历史',
-            icon: const Icon(TablerIcons.clear_all),
-            onPressed: store.history.isEmpty ? null : _clear,
-          ),
-        ],
-      ),
+        ),
+        DebugSearchSortBar(
+          sectionId: 'request-debug-history',
+          hint: '搜索历史 URL / 方法',
+          controller: _searchCtrl,
+          query: _query,
+          sort: _sort,
+          onQueryChanged: (value) => setState(() => _query = value),
+          onSortChanged: (value) => setState(() => _sort = value),
+        ),
+      ],
     );
   }
 
@@ -376,6 +411,37 @@ class _RequestDebugHistorySectionState
         style: theme.textTheme.labelSmall?.copyWith(
           color: scheme.onSecondaryContainer,
           fontWeight: AppTypography.weightSemiBold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchEmpty(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      key: const Key('request-debug-history-search-empty'),
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              TablerIcons.search_off,
+              size: AppTypography.iconXXXL,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('未找到匹配的历史', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '试试其他关键字，或清空搜索查看全部。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
       ),
     );

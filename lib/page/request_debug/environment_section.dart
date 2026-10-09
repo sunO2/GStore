@@ -23,6 +23,8 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'search_sort_bar.dart';
+
 // ==================== 分区组件 ====================
 
 /// 环境分区：环境列表 + 当前环境切换 + 键值对编辑。
@@ -40,6 +42,19 @@ class RequestDebugEnvironmentSection extends StatefulWidget {
 class _RequestDebugEnvironmentSectionState
     extends State<RequestDebugEnvironmentSection> {
   RequestDebugFacade get _facade => widget.facade;
+
+  /// 搜索查询串（空 = 不过滤）。
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  /// 排序顺序（默认原序）。
+  DebugSortOrder _sort = DebugSortOrder.original;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   // ==================== 动作 ====================
 
@@ -94,6 +109,11 @@ class _RequestDebugEnvironmentSectionState
   @override
   Widget build(BuildContext context) {
     final store = _facade.store;
+    // 过滤 + 排序为纯函数，不改动 store 的 CRUD 语义。
+    final displayed = sortDebugEnvironments(
+      filterDebugEnvironments(store.environments, _query),
+      _sort,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -102,12 +122,14 @@ class _RequestDebugEnvironmentSectionState
         Expanded(
           child: store.environments.isEmpty
               ? _buildEmpty(context)
-              : ListView.builder(
-                  padding: AppSpacing.onlyVerticalSM,
-                  itemCount: store.environments.length,
-                  itemBuilder: (context, index) =>
-                      _buildEnvironment(context, store.environments[index]),
-                ),
+              : displayed.isEmpty
+                  ? _buildSearchEmpty(context)
+                  : ListView.builder(
+                      padding: AppSpacing.onlyVerticalSM,
+                      itemCount: displayed.length,
+                      itemBuilder: (context, index) =>
+                          _buildEnvironment(context, displayed[index]),
+                    ),
         ),
       ],
     );
@@ -116,38 +138,52 @@ class _RequestDebugEnvironmentSectionState
   Widget _buildHeader(BuildContext context) {
     final theme = Theme.of(context);
     final active = _facade.store.activeEnvironment;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.sm,
-        AppSpacing.sm,
-        AppSpacing.sm,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('环境', style: theme.textTheme.titleMedium),
-                Text(
-                  '当前：${active?.name ?? '未设置'}',
-                  key: const Key('request-debug-environment-current'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.sm,
+            AppSpacing.sm,
+            AppSpacing.sm,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('环境', style: theme.textTheme.titleMedium),
+                    Text(
+                      '当前：${active?.name ?? '未设置'}',
+                      key: const Key('request-debug-environment-current'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              IconButton(
+                key: const Key('request-debug-environment-add'),
+                tooltip: '新建环境',
+                icon: const Icon(TablerIcons.plus),
+                onPressed: () => _openEditor(null),
+              ),
+            ],
           ),
-          IconButton(
-            key: const Key('request-debug-environment-add'),
-            tooltip: '新建环境',
-            icon: const Icon(TablerIcons.plus),
-            onPressed: () => _openEditor(null),
-          ),
-        ],
-      ),
+        ),
+        DebugSearchSortBar(
+          sectionId: 'request-debug-environment',
+          hint: '搜索环境 / 变量',
+          controller: _searchCtrl,
+          query: _query,
+          sort: _sort,
+          onQueryChanged: (value) => setState(() => _query = value),
+          onSortChanged: (value) => setState(() => _sort = value),
+        ),
+      ],
     );
   }
 
@@ -197,6 +233,37 @@ class _RequestDebugEnvironmentSectionState
             child: const Text('删除'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSearchEmpty(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      key: const Key('request-debug-environment-search-empty'),
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              TablerIcons.search_off,
+              size: AppTypography.iconXXXL,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('未找到匹配的环境', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '试试其他关键字，或清空搜索查看全部。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

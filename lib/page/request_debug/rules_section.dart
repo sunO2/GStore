@@ -35,6 +35,8 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
 
+import 'search_sort_bar.dart';
+
 // ==================== 映射 / 展示辅助 ====================
 
 /// 改写类型的中文展示名。
@@ -144,6 +146,13 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
   /// 正在保存（快捷开关）的规则 id，避免重复点击。
   final Set<String> _busy = <String>{};
 
+  /// 搜索查询串（空 = 不过滤）。
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  /// 排序顺序（默认原序）。
+  DebugSortOrder _sort = DebugSortOrder.original;
+
   RequestDebugFacade get _facade => widget.facade;
 
   @override
@@ -157,6 +166,12 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
         unawaited(_openPrefilled(debugRewriteRuleFromPrefill(prefill)));
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadRules({bool silent = false}) async {
@@ -306,6 +321,21 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
               ),
             ],
           ),
+          DebugSearchSortBar(
+            sectionId: 'request-debug-rules',
+            hint: '搜索规则 URL / 方法 / 备注',
+            controller: _searchCtrl,
+            query: _query,
+            sort: _sort,
+            onQueryChanged: (value) => setState(() => _query = value),
+            onSortChanged: (value) => setState(() => _sort = value),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              0,
+              AppSpacing.sm,
+              AppSpacing.sm,
+            ),
+          ),
           Container(
             padding: AppSpacing.allSM,
             decoration: BoxDecoration(
@@ -348,10 +378,18 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
     if (_rules.isEmpty) {
       return _buildEmpty(context);
     }
+    // 过滤 + 排序为纯函数，不改动规则端口 / CRUD 语义。
+    final displayed = sortDebugRules(
+      filterDebugRules(_rules, _query),
+      _sort,
+    );
+    if (displayed.isEmpty) {
+      return _buildSearchEmpty(context);
+    }
     return ListView.builder(
       padding: AppSpacing.onlyVerticalSM,
-      itemCount: _rules.length,
-      itemBuilder: (context, index) => _buildRule(context, _rules[index]),
+      itemCount: displayed.length,
+      itemBuilder: (context, index) => _buildRule(context, displayed[index]),
     );
   }
 
@@ -438,6 +476,37 @@ class _RequestDebugRulesSectionState extends State<RequestDebugRulesSection> {
               key: const Key('request-debug-rules-retry'),
               onPressed: () => _loadRules(),
               child: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchEmpty(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      key: const Key('request-debug-rules-search-empty'),
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ColoredAliIcon(
+              icon: TablerIcons.search_off,
+              size: AppTypography.iconXXXL,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('未找到匹配的规则', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '试试其他关键字，或清空搜索查看全部。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),

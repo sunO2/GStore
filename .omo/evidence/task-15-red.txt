@@ -1,0 +1,213 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart
+00:00 +0: filterDebugCollections 空查询返回全部（副本，不改输入）
+00:00 +0 -1: filterDebugCollections 空查询返回全部（副本，不改输入） [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 65:3  filterDebugCollections
+  test/request_debug_search_test.dart 130:19                main.<fn>.<fn>
+  
+00:00 +0 -1: filterDebugCollections 请求命中：只剩该请求与所属集合
+00:00 +0 -2: filterDebugCollections 请求命中：只剩该请求与所属集合 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 65:3  filterDebugCollections
+  test/request_debug_search_test.dart 136:19                main.<fn>.<fn>
+  
+00:00 +0 -2: filterDebugCollections 集合名命中：保留集合并保留其全部请求
+00:00 +0 -3: filterDebugCollections 集合名命中：保留集合并保留其全部请求 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 65:3  filterDebugCollections
+  test/request_debug_search_test.dart 142:19                main.<fn>.<fn>
+  
+00:00 +0 -3: filterDebugCollections 子文件夹命中：保留祖先链（层级）
+00:00 +0 -4: filterDebugCollections 子文件夹命中：保留祖先链（层级） [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 65:3  filterDebugCollections
+  test/request_debug_search_test.dart 152:19                main.<fn>.<fn>
+  
+00:00 +0 -4: filterDebugCollections 无匹配返回空，不抛
+00:00 +0 -5: filterDebugCollections 无匹配返回空，不抛 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 65:3  filterDebugCollections
+  test/request_debug_search_test.dart 157:14                main.<fn>.<fn>
+  
+00:00 +0 -5: sortDebugCollections original 返回输入副本（原顺序）
+00:00 +0 -6: sortDebugCollections original 返回输入副本（原顺序） [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 75:3  sortDebugCollections
+  test/request_debug_search_test.dart 169:19                main.<fn>.<fn>
+  
+00:00 +0 -6: sortDebugCollections nameAsc：同级排序且保持父子层级
+00:00 +0 -7: sortDebugCollections nameAsc：同级排序且保持父子层级 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 75:3  sortDebugCollections
+  test/request_debug_search_test.dart 174:19                main.<fn>.<fn>
+  
+00:00 +0 -7: sortDebugCollections nameDesc：同级降序
+00:00 +0 -8: sortDebugCollections nameDesc：同级降序 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 75:3  sortDebugCollections
+  test/request_debug_search_test.dart 179:19                main.<fn>.<fn>
+  
+00:00 +0 -8: filterDebugHistory / sortDebugHistory 过滤：URL 命中；空查询返回全部；无匹配为空
+00:00 +0 -9: filterDebugHistory / sortDebugHistory 过滤：URL 命中；空查询返回全部；无匹配为空 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 85:3  filterDebugHistory
+  test/request_debug_search_test.dart 201:9                 main.<fn>.<fn>
+  
+00:00 +0 -9: filterDebugHistory / sortDebugHistory 排序：original 保持（最新在前）；nameAsc 按 URL
+00:00 +0 -10: filterDebugHistory / sortDebugHistory 排序：original 保持（最新在前）；nameAsc 按 URL [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 93:3  sortDebugHistory
+  test/request_debug_search_test.dart 210:9                 main.<fn>.<fn>
+  
+00:00 +0 -10: filterDebugEnvironments / sortDebugEnvironments 过滤：名称 / 变量键命中；无匹配为空
+00:00 +0 -11: filterDebugEnvironments / sortDebugEnvironments 过滤：名称 / 变量键命中；无匹配为空 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 103:3  filterDebugEnvironments
+  test/request_debug_search_test.dart 230:9                  main.<fn>.<fn>
+  
+00:00 +0 -11: filterDebugEnvironments / sortDebugEnvironments 排序：nameAsc / nameDesc
+00:00 +0 -12: filterDebugEnvironments / sortDebugEnvironments 排序：nameAsc / nameDesc [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 111:3  sortDebugEnvironments
+  test/request_debug_search_test.dart 242:9                  main.<fn>.<fn>
+  
+00:00 +0 -12: filterDebugRules / sortDebugRules 过滤：URL / 方法 / 备注命中；无匹配为空
+00:00 +0 -13: filterDebugRules / sortDebugRules 过滤：URL / 方法 / 备注命中；无匹配为空 [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 121:3  filterDebugRules
+  test/request_debug_search_test.dart 273:14                 main.<fn>.<fn>
+  
+00:00 +0 -13: filterDebugRules / sortDebugRules 排序：nameAsc 按 URL
+00:00 +0 -14: filterDebugRules / sortDebugRules 排序：nameAsc 按 URL [E]
+  UnimplementedError
+  package:gstore/core/request_debug/debug_search.dart 129:3  sortDebugRules
+  test/request_debug_search_test.dart 283:9                  main.<fn>.<fn>
+  
+00:00 +0 -14: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.state (package:flutter_test/src/controller.dart:932:42)
+#2      WidgetTester.showKeyboard.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1125:42)
+#5      TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#6      WidgetTester.showKeyboard (package:flutter_test/src/widget_tester.dart:1124:27)
+#7      WidgetTester.enterText.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1160:13)
+#10     TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#11     WidgetTester.enterText (package:flutter_test/src/widget_tester.dart:1159:27)
+#12     main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart:315:20)
+<asynchronous suspension>
+#13     testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#14     TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided 5 frames from dart:async and package:stack_trace)
+
+The test description was:
+  输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:00 +0 -15: 集合分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩 [E]
+  Test failed. See exception logs above.
+  The test description was: 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+  
+00:00 +0 -15: 历史分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.state (package:flutter_test/src/controller.dart:932:42)
+#2      WidgetTester.showKeyboard.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1125:42)
+#5      TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#6      WidgetTester.showKeyboard (package:flutter_test/src/widget_tester.dart:1124:27)
+#7      WidgetTester.enterText.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1160:13)
+#10     TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#11     WidgetTester.enterText (package:flutter_test/src/widget_tester.dart:1159:27)
+#12     main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart:369:20)
+<asynchronous suspension>
+#13     testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#14     TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided 5 frames from dart:async and package:stack_trace)
+
+The test description was:
+  输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -16: 历史分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩 [E]
+  Test failed. See exception logs above.
+  The test description was: 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+  
+00:01 +0 -16: 环境分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.state (package:flutter_test/src/controller.dart:932:42)
+#2      WidgetTester.showKeyboard.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1125:42)
+#5      TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#6      WidgetTester.showKeyboard (package:flutter_test/src/widget_tester.dart:1124:27)
+#7      WidgetTester.enterText.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1160:13)
+#10     TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#11     WidgetTester.enterText (package:flutter_test/src/widget_tester.dart:1159:27)
+#12     main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart:414:20)
+<asynchronous suspension>
+#13     testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#14     TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided 5 frames from dart:async and package:stack_trace)
+
+The test description was:
+  输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -17: 环境分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩 [E]
+  Test failed. See exception logs above.
+  The test description was: 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+  
+00:01 +0 -17: 改写规则分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.state (package:flutter_test/src/controller.dart:932:42)
+#2      WidgetTester.showKeyboard.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1125:42)
+#5      TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#6      WidgetTester.showKeyboard (package:flutter_test/src/widget_tester.dart:1124:27)
+#7      WidgetTester.enterText.<anonymous closure> (package:flutter_test/src/widget_tester.dart:1160:13)
+#10     TestAsyncUtils.guard (package:flutter_test/src/test_async_utils.dart:74:41)
+#11     WidgetTester.enterText (package:flutter_test/src/widget_tester.dart:1159:27)
+#12     main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart:469:20)
+<asynchronous suspension>
+#13     testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#14     TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided 5 frames from dart:async and package:stack_trace)
+
+The test description was:
+  输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -18: 改写规则分区搜索 输入关键字只剩匹配；清空恢复；无匹配空态且不崩 [E]
+  Test failed. See exception logs above.
+  The test description was: 输入关键字只剩匹配；清空恢复；无匹配空态且不崩
+  
+00:01 +0 -18: Some tests failed.
+
+Failing tests:
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 子文件夹命中：保留祖先链（层级）
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 无匹配返回空，不抛
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 空查询返回全部（副本，不改输入）
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_search_test.dart: filterDebugCollections 请求命中：只剩该请求与所属集合
+  ... and 14 more
