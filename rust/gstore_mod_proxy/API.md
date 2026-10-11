@@ -1300,6 +1300,14 @@ MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / �
 **Bounds.** 白名单条目在写入时被裁剪为最多 `MAX_ALLOWLIST_ENTRIES = 256` 条、每条最长
 `MAX_ALLOWLIST_ENTRY_BYTES = 253` 字节（见 §9 预算）；`maxBodyBytes` 是落盘上限，不驻留内存。
 
+**明文 HTTP 采集（不新增字段）。** 除 `tlsPorts` 上的 TLS 解密外，抓包开启且流命中白名单时，
+固定 HTTP 采集端口 `{80,8080,8880}`（**且不在 `tlsPorts` 内**）上的明文 HTTP 也会被采集，
+记录 `scheme` 为 `http`（TLS 流仍为 `https`）。明文 HTTP **无需 CA**（无 TLS 握手，
+`capture.ca.*` 不参与该分支）；**不支持 h2c**，明文一律按 HTTP/1.1 服务（转发前剥离
+`Upgrade`/`Connection`/`HTTP2-Settings` 升级头）；**`tlsPorts` 优先于固定 HTTP 端口**（端口同时在
+两者时按 TLS 处理，明文不采集）；改写规则按 scheme 匹配（明文命中 `http://` URL，TLS 命中
+`https://` URL）。`CaptureConfig` 的字段表与 JSON 样例**不因本能力变化**。完整语义见 §9.8(g)。
+
 ### 2.17 `capture.ca.*` — MITM CA lifecycle (Todo 11)
 
 | method | request | data |
@@ -1957,14 +1965,21 @@ destination IP with `domainKnown:false`. `crate::sniff` closes that gap for TCP:
 - **Bounds.** A single overall per-flow deadline (`SniffPlan.timeout`), at most
   `8192` bytes buffered, and early stop once a full TLS record is buffered
   (`buf.len() >= 5 + record_len`) or an HTTP header terminator (`\r\n\r\n`) is
-  seen. A TLS port that capture has enabled waits up to `400 ms`; every other
-  sniff port waits `100 ms`.
+  seen. A **capture-enabled** port (a TLS port in `tlsPorts`, or a fixed HTTP
+  capture port) waits up to `400 ms`; every other sniff port waits `100 ms`.
+  The deadline is an upper bound, not a fixed delay: a normal first flight that
+  already carries the full ClientHello or request line short-circuits well before
+  it (early stop).
 - **Ports.** `dispatch::sniff_plan` derives the mapping from the live capture
-  config: TLS sniff ports are `{443,8443} ∪ (capture.tlsPorts while capture is
-  enabled)`, with `tlsPorts` taking precedence over the HTTP defaults, and HTTP
-  sniff ports are `80/8080/8880`. A disabled sniffer or a `plan=None` (no port
-  mapping) reads **nothing** and adds no latency or data consumption (e.g.
-  port 22).
+  config. **Gate rule (both branches require a known host + an allowlist hit):**
+  TLS: `port ∈ tlsPorts`; HTTP: `port ∈ {80,8080,8880}` **and not in
+  `tlsPorts`**. `tlsPorts` therefore takes precedence over the fixed HTTP ports,
+  so a port listed in both is treated as TLS and its plaintext is **not**
+  captured. With capture off the baseline sniff ports are `{443,8443}` (TLS) and
+  `80/8080/8880` (HTTP), all at `100 ms`; with capture on the TLS and HTTP
+  capture ports above use the `400 ms` window. A disabled sniffer or a
+  `plan=None` (no port mapping) reads **nothing** and adds no latency or data
+  consumption (e.g. port 22).
 - **Configuration applies to newly created flows only.** Toggling capture or
   editing `tlsPorts` steers how *future* connections are sniffed; connections
   that were already established keep the behavior they started with.
@@ -1986,6 +2001,38 @@ synthetic TLS SNI and returns the prefix byte-identical; it extracts an HTTP
 likewise reads **0 bytes**; and a silent client returns within `timeout + slack`
 with no host and no panic. All sniffing here is host-side; on-device dispatch
 stays **UNVERIFIED** (no adb device).
+
+### 9.8 (g) Plaintext HTTP capture (fixed HTTP ports; no CA)
+
+An HTTP flow on a **fixed HTTP capture port** `{80,8080,8880}` is captured as
+plaintext when capture is enabled and the flow passes the same allowlist gate as
+TLS (a known host plus an allowlist hit). This branch is **additive**: TLS
+termination is skipped, the upstream is dialed as plaintext TCP, and the recorded
+`scheme` is `"http"` (TLS flows stay `"https"`). Requests and responses then
+appear in the request list and detail pages like a decrypted HTTPS flow
+(method / URL / status / headers / bodies) instead of the old "undecrypted /
+flow-level" row.
+
+* **`tlsPorts` wins.** A port that is in both `tlsPorts` and the fixed HTTP set
+  is handled as TLS, never as plaintext (the HTTP gate defensively excludes
+  `tlsPorts`).
+* **No CA required.** Plaintext HTTP has no TLS handshake, so the MITM CA is not
+  consulted: with no CA generated, capture can still be enabled and plaintext
+  HTTP flows are still captured. HTTPS flows still need the CA and are simply not
+  decrypted without one (the UI shows the "仅 HTTP" state for that case).
+* **HTTP/1.1 only; h2c is not supported.** Plaintext is always served as
+  HTTP/1.1. An `h2c` upgrade is not honored: the upgrade headers (`Upgrade`,
+  `Connection`, `HTTP2-Settings`) are stripped before the request is forwarded to
+  the plaintext upstream, so the upstream sees an ordinary HTTP/1.1 request.
+  Plaintext HTTP/2 (h2c) and QUIC/HTTP3 are out of scope.
+* **Rules match per scheme.** Rewrite rules are matched against the scheme-aware
+  URL, so a plaintext flow matches its `http://…` URL while a TLS flow matches
+  `https://…`. A rule written for `https://` does not fire on the same host over
+  plaintext.
+* **Sniff window.** With capture enabled the HTTP capture ports use the same
+  `400 ms` prefetch window as capture-enabled TLS ports (with early stop), so the
+  gate can read the `Host` before deciding; with capture off they stay at
+  `100 ms`.
 
 ## 10. Rule engine and routing (Todo 9)
 
