@@ -139,12 +139,10 @@ pub(crate) fn spawn(
 /// TLS ports sniffed even when capture is disabled, so `sniff_host` still fills
 /// the connection record on the common secure ports.
 const BASELINE_TLS_SNIFF_PORTS: [u16; 2] = [443, 8443];
-/// Plain-HTTP ports sniffed for the `Host` header.
-const HTTP_SNIFF_PORTS: [u16; 3] = [80, 8080, 8880];
 /// Prefetch budget for the baseline/best-effort ports.
 const SNIFF_TIMEOUT_MS: u64 = 100;
-/// Longer prefetch budget for capture-enabled TLS ports: the gate needs the SNI
-/// before it can decide, so waiting a little longer is worthwhile.
+/// Longer prefetch budget for capture-enabled ports: the gate needs the SNI /
+/// `Host` before it can decide, so waiting a little longer is worthwhile.
 const SNIFF_TIMEOUT_CAPTURE_MS: u64 = 400;
 
 /// Decide whether to sniff `port` and with which parser/window.
@@ -152,7 +150,9 @@ const SNIFF_TIMEOUT_CAPTURE_MS: u64 = 400;
 /// Precedence:
 /// 1. capture enabled and `tls_ports` contains the port -> TLS, 400 ms;
 /// 2. baseline TLS port (`443`/`8443`) -> TLS, 100 ms;
-/// 3. HTTP port (`80`/`8080`/`8880`) -> HTTP, 100 ms;
+/// 3. plaintext-HTTP capture port ([`capture::HTTP_CAPTURE_PORTS`]) -> HTTP,
+///    400 ms while capture is enabled (so the may-decrypt `Host` is awaited),
+///    else the baseline 100 ms;
 /// 4. otherwise -> `None` (nothing is read).
 ///
 /// A capture `tls_ports` entry always wins over the HTTP defaults, so a port
@@ -170,10 +170,14 @@ fn sniff_plan(config: &capture::CaptureConfig, port: u16) -> Option<sniff::Sniff
             timeout: Duration::from_millis(SNIFF_TIMEOUT_MS),
         });
     }
-    if HTTP_SNIFF_PORTS.contains(&port) {
+    if capture::HTTP_CAPTURE_PORTS.contains(&port) {
         return Some(sniff::SniffPlan {
             proto: sniff::SniffProto::Http,
-            timeout: Duration::from_millis(SNIFF_TIMEOUT_MS),
+            timeout: Duration::from_millis(if config.enabled {
+                SNIFF_TIMEOUT_CAPTURE_MS
+            } else {
+                SNIFF_TIMEOUT_MS
+            }),
         });
     }
     None
@@ -199,23 +203,51 @@ pub(crate) async fn handle_flow<S>(
     // Prefetch the first flight, then replay it before the live stream so the
     // tunnel sees every byte in order.
     let plan = sniff_plan(&config, dst.port());
+    let sniff_proto = plan.map(|p| p.proto);
     let (prefix, host) = sniffer.sniff_prefix(&mut stream, plan).await;
     if let Some(h) = host.as_deref() {
         metadata.sniff_host = h.into();
     }
 
     // App attribution is only resolved when it is the sole possible decider.
-    let app = if capture::needs_app_resolution(&config, dst.port()) {
+    let app = if capture::needs_app_resolution(&config, dst.port())
+        || capture::needs_app_resolution_http(&config, dst.port())
+    {
         capture::resolve_app(src, dst).await
     } else {
         AppAttribution::Unknown
     };
 
-    let passthrough = match capture::decide_mitm(&config, dst.port(), host.as_deref(), &app) {
-        Some(mitm_host) => {
+    // The sniff plan decides which gate applies: TLS ports consult the
+    // certificate gate, plaintext-HTTP ports the CA-free one. The matched
+    // host is carried with its proto so the dialer/context match below.
+    let decision = match sniff_proto {
+        Some(sniff::SniffProto::Tls) => {
+            capture::decide_mitm(&config, dst.port(), host.as_deref(), &app)
+                .map(|h| (h, sniff::SniffProto::Tls))
+        }
+        Some(sniff::SniffProto::Http) => {
+            capture::decide_mitm_http(&config, dst.port(), host.as_deref(), &app)
+                .map(|h| (h, sniff::SniffProto::Http))
+        }
+        None => None,
+    };
+
+    let passthrough = match decision {
+        Some((mitm_host, proto)) => {
             let prefixed = sniff::PrefixedStream::new(prefix, stream);
-            let dialer = production_dialer(&inner, &mitm_host, src, dst, config.skip_cert_verify);
-            let ctx = bridge_context(&config, &mitm_host, src, dst);
+            let (dialer, ctx) = match proto {
+                // TLS: terminate, then re-originate through upstream TLS.
+                sniff::SniffProto::Tls => (
+                    production_dialer(&inner, &mitm_host, src, dst, config.skip_cert_verify),
+                    bridge_context(&config, &mitm_host, src, dst),
+                ),
+                // Plaintext HTTP: no TLS on either leg, captures tagged `http`.
+                sniff::SniffProto::Http => (
+                    production_dialer_plain(&inner, &mitm_host, src, dst),
+                    bridge_context(&config, &mitm_host, src, dst).with_scheme("http"),
+                ),
+            };
             match begin_mitm(prefixed, Some(mitm_host.as_str()), dialer, ctx) {
                 // The isolated MITM task owns the stream now.
                 Ok(()) => None,
@@ -286,6 +318,22 @@ pub(crate) fn production_dialer(
     ))
 }
 
+/// Build the production upstream dialer for one **plaintext-HTTP** gate-hit
+/// flow: the captured request is re-originated as plaintext HTTP/1.1 through the
+/// live tunnel (rules/outbound/protect) with no upstream TLS handshake, matching
+/// the plaintext client leg.
+pub(crate) fn production_dialer_plain(
+    inner: &Arc<meow_tunnel::tunnel::TunnelInner>,
+    host: &str,
+    src: SocketAddr,
+    dst: SocketAddr,
+) -> Arc<dyn UpstreamDialer> {
+    let target = UpstreamTarget::new(host, dst.port())
+        .with_dst_ip(dst.ip())
+        .with_source(src.ip(), src.port());
+    Arc::new(mitm::PlainUpstreamDialer::new(Arc::clone(inner), target))
+}
+
 /// Build the bridge context for one gate-hit flow from the capture.config
 /// snapshot taken at session start, so in-flight sessions are internally
 /// consistent even if the live config changes mid-session.
@@ -332,8 +380,16 @@ where
     let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
         return Err((stream, init_failed(MitmInitError::NoHost)));
     };
-    let Some(ca) = mitm::ca() else {
-        return Err((stream, init_failed(MitmInitError::NoCa)));
+    // Plaintext HTTP terminates no TLS, so it needs no CA; only the TLS branch
+    // requires an installed certificate authority.
+    let plaintext = ctx.scheme == "http";
+    let ca = if plaintext {
+        None
+    } else {
+        match mitm::ca() {
+            Some(ca) => Some(ca),
+            None => return Err((stream, init_failed(MitmInitError::NoCa))),
+        }
     };
     let Some(guard) = mitm::InflightGuard::try_acquire() else {
         return Err((stream, init_failed(MitmInitError::InflightCap)));
@@ -359,12 +415,23 @@ where
             }
             _ => None,
         };
-        match tokio::time::timeout(
-            mitm::session_deadline(),
-            mitigate(stream, ca, host.clone(), observer, dialer, ctx),
-        )
-        .await
-        {
+        let outcome = match ca {
+            Some(ca) => {
+                tokio::time::timeout(
+                    mitm::session_deadline(),
+                    mitigate(stream, ca, host.clone(), observer, dialer, ctx),
+                )
+                .await
+            }
+            None => {
+                tokio::time::timeout(
+                    mitm::session_deadline(),
+                    mitigate_plaintext(stream, host.clone(), observer, dialer, ctx),
+                )
+                .await
+            }
+        };
+        match outcome {
             Ok(MitmStreamOutcome::Terminated) | Ok(MitmStreamOutcome::ClientAbort) => {}
             Ok(MitmStreamOutcome::Failed(e)) => {
                 crate::log_message(
@@ -484,6 +551,35 @@ where
             observer.on_failed(&host, &e.to_string());
             mitm::record_mitm_failed(&failure.to_string());
             MitmStreamOutcome::Failed(failure)
+        }
+    }
+}
+
+/// Run the **plaintext** MITM data plane over `stream` for `host`: no TLS
+/// termination on the client leg, the client is served as HTTP/1.1, and captures
+/// are tagged `scheme="http"` by [`mitm::bridge_deferred_plain`].
+///
+/// Mirrors [`mitigate`]'s failure recording, but there is no TLS handshake to
+/// terminate, so [`MitmGateObserver::on_terminated`] is not called (it is
+/// TLS-termination-specific).
+pub(crate) async fn mitigate_plaintext<S>(
+    stream: S,
+    host: String,
+    observer: Arc<dyn MitmGateObserver>,
+    dialer: Arc<dyn UpstreamDialer>,
+    ctx: BridgeContext,
+) -> MitmStreamOutcome
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    observer.on_mitm_entered(&host);
+    match mitm::bridge_deferred_plain(stream, dialer, ctx).await {
+        Ok(()) => MitmStreamOutcome::Terminated,
+        Err(e) if e.is_client_abort() => MitmStreamOutcome::ClientAbort,
+        Err(e) => {
+            observer.on_failed(&host, &e.to_string());
+            mitm::record_mitm_failed(&format!("plain: {e}"));
+            MitmStreamOutcome::Failed(e)
         }
     }
 }
@@ -990,6 +1086,13 @@ mod mitm_gate_tests {
         })
     }
 
+    fn http_plan(timeout_ms: u64) -> Option<sniff::SniffPlan> {
+        Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Http,
+            timeout: Duration::from_millis(timeout_ms),
+        })
+    }
+
     /// `sniff_plan` precedence matrix: a capture-enabled `tls_ports` entry
     /// (400 ms) always wins, over both the baseline TLS ports and the HTTP
     /// defaults (100 ms); an unmapped port yields no plan at all.
@@ -1035,6 +1138,22 @@ mod mitm_gate_tests {
             ..CaptureConfig::default()
         };
         assert_eq!(sniff_plan(&cfg, 80), capture_tls_plan());
+        capture::reset_for_tests();
+
+        // (f) capture-enabled HTTP port (not in tls_ports) -> HTTP, 400 ms.
+        let cfg = CaptureConfig {
+            enabled: true,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 80), http_plan(400));
+        capture::reset_for_tests();
+
+        // (g) capture-disabled HTTP port -> HTTP, baseline 100 ms.
+        let cfg = CaptureConfig {
+            enabled: false,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 80), http_plan(100));
         capture::reset_for_tests();
     }
 
@@ -2398,9 +2517,9 @@ mod mitm_e2e_tests {
 
             assert!(
                 !BASELINE_TLS_SNIFF_PORTS.contains(&positive_port)
-                    && !HTTP_SNIFF_PORTS.contains(&positive_port)
+                    && !capture::HTTP_CAPTURE_PORTS.contains(&positive_port)
                     && !BASELINE_TLS_SNIFF_PORTS.contains(&negative_port)
-                    && !HTTP_SNIFF_PORTS.contains(&negative_port),
+                    && !capture::HTTP_CAPTURE_PORTS.contains(&negative_port),
                 "fixture ports must stay outside every hard-coded sniff set"
             );
 
