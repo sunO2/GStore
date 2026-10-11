@@ -14,6 +14,7 @@ import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_geo_manifest.dart';
 import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_gate.dart';
 import 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
@@ -2343,6 +2344,33 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(openedSettings, 1);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包开关：无 CA 经「继续开启」可开启且状态如实显示仅 HTTP', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade(); // captureCa 默认未生成
+    await tester.pumpWidget(_wrapNav(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-capture-toggle')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 弹出无 CA 提示（标题不变），选「继续开启」放行。
+    expect(find.text('需要先生成根证书'), findsOneWidget);
+    await tester.tap(find.text('继续开启'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 放行并下发开启；标签如实为「仅 HTTP」，绝不谎报 HTTP+HTTPS。
+    expect(facade.captureConfigSetCalls, 1);
+    expect(facade.lastCaptureConfigSet?.enabled, isTrue);
+    expect(find.text('仅 HTTP'), findsOneWidget);
+    expect(find.text('HTTP+HTTPS'), findsNothing);
+    expect(find.text('HTTP+HTTPS（CA 未安装）'), findsNothing);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

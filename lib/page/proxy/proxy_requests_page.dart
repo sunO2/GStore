@@ -693,11 +693,11 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     if (next) {
       final gate = _caGate;
       if (gate != null) {
-        final ok = await ensureCaptureCaGate(
+        final result = await ensureCaptureCaGate(
           captureCaGet: gate.captureCaGet,
           onOpenCaptureSettings: _openCaptureSettings,
         );
-        if (!mounted || !ok) return;
+        if (!mounted || !result.allowed) return;
       }
     }
     setState(() {

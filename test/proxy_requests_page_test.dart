@@ -418,6 +418,50 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('明文 HTTP 采集行 scheme 展示为 http；无 capture 行仍显示未解密/流级信息',
+      (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[
+          _record(recordId: 1, dstPort: 80),
+          _record(recordId: 2, domain: 'nodata.example', dstPort: 8080),
+        ],
+        firstCursor: 1,
+        nextCursor: 2,
+        retained: 2,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'plain.example.com',
+            method: 'GET',
+            scheme: 'http',
+            url: 'http://plain.example.com/a?b=1',
+            protocol: 'h1',
+            statusCode: 200,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 明文 HTTP 行：按 `requestRecordId` 叠加 capture，展示 `protocol · scheme`。
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.textContaining('h1 · http'), findsOneWidget);
+    // 无 capture 的流（record 2）仍为「未解密 / 流级信息」。
+    expect(find.byKey(const ValueKey('request_row_2')), findsOneWidget);
+    expect(find.text('未解密'), findsOneWidget);
+    expect(find.textContaining('流级信息'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('一个流叠加多条 capture -> 取最新一条作为行摘要', (tester) async {
     _useLargeViewport(tester);
     final fake = _FakeRequestsFacade(

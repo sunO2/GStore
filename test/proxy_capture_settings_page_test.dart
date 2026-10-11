@@ -18,6 +18,7 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_gate.dart';
 import 'package:gstore/page/proxy/proxy_capture_ca_page.dart';
 import 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
@@ -88,6 +89,23 @@ class _FakeCaptureFacade implements ProxyCaptureSettingsFacade {
 
   @override
   Future<CaptureStorageStats> storageStats() async => stats;
+}
+
+/// 在 [_FakeCaptureFacade] 之上实现 CA 门控接缝：用于验证「无 CA 时经
+/// 继续开启仍可开启抓包」与「去设置 → 不开启并导航」两条路径。
+class _FakeCaptureCaFacade extends _FakeCaptureFacade
+    implements ProxyCaptureCaGate {
+  _FakeCaptureCaFacade({super.config, super.stats, CaptureCaInfo? ca})
+      : ca = ca ?? const CaptureCaInfo();
+
+  CaptureCaInfo ca;
+  int caGetCalls = 0;
+
+  @override
+  Future<CaptureCaInfo> captureCaGet() async {
+    caGetCalls++;
+    return ca;
+  }
 }
 
 // ==================== 工具 ====================
@@ -360,6 +378,84 @@ void main() {
           'maxBodyBytes',
         },
       );
+    });
+
+    testWidgets('无 CA：MITM 开关经「继续开启」可开启（明文 HTTP 无需证书）',
+        (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureCaFacade(ca: const CaptureCaInfo());
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('capture_mitm_switch')));
+      await tester.pumpAndSettle();
+
+      // 无 CA 提示：标题沿用 kCaptureNeedsCaTitle，两个动作「继续开启 / 去设置」。
+      expect(find.text(kCaptureNeedsCaTitle), findsOneWidget);
+      expect(find.text(kCaptureNeedsCaConfirmText), findsOneWidget);
+      expect(find.text(kCaptureNeedsCaCancelText), findsOneWidget);
+      expect(facade.caGetCalls, 1);
+
+      await tester.tap(find.text(kCaptureNeedsCaConfirmText));
+      await tester.pumpAndSettle();
+
+      expect(facade.setCalls, 0);
+      expect(
+        tester
+            .widget<SwitchListTile>(find.byKey(const Key('capture_mitm_switch')))
+            .value,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('无 CA：选「去设置」不开启且触发证书管理导航', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureCaFacade(ca: const CaptureCaInfo());
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('capture_mitm_switch')));
+      await tester.pumpAndSettle();
+      // 提示出现时开关仍未开启。
+      expect(
+        tester
+            .widget<SwitchListTile>(find.byKey(const Key('capture_mitm_switch')))
+            .value,
+        isFalse,
+      );
+      await tester.tap(find.text(kCaptureNeedsCaCancelText));
+      await tester.pumpAndSettle();
+
+      // 未放行：导航进入证书管理页（生产路由可达），设置页被推入栈下。
+      expect(find.byType(ProxyCaptureCaPage), findsOneWidget);
+      expect(facade.setCalls, 0);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('端口卡片常显明文 HTTP 抓包提示', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      final hint = find.byKey(const Key('capture_plain_http_hint'));
+      expect(hint, findsOneWidget);
+      final text = tester.widget<Text>(hint).data ?? '';
+      expect(text, contains('明文 HTTP'));
+      expect(text, contains('8080'));
+      expect(text, contains('无需证书'));
+      expect(text, contains('h2c'));
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('保存失败 → showError 且不崩', (tester) async {

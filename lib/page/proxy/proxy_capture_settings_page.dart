@@ -277,7 +277,8 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
   // ==================== 编辑动作（本地，保存时一次性提交） ====================
 
   /// 切换 MITM 总开关。开启前复核 CA（与首页 / 列表页同一门控）：
-  /// 无根证书则拦截并引导到「证书管理」，**绝不默默开启**。
+  /// 无根证书时给出「继续开启 / 去设置」——选「继续开启」可放行（仅明文 HTTP
+  /// 会被抓取），选「去设置」引导到「证书管理」。
   Future<void> _setEnabled(bool value) async {
     if (!value) {
       setState(() => _config = _config.copyWith(enabled: false));
@@ -285,11 +286,11 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     }
     final gate = _caGate;
     if (gate != null) {
-      final ok = await ensureCaptureCaGate(
+      final result = await ensureCaptureCaGate(
         captureCaGet: gate.captureCaGet,
         onOpenCaptureSettings: _openCaManagement,
       );
-      if (!mounted || !ok) return;
+      if (!mounted || !result.allowed) return;
     }
     setState(() => _config = _config.copyWith(enabled: true));
   }
@@ -1012,6 +1013,15 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
         const SizedBox(height: AppSpacing.xs),
         Text(
           '仅这些目的端口会被 MITM 终止；可编辑（每项 ∈ 1~65535，逗号 / 空格分隔）。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '明文 HTTP（80/8080/8880）在开启抓包且命中白名单时也会被抓取，'
+          '无需证书；明文 HTTP/2（h2c）不支持。',
+          key: const Key('capture_plain_http_hint'),
           style: theme.textTheme.bodySmall?.copyWith(
             color: scheme.onSurfaceVariant,
           ),

@@ -2169,13 +2169,16 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     }
     // 首次开启前实时复核（不信任加载期缓存，避免 CA 被重置后仍放行）。
     // 门控逻辑与文案集中在校验通过的 [ensureCaptureCaGate]，供首页 / 设置页 /
-    // 列表页复用（无 CA 则拦截并引导，绝不默默开启）。
-    final ok = await ensureCaptureCaGate(
+    // 列表页复用：无 CA 时经「继续开启」可放行（仅明文 HTTP 会被抓取），
+    // 「去设置」则引导到证书管理。
+    final gate = await ensureCaptureCaGate(
       captureCaGet: () => _facade.captureCaGet(),
       onOpenCaptureSettings: _openCaptureSettings,
     );
-    if (!mounted || !ok) return;
-    _captureCaGenerated = true;
+    if (!mounted || !gate.allowed) return;
+    // 如实回填 CA 状态：无 CA 时保持 false，`_captureStatusLabel` 因而显示
+    // 「仅 HTTP」，绝不谎报 `HTTP+HTTPS`。
+    _captureCaGenerated = gate.caGenerated;
     await _applyCaptureEnabled(true);
   }
 
