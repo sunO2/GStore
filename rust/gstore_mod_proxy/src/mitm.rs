@@ -3582,6 +3582,7 @@ fn client_http_failure(
 mod mitm_http_tests {
     use super::mitm_upstream_tests::{trusted_roots, tunnel_with, RecordingProxy};
     use super::*;
+    use crate::TEST_SERIAL as SERIAL;
     use http_body_util::{BodyExt, Full};
     use hyper::Version;
     use rustls::pki_types::ServerName;
@@ -5515,6 +5516,190 @@ mod mitm_http_tests {
             assert_eq!(restored.body, b"upstream");
         });
         crate::captures::rules_reset_for_tests();
+    }
+
+    // ==================== Plaintext-HTTP e2e (todo 7) ====================
+
+    fn current_thread() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime")
+    }
+
+    /// A plaintext (non-TLS) HTTP/1.1 fixture over a bare `TcpStream`: a hyper
+    /// `server_http1` connection with no `TlsAcceptor`, so a dialer that tried a
+    /// TLS handshake could not talk to it.
+    async fn start_plain_http_fixture(body: Vec<u8>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let service = hyper::service::service_fn(move |_req: Request<Incoming>| {
+                let body = body.clone();
+                async move {
+                    let mut response = Response::new(Full::new(Bytes::from(body)));
+                    response.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("text/plain"),
+                    );
+                    Ok::<_, Infallible>(response)
+                }
+            });
+            let _ = server_http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(TokioIo::new(tcp), service)
+                .await;
+        });
+        addr
+    }
+
+    /// Plaintext counterpart of [`client_send_h1`]: no TLS handshake, HTTP/1.1
+    /// spoken directly over the socket.
+    async fn client_send_h1_plain(
+        addr: SocketAddr,
+        host: &str,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> ClientOutcome {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let mut builder = client_http1::Builder::new();
+        builder.max_buf_size(H1_MAX_BUF_SIZE);
+        let (mut sender, conn) = builder
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tcp))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let payload = body.map(Bytes::from).unwrap_or_default();
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(HOST, host)
+            .body(Full::new(payload))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        ClientOutcome {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    /// Serve one plaintext client connection through the production plaintext
+    /// bridge entry ([`bridge_deferred_plain`]), returning the bound address.
+    async fn run_bridge_plain(
+        dialer: Arc<dyn UpstreamDialer>,
+        ctx: BridgeContext,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let _ = bridge_deferred_plain(tcp, dialer, ctx).await;
+        });
+        addr
+    }
+
+    /// (a) End-to-end: a plaintext HTTP/1.1 exchange driven through
+    /// `bridge_deferred_plain` is captured with `scheme == "http"`, the real
+    /// method/url/status/bodies, and the non-zero skeleton id it was opened with.
+    #[test]
+    fn plaintext_http_e2e_is_captured_with_scheme_http() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            crate::requests::reset_for_tests();
+
+            let host = "flow.test";
+            let upstream = start_plain_http_fixture(b"plain-upstream".to_vec()).await;
+            let inner = tunnel_with(&["DOMAIN,flow.test,DIRECT"], vec![]);
+            let target = UpstreamTarget::new(host, upstream.port())
+                .with_dst_ip("127.0.0.1".parse().unwrap());
+            let dialer: Arc<dyn UpstreamDialer> =
+                Arc::new(PlainUpstreamDialer::new(inner, target));
+
+            let (mut rx, sink) = recording_sink();
+            let src: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+            let dst: SocketAddr = format!("127.0.0.1:{}", upstream.port()).parse().unwrap();
+            let rid = crate::requests::open_mitm_flow(
+                "conn-plain-e2e",
+                host,
+                src,
+                dst,
+                crate::now_ms(),
+            );
+            assert_ne!(rid, 0, "the session skeleton id must be minted");
+            let ctx = BridgeContext::new(host, "conn-plain-e2e", rid)
+                .with_scheme("http")
+                .with_sink(sink);
+
+            let bridge_addr = run_bridge_plain(dialer, ctx).await;
+            let out = client_send_h1_plain(
+                bridge_addr,
+                host,
+                "POST",
+                "/hello",
+                Some(b"req-body".to_vec()),
+            )
+            .await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"plain-upstream");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.scheme, "http");
+            assert_eq!(rec.method, "POST");
+            assert_eq!(rec.url, "http://flow.test/hello");
+            assert_eq!(rec.status_code, 200);
+            assert_eq!(rec.req_body, b"req-body");
+            assert_eq!(rec.resp_body, b"plain-upstream");
+            assert_eq!(
+                rec.request_record_id, rid,
+                "the capture must link to the session's request skeleton"
+            );
+            assert_ne!(rec.request_record_id, 0);
+
+            crate::requests::reset_for_tests();
+        });
+    }
+
+    /// (c) `PlainUpstreamDialer::dial` reaches the plaintext fixture and yields an
+    /// `EstablishedUpstream { proto: H1 }`. The fixture is a bare `server_http1`,
+    /// and the dialer only calls `dial_upstream` + `establish`, never
+    /// `connect_upstream_tls`, so no TLS handshake is attempted.
+    #[test]
+    fn plain_upstream_dialer_dials_plaintext_fixture_as_h1() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let host = "flow.test";
+            let upstream = start_plain_http_fixture(b"plain-ok".to_vec()).await;
+            let inner = tunnel_with(&["DOMAIN,flow.test,DIRECT"], vec![]);
+            let target = UpstreamTarget::new(host, upstream.port())
+                .with_dst_ip("127.0.0.1".parse().unwrap());
+            let dialer = PlainUpstreamDialer::new(inner, target);
+
+            let established = dialer
+                .dial()
+                .await
+                .expect("plaintext upstream dial must succeed against a plain fixture");
+            assert_eq!(
+                established.proto,
+                HttpProtocol::H1,
+                "a plaintext upstream is always HTTP/1.1"
+            );
+        });
     }
 }
 

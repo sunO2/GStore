@@ -2687,4 +2687,193 @@ mod mitm_e2e_tests {
             teardown();
         });
     }
+
+    // ==================== Plaintext-HTTP e2e (todo 7) ====================
+
+    /// A plaintext (non-TLS) HTTP/1.1 fixture over a bare `TcpStream`; the
+    /// plaintext counterpart of [`start_tls_fixture`].
+    async fn start_plain_http_fixture(body: Vec<u8>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let service = hyper::service::service_fn(move |_req| {
+                let body = body.clone();
+                async move {
+                    let mut response = hyper::Response::new(Full::new(Bytes::from(body)));
+                    response.headers_mut().insert(
+                        hyper::header::CONTENT_TYPE,
+                        hyper::header::HeaderValue::from_static("text/plain"),
+                    );
+                    Ok::<_, std::convert::Infallible>(response)
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(hyper_util::rt::TokioIo::new(tcp), service)
+                .await;
+        });
+        port
+    }
+
+    /// (d) Plaintext capture needs no CA: after `clear_ca()` a plaintext
+    /// allowlist-hit flow still starts a session and produces a `scheme == "http"`
+    /// capture linked to its skeleton.
+    #[test]
+    fn mitm_e2e_plaintext_is_captured_without_ca() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(false, &[]);
+            mitm::clear_ca();
+            assert!(mitm::ca().is_none(), "no CA is installed for this case");
+
+            let port = start_plain_http_fixture(b"no-ca-upstream".to_vec()).await;
+            let src: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+            let dst: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+            let (mut client, server) = tokio::io::duplex(1 << 16);
+            let ctx =
+                bridge_context(&capture::config(), "flow.test", src, dst).with_scheme("http");
+            let dialer = production_dialer_plain(&inner, "flow.test", src, dst);
+            assert!(
+                begin_mitm(server, Some("flow.test"), dialer, ctx).is_ok(),
+                "a plaintext flow must start without a CA"
+            );
+
+            client
+                .write_all(b"GET /noca HTTP/1.1\r\nHost: flow.test\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write request");
+            client.flush().await.expect("flush");
+            let mut resp = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut resp))
+                .await;
+            assert!(
+                String::from_utf8_lossy(&resp).contains("no-ca-upstream"),
+                "the plaintext response must reach the client, got {:?}",
+                String::from_utf8_lossy(&resp)
+            );
+
+            let records = wait_for_capture(|rs| {
+                rs.iter().any(|r| r.url.ends_with("/noca") && r.scheme == "http")
+            })
+            .await;
+            let rec = records
+                .iter()
+                .find(|r| r.url.ends_with("/noca"))
+                .expect("plaintext capture present");
+            assert_eq!(rec.scheme, "http");
+            assert_eq!(rec.status_code, 200);
+            assert_ne!(rec.request_record_id, 0);
+
+            drain_inflight().await;
+            teardown();
+        });
+    }
+
+    /// (b) The plaintext gate returns `None` on an empty allowlist or a domain
+    /// miss, and a miss mints **zero** new `requests` records (asserted with an id
+    /// delta, never an empty snapshot).
+    #[test]
+    fn plaintext_gate_miss_is_passthrough_and_mints_no_records() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::requests::reset_for_tests();
+
+        let before = crate::requests::next_record_id_for_tests();
+
+        let empty = CaptureConfig {
+            enabled: true,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(
+            capture::decide_mitm_http(&empty, 80, Some("flow.test"), &AppAttribution::Unknown),
+            None,
+            "an empty allowlist must not gate plaintext capture"
+        );
+
+        let miss = CaptureConfig {
+            enabled: true,
+            domain_allowlist: vec!["allowed.test".to_string()],
+            ..CaptureConfig::default()
+        };
+        assert_eq!(
+            capture::decide_mitm_http(&miss, 80, Some("flow.test"), &AppAttribution::Unknown),
+            None,
+            "a domain-allowlist miss must not gate plaintext capture"
+        );
+
+        let hit = CaptureConfig {
+            enabled: true,
+            domain_allowlist: vec!["flow.test".to_string()],
+            ..CaptureConfig::default()
+        };
+        assert_eq!(
+            capture::decide_mitm_http(&hit, 80, Some("flow.test"), &AppAttribution::Unknown)
+                .as_deref(),
+            Some("flow.test"),
+            "a hit must gate, so the negatives above are meaningful"
+        );
+
+        assert_eq!(
+            crate::requests::next_record_id_for_tests(),
+            before,
+            "a plaintext gate miss must register zero new requests records"
+        );
+        crate::requests::reset_for_tests();
+    }
+
+    /// (e) An HTTP capture port (`enabled = true`) sniff returns within
+    /// 400 ms + 100 ms slack for a silent client, and a client that sends a full
+    /// request header at once early-stops well under the 400 ms window. (f) the
+    /// `sniff_plan` HTTP window is 400 ms.
+    #[test]
+    fn sniff_plan_http_capture_port_400ms_and_early_stop() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+            let cfg = CaptureConfig {
+                enabled: true,
+                ..CaptureConfig::default()
+            };
+            let plan = sniff_plan(&cfg, 80);
+            assert_eq!(
+                plan,
+                Some(sniff::SniffPlan {
+                    proto: sniff::SniffProto::Http,
+                    timeout: Duration::from_millis(400),
+                })
+            );
+
+            let sniffer = sniff::Sniffer::default_enabled();
+
+            let (_client, mut server) = tokio::io::duplex(64);
+            let start = Instant::now();
+            let (prefix, host) = sniffer.sniff_prefix(&mut server, plan).await;
+            let elapsed = start.elapsed();
+            assert!(prefix.is_empty());
+            assert!(host.is_none());
+            assert!(
+                elapsed <= Duration::from_millis(400 + 100),
+                "silent HTTP sniff took {elapsed:?}, expected <= 500ms"
+            );
+
+            let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: flow.test\r\n\r\n")
+                .await
+                .expect("write request head");
+            client.flush().await.expect("flush");
+            let start = Instant::now();
+            let (prefix, host) = sniffer.sniff_prefix(&mut server, plan).await;
+            let elapsed = start.elapsed();
+            assert_eq!(host.as_deref(), Some("flow.test"));
+            assert!(prefix.starts_with(b"GET / HTTP/1.1"));
+            assert!(
+                elapsed < Duration::from_millis(200),
+                "an early full header must stop well under 400ms, took {elapsed:?}"
+            );
+        });
+    }
 }
