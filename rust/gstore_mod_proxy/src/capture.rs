@@ -567,6 +567,46 @@ pub(crate) fn app_allowed(app: &AppAttribution, allowlist: &[String]) -> bool {
 
 // ── Gate decision ────────────────────────────────────────────────────────────
 
+/// Fixed destination ports whose **plaintext HTTP** traffic is eligible for
+/// capture (the single source of truth shared with the dispatcher's
+/// `sniff_plan`). TLS ports always win: a port listed in
+/// [`CaptureConfig::tls_ports`] is handled as TLS and excluded here (see
+/// [`decide_mitm_http`]).
+pub(crate) const HTTP_CAPTURE_PORTS: [u16; 3] = [80, 8080, 8880];
+
+/// Shared allowlist decision for both the TLS ([`decide_mitm`]) and plaintext
+/// ([`decide_mitm_http`]) gates.
+///
+/// Domain allowlist is primary: a hit allows. A **non-empty** domain allowlist
+/// is restrictive, so a miss denies regardless of the app allowlist. With an
+/// empty domain allowlist the app allowlist decides according to `app_scope`:
+/// `Routing` allows as soon as the app allowlist is non-empty (the TUN is
+/// already app-scoped by VPN routing; no UID), while `Uid` requires a resolved
+/// matching [`AppAttribution`]. The port/enabled checks are the caller's job.
+fn allow_decision(
+    config: &CaptureConfig,
+    host: Option<&str>,
+    app: &AppAttribution,
+) -> Option<String> {
+    // A host is required: without DNS/sniff there is nothing to certify and
+    // todo 5's fixed no-SNI decision is pass-through anyway.
+    let host = host.map(str::trim).filter(|h| !h.is_empty())?;
+    if domain_allowed(host, &config.domain_allowlist) {
+        return Some(host.to_string());
+    }
+    if !config.domain_allowlist.is_empty() {
+        return None;
+    }
+    if config.app_allowlist.is_empty() {
+        return None;
+    }
+    match config.app_scope {
+        AppScope::Routing => Some(host.to_string()),
+        AppScope::Uid if app_allowed(app, &config.app_allowlist) => Some(host.to_string()),
+        AppScope::Uid => None,
+    }
+}
+
 /// The MITM gate. Returns `Some(host)` when the flow should be decrypted, or
 /// `None` to keep the existing tunnel pass-through.
 ///
@@ -588,28 +628,52 @@ pub(crate) fn decide_mitm(
     if !config.tls_ports.contains(&dst_port) {
         return None;
     }
-    // A host is required: without DNS/sniff there is nothing to certify and
-    // todo 5's fixed no-SNI decision is pass-through anyway.
-    let host = host.map(str::trim).filter(|h| !h.is_empty())?;
-    if domain_allowed(host, &config.domain_allowlist) {
-        return Some(host.to_string());
-    }
-    if !config.domain_allowlist.is_empty() {
+    allow_decision(config, host, app)
+}
+
+/// The **plaintext-HTTP** capture gate. Same allowlist decision as
+/// [`decide_mitm`], but the port condition is the fixed [`HTTP_CAPTURE_PORTS`]
+/// set rather than `tls_ports`, and `tls_ports` defensively wins: a port the
+/// caller configured for TLS is never treated as plaintext HTTP (matching the
+/// dispatcher's "tlsPorts priority" `sniff_plan` rule).
+pub(crate) fn decide_mitm_http(
+    config: &CaptureConfig,
+    dst_port: u16,
+    host: Option<&str>,
+    app: &AppAttribution,
+) -> Option<String> {
+    if !config.enabled {
         return None;
     }
-    if config.app_allowlist.is_empty() {
+    if !HTTP_CAPTURE_PORTS.contains(&dst_port) {
         return None;
     }
-    match config.app_scope {
-        AppScope::Routing => Some(host.to_string()),
-        AppScope::Uid if app_allowed(app, &config.app_allowlist) => Some(host.to_string()),
-        AppScope::Uid => None,
+    if config.tls_ports.contains(&dst_port) {
+        return None;
     }
+    allow_decision(config, host, app)
+}
+
+/// Plaintext-HTTP counterpart of [`needs_app_resolution`]: true only when the
+/// flow is on an [`HTTP_CAPTURE_PORTS`] port that `tls_ports` has not claimed,
+/// and the app allowlist is the only possible decider (empty domain allowlist,
+/// non-empty app allowlist, `appScope=uid`).
+pub(crate) fn needs_app_resolution_http(config: &CaptureConfig, dst_port: u16) -> bool {
+    config.enabled
+        && HTTP_CAPTURE_PORTS.contains(&dst_port)
+        && !config.tls_ports.contains(&dst_port)
+        && config.domain_allowlist.is_empty()
+        && !config.app_allowlist.is_empty()
+        && config.app_scope == AppScope::Uid
 }
 
 #[cfg(test)]
 mod mitm_gate_tests {
     use super::*;
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn enabled(domains: &[&str], apps: &[&str]) -> CaptureConfig {
         CaptureConfig {
@@ -808,6 +872,139 @@ mod mitm_gate_tests {
             443
         ));
         assert!(!needs_app_resolution(&scoped(&[], &[], AppScope::Uid), 443));
+    }
+
+    /// The plaintext gate shares [`allow_decision`] with [`decide_mitm`] but
+    /// gates on the fixed [`HTTP_CAPTURE_PORTS`] set: a domain hit on any HTTP
+    /// capture port allows, with the sniffed host returned verbatim.
+    #[test]
+    fn http_gate_domain_allowlist_hit_on_capture_port() {
+        let _guard = serial();
+        reset_for_tests();
+        let cfg = enabled(&["a.example", "*.b.example"], &[]);
+        for port in [80u16, 8080, 8880] {
+            assert_eq!(
+                decide_mitm_http(&cfg, port, Some("a.example"), &AppAttribution::Unknown).as_deref(),
+                Some("a.example")
+            );
+        }
+        assert_eq!(
+            decide_mitm_http(&cfg, 8080, Some("x.b.example"), &AppAttribution::Unknown).as_deref(),
+            Some("x.b.example")
+        );
+        reset_for_tests();
+    }
+
+    /// Five negatives: empty allowlists, domain-list miss, non-HTTP port,
+    /// `enabled=false`, and a port claimed by `tls_ports` (tlsPorts priority).
+    #[test]
+    fn http_gate_negatives_return_none() {
+        let _guard = serial();
+        reset_for_tests();
+
+        let cfg = enabled(&[], &[]);
+        assert_eq!(
+            decide_mitm_http(&cfg, 80, Some("a.example"), &known(1, &["com.a"])),
+            None,
+            "no allowlist configured must deny"
+        );
+
+        let cfg = enabled(&["only.example"], &["com.allowed"]);
+        assert_eq!(
+            decide_mitm_http(&cfg, 80, Some("a.example"), &known(1, &["com.allowed"])),
+            None,
+            "non-empty domain allowlist miss must deny even with a matching app"
+        );
+
+        let cfg = enabled(&["a.example"], &[]);
+        assert_eq!(decide_mitm_http(&cfg, 443, Some("a.example"), &AppAttribution::Unknown), None);
+        assert_eq!(decide_mitm_http(&cfg, 22, Some("a.example"), &AppAttribution::Unknown), None);
+
+        let mut cfg = enabled(&["a.example"], &[]);
+        cfg.enabled = false;
+        assert_eq!(decide_mitm_http(&cfg, 80, Some("a.example"), &AppAttribution::Unknown), None);
+
+        let mut cfg = enabled(&["a.example"], &[]);
+        cfg.tls_ports = vec![80];
+        assert_eq!(
+            decide_mitm_http(&cfg, 80, Some("a.example"), &AppAttribution::Unknown),
+            None,
+            "a tlsPorts-claimed port must be handled as TLS, never plaintext HTTP"
+        );
+
+        reset_for_tests();
+    }
+
+    /// Empty domain allowlist + `appScope=uid`: only a resolved matching UID
+    /// allows on an HTTP capture port; `Unknown` denies.
+    #[test]
+    fn http_gate_app_allowlist_uid_scope_path() {
+        let _guard = serial();
+        reset_for_tests();
+        let cfg = scoped(&[], &["com.allowed"], AppScope::Uid);
+        assert_eq!(
+            decide_mitm_http(&cfg, 8080, Some("a.example"), &known(10101, &["com.allowed"]))
+                .as_deref(),
+            Some("a.example")
+        );
+        assert_eq!(
+            decide_mitm_http(&cfg, 8080, Some("a.example"), &AppAttribution::Unknown),
+            None
+        );
+        reset_for_tests();
+    }
+
+    /// `needs_app_resolution_http` mirrors [`needs_app_resolution`] but for the
+    /// fixed HTTP capture ports, excluding `tlsPorts`-claimed ports.
+    #[test]
+    fn needs_app_resolution_http_only_for_http_capture_uid_scope() {
+        let _guard = serial();
+        reset_for_tests();
+        assert!(needs_app_resolution_http(&scoped(&[], &["com.allowed"], AppScope::Uid), 80));
+        assert!(!needs_app_resolution_http(&scoped(&[], &["com.allowed"], AppScope::Routing), 80));
+        assert!(!needs_app_resolution_http(
+            &scoped(&["a.example"], &["com.allowed"], AppScope::Uid),
+            80
+        ));
+        assert!(!needs_app_resolution_http(&scoped(&[], &[], AppScope::Uid), 80));
+        assert!(!needs_app_resolution_http(&scoped(&[], &["com.allowed"], AppScope::Uid), 443));
+
+        let mut cfg = scoped(&[], &["com.allowed"], AppScope::Uid);
+        cfg.tls_ports = vec![80];
+        assert!(!needs_app_resolution_http(&cfg, 80));
+
+        let mut cfg = scoped(&[], &["com.allowed"], AppScope::Uid);
+        cfg.enabled = false;
+        assert!(!needs_app_resolution_http(&cfg, 80));
+        reset_for_tests();
+    }
+
+    /// The `allow_decision` extraction must not change [`decide_mitm`]: it still
+    /// gates on `tls_ports` only and never treats an HTTP capture port as TLS.
+    #[test]
+    fn decide_mitm_behavior_unchanged_after_extraction() {
+        let _guard = serial();
+        reset_for_tests();
+
+        let cfg = enabled(&["a.example"], &[]);
+        assert_eq!(
+            decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown).as_deref(),
+            Some("a.example")
+        );
+        assert_eq!(
+            decide_mitm(&cfg, 80, Some("a.example"), &AppAttribution::Unknown),
+            None,
+            "an HTTP capture port is not a TLS port for decide_mitm"
+        );
+
+        let cfg = enabled(&[], &["com.allowed"]);
+        assert_eq!(
+            decide_mitm(&cfg, 8443, Some("a.example"), &known(10101, &["com.allowed"])).as_deref(),
+            Some("a.example")
+        );
+        assert_eq!(decide_mitm(&cfg, 443, None, &known(10101, &["com.allowed"])), None);
+
+        reset_for_tests();
     }
 
     #[test]
