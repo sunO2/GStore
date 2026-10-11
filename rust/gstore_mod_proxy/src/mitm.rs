@@ -1472,6 +1472,44 @@ impl UpstreamDialer for TunnelUpstreamDialer {
     }
 }
 
+/// Plaintext counterpart of [`TunnelUpstreamDialer`]: dials the request's target
+/// through the live meow tunnel (same rules/protect seam) and speaks **plain
+/// HTTP/1.1** to it — no TLS handshake, no ALPN.
+pub(crate) struct PlainUpstreamDialer {
+    inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+    target: UpstreamTarget,
+}
+
+impl PlainUpstreamDialer {
+    pub(crate) fn new(
+        inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+        target: UpstreamTarget,
+    ) -> Self {
+        Self { inner, target }
+    }
+}
+
+impl UpstreamDialer for PlainUpstreamDialer {
+    fn dial(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, MitmFailure>> + Send>> {
+        let inner = Arc::clone(&self.inner);
+        let target = self.target.clone();
+        Box::pin(async move {
+            let conn = dial_upstream(&inner, &target)
+                .await
+                .map_err(|e| MitmFailure::new(e.stage(), e.to_string()))?;
+            let client = UpstreamClient::establish(conn, HttpProtocol::H1)
+                .await
+                .map_err(|e| MitmFailure::new(MitmStage::UpstreamHttp, e))?;
+            Ok(EstablishedUpstream {
+                client,
+                proto: HttpProtocol::H1,
+            })
+        })
+    }
+}
+
 /// The production upstream trust anchors: Mozilla's root store.
 fn production_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
@@ -2153,6 +2191,7 @@ impl ExchangeCapture {
     fn new(
         sink: Arc<dyn CaptureSink>,
         protocol: HttpProtocol,
+        scheme: &'static str,
         host: &str,
         conn_id: &str,
         request_record_id: u64,
@@ -2166,7 +2205,7 @@ impl ExchangeCapture {
             sink,
             protocol: protocol.as_str(),
             host: host.to_string(),
-            scheme: "https".to_string(),
+            scheme: scheme.to_string(),
             conn_id: conn_id.to_string(),
             request_record_id,
             started_at_ms,
@@ -2449,9 +2488,9 @@ pub(crate) enum UpstreamClient {
 }
 
 impl UpstreamClient {
-    async fn establish<U>(io: ClientTlsStream<U>, protocol: HttpProtocol) -> Result<Self, String>
+    async fn establish<IO>(io: IO, protocol: HttpProtocol) -> Result<Self, String>
     where
-        U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let io = TokioIo::new(io);
         match protocol {
@@ -2549,6 +2588,11 @@ pub(crate) trait UpstreamDialer: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct BridgeContext {
     pub host: String,
+    /// The URL scheme this bridge presents to the capture/rule layer: `"https"`
+    /// for TLS-terminated flows, `"http"` for the plaintext branch. It is also
+    /// the plaintext/TLS discriminator the dispatch layer reads (`scheme ==
+    /// "http"` means no CA was needed).
+    pub scheme: &'static str,
     pub conn_id: String,
     pub request_record_id: u64,
     pub src: Option<SocketAddr>,
@@ -2571,6 +2615,7 @@ impl BridgeContext {
     ) -> Self {
         Self {
             host: host.into(),
+            scheme: "https",
             conn_id: conn_id.into(),
             request_record_id,
             src: None,
@@ -2584,6 +2629,14 @@ impl BridgeContext {
             ws_sink: None,
             rule_source: Arc::new(StoreRuleSource),
         }
+    }
+
+    /// Present this bridge under `scheme` (`"http"` for the plaintext branch,
+    /// `"https"` otherwise). This also selects the plaintext semantics the
+    /// dispatch layer keys on.
+    pub(crate) fn with_scheme(mut self, s: &'static str) -> Self {
+        self.scheme = s;
+        self
     }
 
     /// Serve requests with a fixed rule snapshot instead of the live store. Used
@@ -2640,6 +2693,7 @@ struct BridgeState {
     sink: Arc<dyn CaptureSink>,
     ws_sink: Arc<dyn WsFrameSink>,
     host: String,
+    scheme: &'static str,
     conn_id: String,
     request_record_id: u64,
     capture_body: bool,
@@ -2703,7 +2757,7 @@ impl BridgeState {
             .map(|pq| pq.as_str().to_string())
             .unwrap_or_else(|| "/".to_string());
         let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
-        let url = format!("https://{host}{path}");
+        let url = format!("{}://{host}{path}", self.scheme);
         // Exact-URL (+ optional method) match against the stored *enabled* rules.
         // The source hands back a snapshot and counts the hit; no lock is held
         // across the dial below.
@@ -2712,6 +2766,7 @@ impl BridgeState {
         let exchange = Arc::new(ExchangeCapture::new(
             self.exchange_sink(),
             self.client_proto,
+            self.scheme,
             &self.host,
             &self.conn_id,
             self.request_record_id,
@@ -2750,13 +2805,18 @@ impl BridgeState {
             Err(_) => Uri::from_static("/"),
         };
         let upstream_uri = match upstream_proto {
-            HttpProtocol::H2 => format!("https://{host}{path}").parse().unwrap_or(origin),
+            HttpProtocol::H2 => format!("{}://{host}{path}", self.scheme)
+                .parse()
+                .unwrap_or(origin),
             HttpProtocol::H1 => origin,
         };
         let mut builder = Request::builder().method(method).uri(upstream_uri);
         match builder.headers_mut() {
             Some(dst) => {
                 copy_forward_request_headers(&req_headers, dst);
+                if self.scheme == "http" && is_h2c_upgrade(&req_headers) {
+                    dst.remove("http2-settings");
+                }
                 if !dst.contains_key(HOST) {
                     if let Ok(value) = HeaderValue::from_str(&host) {
                         dst.insert(HOST, value);
@@ -2882,7 +2942,7 @@ impl BridgeState {
             .map(|pq| pq.as_str().to_string())
             .unwrap_or_else(|| "/".to_string());
         let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
-        let ws_url = format!("https://{host}{path}");
+        let ws_url = format!("{}://{host}{path}", self.scheme);
         let origin: Uri = match path.parse() {
             Ok(uri) => uri,
             Err(_) => Uri::from_static("/"),
@@ -3207,6 +3267,20 @@ fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
     wants_websocket && req.headers().contains_key(SEC_WEBSOCKET_KEY)
 }
 
+/// True when the request carries an HTTP/1.1 `Upgrade: h2c` offer. Plaintext
+/// HTTP/2 is unsupported, so the bridge strips the `HTTP2-Settings` header that
+/// pairs with the offer before forwarding a plaintext request as H1.
+fn is_h2c_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("h2c"))
+        })
+        .unwrap_or(false)
+}
+
 /// Request headers preserved across the WebSocket upgrade. `Sec-WebSocket-
 /// Extensions` is stripped in the client→upstream direction (no compression).
 fn ws_forward_request_header(name: &HeaderName) -> bool {
@@ -3382,6 +3456,7 @@ where
     serve_client(
         client,
         client_proto,
+        "https",
         ctx,
         Some(EstablishedUpstream {
             client: upstream_client,
@@ -3403,12 +3478,27 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let client_proto = HttpProtocol::from_alpn(client.get_ref().1.alpn_protocol());
-    serve_client(client, client_proto, ctx, None, Some(dialer)).await
+    serve_client(client, client_proto, "https", ctx, None, Some(dialer)).await
+}
+
+/// Bridge a **plaintext** client connection (no TLS termination) to an upstream
+/// dialed lazily on the first request. The client side is forced to HTTP/1.1 and
+/// captures are tagged `scheme="http"`.
+pub(crate) async fn bridge_deferred_plain<S>(
+    client: S,
+    dialer: Arc<dyn UpstreamDialer>,
+    ctx: BridgeContext,
+) -> Result<(), MitmFailure>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    serve_client(client, HttpProtocol::H1, "http", ctx, None, Some(dialer)).await
 }
 
 async fn serve_client<S>(
-    client: TlsStream<S>,
+    client: S,
     client_proto: HttpProtocol,
+    scheme: &'static str,
     ctx: BridgeContext,
     upstream: Option<EstablishedUpstream>,
     dialer: Option<Arc<dyn UpstreamDialer>>,
@@ -3420,6 +3510,7 @@ where
         sink: ctx.sink.clone().unwrap_or_else(capture_sink),
         ws_sink: ctx.ws_sink.clone().unwrap_or_else(ws_frame_sink),
         host: ctx.host,
+        scheme,
         conn_id: ctx.conn_id,
         request_record_id: ctx.request_record_id,
         capture_body: ctx.capture_body,
@@ -4677,6 +4768,7 @@ mod mitm_http_tests {
         let exchange = ExchangeCapture::new(
             sink,
             HttpProtocol::H1,
+            "https",
             "flow.test",
             "conn-reason",
             0,
