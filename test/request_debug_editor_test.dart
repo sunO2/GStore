@@ -11,7 +11,6 @@ library;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -24,6 +23,7 @@ import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
 import 'package:gstore/page/request_debug/collection_section.dart';
 import 'package:gstore/page/request_debug/history_section.dart';
+import 'package:gstore/page/request_debug/request_debug_page.dart';
 import 'package:gstore/page/request_debug/request_editor_page.dart';
 
 /// 假发送器：记录每次发送参数，返回受控响应；**不触碰网络**。
@@ -131,6 +131,22 @@ Widget _host(RequestDebugCollectionSection section) => MaterialApp(
       home: Scaffold(body: section),
     );
 
+/// 完整 [RequestDebugPage] 宿主（Wave 8）：集合动作已上移到导航头 AppBar，
+/// 「添加集合」与「更多」菜单（排序 / 导入 cURL / 导入文件 / 导出）经此驱动。
+Widget _hostPage(RequestDebugFacade facade) => MaterialApp(
+      navigatorKey: appNavigatorKey,
+      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+      home: RequestDebugPage(facade: facade),
+    );
+
+/// 打开导航头「更多」菜单并点选其中一项（排序 / 导入 cURL / …）。
+Future<void> _tapCollectionMore(WidgetTester tester, Key itemKey) async {
+  await tester.tap(find.byKey(const Key('request-debug-collection-transfer')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(itemKey));
+  await tester.pumpAndSettle();
+}
+
 /// 把编辑器压入导航栈（先在宿主页点「open-editor」，再进入编辑器）。
 Future<void> _pumpEditor(
   WidgetTester tester, {
@@ -211,7 +227,8 @@ void main() {
   group('集合分区（集合树 + 请求列表）', () {
     testWidgets('新建集合 → 通过门面持久化（名称精确、触发 save）', (tester) async {
       final facade = _facade();
-      await tester.pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
+      // Wave 8：「添加集合」是导航头 AppBar action，需 pump 完整页面。
+      await tester.pumpWidget(_hostPage(facade));
       await tester.pumpAndSettle();
 
       // 空态。
@@ -306,11 +323,14 @@ void main() {
     testWidgets('导入 cURL → 解析并写入集合（方法 / URL / Body 精确）',
         (tester) async {
       final facade = _facade();
-      await tester.pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
+      // Wave 8：「导入 cURL」在导航头「更多」菜单内，需 pump 完整页面。
+      await tester.pumpWidget(_hostPage(facade));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('request-debug-curl-import')));
-      await tester.pumpAndSettle();
+      await _tapCollectionMore(
+        tester,
+        const Key('request-debug-curl-import'),
+      );
 
       await tester.enterText(
         find.byKey(const Key('request-debug-curl-field')),
@@ -969,9 +989,12 @@ void main() {
       await tester.tap(find.byKey(const Key('request-editor-headers-add')));
       await tester.pumpAndSettle();
 
-      // 打开「值」自适应弹层，建议 chips 应含历史派生值。
-      await tester.tap(find.byKey(const Key('request-editor-header-value-0')));
-      await tester.pumpAndSettle();
+      // Wave 6：添加 / 编辑请求头走同一键值表单弹层（不再插入可编辑空行）；
+      // 建议 chips 应含历史派生值，且位于表单弹层内。
+      expect(
+        find.byKey(const Key('request-editor-kv-row-editor')),
+        findsOneWidget,
+      );
       expect(
         find.byKey(const Key('editor-suggestion-chip-recent-secret-42')),
         findsOneWidget,
@@ -1224,6 +1247,51 @@ void main() {
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
       expect(find.byKey(const Key('request-editor-send')), findsOneWidget);
       expect(find.byKey(const Key('request-editor-more')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('窄屏 360x640：参数 / 请求头 KV 段渲染无 overflow', (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-narrow-kv',
+          name: 'narrow-kv',
+          method: 'GET',
+          url: 'https://api.example/p?a=1&b=2',
+          query: const <DebugQueryParam>[
+            DebugQueryParam(name: 'a', value: '1'),
+            DebugQueryParam(name: 'b', value: '2'),
+          ],
+          headers: const <DebugHeader>[
+            DebugHeader(name: 'X-Token', value: 'abcdef'),
+          ],
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      // 参数段：KV 行渲染为键 / 值预览，页脚动作齐备（含排序切换），无 overflow。
+      expect(find.byKey(const Key('request-editor-param-name-0')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-param-value-0')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-kv-sort')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // 请求头段：同样为 KV 段（allowDisable=true），窄屏下无异常。
+      await tester.tap(find.byKey(const Key('request-editor-segment-headers')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('request-editor-header-name-0')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

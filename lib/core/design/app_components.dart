@@ -389,6 +389,8 @@ class _AppTextFieldState extends State<AppTextField> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return TextField(
       controller: widget.controller,
       obscureText: _obscureText,
@@ -405,6 +407,7 @@ class _AppTextFieldState extends State<AppTextField> {
       onChanged: widget.onChanged,
       onSubmitted: widget.onSubmitted,
       onTap: widget.onTap,
+      style: theme.textTheme.bodyMedium,
       decoration: InputDecoration(
         labelText: widget.label,
         hintText: widget.hint,
@@ -412,32 +415,37 @@ class _AppTextFieldState extends State<AppTextField> {
         helperText: widget.helperText,
         prefixIcon: widget.prefixIcon != null ? Icon(widget.prefixIcon) : null,
         suffixIcon: _buildSuffixIcon(),
+        hintStyle: theme.textTheme.bodyMedium?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
         border: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: AppBorders.sideOf(context, color: AppColors.borderPrimary),
+          borderSide: AppBorders.sideOf(context, color: scheme.outline),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: AppBorders.sideOf(context, color: AppColors.borderPrimary),
+          borderSide: AppBorders.sideOf(context, color: scheme.outline),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.primary, width: 2),
+          borderSide: BorderSide(color: scheme.primary, width: 2),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.error),
+          borderSide: BorderSide(color: scheme.error),
         ),
         focusedErrorBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.error, width: 2),
+          borderSide: BorderSide(color: scheme.error, width: 2),
         ),
         disabledBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: AppBorders.sideOf(context, color: AppColors.borderSecondary),
+          borderSide: AppBorders.sideOf(context, color: scheme.outlineVariant),
         ),
         filled: true,
-        fillColor: widget.enabled ? AppColors.surface : AppColors.grey100,
+        fillColor: widget.enabled
+            ? scheme.surfaceContainerHighest
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.5),
         contentPadding: AppSpacing.inputFieldPadding,
         counterText: '',
       ),
@@ -1561,6 +1569,10 @@ enum AppEditableFieldMode {
 
   /// 弹层编辑：点按后在统一底部弹层内用大输入框编辑（完成 / 取消 + 全屏升级）。
   sheet,
+
+  /// 行内编辑 + 尾部展开：行内 [TextField]（可 [AppEditableField.dense] /
+  /// [AppEditableField.borderless]）+ 尾部展开按钮，点按进入既有底部弹层。
+  inlineExpandable,
 }
 
 /// 弹层内工具栏槽位构造器。
@@ -1577,6 +1589,8 @@ typedef AppEditableFieldToolbarBuilder = Widget Function(
 /// 按 [AppEditableFieldMode] 呈现同一份绑定值：
 /// - [AppEditableFieldMode.display]：只读换行展示（限 [displayMaxLines] 行 + 省略号）；
 /// - [AppEditableFieldMode.inline]：行内自增高输入框；
+/// - [AppEditableFieldMode.inlineExpandable]：行内输入框 + 尾部展开按钮，
+///   点按展开进入与 [AppEditableFieldMode.sheet] 相同的底部弹层；
 /// - [AppEditableFieldMode.sheet]：点按展开统一底部弹层（大输入框 + 完成/取消 +
 ///   全屏升级），未确认前不修改绑定值。
 ///
@@ -1595,6 +1609,11 @@ class AppEditableField extends StatefulWidget {
     this.label,
     this.toolbarBuilder,
     this.displayMaxLines = 4,
+    this.dense = false,
+    this.borderless = false,
+    this.style,
+    this.commitOnBlur = false,
+    this.expandKey,
   });
 
   /// 绑定的业务 controller（唯一真值来源）。
@@ -1624,6 +1643,22 @@ class AppEditableField extends StatefulWidget {
   /// display 模式最大行数，默认 4。
   final int displayMaxLines;
 
+  /// 紧凑密度：`inline` / `inlineExpandable` 的输入框 `isDense`，默认 false。
+  final bool dense;
+
+  /// 无边框：`inline` / `inlineExpandable` 使用 `InputBorder.none` 且不填充，默认 false。
+  final bool borderless;
+
+  /// 行内输入框样式（如 `AppTypography.code` 等宽），默认继承主题。
+  final TextStyle? style;
+
+  /// 失焦提交：行内输入在失焦且文本自本次聚焦后发生变化时，触发一次
+  /// [onSubmitted]（同一次焦点周期内只提交一次），默认 false。
+  final bool commitOnBlur;
+
+  /// 展开按钮的 Key，默认 `Key('request-editor-field-expand')`。
+  final Key? expandKey;
+
   @override
   AppEditableFieldState createState() => AppEditableFieldState();
 }
@@ -1641,18 +1676,58 @@ class AppEditableFieldState extends State<AppEditableField> {
   final FocusNode _draftFocus = FocusNode();
   bool _sheetOpen = false;
 
-  /// 当前激活的 controller：
-  /// 空闲时为绑定 controller；sheet / 全屏打开时为本地草稿 controller。
-  TextEditingController get activeController =>
-      _sheetOpen ? _draft : widget.controller;
+  // commitOnBlur：本次聚焦开始时的文本快照 + 「已变化」标记。
+  // 聚焦时记录快照并复位标记；失焦且标记为真时提交一次，防止重复追加。
+  String _focusStartText = '';
+  bool _textChangedSinceFocus = false;
+
+  bool get _commitOnBlurActive =>
+      widget.commitOnBlur &&
+      (widget.mode == AppEditableFieldMode.inline ||
+          widget.mode == AppEditableFieldMode.inlineExpandable);
+
+  @override
+  void initState() {
+    super.initState();
+    _inlineFocus.addListener(_onInlineFocusChanged);
+    widget.controller.addListener(_onControllerChanged);
+  }
+
+  /// 行内文本变化：仅当聚焦中且与本次聚焦快照不同，标记为「已变化」。
+  void _onControllerChanged() {
+    if (!_commitOnBlurActive) return;
+    if (_inlineFocus.hasFocus &&
+        widget.controller.text != _focusStartText) {
+      _textChangedSinceFocus = true;
+    }
+  }
+
+  /// 行内焦点变化：聚焦记快照并复位；失焦且已变化则提交一次。
+  void _onInlineFocusChanged() {
+    if (!_commitOnBlurActive) return;
+    if (_inlineFocus.hasFocus) {
+      _focusStartText = widget.controller.text;
+      _textChangedSinceFocus = false;
+    } else if (_textChangedSinceFocus) {
+      _textChangedSinceFocus = false;
+      widget.onSubmitted?.call(widget.controller.text);
+    }
+  }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_onControllerChanged);
+    _inlineFocus.removeListener(_onInlineFocusChanged);
     _inlineFocus.dispose();
     _draftFocus.dispose();
     _draft.dispose();
     super.dispose();
   }
+
+  /// 当前激活的 controller：
+  /// 空闲时为绑定 controller；sheet / 全屏打开时为本地草稿 controller。
+  TextEditingController get activeController =>
+      _sheetOpen ? _draft : widget.controller;
 
   /// 聚焦当前激活的编辑面（inline 输入框 / 弹层草稿）。
   void focus() {
@@ -1783,15 +1858,69 @@ class AppEditableFieldState extends State<AppEditableField> {
       focusNode: _inlineFocus,
       minLines: 1,
       maxLines: null,
+      style: widget.style,
       textInputAction: widget.textInputAction,
       onSubmitted: widget.onSubmitted,
       decoration: InputDecoration(
         hintText: widget.hintText,
         labelText: widget.label,
-        border: const OutlineInputBorder(),
-        filled: true,
-        fillColor: scheme.inputFill,
+        isDense: widget.dense,
+        contentPadding: (widget.dense || widget.borderless)
+            ? AppSpacing.inputFieldPadding
+            : null,
+        border: widget.borderless
+            ? InputBorder.none
+            : const OutlineInputBorder(),
+        filled: !widget.borderless,
+        fillColor: widget.borderless ? null : scheme.inputFill,
       ),
+    );
+  }
+
+  /// 行内编辑 + 尾部展开按钮：点按展开进入既有底部弹层（`_openSheet`）。
+  Widget _buildInlineExpandable(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: widget.controller,
+            focusNode: _inlineFocus,
+            minLines: 1,
+            maxLines: null,
+            style: widget.style,
+            textInputAction: widget.textInputAction,
+            onSubmitted: widget.onSubmitted,
+            decoration: InputDecoration(
+              hintText: widget.hintText,
+              labelText: widget.label,
+              isDense: widget.dense,
+              contentPadding: AppSpacing.inputFieldPadding,
+              border: widget.borderless
+                  ? InputBorder.none
+                  : const OutlineInputBorder(),
+              filled: !widget.borderless,
+              fillColor: widget.borderless ? null : scheme.inputFill,
+            ),
+          ),
+        ),
+        IconButton(
+          key: widget.expandKey ?? const Key('request-editor-field-expand'),
+          tooltip: '展开编辑',
+          icon: const Icon(Icons.open_in_full),
+          iconSize: AppTypography.iconMD,
+          padding: EdgeInsets.zero,
+          // 与行尾动作槽位对齐：占位宽度取 AppSpacing.huge(40)，而非
+          // IconButton 默认的 48——否则会挤占窄屏下可编辑值区的宽度。
+          constraints: const BoxConstraints.tightFor(
+            width: AppSpacing.huge,
+            height: AppSpacing.huge,
+          ),
+          visualDensity: VisualDensity.compact,
+          onPressed: _openSheet,
+        ),
+      ],
     );
   }
 
@@ -1819,7 +1948,9 @@ class AppEditableFieldState extends State<AppEditableField> {
                 display,
                 maxLines: widget.displayMaxLines,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyMedium?.copyWith(
+                // 可选 [AppEditableField.style] 覆盖展示字号（如 KV 预览用更小
+                // 的 bodySmall）；未传时维持既有 bodyMedium，行为零变化。
+                style: (widget.style ?? theme.textTheme.bodyMedium)?.copyWith(
                   color: isEmpty ? scheme.onSurfaceVariant : scheme.onSurface,
                 ),
               ),
@@ -1835,6 +1966,8 @@ class AppEditableFieldState extends State<AppEditableField> {
     switch (widget.mode) {
       case AppEditableFieldMode.inline:
         return _buildInline(context);
+      case AppEditableFieldMode.inlineExpandable:
+        return _buildInlineExpandable(context);
       case AppEditableFieldMode.display:
       case AppEditableFieldMode.sheet:
         return _buildDisplay(context);

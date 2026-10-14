@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/design/app_typography.dart';
 
 /// AppEditableField 自适应输入原语测试（plan todo 4）。
 ///
@@ -174,6 +175,225 @@ void main() {
     expect(controller.text, 'submitted value');
     expect(find.byKey(sheetKey), findsNothing);
     expect(submitted, ['submitted value'], reason: 'onSubmitted 必须恰好一次');
+    expect(tester.takeException(), isNull);
+  });
+
+  // ========== inlineExpandable / commitOnBlur（plan todo 1） ==========
+
+  const Key inlineExpandKey = Key('request-editor-field-expand');
+  const Key siblingKey = Key('other-field');
+
+  /// 定位 [fieldKey] 字段内部的行内输入框（与兄弟字段区分）。
+  Finder inlineTextField(GlobalKey<AppEditableFieldState> fieldKey) =>
+      find.descendant(
+        of: find.byKey(fieldKey),
+        matching: find.byType(TextField),
+      );
+
+  Widget inlineHarness({
+    required TextEditingController controller,
+    required GlobalKey<AppEditableFieldState> fieldKey,
+    ValueChanged<String>? onSubmitted,
+    bool dense = false,
+    bool borderless = true,
+    bool commitOnBlur = false,
+    Key? expandKey,
+    TextStyle? style,
+    bool withSibling = false,
+  }) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Column(
+          children: [
+            AppEditableField(
+              key: fieldKey,
+              controller: controller,
+              mode: AppEditableFieldMode.inlineExpandable,
+              dense: dense,
+              borderless: borderless,
+              commitOnBlur: commitOnBlur,
+              expandKey: expandKey,
+              style: style,
+              onSubmitted: onSubmitted,
+              hintText: '值',
+            ),
+            if (withSibling) const TextField(key: siblingKey),
+          ],
+        ),
+      ),
+    );
+  }
+
+  testWidgets('inlineExpandable 渲染行内 TextField + 展开按钮，展开确认写回', (tester) async {
+    final controller = TextEditingController(text: 'orig');
+    addTearDown(controller.dispose);
+    final submitted = <String>[];
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      onSubmitted: submitted.add,
+    ));
+
+    expect(inlineTextField(fieldKey), findsOneWidget);
+    expect(find.byKey(inlineExpandKey), findsOneWidget);
+    expect(find.byIcon(Icons.open_in_full), findsOneWidget);
+
+    await tester.tap(find.byKey(inlineExpandKey));
+    await tester.pumpAndSettle();
+    expect(find.byKey(sheetInputKey), findsOneWidget);
+
+    await tester.enterText(find.byKey(sheetInputKey), 'expanded');
+    await tester.tap(find.byKey(sheetConfirmKey));
+    await tester.pumpAndSettle();
+
+    expect(controller.text, 'expanded');
+    expect(submitted, ['expanded']);
+    expect(find.byKey(sheetKey), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('inlineExpandable 自定义 expandKey 生效且 style 应用到行内输入框', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+    const Key customExpand = Key('kv-value-expand-7');
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      expandKey: customExpand,
+      style: AppTypography.code,
+    ));
+
+    expect(find.byKey(customExpand), findsOneWidget);
+    expect(find.byKey(inlineExpandKey), findsNothing);
+    final tf = tester.widget<TextField>(inlineTextField(fieldKey));
+    expect(tf.style?.fontFamily, 'monospace', reason: 'style 必须落到行内 TextField');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('commitOnBlur: 失焦且文本已变触发一次 onSubmitted', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final submitted = <String>[];
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      onSubmitted: submitted.add,
+      commitOnBlur: true,
+      withSibling: true,
+    ));
+
+    await tester.enterText(inlineTextField(fieldKey), 'changed');
+    await tester.pump();
+
+    // 焦点移到兄弟字段 → 行内失焦。
+    await tester.enterText(find.byKey(siblingKey), 'x');
+    await tester.pumpAndSettle();
+
+    expect(submitted, ['changed'], reason: '失焦且文本已变，恰好提交一次');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('commitOnBlur: 文本未变时失焦不提交', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final submitted = <String>[];
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      onSubmitted: submitted.add,
+      commitOnBlur: true,
+      withSibling: true,
+    ));
+
+    // 聚焦但文本未变，再失焦。
+    await tester.tap(inlineTextField(fieldKey));
+    await tester.pump();
+    await tester.enterText(find.byKey(siblingKey), 'x');
+    await tester.pumpAndSettle();
+
+    expect(submitted, isEmpty, reason: '文本未变不得提交（防重复追加）');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('inlineExpandable borderless 开关控制 OutlineInputBorder', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      borderless: false,
+    ));
+    final bordered = tester.widget<TextField>(inlineTextField(fieldKey));
+    expect(bordered.decoration!.border, isA<OutlineInputBorder>(),
+        reason: 'borderless=false（默认）必须仍为 OutlineInputBorder');
+
+    await tester.pumpWidget(inlineHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      borderless: true,
+    ));
+    await tester.pump();
+    final borderless = tester.widget<TextField>(inlineTextField(fieldKey));
+    expect(borderless.decoration!.border, InputBorder.none);
+    expect(borderless.decoration!.filled, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  Widget inlineModeHarness({
+    required TextEditingController controller,
+    required GlobalKey<AppEditableFieldState> fieldKey,
+    bool dense = false,
+    bool borderless = false,
+  }) {
+    return MaterialApp(
+      home: Scaffold(
+        body: AppEditableField(
+          key: fieldKey,
+          controller: controller,
+          mode: AppEditableFieldMode.inline,
+          dense: dense,
+          borderless: borderless,
+          hintText: '值',
+        ),
+      ),
+    );
+  }
+
+  testWidgets('inline 模式 dense+borderless 去方框；默认仍为 OutlineInputBorder', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final fieldKey = GlobalKey<AppEditableFieldState>();
+
+    await tester.pumpWidget(inlineModeHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+      dense: true,
+      borderless: true,
+    ));
+    final borderless = tester.widget<TextField>(inlineTextField(fieldKey));
+    expect(borderless.decoration!.border, InputBorder.none,
+        reason: 'inline + borderless 必须无方框');
+    expect(borderless.decoration!.filled, isFalse);
+
+    await tester.pumpWidget(inlineModeHarness(
+      controller: controller,
+      fieldKey: fieldKey,
+    ));
+    await tester.pump();
+    final bordered = tester.widget<TextField>(inlineTextField(fieldKey));
+    expect(bordered.decoration!.border, isA<OutlineInputBorder>(),
+        reason: '默认 inline 必须保持 OutlineInputBorder（回归）');
+    expect(bordered.decoration!.filled, isTrue);
     expect(tester.takeException(), isNull);
   });
 }

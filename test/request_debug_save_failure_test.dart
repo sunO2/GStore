@@ -18,9 +18,9 @@ import 'package:gstore/core/request_debug/debug_response.dart';
 import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
-import 'package:gstore/page/request_debug/collection_section.dart';
 import 'package:gstore/page/request_debug/environment_section.dart';
 import 'package:gstore/page/request_debug/history_section.dart';
+import 'package:gstore/page/request_debug/request_debug_page.dart';
 import 'package:gstore/page/request_debug/request_editor_page.dart';
 
 /// 假发送器：记录每次发送参数，返回受控响应；**不触碰网络**。
@@ -76,6 +76,14 @@ Widget _host(Widget body) => MaterialApp(
       navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: Scaffold(body: body),
+    );
+
+/// 完整 [RequestDebugPage] 宿主（Wave 8）：集合动作已上移到导航头 AppBar，
+/// 「添加集合」经 `request-debug-collection-add` action 触发。
+Widget _hostPage(RequestDebugFacade facade) => MaterialApp(
+      navigatorKey: appNavigatorKey,
+      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+      home: RequestDebugPage(facade: facade),
     );
 
 /// 把编辑器压入导航栈（先在宿主页点「open-editor」，再进入编辑器）。
@@ -154,9 +162,8 @@ void main() {
 
     testWidgets('集合分区保存失败 → 显示错误', (tester) async {
       final facade = _failingFacade();
-      await tester.pumpWidget(
-        _host(RequestDebugCollectionSection(facade: facade)),
-      );
+      // Wave 8：「添加集合」是导航头 AppBar action，需 pump 完整页面。
+      await tester.pumpWidget(_hostPage(facade));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('request-debug-collection-add')));

@@ -23,6 +23,7 @@ import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
 import 'package:gstore/page/request_debug/collection_section.dart';
 import 'package:gstore/page/request_debug/environment_section.dart';
+import 'package:gstore/page/request_debug/request_debug_page.dart';
 
 // ==================== 假实现 ====================
 
@@ -96,6 +97,14 @@ Widget _host(Widget child) => MaterialApp(
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: Scaffold(body: child),
     );
+
+/// 打开导航头「更多」菜单并点选其中一项（排序 / 导入 cURL / …，Wave 8）。
+Future<void> _tapCollectionMore(WidgetTester tester, Key itemKey) async {
+  await tester.tap(find.byKey(const Key('request-debug-collection-transfer')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(itemKey));
+  await tester.pumpAndSettle();
+}
 
 DebugRequest _request(String id, {String name = '', String url = ''}) =>
     DebugRequest(id: id, name: name, url: url);
@@ -295,13 +304,29 @@ void main() {
       facade.store.addRequest(col.id, _request('r2', name: '第二'));
       facade.store.addRequest(col.id, _request('r3', name: '第三'));
 
-      await tester.pumpWidget(
-        _host(RequestDebugCollectionSection(facade: facade)),
-      );
+      await tester.pumpWidget(_host(RequestDebugPage(facade: facade)));
       await tester.pumpAndSettle();
 
+      // Wave 7：默认（排序关闭）不渲染拖拽手柄。
       final handle = find.byKey(const Key('request-debug-request-drag-r1'));
-      expect(handle, findsOneWidget);
+      expect(handle, findsNothing, reason: '排序关闭时不得显示请求拖拽手柄');
+      expect(
+        find.byKey(const Key('request-debug-collection-drag-c1')),
+        findsNothing,
+        reason: '排序关闭时不得显示集合拖拽手柄',
+      );
+
+      // Wave 8：排序切换已上移到导航头「更多」菜单，先开菜单再点「排序」。
+      await _tapCollectionMore(
+        tester,
+        const Key('request-debug-collection-sort-toggle'),
+      );
+      expect(handle, findsOneWidget, reason: '开启排序后应显示请求拖拽手柄');
+      expect(
+        find.byKey(const Key('request-debug-collection-drag-c1')),
+        findsOneWidget,
+        reason: '开启排序后应显示集合拖拽手柄',
+      );
 
       await tester.timedDrag(
         handle,
@@ -353,10 +378,14 @@ void main() {
       facade.store.addRequest(col.id, _request('r1', name: '第一', url: 'https://a'));
       facade.store.addRequest(col.id, _request('r2', name: '第二', url: 'https://b'));
 
-      await tester.pumpWidget(
-        _host(RequestDebugCollectionSection(facade: facade)),
-      );
+      await tester.pumpWidget(_host(RequestDebugPage(facade: facade)));
       await tester.pumpAndSettle();
+
+      // Wave 7/8：拖拽手柄仅在排序模式显示，排序切换在导航头「更多」菜单。
+      await _tapCollectionMore(
+        tester,
+        const Key('request-debug-collection-sort-toggle'),
+      );
 
       await tester.timedDrag(
         find.byKey(const Key('request-debug-request-drag-r1')),

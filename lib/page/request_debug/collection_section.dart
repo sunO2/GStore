@@ -34,6 +34,7 @@ class RequestDebugCollectionSection extends StatefulWidget {
     required this.facade,
     this.pickFile,
     this.saveFile,
+    this.onSortModeChanged,
   });
 
   /// 窄门面（store CRUD + cURL 解析 + 发送）。
@@ -45,12 +46,20 @@ class RequestDebugCollectionSection extends StatefulWidget {
   /// 导出文件保存接缝（测试注入；为空时走 [FilePicker]）。
   final DebugSaveFile? saveFile;
 
+  /// 排序态变化回调（新值 `true` = 进入排序 / `false` = 退出）。
+  ///
+  /// 宿主（[RequestDebugPage] 导航头）据此在「更多」与「完成」按钮间切换；
+  /// 为空时无副作用（裸分区测试不受影响）。
+  final ValueChanged<bool>? onSortModeChanged;
+
   @override
   State<RequestDebugCollectionSection> createState() =>
-      _RequestDebugCollectionSectionState();
+      RequestDebugCollectionSectionState();
 }
 
-class _RequestDebugCollectionSectionState
+/// 集合分区状态：公开类型以便 [RequestDebugPage] 经 `GlobalKey` 驱动其
+/// 导航头动作（添加集合 / 排序 / 导入 / 导出）。
+class RequestDebugCollectionSectionState
     extends State<RequestDebugCollectionSection> {
   /// 处于折叠状态的集合 id（默认全部展开）。
   final Set<String> _collapsed = <String>{};
@@ -62,7 +71,41 @@ class _RequestDebugCollectionSectionState
   /// 排序顺序（默认原序）。
   DebugSortOrder _sort = DebugSortOrder.original;
 
+  /// 排序模式（默认关闭）：仅开启后集合 / 请求条目尾部才显示拖拽手柄。
+  bool _sorting = false;
+
   RequestDebugFacade get _facade => widget.facade;
+
+  // ==================== 公开动作（供导航头 AppBar 驱动） ====================
+
+  /// 排序模式是否开启（导航头「排序」菜单项据此显示勾选）。
+  bool get sortMode => _sorting;
+
+  /// 新建顶层集合（导航头「添加集合」）。
+  Future<void> createCollection() => _createCollection();
+
+  /// 导入 cURL（导航头「更多」→「导入 cURL」）。
+  Future<void> importCurl() => _importCurl();
+
+  /// 从文件导入集合（导航头「更多」→「导入集合文件…」）。
+  Future<void> importCollections() => _importCollections();
+
+  /// 导出当前集合树为指定格式（导航头「更多」→「导出为 …」）。
+  Future<void> exportCollections(DebugTransferFormat format) =>
+      _exportCollections(format);
+
+  /// 切换排序模式（导航头「更多」→「排序」）。
+  ///
+  /// 与 Wave 7 的内联按钮语义一致：仅在「原序 + 无搜索」视图下可切换，
+  /// 否则忽略（导航头菜单项此时不产生副作用）。
+  void toggleSort() {
+    final canReorder =
+        _query.trim().isEmpty && _sort == DebugSortOrder.original;
+    if (!canReorder) return;
+    final next = !_sorting;
+    setState(() => _sorting = next);
+    widget.onSortModeChanged?.call(next);
+  }
 
   @override
   void dispose() {
@@ -243,6 +286,18 @@ class _RequestDebugCollectionSectionState
     // 原序不一致，若在此拖拽会写坏顺序。
     final canReorder =
         _query.trim().isEmpty && _sort == DebugSortOrder.original;
+    // 搜索 / 非原序视图下无法安全重排：强制退出排序模式（手柄随之消失）。
+    if (!canReorder && _sorting) {
+      _sorting = false;
+      // 被动复位同样需通知宿主（否则导航头会停在「完成」）。build 期间不能
+      // 直接 setState 宿主，故排到当前帧之后回调。
+      final onSortModeChanged = widget.onSortModeChanged;
+      if (onSortModeChanged != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) onSortModeChanged(false);
+        });
+      }
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -282,94 +337,14 @@ class _RequestDebugCollectionSectionState
   }
 
   Widget _buildHeader(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            AppSpacing.sm,
-            AppSpacing.sm,
-            AppSpacing.sm,
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text('集合树', style: theme.textTheme.titleMedium),
-              ),
-              IconButton(
-                key: const Key('request-debug-curl-import'),
-                tooltip: '导入 cURL',
-                icon: const Icon(TablerIcons.file_import),
-                onPressed: _importCurl,
-              ),
-              PopupMenuButton<String>(
-                key: const Key('request-debug-collection-transfer'),
-                tooltip: '导入 / 导出集合',
-                icon: const Icon(TablerIcons.dots),
-                onSelected: (value) {
-                  switch (value) {
-                    case 'import':
-                      _importCollections();
-                    case 'export-har':
-                      _exportCollections(DebugTransferFormat.har);
-                    case 'export-postman':
-                      _exportCollections(DebugTransferFormat.postman);
-                    case 'export-openapi':
-                      _exportCollections(DebugTransferFormat.openapi);
-                    case 'export-raw':
-                      _exportCollections(DebugTransferFormat.rawHttp);
-                  }
-                },
-                itemBuilder: (_) => const <PopupMenuEntry<String>>[
-                  PopupMenuItem<String>(
-                    key: Key('request-debug-collection-import-file'),
-                    value: 'import',
-                    child: Text('导入集合文件…'),
-                  ),
-                  PopupMenuDivider(),
-                  PopupMenuItem<String>(
-                    key: Key('request-debug-collection-export-har'),
-                    value: 'export-har',
-                    child: Text('导出为 HAR 1.2'),
-                  ),
-                  PopupMenuItem<String>(
-                    key: Key('request-debug-collection-export-postman'),
-                    value: 'export-postman',
-                    child: Text('导出为 Postman v2.1'),
-                  ),
-                  PopupMenuItem<String>(
-                    key: Key('request-debug-collection-export-openapi'),
-                    value: 'export-openapi',
-                    child: Text('导出为 OpenAPI 3'),
-                  ),
-                  PopupMenuItem<String>(
-                    key: Key('request-debug-collection-export-raw'),
-                    value: 'export-raw',
-                    child: Text('导出为原始 HTTP'),
-                  ),
-                ],
-              ),
-              IconButton(
-                key: const Key('request-debug-collection-add'),
-                tooltip: '新建集合',
-                icon: const Icon(TablerIcons.plus),
-                onPressed: () => _createCollection(),
-              ),
-            ],
-          ),
-        ),
-        DebugSearchSortBar(
-          sectionId: 'request-debug-collection',
-          hint: '搜索集合 / 请求',
-          controller: _searchCtrl,
-          query: _query,
-          sort: _sort,
-          onQueryChanged: (value) => setState(() => _query = value),
-          onSortChanged: (value) => setState(() => _sort = value),
-        ),
-      ],
+    return DebugSearchSortBar(
+      sectionId: 'request-debug-collection',
+      hint: '搜索集合 / 请求',
+      controller: _searchCtrl,
+      query: _query,
+      sort: _sort,
+      onQueryChanged: (value) => setState(() => _query = value),
+      onSortChanged: (value) => setState(() => _sort = value),
     );
   }
 
@@ -406,7 +381,7 @@ class _RequestDebugCollectionSectionState
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (reorderable)
+          if (reorderable && _sorting)
             SizedBox(
               width: 40,
               height: 40,
@@ -608,7 +583,7 @@ class _RequestDebugCollectionSectionState
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (reorderable)
+          if (reorderable && _sorting)
             SizedBox(
               width: 40,
               height: 40,

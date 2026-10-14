@@ -129,6 +129,155 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('集合分区：导航头承载 [添加集合]/[更多]，分区不再有「集合树」标题',
+        (tester) async {
+      await pumpPage(tester);
+
+      // Wave 8：集合动作上移到导航头 AppBar。
+      expect(
+        find.byKey(const Key('request-debug-collection-add')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-transfer')),
+        findsOneWidget,
+      );
+      // 旧的分区标题行已移除。
+      expect(find.text('集合树'), findsNothing);
+
+      // 「更多」菜单含排序 / 导入 cURL / 导入文件 / 导出项。
+      await tester.tap(
+        find.byKey(const Key('request-debug-collection-transfer')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-debug-collection-sort-toggle')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-curl-import')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-import-file')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-export-har')),
+        findsOneWidget,
+      );
+      // 关闭菜单。
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      // 非集合分区不显示这两个 action。
+      await tester.tap(find.byKey(const Key('request-debug-segment-history')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-debug-collection-add')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-transfer')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('集合分区：更多 → 排序 → 完成 → 更多（Wave 9 排序态导航头）',
+        (tester) async {
+      await pumpPage(tester);
+
+      // 非排序态：显示「更多」，无「完成」。
+      expect(
+        find.byKey(const Key('request-debug-collection-transfer')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-sort-done')),
+        findsNothing,
+      );
+      // 搜索框正常渲染（AppTextField 主题自适应）。
+      expect(
+        find.byKey(const Key('request-debug-collection-search')),
+        findsOneWidget,
+      );
+
+      // 「更多」→「排序」。
+      await tester.tap(
+        find.byKey(const Key('request-debug-collection-transfer')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-debug-collection-sort-toggle')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const Key('request-debug-collection-sort-toggle')),
+      );
+      await tester.pumpAndSettle();
+
+      // 排序态：「更多」被「完成」替换。
+      expect(
+        find.byKey(const Key('request-debug-collection-sort-done')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-transfer')),
+        findsNothing,
+        reason: '排序态下「更多」菜单必须被替换为「完成」',
+      );
+
+      // 「完成」→ 退出排序，恢复「更多」。
+      await tester.tap(
+        find.byKey(const Key('request-debug-collection-sort-done')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-debug-collection-transfer')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('request-debug-collection-sort-done')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('搜索框填充色随主题自适应且不同于文字色（暗色可见性回归）',
+        (tester) async {
+      Future<({Color? fill, Color? text})> probe(Brightness brightness) async {
+        await tester.pumpWidget(MaterialApp(
+          theme: ThemeData(brightness: brightness),
+          home: buildPage(),
+        ));
+        await tester.pumpAndSettle();
+        final searchFinder =
+            find.byKey(const Key('request-debug-collection-search'));
+        final field = tester.widget<TextField>(find.descendant(
+          of: searchFinder,
+          matching: find.byType(TextField),
+        ));
+        final textColor = field.style?.color ??
+            Theme.of(tester.element(searchFinder)).textTheme.bodyMedium?.color;
+        return (fill: field.decoration?.fillColor, text: textColor);
+      }
+
+      final light = await probe(Brightness.light);
+      expect(light.fill, isNotNull);
+      expect(light.text, isNotNull);
+      expect(light.fill, isNot(light.text), reason: '亮色下文字与填充不得同色');
+
+      final dark = await probe(Brightness.dark);
+      expect(dark.fill, isNotNull);
+      expect(dark.text, isNotNull);
+      expect(dark.fill, isNot(dark.text),
+          reason: '暗色下文字与填充不得同色（白底白字回归）');
+      expect(dark.fill, isNot(light.fill),
+          reason: 'AppTextField 填充应随主题变化，而非硬编码 #FFFFFF');
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('切换 4 分区，各分区渲染各自空态', (tester) async {
       await pumpPage(tester);
 

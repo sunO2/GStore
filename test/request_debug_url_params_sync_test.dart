@@ -127,22 +127,22 @@ int _paramRowCount(WidgetTester tester) {
   return n;
 }
 
-/// 第 [i] 行参数名（行内输入框的 controller 文本）。
+/// 第 [i] 行参数名（Wave 5 起为 display 预览的 [Text] 文本；空值显示 hint「参数名」）。
 String _paramName(WidgetTester tester, int i) {
-  final field = tester.widget<TextField>(find.descendant(
+  final text = tester.widget<Text>(find.descendant(
     of: find.byKey(Key('request-editor-param-name-$i')),
-    matching: find.byType(TextField),
+    matching: find.byType(Text),
   ));
-  return field.controller!.text;
+  return text.data ?? '';
 }
 
-/// 第 [i] 行参数值（sheet 模式展示文本）。
+/// 第 [i] 行参数值（display 预览的 [Text] 文本；空行显示 hint「值」）。
 String _paramValue(WidgetTester tester, int i) {
   final text = tester.widget<Text>(find.descendant(
     of: find.byKey(Key('request-editor-param-value-$i')),
     matching: find.byType(Text),
   ));
-  return text.data ?? text.textSpan?.toPlainText() ?? '';
+  return text.data ?? '';
 }
 
 /// 通过 URL 自适应弹层提交 URL。
@@ -165,15 +165,20 @@ Future<void> _setUrlViaSheet(WidgetTester tester, String url) async {
   }
 }
 
-/// 通过值 sheet 提交第 [i] 行参数值。
+/// 编辑第 [i] 行参数值（Wave 6）：长按行 → 「编辑」→ 键值表单弹层 → 完成。
+///
+/// 表单预填该行键 / 值，仅改写值字段；确认后写回行 controller 并
+/// `_syncUrlFromParams`。**无末行自动追加**。
 Future<void> _editParamValue(WidgetTester tester, int i, String value) async {
-  await tester.tap(find.byKey(Key('request-editor-param-value-$i')));
+  await tester.longPress(find.byKey(Key('request-editor-param-name-$i')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('request-editor-kv-row-edit')));
   await tester.pumpAndSettle();
   await tester.enterText(
-    find.byKey(const Key('request-editor-field-sheet-input')),
+    find.byKey(const Key('request-editor-kv-editor-value')),
     value,
   );
-  await tester.tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
+  await tester.tap(find.byKey(const Key('request-editor-kv-editor-confirm')));
   await tester.pumpAndSettle();
 }
 
@@ -403,8 +408,8 @@ void main() {
       // 稳定：额外帧不回弹。
       await tester.pump();
       expect(_urlDisplay('https://api.example/p?a=33&b=22'), findsOneWidget);
-      // T13：提交末行（b）后自动追加一个空行，故为 3 行；空名行不入 URL。
-      expect(_paramRowCount(tester), 3);
+      // Wave 6：编辑不自动追加，故仍为 2 行（原 a / b）。
+      expect(_paramRowCount(tester), 2);
       expect(tester.takeException(), isNull);
     });
 

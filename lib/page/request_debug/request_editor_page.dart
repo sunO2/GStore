@@ -25,6 +25,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'cookie_manager_sheet.dart';
+import 'debug_kv_editor.dart';
 import 'history_section.dart';
 import 'raw_request_view.dart';
 import 'response_viewer.dart';
@@ -99,9 +100,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   final GlobalKey<AppEditableFieldState> _authKeyValueFieldKey =
       GlobalKey<AppEditableFieldState>();
 
-  final List<_KvRow> _params = <_KvRow>[];
-  final List<_KvRow> _headers = <_KvRow>[];
-  final List<_KvRow> _cookies = <_KvRow>[];
+  final List<DebugKvRow> _params = <DebugKvRow>[];
+  final List<DebugKvRow> _headers = <DebugKvRow>[];
+  final List<DebugKvRow> _cookies = <DebugKvRow>[];
 
   late String _method;
   late DebugBodyKind _bodyKind;
@@ -127,6 +128,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   /// URL ⇄ 参数同步的重入保护：任一方向的同步过程中绝不再次触发同步，
   /// 避免显示 URL 的程序化回写被误判为一次新提交而振荡。
   bool _syncing = false;
+
+  /// 处于排序模式的 KV 段前缀集合（参数 / 请求头 / Cookie 各自独立）；
+  /// 仅当某段处于排序模式时，其行尾才渲染拖拽手柄。
+  final Set<String> _sortModePrefixes = <String>{};
 
   late final String _draftId;
 
@@ -201,7 +206,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _authToken.dispose();
     _authKeyName.dispose();
     _authKeyValue.dispose();
-    for (final row in <_KvRow>[..._params, ..._headers, ..._cookies]) {
+    for (final row in <DebugKvRow>[..._params, ..._headers, ..._cookies]) {
       row.dispose();
     }
     super.dispose();
@@ -221,8 +226,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     setState(() => _dirty = true);
   }
 
-  _KvRow _newRow({String name = '', String value = '', bool enabled = true}) {
-    final row = _KvRow(
+  DebugKvRow _newRow({String name = '', String value = '', bool enabled = true}) {
+    final row = DebugKvRow(
       id: generateDebugId('kv'),
       name: name,
       value: value,
@@ -233,24 +238,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     return row;
   }
 
-  /// 提交某行（行内 done / 弹层完成）后的统一处理：
-  /// - 参数行回写 URL；
-  /// - 若提交的是**最后一个非空行**，追加一个空行便于继续录入。
-  void _onRowCommitted(_KvRow row, String keyPrefix) {
-    final rows = _rowsOf(keyPrefix);
-    final isLast = rows.isNotEmpty && identical(rows.last, row);
-    final hasContent = row.nameCtrl.text.trim().isNotEmpty ||
-        row.valueCtrl.text.trim().isNotEmpty;
-    setState(() {
-      _dirty = true;
-      if (isLast && hasContent) rows.add(_newRow());
-    });
-    if (keyPrefix == 'request-editor-param') _syncUrlFromParams();
-  }
-
   /// 行从列表移除后，等首帧重建（TextField 已卸载）再释放其 controller，
   /// 避免「controller used after dispose」。
-  void _disposeRowsAfterFrame(List<_KvRow> rows) {
+  void _disposeRowsAfterFrame(List<DebugKvRow> rows) {
     if (rows.isEmpty) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       for (final row in rows) {
@@ -260,13 +250,98 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   /// 删除一行：先出列表并重建，再延迟释放 controller；参数行回写 URL。
-  void _removeRow(String keyPrefix, _KvRow row) {
+  void _removeRow(String keyPrefix, DebugKvRow row) {
     final isParams = keyPrefix == 'request-editor-param';
     setState(() {
       _rowsOf(keyPrefix).remove(row);
       _dirty = true;
     });
-    _disposeRowsAfterFrame(<_KvRow>[row]);
+    _disposeRowsAfterFrame(<DebugKvRow>[row]);
+    if (isParams) _syncUrlFromParams();
+  }
+
+  /// 长按 KV 行：弹出统一底部弹层展示「编辑 / 删除」两项（删除用危险色）。
+  ///
+  /// - 「编辑」→ 打开键 + 值表单弹层（[row] 预填）并写回；
+  /// - 「删除」→ 经本弹层确认后删除该行。
+  ///
+  /// 走 [AppSheet] 统一骨架（非 raw `showModalBottomSheet` / `showDialog`），
+  /// 用弹层自身 context 关闭并返回结果，避免依赖全局导航 key（便于测试）。
+  Future<void> _showRowActions(String keyPrefix, DebugKvRow row) async {
+    final label = row.nameCtrl.text.trim();
+    final action = await AppSheet.showCustom<String>(
+      context: context,
+      builder: (sheetContext) {
+        final scheme = Theme.of(sheetContext).colorScheme;
+        return AppSheetScaffold(
+          key: const Key('request-editor-kv-row-actions'),
+          title: label.isEmpty ? '行操作' : label,
+          contentPadding: AppSpacing.onlyHorizontalXL,
+          content: Material(
+            // 弹层骨架自带背景色 DecoratedBox；给 ListTile 就近一个透明
+            // Material 祖先，避免其背景 / 水波纹被遮挡的断言。
+            type: MaterialType.transparency,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  key: const Key('request-editor-kv-row-edit'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(TablerIcons.pencil),
+                  title: const Text('编辑'),
+                  onTap: () => Navigator.of(sheetContext).pop('edit'),
+                ),
+                ListTile(
+                  key: const Key('request-editor-kv-row-delete'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(TablerIcons.trash, color: scheme.error),
+                  title: Text('删除', style: TextStyle(color: scheme.error)),
+                  onTap: () => Navigator.of(sheetContext).pop('delete'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'edit':
+        await _openRowEditor(keyPrefix, row: row);
+      case 'delete':
+        _removeRow(keyPrefix, row);
+    }
+  }
+
+  /// 打开「键 + 值」表单弹层：新建（[row] 为 null）或编辑既有行。
+  ///
+  /// 值字段带插入环境变量 / 粘贴 / 清空工具栏（请求头段附建议 chips），
+  /// 与「添加」按钮共用同一弹层。确认后：新建则追加 [_newRow]，编辑则写回
+  /// 该行 controller；随后标记脏值，参数段回写 URL。
+  Future<void> _openRowEditor(String keyPrefix, {DebugKvRow? row}) async {
+    final isParams = keyPrefix == 'request-editor-param';
+    final isHeaders = keyPrefix == 'request-editor-header';
+    final draft = await AppSheet.showCustom<_KvDraft>(
+      context: context,
+      builder: (_) => _KvRowEditorSheet(
+        title: row == null ? '添加' : '编辑',
+        initialName: row?.nameCtrl.text ?? '',
+        initialValue: row?.valueCtrl.text ?? '',
+        suggestions: isHeaders ? _headerSuggestions() : const <String>[],
+        onPickInsertVariable: _pickInsertVariable,
+      ),
+    );
+    if (draft == null || !mounted) return;
+    final rows = _rowsOf(keyPrefix);
+    setState(() {
+      if (row == null) {
+        rows.add(_newRow(name: draft.name, value: draft.value));
+      } else {
+        row.nameCtrl.text = draft.name;
+        row.valueCtrl.text = draft.value;
+      }
+      _dirty = true;
+    });
     if (isParams) _syncUrlFromParams();
   }
 
@@ -288,9 +363,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   /// 从而保留 controller / 焦点），不足则新建，多余则延迟释放。
   void _applyParamRows(List<DebugQueryParam> params) {
     final used = <String>{};
-    final next = <_KvRow>[];
+    final next = <DebugKvRow>[];
     for (final param in params) {
-      _KvRow? row;
+      DebugKvRow? row;
       for (final candidate in _params) {
         if (!used.contains(candidate.id) &&
             candidate.nameCtrl.text.trim() == param.name) {
@@ -577,7 +652,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   /// 当前分段下可聚焦的编辑字段顺序（仅枚举已挂载的字段）。
   List<GlobalKey<AppEditableFieldState>> _focusOrder() {
     final order = <GlobalKey<AppEditableFieldState>>[_urlFieldKey];
-    void addRows(List<_KvRow> rows) {
+    void addRows(List<DebugKvRow> rows) {
       for (final row in rows) {
         order.add(row.nameFieldKey);
         order.add(row.valueFieldKey);
@@ -1029,64 +1104,71 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   Widget _buildTopBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // 方法 + URL 收进单个圆角「请求栏」，方法选择器不再自带边框，
+    // 与环境预览一起构成干净的一条顶部区域。
     return Padding(
       padding: AppSpacing.allLG,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildMethodDropdown(context),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+          Container(
+            padding: AppSpacing.allSM,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: AppRadius.allMD,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                KeyedSubtree(
-                  key: const Key('request-editor-url'),
-                  child: AppEditableField(
-                    key: _urlFieldKey,
-                    controller: _url,
-                    mode: AppEditableFieldMode.sheet,
-                    label: '请求地址',
-                    hintText: 'https://api.example/path',
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) {
-                      // 先同步 URL 查询到参数行（sync-before-send），再发送：
-                      // 否则刚输入的 `?a=1&b=2` 会在 composeDraft 规范化时被丢弃。
-                      _syncParamsFromUrl();
-                      _send();
-                    },
-                    toolbarBuilder: _sheetToolbar(
-                      fieldKey: _urlFieldKey,
-                      allowInsertVar: true,
+                _buildMethodDropdown(context),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: KeyedSubtree(
+                    key: const Key('request-editor-url'),
+                    child: AppEditableField(
+                      key: _urlFieldKey,
+                      controller: _url,
+                      mode: AppEditableFieldMode.sheet,
+                      label: '请求地址',
+                      hintText: 'https://api.example/path',
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) {
+                        // 先同步 URL 查询到参数行（sync-before-send），再发送：
+                        // 否则刚输入的 `?a=1&b=2` 会在 composeDraft 规范化时被丢弃。
+                        _syncParamsFromUrl();
+                        _send();
+                      },
+                      toolbarBuilder: _sheetToolbar(
+                        fieldKey: _urlFieldKey,
+                        allowInsertVar: true,
+                      ),
                     ),
                   ),
                 ),
-                _buildEnvPreview(context),
               ],
             ),
           ),
+          _buildEnvPreview(context),
         ],
       ),
     );
   }
 
   Widget _buildMethodDropdown(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     // 非标准方法（如 PROPFIND）：把自定义值补进下拉选项，避免 DropdownButton
     // 因 value 不在 items 中断言失败，从而保留方法字符串（todo 13）。
     final methods = _httpMethods.contains(_method)
         ? _httpMethods
         : <String>[_method, ..._httpMethods];
-    return Container(
+    // 无独立边框：作为请求栏容器内的紧凑选择器（水平内边距与 URL 文本对齐）。
+    return Padding(
       padding: AppSpacing.onlyHorizontalSM,
-      decoration: BoxDecoration(
-        border: Border.all(color: scheme.outline),
-        borderRadius: AppRadius.allSM,
-      ),
       child: DropdownButton<String>(
         key: const Key('request-editor-method'),
         value: _method,
         underline: const SizedBox.shrink(),
+        borderRadius: AppRadius.allMD,
         items: methods
             .map(
               (method) => DropdownMenuItem<String>(
@@ -1196,15 +1278,16 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   Widget _buildSegmentBody(BuildContext context) {
     switch (_segment) {
       case RequestEditorSegment.params:
-        return _buildKvList(
+        return _buildKvEditor(
           rows: _params,
           addLabel: '添加参数',
           addKey: const Key('request-editor-params-add'),
           keyPrefix: 'request-editor-param',
           nameHint: '参数名',
+          allowDisable: true,
         );
       case RequestEditorSegment.headers:
-        return _buildKvList(
+        return _buildKvEditor(
           rows: _headers,
           addLabel: '添加请求头',
           addKey: const Key('request-editor-headers-add'),
@@ -1220,7 +1303,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         return Column(
           children: [
             Expanded(
-              child: _buildKvList(
+              child: _buildKvEditor(
                 rows: _cookies,
                 addLabel: '添加 Cookie',
                 addKey: const Key('request-editor-cookies-add'),
@@ -1250,8 +1333,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     }
   }
 
-  Widget _buildKvList({
-    required List<_KvRow> rows,
+  /// 参数 / 请求头 / Cookie 三段共用的干净键值编辑器接线。
+  ///
+  /// 全部行为（URL 回写、延迟释放 controller、拖拽重排、批量编辑、键值表单弹层
+  /// 新增 / 编辑、长按「编辑 / 删除」菜单）由调用方持有并转接给 [DebugKvEditor]。
+  Widget _buildKvEditor({
+    required List<DebugKvRow> rows,
     required String addLabel,
     required Key addKey,
     required String keyPrefix,
@@ -1259,11 +1346,26 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     bool allowDisable = false,
   }) {
     final isParams = keyPrefix == 'request-editor-param';
-    return ReorderableListView(
-      padding: AppSpacing.allLG,
-      buildDefaultDragHandles: false,
-      header: _buildKvHeader(allowDisable: allowDisable),
-      onReorderItem: (oldIndex, newIndex) {
+    final sortMode = _sortModePrefixes.contains(keyPrefix);
+    return DebugKvEditor(
+      rows: rows,
+      keyPrefix: keyPrefix,
+      nameHint: nameHint,
+      addLabel: addLabel,
+      addKey: addKey,
+      allowDisable: allowDisable,
+      sortMode: sortMode,
+      onToggleSort: () => setState(() {
+        if (sortMode) {
+          _sortModePrefixes.remove(keyPrefix);
+        } else {
+          _sortModePrefixes.add(keyPrefix);
+        }
+      }),
+      onRowLongPress: (row) => _showRowActions(keyPrefix, row),
+      onChanged: () => setState(() => _dirty = true),
+      onRemove: (row) => _removeRow(keyPrefix, row),
+      onReordered: (oldIndex, newIndex) {
         setState(() {
           // `onReorderItem` 已为「移除 oldIndex」调整 newIndex。
           final row = rows.removeAt(oldIndex);
@@ -1272,157 +1374,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         });
         if (isParams) _syncUrlFromParams();
       },
-      footer: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              TextButton.icon(
-                key: addKey,
-                onPressed: () {
-                  setState(() {
-                    rows.add(_newRow());
-                    _dirty = true;
-                  });
-                  if (isParams) _syncUrlFromParams();
-                },
-                icon: const Icon(TablerIcons.plus),
-                label: Text(addLabel),
-              ),
-              TextButton.icon(
-                key: const Key('request-editor-kv-bulk'),
-                onPressed: () => _openBulkEdit(keyPrefix),
-                icon: const Icon(TablerIcons.list_check),
-                label: const Text('批量编辑'),
-              ),
-            ],
-          ),
-        ],
-      ),
-      children: [
-        for (var i = 0; i < rows.length; i++)
-          _buildKvRow(
-            rows[i],
-            keyPrefix,
-            nameHint,
-            allowDisable,
-            i,
-            key: ValueKey<String>('$keyPrefix-row-${rows[i].id}'),
-          ),
-      ],
+      onAdd: () => _openRowEditor(keyPrefix),
+      onBulkEdit: () => _openBulkEdit(keyPrefix),
     );
   }
 
-  /// 键 / 值 表头（与数据行各列对齐）。
-  Widget _buildKvHeader({required bool allowDisable}) {
-    final theme = Theme.of(context);
-    final style = theme.textTheme.labelSmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    return Padding(
-      padding: AppSpacing.onlyVerticalXS,
-      child: Row(
-        children: [
-          if (allowDisable) const SizedBox(width: 48),
-          Expanded(flex: 2, child: Text('键', style: style)),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(flex: 3, child: Text('值', style: style)),
-          const SizedBox(width: 40),
-          const SizedBox(width: 40),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildKvRow(
-    _KvRow row,
-    String keyPrefix,
-    String nameHint,
-    bool allowDisable,
-    int index, {
-    Key? key,
-  }) {
-    // 参数行的「提交」触发 URL 回写；头 / Cookie 与 URL 无关（但仍自动追加）。
-    void onCommitted(String _) => _onRowCommitted(row, keyPrefix);
-    return Padding(
-      key: key,
-      padding: AppSpacing.onlyVerticalXS,
-      child: Row(
-        children: [
-          if (allowDisable)
-            Checkbox(
-              value: row.enabled,
-              onChanged: (value) => setState(() {
-                row.enabled = value ?? false;
-                _dirty = true;
-              }),
-            ),
-          Expanded(
-            flex: 2,
-            child: KeyedSubtree(
-              key: Key('$keyPrefix-name-$index'),
-              child: AppEditableField(
-                key: row.nameFieldKey,
-                controller: row.nameCtrl,
-                mode: AppEditableFieldMode.inline,
-                hintText: nameHint,
-                textInputAction: TextInputAction.next,
-                onSubmitted: onCommitted,
-              ),
-            ),
-          ),
-          const SizedBox(width: AppSpacing.sm),
-          Expanded(
-            flex: 3,
-            child: KeyedSubtree(
-              key: Key('$keyPrefix-value-$index'),
-              child: AppEditableField(
-                key: row.valueFieldKey,
-                controller: row.valueCtrl,
-                mode: AppEditableFieldMode.sheet,
-                label: nameHint,
-                hintText: '值',
-                textInputAction: TextInputAction.next,
-                onSubmitted: onCommitted,
-                toolbarBuilder: _sheetToolbar(
-                  fieldKey: row.valueFieldKey,
-                  suggestionsBuilder: keyPrefix == 'request-editor-header'
-                      ? _headerSuggestions
-                      : null,
-                ),
-              ),
-            ),
-          ),
-          // 显式拖拽手柄：buildDefaultDragHandles:false 下唯一拖拽入口；
-          // 按下即先移除焦点，规避聚焦 TextField 参与拖拽时的 LeaderLayer 断言。
-          SizedBox(
-            width: 40,
-            height: 40,
-            child: Listener(
-              key: Key('$keyPrefix-drag-$index'),
-              onPointerDown: (_) =>
-                  FocusManager.instance.primaryFocus?.unfocus(),
-              child: ReorderableDragStartListener(
-                index: index,
-                child: const Icon(TablerIcons.grip_vertical),
-              ),
-            ),
-          ),
-          IconButton(
-            key: Key('$keyPrefix-delete-$index'),
-            tooltip: '删除',
-            icon: const Icon(TablerIcons.trash),
-            onPressed: () => _removeRow(keyPrefix, row),
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<_KvRow> _rowsOf(String keyPrefix) {
+  List<DebugKvRow> _rowsOf(String keyPrefix) {
     switch (keyPrefix) {
       case 'request-editor-header':
         return _headers;
@@ -2019,30 +1976,133 @@ class _NetworkOptionsSheetState extends State<_NetworkOptionsSheet> {
   }
 }
 
-/// 键值编辑行（参数 / 头 / Cookie 共用）。
-class _KvRow {
-  _KvRow({
-    required this.id,
-    String name = '',
-    String value = '',
-    this.enabled = true,
-  })  : nameCtrl = TextEditingController(text: name),
-        valueCtrl = TextEditingController(text: value);
+/// 键 + 值表单弹层：新建 / 编辑 KV 行共用。
+///
+/// 内容自带 controller 生命周期，故用独立 StatefulWidget（弹层退场动画结束后
+/// 才随 route 释放，避免提前 dispose 被退场帧引用）。
+///
+/// 值字段保留插入环境变量 / 粘贴 / 清空工具栏，并可选渲染建议 chips；
+/// 确认时以 [_KvDraft] 返回键 / 值，调用方负责写回或新增行。
+class _KvRowEditorSheet extends StatefulWidget {
+  const _KvRowEditorSheet({
+    required this.title,
+    this.initialName = '',
+    this.initialValue = '',
+    this.suggestions = const <String>[],
+    this.onPickInsertVariable,
+  });
 
-  /// 稳定唯一 id：列表重排 / 协调时按它复用行对象（保留 controller 与焦点）。
-  final String id;
+  /// 弹层标题（新建「添加」/ 编辑「编辑」）。
+  final String title;
 
-  final TextEditingController nameCtrl;
-  final TextEditingController valueCtrl;
-  final GlobalKey<AppEditableFieldState> nameFieldKey =
-      GlobalKey<AppEditableFieldState>();
-  final GlobalKey<AppEditableFieldState> valueFieldKey =
-      GlobalKey<AppEditableFieldState>();
-  bool enabled;
+  /// 键初值。
+  final String initialName;
 
+  /// 值初值。
+  final String initialValue;
+
+  /// 值建议 chips（请求头段注入；为空不渲染）。
+  final List<String> suggestions;
+
+  /// 「插入环境变量」入口；为 null 时不渲染该按钮。
+  final void Function(TextEditingController controller)? onPickInsertVariable;
+
+  @override
+  State<_KvRowEditorSheet> createState() => _KvRowEditorSheetState();
+}
+
+class _KvRowEditorSheetState extends State<_KvRowEditorSheet> {
+  late final TextEditingController _name;
+  late final TextEditingController _value;
+  late final FocusNode _nameFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.initialName);
+    _value = TextEditingController(text: widget.initialValue);
+    _nameFocus = FocusNode();
+  }
+
+  @override
   void dispose() {
-    nameCtrl.dispose();
-    valueCtrl.dispose();
+    _name.dispose();
+    _value.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    Navigator.of(context).pop(_KvDraft(_name.text, _value.text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      key: const Key('request-editor-kv-row-editor'),
+      title: widget.title,
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('request-editor-kv-editor-name'),
+            controller: _name,
+            focusNode: _nameFocus,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: '键',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            key: const Key('request-editor-kv-editor-value'),
+            controller: _value,
+            minLines: 3,
+            maxLines: 6,
+            keyboardType: TextInputType.multiline,
+            decoration: const InputDecoration(
+              labelText: '值',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.xs,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (widget.onPickInsertVariable != null)
+                IconButton(
+                  key: const Key('request-editor-insert-var'),
+                  tooltip: '插入环境变量',
+                  icon: const Icon(TablerIcons.variable),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => widget.onPickInsertVariable!(_value),
+                ),
+              AppEditorToolbar(controller: _value),
+            ],
+          ),
+          if (widget.suggestions.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            AppSuggestionChips(widget.suggestions, controller: _value),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const Key('request-editor-kv-editor-cancel'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('request-editor-kv-editor-confirm'),
+          onPressed: _confirm,
+          child: const Text('完成'),
+        ),
+      ],
+    );
   }
 }
 
@@ -2089,6 +2149,7 @@ class _KvBulkEditSheetState extends State<_KvBulkEditSheet> {
     final theme = Theme.of(context);
     return AppSheetScaffold(
       title: '批量编辑',
+      contentPadding: AppSpacing.onlyHorizontalXL,
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

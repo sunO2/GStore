@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_spacing.dart';
+import 'package:gstore/core/request_debug/import_export/import_export.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'collection_section.dart';
@@ -64,8 +66,15 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
 
   late RequestDebugSection _section;
 
+  /// 集合分区状态句柄：导航头动作（添加集合 / 更多菜单）经此驱动集合分区。
+  final GlobalKey<RequestDebugCollectionSectionState> _collectionKey =
+      GlobalKey<RequestDebugCollectionSectionState>();
+
   /// 待消费的抓包预填（构造后只生效一次，避免切换分区后重复弹出编辑器）。
   CaptureRulePrefill? _rulePrefill;
+
+  /// 集合分区是否处于排序态（导航头据此把「更多」替换为「完成」）。
+  bool _collectionSorting = false;
 
   bool _loading = true;
 
@@ -88,7 +97,10 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('请求调试')),
+      appBar: AppBar(
+        title: const Text('请求调试'),
+        actions: _buildCollectionActions(),
+      ),
       body: Column(
         children: [
           _buildSectionSwitch(context),
@@ -132,9 +144,113 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
             key: Key('request-debug-segment-rules'),
           ),
         ],
-        onChanged: (section) => setState(() => _section = section),
+        onChanged: (section) => setState(() {
+          _section = section;
+          // 离开「集合」分区会销毁其状态（含排序态），此处复位避免导航头
+          // 切回来后仍停留在「完成」。
+          if (section != RequestDebugSection.collections) {
+            _collectionSorting = false;
+          }
+        }),
       ),
     );
+  }
+
+  /// 导航头动作：仅在「集合」分区显示 `[添加集合]` + `[更多]`。
+  ///
+  /// 集合分区的排序 / 导入 / 导出动作经 [_collectionKey] 驱动，避免把集合
+  /// 分区自身的操作塞进分区头部（Wave 8）。排序态下「更多」替换为「完成」
+  /// 文字按钮（Wave 9）：点「完成」直接退出排序，无需重开菜单取消。
+  List<Widget> _buildCollectionActions() {
+    if (_section != RequestDebugSection.collections) {
+      return const <Widget>[];
+    }
+    return <Widget>[
+      IconButton(
+        key: const Key('request-debug-collection-add'),
+        tooltip: '添加集合',
+        icon: const Icon(TablerIcons.plus),
+        onPressed: () => _collectionKey.currentState?.createCollection(),
+      ),
+      if (_collectionSorting)
+        TextButton(
+          key: const Key('request-debug-collection-sort-done'),
+          onPressed: () => _collectionKey.currentState?.toggleSort(),
+          child: const Text('完成'),
+        )
+      else
+        PopupMenuButton<String>(
+          key: const Key('request-debug-collection-transfer'),
+          tooltip: '更多',
+          icon: const Icon(TablerIcons.dots_vertical),
+          onSelected: (value) {
+            switch (value) {
+              case 'sort':
+                _collectionKey.currentState?.toggleSort();
+              case 'import-curl':
+                _collectionKey.currentState?.importCurl();
+              case 'import-file':
+                _collectionKey.currentState?.importCollections();
+              case 'export-har':
+                _collectionKey.currentState?.exportCollections(
+                  DebugTransferFormat.har,
+                );
+              case 'export-postman':
+                _collectionKey.currentState?.exportCollections(
+                  DebugTransferFormat.postman,
+                );
+              case 'export-openapi':
+                _collectionKey.currentState?.exportCollections(
+                  DebugTransferFormat.openapi,
+                );
+              case 'export-raw':
+                _collectionKey.currentState?.exportCollections(
+                  DebugTransferFormat.rawHttp,
+                );
+            }
+          },
+          itemBuilder: (_) {
+            return <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-sort-toggle'),
+                value: 'sort',
+                child: Text('排序'),
+              ),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-curl-import'),
+                value: 'import-curl',
+                child: Text('导入 cURL'),
+              ),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-import-file'),
+                value: 'import-file',
+                child: Text('导入集合文件…'),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-export-har'),
+                value: 'export-har',
+                child: Text('导出为 HAR 1.2'),
+              ),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-export-postman'),
+                value: 'export-postman',
+                child: Text('导出为 Postman v2.1'),
+              ),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-export-openapi'),
+                value: 'export-openapi',
+                child: Text('导出为 OpenAPI 3'),
+              ),
+              const PopupMenuItem<String>(
+                key: Key('request-debug-collection-export-raw'),
+                value: 'export-raw',
+                child: Text('导出为原始 HTTP'),
+              ),
+            ];
+          },
+        ),
+    ];
   }
 
   Widget _buildSectionBody(BuildContext context) {
@@ -143,7 +259,13 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     }
     switch (_section) {
       case RequestDebugSection.collections:
-        return RequestDebugCollectionSection(facade: _facade);
+        return RequestDebugCollectionSection(
+          key: _collectionKey,
+          facade: _facade,
+          onSortModeChanged: (on) {
+            if (mounted) setState(() => _collectionSorting = on);
+          },
+        );
 
       case RequestDebugSection.history:
         return RequestDebugHistorySection(facade: _facade);
