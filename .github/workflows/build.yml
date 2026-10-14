@@ -46,12 +46,16 @@ jobs:
           ndk-version: r26c
 
       # proxy 模块的 C/C++ 依赖（BoringSSL / aws-lc / lwIP）走 cmake+ninja，
-      # bindgen 需要 libclang，BoringSSL 构建脚本可能调用 perl；x86_64 宿主上
-      # build_android_rust.sh 会显式注入 NDK 的 libclang/CC/CXX（见脚本内注释）。
-      - name: Set up C/C++ toolchain (cmake/ninja/libclang/perl)
+      # BoringSSL 构建脚本可能调用 perl。bindgen 所需的 libclang 由 NDK 自带
+      # （build_android_rust.sh 会把 LIBCLANG_PATH 指向 NDK 的 libclang）。
+      # ⚠️ 切勿 apt 安装 libclang-dev：ubuntu-24.04 上它装成 clang-18，与 NDK r26
+      # 自带的 clang-17 内建头（脚本注入的 -isystem .../lib/clang/17/include）版本
+      # 不一致 → 两版 stdint.h 撞同一 include 守卫 → NDK sysroot 的 stdint.h 被跳过
+      # → boring-sys 的 bindgen 报 `unknown type name 'uint32_t'`（4 个 ABI 全挂）。
+      - name: Set up C/C++ toolchain (cmake/ninja/perl)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake ninja-build libclang-dev perl
+          sudo apt-get install -y --no-install-recommends cmake ninja-build perl
 
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
