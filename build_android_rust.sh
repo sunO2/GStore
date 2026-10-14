@@ -292,11 +292,17 @@ EOF
             local ndk_llvm="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
             local clang_resource
             clang_resource="$(ls -d "$ndk_llvm"/lib/clang/*/include 2>/dev/null | head -n1)"
+            # 用 -resource-dir 而非 -isystem 指定内建头目录：CI runner 镜像自带
+            # clang 16/17/18，bindgen 若加载到系统 libclang，其内建 stdint.h 会与
+            # -isystem 注入的 NDK clang-17 头撞同一 include 守卫，使 NDK sysroot 的
+            # stdint.h 被跳过（unknown type name 'uint32_t'）。-resource-dir 覆盖其
+            # 默认内建头目录，保证版本与 sysroot 一致且不重复加入。
+            local clang_resdir="${clang_resource%/include}"
             export "CC_${target_underscore}=$toolchain_bin/$clang_name"
             export "CXX_${target_underscore}=$toolchain_bin/${clang_name%clang}clang++"
             export "AR_${target_underscore}=$toolchain_bin/llvm-ar"
             export LIBCLANG_PATH="$ndk_llvm/lib"
-            export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ndk_llvm/sysroot ${clang_resource:+-isystem $clang_resource}"
+            export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ndk_llvm/sysroot ${clang_resdir:+-resource-dir $clang_resdir}"
             export "BINDGEN_EXTRA_CLANG_ARGS_${target_underscore}=$BINDGEN_EXTRA_CLANG_ARGS"
         fi
 

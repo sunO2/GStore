@@ -46,37 +46,14 @@ jobs:
           ndk-version: r26c
 
       # proxy 模块的 C/C++ 依赖（BoringSSL / aws-lc / lwIP）走 cmake+ninja，
-      # BoringSSL 构建脚本可能调用 perl。bindgen 所需的 libclang 由 NDK 自带
-      # （build_android_rust.sh 会把 LIBCLANG_PATH 指向 NDK 的 libclang）。
-      # ⚠️ 切勿 apt 安装 libclang-dev：ubuntu-24.04 上它装成 clang-18，与 NDK r26
-      # 自带的 clang-17 内建头（脚本注入的 -isystem .../lib/clang/17/include）版本
-      # 不一致 → 两版 stdint.h 撞同一 include 守卫 → NDK sysroot 的 stdint.h 被跳过
-      # → boring-sys 的 bindgen 报 `unknown type name 'uint32_t'`（4 个 ABI 全挂）。
+      # BoringSSL 构建脚本可能调用 perl。bindgen 的 libclang 由 NDK 自带
+      # （build_android_rust.sh 设 LIBCLANG_PATH，并用 -resource-dir 固定内建头版本）。
+      # 不再 apt 装 libclang-dev：runner 镜像自带 clang 16/17/18，系统 libclang 的
+      # 版本与 NDK clang-17 不一致会污染 bindgen 的 include 顺序。
       - name: Set up C/C++ toolchain (cmake/ninja/perl)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends cmake ninja-build perl
-
-      - name: DIAGNOSE bindgen libclang env (temporary, fails fast)
-        env:
-          GSTORE_NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          set -x
-          echo "=== rustc ==="; rustc --version
-          NDK="$GSTORE_NDK_PATH"; LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          echo "NDK=$NDK"
-          echo "=== NDK libclang ==="; ls -la "$LLVM/lib/"libclang* || echo none
-          echo "=== NDK clang include dirs ==="; ls -d "$LLVM"/lib/clang/*/include
-          echo "=== system llvm dirs ==="; ls -d /usr/lib/llvm-* || echo none
-          echo "=== all libclang on system ==="; find /usr /opt /snap -maxdepth 6 -name 'libclang*.so*' 2>/dev/null | head -20 || true
-          echo "=== system clang ==="; ls /usr/bin/clang* 2>/dev/null || echo none
-          echo "=== host stdint ==="; ls -la /usr/include/stdint.h 2>/dev/null || echo none
-          echo "=== driver compile test (NDK clang, --sysroot + -isystem clanginc) ==="
-          printf '#include <sys/types.h>\nint x;\n' > /tmp/t.c
-          "$LLVM/bin/clang" --target=aarch64-linux-android33 --sysroot="$LLVM/sysroot" -isystem "$LLVM"/lib/clang/*/include -c /tmp/t.c -o /tmp/t.o 2>&1 | head -8 || true
-          echo "=== driver include order ==="
-          "$LLVM/bin/clang" --target=aarch64-linux-android33 --sysroot="$LLVM/sysroot" -isystem "$LLVM"/lib/clang/*/include -E -v /tmp/t.c -o /dev/null 2>&1 | sed -n '/search starts here:/,/End of search list/p' || true
-          exit 1
 
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
