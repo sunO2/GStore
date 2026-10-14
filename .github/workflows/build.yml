@@ -57,6 +57,27 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends cmake ninja-build perl
 
+      - name: DIAGNOSE bindgen libclang env (temporary, fails fast)
+        env:
+          GSTORE_NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -x
+          echo "=== rustc ==="; rustc --version
+          NDK="$GSTORE_NDK_PATH"; LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "NDK=$NDK"
+          echo "=== NDK libclang ==="; ls -la "$LLVM/lib/"libclang* || echo none
+          echo "=== NDK clang include dirs ==="; ls -d "$LLVM"/lib/clang/*/include
+          echo "=== system llvm dirs ==="; ls -d /usr/lib/llvm-* || echo none
+          echo "=== all libclang on system ==="; find /usr /opt /snap -maxdepth 6 -name 'libclang*.so*' 2>/dev/null | head -20 || true
+          echo "=== system clang ==="; ls /usr/bin/clang* 2>/dev/null || echo none
+          echo "=== host stdint ==="; ls -la /usr/include/stdint.h 2>/dev/null || echo none
+          echo "=== driver compile test (NDK clang, --sysroot + -isystem clanginc) ==="
+          printf '#include <sys/types.h>\nint x;\n' > /tmp/t.c
+          "$LLVM/bin/clang" --target=aarch64-linux-android33 --sysroot="$LLVM/sysroot" -isystem "$LLVM"/lib/clang/*/include -c /tmp/t.c -o /tmp/t.o 2>&1 | head -8 || true
+          echo "=== driver include order ==="
+          "$LLVM/bin/clang" --target=aarch64-linux-android33 --sysroot="$LLVM/sysroot" -isystem "$LLVM"/lib/clang/*/include -E -v /tmp/t.c -o /dev/null 2>&1 | sed -n '/search starts here:/,/End of search list/p' || true
+          exit 1
+
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
           REPO_OWNER="sunO2"
