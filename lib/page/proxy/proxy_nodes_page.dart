@@ -150,10 +150,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   List<ProxyGroup> _groups = const <ProxyGroup>[];
   bool _hasProxyGroups = true;
 
-  /// 搜索关键字（小写、trim）。空串 = 不过滤。
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-
   /// 收藏键集合（`分组\u0000节点名`）；命中的节点在列表中置顶。
   Set<String> _favorites = <String>{};
 
@@ -212,7 +208,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   void dispose() {
     _eventSub?.cancel();
     _latencyTick.dispose();
-    _searchController.dispose();
     super.dispose();
   }
 
@@ -290,15 +285,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     return fallback;
   }
 
-  // ==================== 搜索 / 收藏 ====================
-
-  /// 节点是否匹配当前搜索（名称 / 服务器 / 类型 / 端口）。
-  bool _matchesNode(ProxyNode node) {
-    if (_searchQuery.isEmpty) return true;
-    final String haystack =
-        '${node.name} ${node.server} ${node.type} ${node.port}'.toLowerCase();
-    return haystack.contains(_searchQuery);
-  }
+  // ==================== 收藏 ====================
 
   bool _isFavorite(String group, String node) =>
       _favorites.contains(proxyNodeFavoriteKey(group, node));
@@ -827,7 +814,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
     return CustomScrollView(
       slivers: <Widget>[
-        SliverToBoxAdapter(child: _buildSearchBar(context)),
         if (_testing)
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(
@@ -884,47 +870,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 搜索栏：按节点名 / 服务器 / 类型 / 端口过滤（空串 = 不过滤）。
-  Widget _buildSearchBar(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.md,
-        AppSpacing.lg,
-        0,
-      ),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: TextField(
-              key: const Key('proxy_nodes_search'),
-              controller: _searchController,
-              onChanged: (String value) => setState(
-                () => _searchQuery = value.trim().toLowerCase(),
-              ),
-              decoration: const InputDecoration(
-                isDense: true,
-                hintText: '节点名 / 服务器 / 类型',
-                prefixIcon: Icon(TablerIcons.search),
-              ),
-            ),
-          ),
-          if (_searchQuery.isNotEmpty)
-            IconButton(
-              key: const Key('proxy_nodes_search_clear'),
-              tooltip: '清除',
-              icon: const Icon(TablerIcons.x),
-              onPressed: () {
-                _searchController.clear();
-                setState(() => _searchQuery = '');
-              },
-            ),
-        ],
-      ),
-    );
-  }
-
-  /// 无匹配结果的空态 sliver（搜索过滤后）。
+  /// 空态 sliver（无分组 / 无节点）。
   Widget _buildNoResultsSliver(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     return SliverToBoxAdapter(
@@ -937,14 +883,12 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 可见节点名：匹配搜索的节点，收藏置顶，其余按 [_sort] 排序。
+  /// 可见节点名：收藏置顶，其余按 [_sort] 排序。
   List<String> get _visibleNodeNames {
     final String implicit = _implicitGroupName;
-    final Set<String> matched = <String>{
-      for (final ProxyNode node in _nodes)
-        if (_matchesNode(node)) node.name,
-    };
-    final List<String> sorted = _sortedNames(matched);
+    final List<String> sorted = _sortedNames(<String>{
+      for (final ProxyNode node in _nodes) node.name,
+    });
     final List<String> favorites = <String>[];
     final List<String> rest = <String>[];
     for (final String name in sorted) {
@@ -971,18 +915,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 可见分组：匹配搜索的分组（分组名或其成员节点命中）。
-  List<ProxyGroup> get _visibleGroups {
-    if (_searchQuery.isEmpty) return _groups;
-    return _groups.where((ProxyGroup group) {
-      if (group.name.toLowerCase().contains(_searchQuery)) return true;
-      for (final String member in group.members) {
-        final ProxyNode? node = _resolveMemberNode(group.name, member);
-        if (node != null && _matchesNode(node)) return true;
-      }
-      return false;
-    }).toList();
-  }
+  /// 可见分组：全部分组（不做搜索过滤）。
+  List<ProxyGroup> get _visibleGroups => _groups;
 
   /// 按名字查找分组（子分组条目跳转用）。
   ProxyGroup? _groupByName(String name) {

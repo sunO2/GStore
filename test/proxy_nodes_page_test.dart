@@ -1080,41 +1080,6 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('搜索：分组模式按分组名过滤，清空恢复',
-      (WidgetTester tester) async {
-    _useTallViewport(tester);
-    final facade = _FakeNodesFacade();
-    await tester.pumpWidget(_wrap(ProxyNodesPage(
-      nodes: const <ProxyNode>[_hk, _jp, _us],
-      groups: _sectionedGroups,
-      facade: facade,
-    )));
-
-    // 搜索框存在（无关键字时清除按钮不显示）。
-    expect(find.byKey(const Key('proxy_nodes_search')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_search_clear')), findsNothing);
-
-    // 无过滤：所有分组磁贴都渲染。
-    expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
-
-    // 按分组名过滤：只剩 AUTO。
-    await tester.enterText(find.byKey(const Key('proxy_nodes_search')), 'AUTO');
-    await tester.pump();
-    expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsNothing);
-    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_search_clear')), findsOneWidget);
-
-    // 清空恢复全部。
-    await tester.tap(find.byKey(const Key('proxy_nodes_search_clear')));
-    await tester.pump();
-    expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    await facade.controller.close();
-  });
-
   testWidgets('重入高亮：持久化选择在初始化时回显', (WidgetTester tester) async {
     _useTallViewport(tester);
     final facade = _FakeNodesFacade();

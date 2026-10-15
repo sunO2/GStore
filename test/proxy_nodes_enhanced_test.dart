@@ -110,45 +110,6 @@ bool _comesBefore(WidgetTester tester, Key a, Key b) {
 Key _nodeTile(String name) => Key('proxy_nodes_member_PROXY_$name');
 
 void main() {
-  testWidgets('搜索：按名称/端点过滤，清空恢复（nodes 模式）',
-      (WidgetTester tester) async {
-    _useTallViewport(tester);
-    final facade = _FakeNodesFacade();
-    await tester.pumpWidget(_wrap(ProxyNodesPage(
-      nodes: const <ProxyNode>[_alpha, _beta],
-      groups: _groups,
-      hasProxyGroups: false,
-      facade: facade,
-    )));
-
-    expect(find.byKey(_nodeTile('alpha')), findsOneWidget);
-    expect(find.byKey(_nodeTile('beta')), findsOneWidget);
-
-    // 名称过滤：只剩 beta。
-    await tester.enterText(find.byKey(const Key('proxy_nodes_search')), 'beta');
-    await tester.pump();
-    expect(find.byKey(_nodeTile('alpha')), findsNothing);
-    expect(find.byKey(_nodeTile('beta')), findsOneWidget);
-
-    // 端点过滤：只剩 alpha。
-    await tester.enterText(
-      find.byKey(const Key('proxy_nodes_search')),
-      '1.1.1.1',
-    );
-    await tester.pump();
-    expect(find.byKey(_nodeTile('alpha')), findsOneWidget);
-    expect(find.byKey(_nodeTile('beta')), findsNothing);
-
-    // 清空恢复全部。
-    await tester.tap(find.byKey(const Key('proxy_nodes_search_clear')));
-    await tester.pump();
-    expect(find.byKey(_nodeTile('alpha')), findsOneWidget);
-    expect(find.byKey(_nodeTile('beta')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    await facade.controller.close();
-  });
-
   testWidgets('收藏：收藏节点置顶（nodes 模式）', (WidgetTester tester) async {
     _useTallViewport(tester);
     final facade = _FakeNodesFacade();
