@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
-import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
@@ -11,7 +10,6 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_active_node_store.dart';
-import 'proxy_node_favorites_store.dart';
 import 'proxy_nodes_facade.dart';
 
 /// 延迟徽章淡色背景的透明度。
@@ -59,7 +57,6 @@ class ProxyNodesPage extends StatefulWidget {
     this.facade,
     this.initialActiveByGroup = const <String, String>{},
     this.nodeStore,
-    this.favoritesStore,
   });
 
   /// 可直接展示的节点集合（未传 [profileId] 时生效）。
@@ -83,10 +80,6 @@ class ProxyNodesPage extends StatefulWidget {
   /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   /// `_selectNode` 成功后写入，重入时用于高亮回显。
   final ProxyActiveNodeStore? nodeStore;
-
-  /// 收藏节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
-  /// 收藏的节点在列表中置顶。
-  final ProxyNodeFavoritesStore? favoritesStore;
 
   @override
   State<ProxyNodesPage> createState() => _ProxyNodesPageState();
@@ -139,7 +132,6 @@ class _DelayState {
 class _ProxyNodesPageState extends State<ProxyNodesPage> {
   late final ProxyNodesFacade _facade;
   late final ProxyActiveNodeStore _nodeStore;
-  late final ProxyNodeFavoritesStore _favoritesStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = false;
@@ -149,9 +141,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   List<ProxyNode> _nodes = const <ProxyNode>[];
   List<ProxyGroup> _groups = const <ProxyGroup>[];
   bool _hasProxyGroups = true;
-
-  /// 收藏键集合（`分组\u0000节点名`）；命中的节点在列表中置顶。
-  Set<String> _favorites = <String>{};
 
   /// 引擎运行时的实时组信息（`node.list`，best-effort）：用于「当前」回显与
   /// 可选性判定。为空时退回配置类型 + 持久化选择。
@@ -189,12 +178,9 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     super.initState();
     _facade = widget.facade ?? ProxyModuleNodesFacade();
     _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
-    _favoritesStore =
-        widget.favoritesStore ?? const ConfigStoreProxyNodeFavoritesStore();
     _activeByGroup.addAll(widget.initialActiveByGroup);
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
     _restoreActiveSelection();
-    _restoreFavorites();
 
     final String? profileId = widget.profileId;
     if (profileId == null || profileId.isEmpty) {
@@ -209,14 +195,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     _eventSub?.cancel();
     _latencyTick.dispose();
     super.dispose();
-  }
-
-  /// 重入回显：从持久化接缝读取收藏（best-effort，失败静默保持为空）。
-  Future<void> _restoreFavorites() async {
-    final Set<String>? stored =
-        await _safe<Set<String>>(() => _favoritesStore.read());
-    if (!mounted || stored == null || stored.isEmpty) return;
-    setState(() => _favorites = Set<String>.from(stored));
   }
 
   /// 重入回显：调用方未显式传初始映射时，从持久化接缝读取上次选择
@@ -283,21 +261,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       fallback ??= node;
     }
     return fallback;
-  }
-
-  // ==================== 收藏 ====================
-
-  bool _isFavorite(String group, String node) =>
-      _favorites.contains(proxyNodeFavoriteKey(group, node));
-
-  /// 切换收藏（乐观更新 + best-effort 持久化）；弹层随 [_latencyTick] 重建。
-  Future<void> _toggleFavorite(String group, String node) async {
-    final String key = proxyNodeFavoriteKey(group, node);
-    setState(() {
-      if (!_favorites.add(key)) _favorites.remove(key);
-    });
-    _latencyTick.value++;
-    await _safe<void>(() => _favoritesStore.write(_favorites));
   }
 
   /// `profile.get`：加载订阅节点；失败降级为显式错误态（绝不崩溃）。
@@ -438,23 +401,18 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     return list;
   }
 
-  /// 某个分组内的成员名：收藏节点最前、组引用其次、其余叶子节点最后，
-  /// 各组内按 [_sort] 排序。
+  /// 某个分组内的成员名：组引用在前、其余叶子节点在后，各组内按 [_sort] 排序。
   List<String> _sortedMembers(ProxyGroup group) {
-    final List<String> favoriteNodes = <String>[];
     final List<String> groupRefs = <String>[];
     final List<String> nodes = <String>[];
     for (final String member in group.members) {
       if (!_isNodeName(member)) {
         groupRefs.add(member);
-      } else if (_isFavorite(group.name, member)) {
-        favoriteNodes.add(member);
       } else {
         nodes.add(member);
       }
     }
     return <String>[
-      ..._sortedNames(favoriteNodes),
       ..._sortedNames(groupRefs),
       ..._sortedNames(nodes),
     ];
@@ -690,8 +648,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _isPending,
-        favoriteOf: (String n) => _isFavorite(group.name, n),
-        onToggleFavorite: (String n) => _toggleFavorite(group.name, n),
         onTest: () => _runDelayTest(
           targets: targets,
           pending: targets,
@@ -729,8 +685,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _isPending,
-        favoriteOf: (String n) => _isFavorite(parentGroup, n),
-        onToggleFavorite: (String n) => _toggleFavorite(parentGroup, n),
         onDetail: () => _openNodeDetail(node),
         onCopy: () => _copyNodeAddress(node),
         onTest: () =>
@@ -883,23 +837,10 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 可见节点名：收藏置顶，其余按 [_sort] 排序。
-  List<String> get _visibleNodeNames {
-    final String implicit = _implicitGroupName;
-    final List<String> sorted = _sortedNames(<String>{
-      for (final ProxyNode node in _nodes) node.name,
-    });
-    final List<String> favorites = <String>[];
-    final List<String> rest = <String>[];
-    for (final String name in sorted) {
-      if (_isFavorite(implicit, name)) {
-        favorites.add(name);
-      } else {
-        rest.add(name);
-      }
-    }
-    return <String>[...favorites, ...rest];
-  }
+  /// 可见节点名：按 [_sort] 排序。
+  List<String> get _visibleNodeNames => _sortedNames(<String>{
+        for (final ProxyNode node in _nodes) node.name,
+      });
 
   /// 分组磁贴：点击打开该组成员弹层（含测速与（可选）选择）。
   Widget _buildGroupTile(ProxyGroup group) {
@@ -1246,8 +1187,6 @@ class _NodePickerSheet extends StatelessWidget {
     required this.onTest,
     required this.onSelect,
     this.onTestNode,
-    this.favoriteOf,
-    this.onToggleFavorite,
     this.onDetail,
     this.onCopy,
     this.selectable = true,
@@ -1269,12 +1208,6 @@ class _NodePickerSheet extends StatelessWidget {
   ///
   /// 仅分组弹层传入；节点弹层不传，故节点模式的行不渲染该按钮。
   final Future<void> Function(String name)? onTestNode;
-
-  /// 该节点是否已收藏（分组弹层内联星标 + 节点弹层动作共用）。
-  final bool Function(String name)? favoriteOf;
-
-  /// 切换收藏。
-  final Future<void> Function(String name)? onToggleFavorite;
 
   /// 节点弹层「详情」动作（只读展示契约字段）。
   final Future<void> Function()? onDetail;
@@ -1323,16 +1256,14 @@ class _NodePickerSheet extends StatelessWidget {
                   ),
                 ]
               : const <Widget>[],
-          content: SlidableAutoCloseBehavior(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                for (final _PickerEntry entry in entries)
-                  _buildEntry(context, entry),
-                if (nodeMode) _buildNodeActions(context),
-              ],
-            ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              for (final _PickerEntry entry in entries)
+                _buildEntry(context, entry),
+              if (nodeMode) _buildNodeActions(context),
+            ],
           ),
         );
       },
@@ -1340,8 +1271,6 @@ class _NodePickerSheet extends StatelessWidget {
   }
 
   /// 节点弹层动作行：复制地址 / 详情（均不触发选择）。
-  ///
-  /// 收藏已移至节点行左滑动作（见 [_buildEntry] 的 `Slidable`），此处不再提供。
   Widget _buildNodeActions(BuildContext context) {
     return Padding(
       padding: AppSpacing.onlyVerticalSM,
@@ -1455,30 +1384,7 @@ class _NodePickerSheet extends StatelessWidget {
       ),
     );
 
-    // 收藏仅通过左滑动作暴露（节点行）；组引用行无收藏、无滑动。
-    if (favoriteOf == null || onToggleFavorite == null || entry.isGroupRef) {
-      return row;
-    }
-    final bool favorite = favoriteOf!(entry.name);
-    return Slidable(
-      // 稳定 Key：弹层随 `_latencyTick` 频繁重建，多条目列表顺序变化时
-      // 保滑动面板状态不串位。
-      key: ValueKey<String>('slidable_${entry.name}'),
-      endActionPane: ActionPane(
-        motion: const ScrollMotion(),
-        children: <Widget>[
-          SlidableAction(
-            key: Key('proxy_nodes_row_favorite_${entry.name}'),
-            onPressed: (_) => onToggleFavorite!(entry.name),
-            backgroundColor: scheme.primaryContainer,
-            foregroundColor: scheme.onPrimaryContainer,
-            icon: favorite ? TablerIcons.star_filled : TablerIcons.star,
-            label: favorite ? '已收藏' : '收藏',
-          ),
-        ],
-      ),
-      child: row,
-    );
+    return row;
   }
 }
 

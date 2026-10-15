@@ -99,58 +99,10 @@ void _useTallViewport(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
-/// 宫格阅读顺序：先按 y（行），同一行再按 x（列）。
-bool _comesBefore(WidgetTester tester, Key a, Key b) {
-  final Offset oa = tester.getTopLeft(find.byKey(a));
-  final Offset ob = tester.getTopLeft(find.byKey(b));
-  if (oa.dy != ob.dy) return oa.dy < ob.dy;
-  return oa.dx < ob.dx;
-}
-
+/// nodes 模式下节点磁贴的 Key（隐式分组 PROXY）。
 Key _nodeTile(String name) => Key('proxy_nodes_member_PROXY_$name');
 
 void main() {
-  testWidgets('收藏：收藏节点置顶（nodes 模式）', (WidgetTester tester) async {
-    _useTallViewport(tester);
-    final facade = _FakeNodesFacade();
-    await tester.pumpWidget(_wrap(ProxyNodesPage(
-      nodes: const <ProxyNode>[_alpha, _beta],
-      groups: _groups,
-      hasProxyGroups: false,
-      facade: facade,
-    )));
-
-    // 名称排序：alpha 在 beta 之前。
-    expect(
-      _comesBefore(tester, _nodeTile('alpha'), _nodeTile('beta')),
-      isTrue,
-    );
-
-    // 打开 beta 节点弹层：底部已无收藏动作，收藏改由节点行左滑露出。
-    await tester.tap(find.byKey(_nodeTile('beta')));
-    await tester.pumpAndSettle();
-    await tester.drag(
-      find.byKey(const Key('proxy_nodes_sheet_node')),
-      const Offset(-300, 0),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('proxy_nodes_row_favorite_beta')));
-    await tester.pumpAndSettle();
-
-    // 关闭弹层。
-    await tester.tapAt(const Offset(10, 10));
-    await tester.pumpAndSettle();
-
-    // 收藏后 beta 置顶（排在 alpha 之前）。
-    expect(
-      _comesBefore(tester, _nodeTile('beta'), _nodeTile('alpha')),
-      isTrue,
-    );
-    expect(tester.takeException(), isNull);
-
-    await facade.controller.close();
-  });
-
   testWidgets('重名节点：各分组解析各自节点（不串用）且独立选择',
       (WidgetTester tester) async {
     _useTallViewport(tester);
