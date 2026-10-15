@@ -7,7 +7,7 @@
 //!
 //! * resolves a group and applies a selection through `ProxySelection::set`
 //!   (selector / url-test / fallback), so the choice is meow's state;
-//! * runs HTTP HEAD delay probes with `meow_proxy::health` on a **separate
+//! * runs HTTP GET delay probes with `meow_proxy::health` on a **separate
 //!   bounded runtime**, never the tunnel loop, and turns every unreachable node
 //!   into a per-node `timeout` result (never a top-level error or a panic);
 //! * persists selector/url-test/fallback choices through meow's
@@ -44,10 +44,23 @@ pub(crate) const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204"
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 120_000;
-/// Meow's group default is 16; a phone firing 16 concurrent TLS handshakes
-/// starves its own uplink/CPU and manufactures false timeouts on a large
-/// subscription, so probe a queue of exactly 5 at a time.
-const DELAY_PROBE_CONCURRENCY: usize = 5;
+/// Meow's global delay-probe limiter is its OWN constant,
+/// `GLOBAL_DELAY_PROBE_CONCURRENCY = 32`; it is not the sum of the group and
+/// provider caps. Group url-test probes can hold up to `GROUP_DELAY_CONCURRENCY
+/// = 16` of those permits and provider health checks up to
+/// `PROVIDER_HEALTHCHECK_CONCURRENCY = 10`, so headroom under the shared cap can
+/// be as low as `32 - 16 - 10 = 6`; a window of 10 may therefore queue behind
+/// other probes. `probe_and_record` acquires the global permit *outside* the
+/// per-probe timeout, so a queue wait is not bounded by `timeoutMs`.
+///
+/// The original rationale for a narrower window still holds as a *device*
+/// concern: a phone firing many concurrent TLS handshakes at once starves its
+/// own uplink/CPU and manufactures false timeouts on a large subscription. That
+/// concern is orthogonal to meow's shared 32-permit cap. A window of 10
+/// concurrent mobile TLS handshakes stays within an accepted trade-off: it is
+/// wider than the old 5 (so batches drain roughly twice as fast) while still
+/// well below meow's own group default of 16.
+const DELAY_PROBE_CONCURRENCY: usize = 10;
 
 /// Off-tunnel-loop runtime for delay probes and async selection. Built once with
 /// the crate's bounded shape; never the tunnel loop's runtime, so a slow probe
@@ -1133,7 +1146,7 @@ pub(crate) mod tests {
     /// Pool-bound QA: at most [`DELAY_PROBE_CONCURRENCY`] probes are ever in
     /// flight at once, no matter how many targets are queued.
     #[test]
-    fn delay_probe_bounds_inflight_probes_to_five() {
+    fn delay_probe_bounds_inflight_probes_to_ten() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         PROBE_INFLIGHT.store(0, Ordering::SeqCst);
         PROBE_MAX_INFLIGHT.store(0, Ordering::SeqCst);
@@ -1154,9 +1167,9 @@ pub(crate) mod tests {
             |_| {},
         );
         assert_eq!(results.len(), 12);
-        assert_eq!(DELAY_PROBE_CONCURRENCY, 5, "the queue width is exactly 5");
+        assert_eq!(DELAY_PROBE_CONCURRENCY, 10, "the queue width is exactly 10");
         let peak = PROBE_MAX_INFLIGHT.load(Ordering::SeqCst);
-        assert_eq!(peak, 5, "exactly 5 probes run concurrently at peak");
+        assert_eq!(peak, 10, "exactly 10 probes run concurrently at peak");
     }
 
     /// Build a live engine and install a `name -> proxy` map, the online path.
