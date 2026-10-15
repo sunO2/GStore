@@ -20,6 +20,12 @@ import 'proxy_nodes_facade.dart';
 /// 不引入硬编码颜色或字号。
 const double _kBadgeTintAlpha = 0.12;
 
+/// 多节点（「测试全部」/ 分组弹层）批量测速的单节点超时上限（毫秒）。
+///
+/// 仅批量调用点发送；单节点测速不发送该字段（走引擎默认
+/// `DEFAULT_TIMEOUT_MS` 10s）。更短的批量上限让死节点更快回填，缩短整体等待。
+const int _kBatchTestTimeoutMs = 6000;
+
 /// 节点 / 代理组页面（纯展示 + 触发）。
 ///
 /// **只做展示与转发**：分组/节点模型来自冻结契约 [ProxyGroup] / [ProxyNode]；
@@ -161,7 +167,17 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
   final Map<String, String> _activeByGroup = <String, String>{};
   final Map<String, _DelayState> _delays = <String, _DelayState>{};
-  final Set<String> _pending = <String>{};
+
+  /// 待回填节点名的引用计数：同名并发测速各自持有一份，互不 clobber。
+  ///
+  /// 计数归零即删除键；键存在 ⟺ 该节点名仍有测试在等待回填。
+  final Map<String, int> _pendingCounts = <String, int>{};
+
+  /// 当前批量（`showProgress`）测速的节点名集合：仅用于进度计数。
+  ///
+  /// 与 [Map] 引用计数解耦——逐节点事件的 `_testedCount` 只统计本批节点，
+  /// 且每个节点至多计一次。
+  final Set<String> _batchPending = <String>{};
 
   /// 延迟状态版本号：弹层（独立 route）据此在事件 / 测试回填时刷新。
   final ValueNotifier<int> _latencyTick = ValueNotifier<int>(0);
@@ -351,6 +367,11 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   // ==================== 事件 ====================
 
   /// `proxy.node.delay`：逐节点回填延迟（唯一延迟来源）。
+  ///
+  /// 事件**不**释放 [_pendingCounts]：并发测试可能正等待同名事件，此处
+  /// 提前递减会误清他人归属；待回填集合仅由 `_runDelayTest` /
+  /// `_finishTestWithError` 的响应路径释放。进度仅统计 [_batchPending] 内的
+  /// 本批节点（每节点至多一次）。
   void _onEvent(ProxyEvent event) {
     if (!mounted || event is! ProxyNodeDelayEvent) return;
     setState(() {
@@ -359,9 +380,37 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         alive: event.error == null && event.delayMs > 0,
         error: event.error,
       );
-      if (_pending.remove(event.node)) _testedCount++;
+      if (_batchPending.remove(event.node)) _testedCount++;
     });
     _latencyTick.value++;
+  }
+
+  // ==================== 待回填归属（引用计数） ====================
+
+  /// 该节点名是否仍有测试在等待回填（徽标 / 测速按钮禁用态）。
+  bool _isPending(String name) => _pendingCounts.containsKey(name);
+
+  /// 为 [names] 登记待回填（同名并发各自 +1）。
+  ///
+  /// 迭代**去重**集合：一次调用对同一名字只 +1，与 `toSet()` 的单次递减
+  /// 配对，避免重复名把计数顶高后无法归零。
+  void _addPending(Iterable<String> names) {
+    for (final String name in names.toSet()) {
+      _pendingCounts[name] = (_pendingCounts[name] ?? 0) + 1;
+    }
+  }
+
+  /// 释放 [names] 的待回填登记（计数 -1，归零删除；键不存在时 no-op）。
+  void _removePending(Iterable<String> names) {
+    for (final String name in names.toSet()) {
+      final int? count = _pendingCounts[name];
+      if (count == null) continue;
+      if (count <= 1) {
+        _pendingCounts.remove(name);
+      } else {
+        _pendingCounts[name] = count - 1;
+      }
+    }
   }
 
   // ==================== 排序 ====================
@@ -500,70 +549,101 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   /// [group] / [node] 限定探测范围（见 `_testAll` / 弹层）；[targets] 是显式
   /// 请求选择器（「测试全部」发送节点名集合，后端据此探测）。[pending] 是本地
   /// 待回填集合，缺省与 [targets] 相同；响应 + 事件双通道回填，剩余未回的节点
-  /// 显式标记为超时（绝不无限 spinner）。
+  /// 显式标记为超时（绝不无限 spinner）。[timeoutMs] 非空时随请求下发
+  /// （批量 6s；单节点留空走引擎默认 10s）。
   Future<void> _runDelayTest({
     String? group,
     String? node,
     List<String> targets = const <String>[],
     List<String>? pending,
     bool showProgress = false,
+    int? timeoutMs,
   }) async {
     final List<String> pendingList = pending ?? targets;
     if (pendingList.isEmpty) {
       AppDialogs.showInfo('当前没有可测试的端子');
       return;
     }
+    // 本次调用独占的节点名集合：所有「释放 / 标记超时」都只作用于它。
+    final Set<String> myNames = pendingList.toSet();
     setState(() {
-      if (showProgress) _testing = true;
-      _testTotal = pendingList.length;
-      _testedCount = 0;
-      _pending
-        ..clear()
-        ..addAll(pendingList);
-      for (final String name in pendingList) {
+      if (showProgress) {
+        _testing = true;
+        _testTotal = pendingList.length;
+        _testedCount = 0;
+        _batchPending
+          ..clear()
+          ..addAll(myNames);
+      }
+      _addPending(pendingList);
+      for (final String name in myNames) {
         _delays.remove(name);
       }
     });
     _latencyTick.value++;
     try {
       final DelayTestResult result = await _facade.nodeDelayTest(
-        NodeDelayTestRequest(group: group, node: node, targets: targets),
+        NodeDelayTestRequest(
+          group: group,
+          node: node,
+          targets: targets,
+          timeoutMs: timeoutMs,
+        ),
       );
       if (!mounted) return;
       setState(() {
         for (final DelayResult item in result.results) {
           _delays[item.node] = _DelayState.fromDelayResult(item);
-          _pending.remove(item.node);
         }
-        // 响应里未出现的节点：显式超时，而非停留在“测试中…”。
-        for (final String name in _pending.toList()) {
-          _delays[name] = _DelayState.timeout;
+        // 响应里未出现的「本次」节点：显式超时，而非停留在“测试中…”。
+        for (final String name in myNames) {
+          if (!result.results.any((DelayResult r) => r.node == name)) {
+            _delays[name] = _DelayState.timeout;
+          }
         }
-        _pending.clear();
-        _testedCount = _testTotal;
-        _testing = false;
+        // 只释放本次归属；并发测试的待回填不受影响。
+        _removePending(myNames);
+        if (showProgress) {
+          _testedCount = _testTotal;
+          _testing = false;
+          _batchPending.clear();
+        }
       });
       _latencyTick.value++;
     } on ProxyModuleException catch (error) {
-      _finishTestWithError('延迟测试失败：${error.message}');
+      _finishTestWithError('延迟测试失败：${error.message}', myNames, showProgress);
     } catch (error) {
-      _finishTestWithError('延迟测试失败：$error');
+      _finishTestWithError('延迟测试失败：$error', myNames, showProgress);
     }
   }
 
   /// `测试全部`：不带 group / node，改为显式发送所有分组里的节点名集合。
-  Future<void> _testAll() =>
-      _runDelayTest(targets: _testTargets, showProgress: true);
+  ///
+  /// 多节点批量：下发 [_kBatchTestTimeoutMs] 的单节点超时上限并展示进度。
+  Future<void> _testAll() => _runDelayTest(
+        targets: _testTargets,
+        showProgress: true,
+        timeoutMs: _kBatchTestTimeoutMs,
+      );
 
-  void _finishTestWithError(String message) {
+  /// 测试失败的收尾：只标记 / 释放 [pendingNames]（本次调用），并且仅在
+  /// [showProgress]（批量）时收尾进度，逐节点测试绝不触碰批量进度。
+  void _finishTestWithError(
+    String message,
+    Set<String> pendingNames,
+    bool showProgress,
+  ) {
     if (!mounted) return;
     setState(() {
-      for (final String name in _pending.toList()) {
+      for (final String name in pendingNames) {
         _delays[name] = _DelayState.timeout;
       }
-      _pending.clear();
-      _testedCount = _testTotal;
-      _testing = false;
+      _removePending(pendingNames);
+      if (showProgress) {
+        _testedCount = _testTotal;
+        _testing = false;
+        _batchPending.clear();
+      }
     });
     _latencyTick.value++;
     AppDialogs.showError(message);
@@ -621,10 +701,14 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         selectable: _groupSelectable(group),
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
-        isPending: _pending.contains,
+        isPending: _isPending,
         favoriteOf: (String n) => _isFavorite(group.name, n),
         onToggleFavorite: (String n) => _toggleFavorite(group.name, n),
-        onTest: () => _runDelayTest(targets: targets, pending: targets),
+        onTest: () => _runDelayTest(
+          targets: targets,
+          pending: targets,
+          timeoutMs: _kBatchTestTimeoutMs,
+        ),
         onSelect: (String n) => _selectNode(group.name, n),
       ),
     );
@@ -654,7 +738,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         selectable: selectable,
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
-        isPending: _pending.contains,
+        isPending: _isPending,
         favoriteOf: (String n) => _isFavorite(parentGroup, n),
         onToggleFavorite: (String n) => _toggleFavorite(parentGroup, n),
         onDetail: () => _openNodeDetail(node),
@@ -1065,7 +1149,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       badge: _LatencyBadge(
         key: Key('proxy_nodes_delay_${parentGroup}_${node.name}'),
         state: _delays[node.name],
-        pending: _pending.contains(node.name),
+        pending: _isPending(node.name),
       ),
       onTap: () => _openNodeSheet(node, parentGroup),
     );

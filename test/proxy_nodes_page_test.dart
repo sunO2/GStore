@@ -50,8 +50,25 @@ class _FakeNodesFacade implements ProxyNodesFacade {
     profile: ImportedProfile(name: '订阅', format: 'clash'),
   );
 
-  /// 测试通过它手动控制 `node.delay_test` 的完成时机（以便断言进行中态）。
+  /// 测试通过它手动控制 `node.delay_test` 的完成时机（最近一次调用）。
   Completer<DelayTestResult>? delayCompleter;
+
+  /// 全部在途完成器，按 `(group, node)` 键控：同一节点名可被并发测试两次，
+  /// 且不同分组可能有同名节点，故不能只按 node 键控。
+  final Map<String, List<Completer<DelayTestResult>>> delayCompleters =
+      <String, List<Completer<DelayTestResult>>>{};
+
+  String _delayKey(String? group, String? node) => '${group ?? ''}|${node ?? ''}';
+
+  /// 取最近一次 `(group, node)` 的完成器（测试用；无在途则抛错）。
+  Completer<DelayTestResult> completerFor(String? group, String? node) {
+    final List<Completer<DelayTestResult>>? list =
+        delayCompleters[_delayKey(group, node)];
+    if (list == null || list.isEmpty) {
+      throw StateError('no in-flight delay test for ($group, $node)');
+    }
+    return list.last;
+  }
 
   @override
   Stream<ProxyEvent> get events => controller.stream;
@@ -84,6 +101,12 @@ class _FakeNodesFacade implements ProxyNodesFacade {
     }
     final completer = Completer<DelayTestResult>();
     delayCompleter = completer;
+    delayCompleters
+        .putIfAbsent(
+          _delayKey(request.group, request.node),
+          () => <Completer<DelayTestResult>>[],
+        )
+        .add(completer);
     return completer.future;
   }
 
@@ -227,6 +250,22 @@ Future<void> _selectNodeViaSheet(
   await tester.pumpAndSettle();
   expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
   await tester.tap(find.byKey(const Key('proxy_nodes_node_select')));
+  await tester.pumpAndSettle();
+}
+
+/// 打开某节点磁贴的弹层 -> 点「测速」-> 关闭弹层，留下一个在途的单节点测速。
+///
+/// 仅用于**非批量**（无进度卡 / 无 AppLoading）场景，故可安全 `pumpAndSettle`。
+Future<void> _fireNodeTest(
+  WidgetTester tester,
+  String group,
+  String nodeName,
+) async {
+  await tester.tap(find.byKey(Key('proxy_nodes_member_${group}_$nodeName')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('proxy_nodes_sheet_test')));
+  await tester.pump();
+  await tester.tapAt(const Offset(10, 10));
   await tester.pumpAndSettle();
 }
 
@@ -764,6 +803,201 @@ void main() {
 
     expect(find.text('超时'), findsNWidgets(3));
     expect(find.byType(AppLoading), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('c1：两个并发单节点测速各自保有在途，乱序完成不误判超时',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _groups,
+      facade: facade,
+      hasProxyGroups: false,
+    )));
+
+    // 依次发起两个单节点测速（均在途，互不覆盖）。
+    await _fireNodeTest(tester, 'PROXY', '香港 01');
+    await _fireNodeTest(tester, 'PROXY', '日本 02');
+
+    // 两个名字同时处于「测试中…」。
+    expect(find.text('测试中…'), findsNWidgets(2));
+
+    // 乱序完成：先回 香港 01。
+    facade.completerFor(null, '香港 01').complete(const DelayTestResult(
+      results: <DelayResult>[
+        DelayResult(node: '香港 01', delayMs: 111, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('111 ms'), findsOneWidget);
+    // 日本 02 仍在途：未被提前判超时，也未丢在途态。
+    expect(find.text('测试中…'), findsOneWidget);
+    expect(find.text('超时'), findsNothing);
+
+    // 再回 日本 02。
+    facade.completerFor(null, '日本 02').complete(const DelayTestResult(
+      results: <DelayResult>[
+        DelayResult(node: '日本 02', delayMs: 222, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('222 ms'), findsOneWidget);
+    expect(find.text('测试中…'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('c2：逐节点测速失败不触碰批量进度与其余待回填',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      // 批量目标仅 PROXY 的两个节点；美国 03 不在批量范围内。
+      groups: const <ProxyGroup>[
+        ProxyGroup(
+          name: 'PROXY',
+          type: 'select',
+          members: <String>['香港 01', '日本 02'],
+        ),
+      ],
+      facade: facade,
+      hasProxyGroups: false,
+    )));
+
+    // 先起一个不在批量范围内的逐节点测速（美国 03）。
+    await _fireNodeTest(tester, 'PROXY', '美国 03');
+
+    // 再起批量（total=2）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_test_all')));
+    await tester.pump();
+    expect(find.text('正在测试延迟 0/2'), findsOneWidget);
+    // 3 个在途：批量的 香港 01 / 日本 02 + 逐节点的 美国 03。
+    expect(find.text('测试中…'), findsNWidgets(3));
+
+    // 让逐节点测速失败。
+    facade.completerFor(null, '美国 03').completeError(
+          const ProxyModuleException(
+            code: 'PROXY_NODE_NOT_FOUND',
+            message: '美国 03 不可达',
+          ),
+        );
+    await tester.pump();
+    await tester.pump();
+
+    // 批量进度 / 测试态未被触碰；两个批量节点仍在途。
+    expect(find.text('正在测试延迟 0/2'), findsOneWidget);
+    expect(find.byType(AppLoading), findsOneWidget);
+    expect(find.text('测试中…'), findsNWidgets(2));
+    // 失败的逐节点显式「超时」。
+    expect(find.text('超时'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('c3：批量进度在逐节点事件交错时不越界（每节点至多计一次）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: const <ProxyGroup>[
+        ProxyGroup(
+          name: 'PROXY',
+          type: 'select',
+          members: <String>['香港 01', '日本 02'],
+        ),
+      ],
+      facade: facade,
+      hasProxyGroups: false,
+    )));
+
+    // 批量先起（total=2）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_test_all')));
+    await tester.pump();
+    expect(find.text('正在测试延迟 0/2'), findsOneWidget);
+
+    // 批量进行中：打开「非批量节点」美国 03 的弹层并起一个逐节点测速。
+    // 此时有 AppLoading（无限动画），用定长 pump 而非 pumpAndSettle。
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_美国 03')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_test')));
+    await tester.pump();
+
+    // 逐节点测速绝不篡改批量进度（旧实现会把 total 覆盖为 1）。
+    expect(find.text('正在测试延迟 0/2'), findsOneWidget);
+
+    // 批量节点事件：每节点至多计一次。
+    facade.controller.add(const ProxyNodeDelayEvent(
+      group: 'PROXY',
+      node: '香港 01',
+      delayMs: 100,
+    ));
+    await tester.pump();
+    expect(find.text('正在测试延迟 1/2'), findsOneWidget);
+    facade.controller.add(const ProxyNodeDelayEvent(
+      group: 'PROXY',
+      node: '香港 01',
+      delayMs: 101,
+    ));
+    await tester.pump();
+    expect(find.text('正在测试延迟 1/2'), findsOneWidget);
+
+    // 非批量节点（仅逐节点测速）的事件不计入批量进度。
+    facade.controller.add(const ProxyNodeDelayEvent(
+      group: 'PROXY',
+      node: '美国 03',
+      delayMs: 150,
+    ));
+    await tester.pump();
+    expect(find.text('正在测试延迟 1/2'), findsOneWidget);
+    // 从未越过 total。
+    expect(find.text('正在测试延迟 2/2'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('c4：批量请求带 6000ms 超时，单节点请求不带（null）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _groups,
+      facade: facade,
+      hasProxyGroups: false,
+    )));
+
+    // 批量（测试全部）-> 下发 6000ms。
+    await tester.tap(find.byKey(const Key('proxy_nodes_test_all')));
+    await tester.pump();
+    expect(facade.lastDelayRequest?.targets, isNotEmpty);
+    expect(facade.lastDelayRequest?.timeoutMs, 6000);
+
+    // 收尾，恢复非测试态。
+    facade.delayCompleter!.complete(const DelayTestResult());
+    await tester.pump();
+    await tester.pump();
+
+    // 单节点（节点弹层测速）-> 不带 timeoutMs（null，走引擎默认 10s）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_test')));
+    await tester.pump();
+    expect(facade.lastDelayRequest?.node, '日本 02');
+    expect(facade.lastDelayRequest?.timeoutMs, isNull);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
