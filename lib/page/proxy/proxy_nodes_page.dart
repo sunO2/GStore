@@ -1466,89 +1466,101 @@ class _NodePickerSheetState extends State<_NodePickerSheet> {
     final bool showRowTest =
         !widget.nodeMode && !entry.isGroupRef && widget.onTestNode != null;
 
-    return InkWell(
-      key: Key(
-        widget.nodeMode
-            ? 'proxy_nodes_sheet_node'
-            : 'proxy_nodes_sheet_member_${entry.name}',
-      ),
-      onTap: widget.selectable ? () => _select(context, entry.name) : null,
-      borderRadius: AppRadius.allSM,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm,
-          vertical: AppSpacing.md,
+    // 与主视图 [_GridTile] 保持一致的边界 + 背景：当前项 primary 系，其余
+    // surfaceContainerLow + outlineVariant 描边，避免裸 InkWell 无边界。
+    return Card(
+      margin: EdgeInsets.zero,
+      color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppRadius.allLG,
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                Icon(
-                  entry.isGroupRef ? TablerIcons.folder : TablerIcons.server,
-                  size: AppTypography.iconMD,
-                  color: selected ? scheme.primary : scheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    entry.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: selected ? scheme.primary : scheme.onSurface,
-                      fontWeight: selected
-                          ? AppTypography.weightMedium
-                          : AppTypography.weightRegular,
-                    ),
-                  ),
-                ),
-                if (selected && widget.selectable)
-                  Icon(
-                    TablerIcons.circle_check_filled,
-                    size: AppTypography.iconMD,
-                    color: scheme.primary,
-                  ),
-              ],
-            ),
-            const SizedBox(height: 2),
-            Text(
-              entry.subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-            if (!entry.isGroupRef || showRowTest) ...[
-              const SizedBox(height: AppSpacing.sm),
+      ),
+      child: InkWell(
+        key: Key(
+          widget.nodeMode
+              ? 'proxy_nodes_sheet_node'
+              : 'proxy_nodes_sheet_member_${entry.name}',
+        ),
+        onTap: widget.selectable ? () => _select(context, entry.name) : null,
+        borderRadius: AppRadius.allLG,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sm,
+            vertical: AppSpacing.md,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
               Row(
                 children: <Widget>[
-                  if (!entry.isGroupRef)
-                    _LatencyBadge(
-                      key: Key('proxy_nodes_sheet_delay_${entry.name}'),
-                      state: widget.delayOf(entry.name),
-                      pending: widget.isPending(entry.name),
-                    ),
-                  const Spacer(),
-                  if (showRowTest)
-                    IconButton(
-                      key: Key('proxy_nodes_row_test_${entry.name}'),
-                      tooltip: '测速',
-                      icon: const Icon(
-                        TablerIcons.gauge,
-                        size: AppTypography.iconMD,
+                  Icon(
+                    entry.isGroupRef ? TablerIcons.folder : TablerIcons.server,
+                    size: AppTypography.iconMD,
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      entry.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        color: selected ? scheme.primary : scheme.onSurface,
+                        fontWeight: selected
+                            ? AppTypography.weightMedium
+                            : AppTypography.weightRegular,
                       ),
-                      color: scheme.onSurfaceVariant,
-                      onPressed: widget.isPending(entry.name)
-                          ? null
-                          : () => widget.onTestNode!(entry.name),
+                    ),
+                  ),
+                  if (selected && widget.selectable)
+                    Icon(
+                      TablerIcons.circle_check_filled,
+                      size: AppTypography.iconMD,
+                      color: scheme.primary,
                     ),
                 ],
               ),
+              const SizedBox(height: 2),
+              Text(
+                entry.subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              if (!entry.isGroupRef || showRowTest) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Row(
+                  children: <Widget>[
+                    if (!entry.isGroupRef)
+                      _LatencyBadge(
+                        key: Key('proxy_nodes_sheet_delay_${entry.name}'),
+                        state: widget.delayOf(entry.name),
+                        pending: widget.isPending(entry.name),
+                      ),
+                    const Spacer(),
+                    if (showRowTest)
+                      IconButton(
+                        key: Key('proxy_nodes_row_test_${entry.name}'),
+                        tooltip: '测速',
+                        icon: const Icon(
+                          TablerIcons.gauge,
+                          size: AppTypography.iconMD,
+                        ),
+                        color: scheme.onSurfaceVariant,
+                        onPressed: widget.isPending(entry.name)
+                            ? null
+                            : () => widget.onTestNode!(entry.name),
+                      ),
+                  ],
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
