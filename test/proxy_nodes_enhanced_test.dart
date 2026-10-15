@@ -165,10 +165,15 @@ void main() {
       isTrue,
     );
 
-    // 打开 beta 节点弹层并收藏。
+    // 打开 beta 节点弹层：底部已无收藏动作，收藏改由节点行左滑露出。
     await tester.tap(find.byKey(_nodeTile('beta')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('proxy_nodes_node_favorite')));
+    await tester.drag(
+      find.byKey(const Key('proxy_nodes_sheet_node')),
+      const Offset(-300, 0),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('proxy_nodes_row_favorite_beta')));
     await tester.pumpAndSettle();
 
     // 关闭弹层。

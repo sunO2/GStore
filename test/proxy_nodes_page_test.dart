@@ -519,6 +519,8 @@ void main() {
       facade.lastDelayRequest?.targets,
       unorderedEquals(<String>['香港 01', '日本 02']),
     );
+    // 分组弹层头部测速属多节点批量：下发 6000ms 的单节点超时上限。
+    expect(facade.lastDelayRequest?.timeoutMs, 6000);
     expect(find.textContaining('正在测速…'), findsOneWidget);
 
     facade.delayCompleter!.complete(const DelayTestResult(
@@ -1773,6 +1775,84 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('d：同一节点名并发两次测速，两次都完成后行内才收尾（无残留 spinner）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 打开分组弹层（分组模式）：行内测速按钮对 香港 01 可用。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    final Finder rowTest =
+        find.byKey(const Key('proxy_nodes_row_test_香港 01'));
+
+    // 连点两次（中间不 pump：控件尚未重建，两次 onPressed 均非空），对同一
+    // (group, node) 并发两次单节点测速 —— 两个在途完成器落在同一键下。
+    await tester.tap(rowTest);
+    await tester.tap(rowTest);
+    await tester.pump();
+
+    final List<Completer<DelayTestResult>> inFlight =
+        facade.delayCompleters['PROXY|香港 01']!;
+    expect(inFlight.length, 2);
+
+    // 行内徽标进入「测试中…」。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
+        matching: find.text('测试中…'),
+      ),
+      findsOneWidget,
+    );
+
+    // 只完成第一个：该名字仍被第二个在途占用（引用计数未归零），行内按钮仍禁用。
+    // 若 pending 退化为集合，这里会提前释放 -> 按钮可点，断言失败（load-bearing）。
+    inFlight[0].complete(const DelayTestResult(
+      results: <DelayResult>[
+        DelayResult(node: '香港 01', delayMs: 50, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const Key('proxy_nodes_row_test_香港 01')),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    // 完成第二个：该名字的全部在途释放，行内收尾，无残留 spinner。
+    inFlight[1].complete(const DelayTestResult(
+      results: <DelayResult>[
+        DelayResult(node: '香港 01', delayMs: 88, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('测试中…'), findsNothing);
+    expect(find.text('88 ms'), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const Key('proxy_nodes_row_test_香港 01')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('节点弹层（单节点模式）不渲染行内测速按钮',
       (WidgetTester tester) async {
     _useTallViewport(tester);
@@ -1900,8 +1980,8 @@ void main() {
     await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')));
     await tester.pumpAndSettle();
 
-    // 底部动作行：收藏已移除；复制地址 + 详情保留。
-    expect(find.byKey(const Key('proxy_nodes_node_favorite')), findsNothing);
+    // 底部动作行：收藏动作已移除（未左滑时无「收藏」文案）；复制地址 + 详情保留。
+    expect(find.text('收藏'), findsNothing);
     expect(find.byKey(const Key('proxy_nodes_node_copy')), findsOneWidget);
     expect(find.byKey(const Key('proxy_nodes_node_detail')), findsOneWidget);
 
