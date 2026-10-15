@@ -437,7 +437,7 @@ Template guarantees are in §13.
 | method | request | data |
 |---|---|---|
 | `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string, "active": string }` |
-| `node.delay_test` | `{ "node"?: string, "group"?: string, "targets"?: [string], "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
+| `node.delay_test` | `{ "node"?: string, "group"?: string, "targets"?: [string], "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 10000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
 | `node.list` | *(none)* | `{ "engineRunning": bool, "groups": [NodeGroupInfo], "current": NodeCurrent\|null }` |
 
 `node.list` is the **read-only live selection view** used by the home status
@@ -492,11 +492,13 @@ opened at instance create; meow-config's runtime rebuild wires it into rebuilt
 groups), so it survives `rules.reload` and an engine restart **when groups are
 built through that store** — see §11.2 for what Todo 13 must call.
 
-`node.delay_test` performs an HTTP **HEAD** probe per node against `url` (or the
+`node.delay_test` performs an HTTP **GET** probe per node against `url` (or the
 group's own `test_url`, else `https://www.gstatic.com/generate_204`) with
-`expectedStatus` (default `200-299`) and `timeoutMs` clamped to `100..120000`.
-Probes run on a **dedicated bounded runtime, never the tunnel loop**. An
-unreachable node is a **per-node result**, not a call error:
+`expectedStatus` (default `200-299`) and `timeoutMs` clamped to `100..120000`;
+the module default is 10 s (`DEFAULT_TIMEOUT_MS = 10_000`), while the batch UI
+sends 6 s. Probes run on a **dedicated bounded runtime, never the tunnel loop**,
+at a fixed window of **10 concurrent** probes. An unreachable node is a
+**per-node result**, not a call error:
 
 ```json
 { "node": "A", "delayMs": 0, "alive": false, "error": "timeout" }
