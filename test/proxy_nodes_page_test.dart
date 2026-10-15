@@ -11,6 +11,7 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
+import 'package:gstore/page/proxy/proxy_sheet_view_mode_store.dart';
 
 /// 假门面：无需原生模块，可受控返回选择/延迟/订阅结果并推送类型化事件。
 class _FakeNodesFacade implements ProxyNodesFacade {
@@ -146,6 +147,28 @@ class _FakeActiveNodeStore implements ProxyActiveNodeStore {
 
   @override
   Future<void> clear() async => value = null;
+}
+
+/// 假「节点弹层排布模式」持久化存储：内存实现。
+class _FakeSheetViewModeStore implements ProxySheetViewModeStore {
+  _FakeSheetViewModeStore([this.grid]);
+
+  /// null = 未设置（默认列表）；true = 宫格；false = 列表。
+  bool? grid;
+
+  /// 写入次数与写入值（断言切换时确实落盘）。
+  int writes = 0;
+  final List<bool> writeValues = <bool>[];
+
+  @override
+  Future<bool?> readGridMode() async => grid;
+
+  @override
+  Future<void> writeGridMode(bool grid) async {
+    writes++;
+    writeValues.add(grid);
+    this.grid = grid;
+  }
 }
 
 const ProxyNode _hk = ProxyNode(
@@ -1896,6 +1919,138 @@ void main() {
       find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弹层排布：默认（未设置）以列表打开', (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final modeStore = _FakeSheetViewModeStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      sheetViewModeStore: modeStore,
+    )));
+    // 等待 initState 的异步回显完成（读返回 null）。
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsNothing);
+    // 未设置时打开不写入。
+    expect(modeStore.writes, 0);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弹层排布：切宫格时写回 store，并渲染带边界的 Card 磁贴',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final modeStore = _FakeSheetViewModeStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      sheetViewModeStore: modeStore,
+    )));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+    expect(modeStore.writes, 0);
+
+    // 切宫格：写回 true。
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_view_toggle')));
+    await tester.pumpAndSettle();
+    expect(modeStore.writes, 1);
+    expect(modeStore.writeValues, <bool>[true]);
+    expect(modeStore.grid, isTrue);
+
+    // 宫格容器出现，且每个磁贴是带边界 / 背景的 Card（不只是点击生效）。
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('proxy_nodes_sheet_grid')),
+        matching: find.byType(Card),
+      ),
+      findsWidgets,
+    );
+
+    // 再切回列表：同样写回 false。
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_view_toggle')));
+    await tester.pumpAndSettle();
+    expect(modeStore.writes, 2);
+    expect(modeStore.writeValues, <bool>[true, false]);
+    expect(modeStore.grid, isFalse);
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弹层排布：切到宫格并关闭后重开同一分组仍是宫格（状态被记住）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final modeStore = _FakeSheetViewModeStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      sheetViewModeStore: modeStore,
+    )));
+    await tester.pump();
+
+    // 打开分组弹层 -> 切宫格。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_view_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+
+    // 关闭弹层。
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsNothing);
+
+    // 重开同一分组弹层：仍是宫格（上次选择被记住，未回落到列表）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弹层排布：store 已保存宫格时打开分组弹层即为宫格',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final modeStore = _FakeSheetViewModeStore(true);
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      sheetViewModeStore: modeStore,
+    )));
+    // 等待 initState 的异步回显完成（读返回 true）。
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsNothing);
+    // 仅打开不改写 store。
+    expect(modeStore.writes, 0);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

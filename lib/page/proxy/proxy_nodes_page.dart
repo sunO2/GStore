@@ -11,6 +11,7 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_active_node_store.dart';
 import 'proxy_nodes_facade.dart';
+import 'proxy_sheet_view_mode_store.dart';
 
 /// 延迟徽章淡色背景的透明度。
 ///
@@ -57,6 +58,7 @@ class ProxyNodesPage extends StatefulWidget {
     this.facade,
     this.initialActiveByGroup = const <String, String>{},
     this.nodeStore,
+    this.sheetViewModeStore,
   });
 
   /// 可直接展示的节点集合（未传 [profileId] 时生效）。
@@ -80,6 +82,11 @@ class ProxyNodesPage extends StatefulWidget {
   /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   /// `_selectNode` 成功后写入，重入时用于高亮回显。
   final ProxyActiveNodeStore? nodeStore;
+
+  /// 节点弹层列表 / 宫格排布模式的持久化接缝（测试注入内存实现；为空时用
+  /// [ConfigStoreProxySheetViewModeStore]）。打开分组弹层时回显上次选择，
+  /// 弹层内切换时写入。
+  final ProxySheetViewModeStore? sheetViewModeStore;
 
   @override
   State<ProxyNodesPage> createState() => _ProxyNodesPageState();
@@ -132,6 +139,7 @@ class _DelayState {
 class _ProxyNodesPageState extends State<ProxyNodesPage> {
   late final ProxyNodesFacade _facade;
   late final ProxyActiveNodeStore _nodeStore;
+  late final ProxySheetViewModeStore _sheetViewModeStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = false;
@@ -173,14 +181,23 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   int _testTotal = 0;
   _NodeSort _sort = _NodeSort.name;
 
+  /// 节点弹层上次选择的排布模式（false = 列表，true = 宫格）。
+  ///
+  /// 弹层是独立 route，页面的 `setState` 不会重建它；故此处持有最新的用户选择，
+  /// 每次打开分组弹层时经 `initialGridMode` 重新供给，弹层内切换时经回调更新。
+  bool _sheetGridMode = false;
+
   @override
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleNodesFacade();
     _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
+    _sheetViewModeStore =
+        widget.sheetViewModeStore ?? const ConfigStoreProxySheetViewModeStore();
     _activeByGroup.addAll(widget.initialActiveByGroup);
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
     _restoreActiveSelection();
+    _restoreSheetViewMode();
 
     final String? profileId = widget.profileId;
     if (profileId == null || profileId.isEmpty) {
@@ -206,6 +223,16 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     if (!mounted || selection == null) return;
     if (selection.group.isEmpty || selection.node.isEmpty) return;
     setState(() => _activeByGroup[selection.group] = selection.node);
+  }
+
+  /// 重入回显：从持久化接缝读取上次的弹层排布模式（best-effort，未设置 /
+  /// 失败回落到列表）。弹层在下一帧构建时才读取 [_sheetGridMode]，故无需
+  /// 在这里关心弹层是否已打开。
+  Future<void> _restoreSheetViewMode() async {
+    final bool? value =
+        await _safe<bool?>(() => _sheetViewModeStore.readGridMode());
+    if (!mounted) return;
+    setState(() => _sheetGridMode = value ?? false);
   }
 
   /// best-effort：持久化接缝异常不应影响页面。
@@ -656,6 +683,11 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         onTestNode: (String n) =>
             _runDelayTest(group: group.name, node: n, pending: <String>[n]),
         onSelect: (String n) => _selectNode(group.name, n),
+        initialGridMode: _sheetGridMode,
+        onGridModeChanged: (bool v) {
+          _sheetGridMode = v;
+          _sheetViewModeStore.writeGridMode(v);
+        },
       ),
     );
   }
@@ -690,6 +722,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         onTest: () =>
             _runDelayTest(node: node.name, pending: <String>[node.name]),
         onSelect: (String n) => _selectNode(parentGroup, n),
+        initialGridMode: false,
       ),
     );
   }
@@ -1191,6 +1224,8 @@ class _NodePickerSheet extends StatefulWidget {
     this.onCopy,
     this.selectable = true,
     this.nodeMode = false,
+    required this.initialGridMode,
+    this.onGridModeChanged,
   });
 
   final String title;
@@ -1220,14 +1255,26 @@ class _NodePickerSheet extends StatefulWidget {
   final bool selectable;
   final bool nodeMode;
 
+  /// 打开时的初始排布模式（false = 列表，true = 宫格）。
+  final bool initialGridMode;
+
+  /// 排布模式变更回调（点击切换按钮时触发）。节点弹层不显示切换按钮，故可空。
+  final ValueChanged<bool>? onGridModeChanged;
+
   @override
   State<_NodePickerSheet> createState() => _NodePickerSheetState();
 }
 
 class _NodePickerSheetState extends State<_NodePickerSheet> {
-  /// 分组弹层内的排布模式：false = 列表（默认），true = 2 列宫格。
-  /// 状态仅存在于当前打开的弹层实例，每次重新打开都重置为列表。
+  /// 分组弹层内的排布模式：false = 列表，true = 2 列宫格。
+  /// 打开时取自 [widget.initialGridMode]（页面持久化回显），切换后经回调写回。
   bool _gridMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _gridMode = widget.nodeMode ? false : widget.initialGridMode;
+  }
 
   Future<void> _select(BuildContext context, String name) async {
     if (!widget.selectable) return;
@@ -1271,7 +1318,10 @@ class _NodePickerSheetState extends State<_NodePickerSheet> {
                     size: AppTypography.iconMD,
                   ),
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  onPressed: () => setState(() => _gridMode = !_gridMode),
+                  onPressed: () {
+                    setState(() => _gridMode = !_gridMode);
+                    widget.onGridModeChanged?.call(_gridMode);
+                  },
                 ),
               ],
             ],
