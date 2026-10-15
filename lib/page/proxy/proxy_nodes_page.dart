@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
@@ -1388,37 +1389,31 @@ class _NodePickerSheet extends StatelessWidget {
                   ),
                 ]
               : const <Widget>[],
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              for (final _PickerEntry entry in entries)
-                _buildEntry(context, entry),
-              if (nodeMode) _buildNodeActions(context),
-            ],
+          content: SlidableAutoCloseBehavior(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                for (final _PickerEntry entry in entries)
+                  _buildEntry(context, entry),
+                if (nodeMode) _buildNodeActions(context),
+              ],
+            ),
           ),
         );
       },
     );
   }
 
-  /// 节点弹层动作行：收藏 / 复制地址 / 详情（均不触发选择）。
+  /// 节点弹层动作行：复制地址 / 详情（均不触发选择）。
+  ///
+  /// 收藏已移至节点行左滑动作（见 [_buildEntry] 的 `Slidable`），此处不再提供。
   Widget _buildNodeActions(BuildContext context) {
-    final String name = entries.first.name;
-    final bool favorite = favoriteOf?.call(name) ?? false;
     return Padding(
       padding: AppSpacing.onlyVerticalSM,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: <Widget>[
-          if (favoriteOf != null && onToggleFavorite != null)
-            _SheetAction(
-              key: const Key('proxy_nodes_node_favorite'),
-              icon: favorite ? TablerIcons.star_filled : TablerIcons.star,
-              label: favorite ? '已收藏' : '收藏',
-              highlighted: favorite,
-              onTap: () => onToggleFavorite!(name),
-            ),
           if (onCopy != null)
             _SheetAction(
               key: const Key('proxy_nodes_node_copy'),
@@ -1442,7 +1437,7 @@ class _NodePickerSheet extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme scheme = theme.colorScheme;
     final bool selected = entry.name == activeName;
-    return InkWell(
+    final Widget row = InkWell(
       key: Key(
         nodeMode
             ? 'proxy_nodes_sheet_node'
@@ -1525,6 +1520,31 @@ class _NodePickerSheet extends StatelessWidget {
         ),
       ),
     );
+
+    // 收藏仅通过左滑动作暴露（节点行）；组引用行无收藏、无滑动。
+    if (favoriteOf == null || onToggleFavorite == null || entry.isGroupRef) {
+      return row;
+    }
+    final bool favorite = favoriteOf!(entry.name);
+    return Slidable(
+      // 稳定 Key：弹层随 `_latencyTick` 频繁重建，多条目列表顺序变化时
+      // 保滑动面板状态不串位。
+      key: ValueKey<String>('slidable_${entry.name}'),
+      endActionPane: ActionPane(
+        motion: const ScrollMotion(),
+        children: <Widget>[
+          SlidableAction(
+            key: Key('proxy_nodes_row_favorite_${entry.name}'),
+            onPressed: (_) => onToggleFavorite!(entry.name),
+            backgroundColor: scheme.primaryContainer,
+            foregroundColor: scheme.onPrimaryContainer,
+            icon: favorite ? TablerIcons.star_filled : TablerIcons.star,
+            label: favorite ? '已收藏' : '收藏',
+          ),
+        ],
+      ),
+      child: row,
+    );
   }
 }
 
@@ -1535,22 +1555,17 @@ class _SheetAction extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
-    this.highlighted = false,
   });
 
   final IconData icon;
   final String label;
   final Future<void> Function() onTap;
 
-  /// 高亮（如已收藏）用主题 primary。
-  final bool highlighted;
-
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme scheme = theme.colorScheme;
-    final Color color =
-        highlighted ? scheme.primary : scheme.onSurfaceVariant;
+    final Color color = scheme.onSurfaceVariant;
     return InkWell(
       onTap: () => onTap(),
       borderRadius: AppRadius.allSM,

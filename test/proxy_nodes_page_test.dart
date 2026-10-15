@@ -9,6 +9,7 @@ import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
+import 'package:gstore/page/proxy/proxy_node_favorites_store.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 
@@ -146,6 +147,21 @@ class _FakeActiveNodeStore implements ProxyActiveNodeStore {
 
   @override
   Future<void> clear() async => value = null;
+}
+
+/// 假「收藏节点」持久化存储：内存实现，记录写入次数与最近一次集合。
+class _FakeFavoritesStore implements ProxyNodeFavoritesStore {
+  Set<String> value = <String>{};
+  int writes = 0;
+
+  @override
+  Future<Set<String>> read() async => Set<String>.from(value);
+
+  @override
+  Future<void> write(Set<String> keys) async {
+    writes++;
+    value = Set<String>.from(keys);
+  }
 }
 
 const ProxyNode _hk = ProxyNode(
@@ -1783,6 +1799,126 @@ void main() {
     );
     // 头部测速仍保留。
     expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('左滑收藏（分组弹层）：滑动显示动作，切换后持久化，延迟事件后仍可命中',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final favorites = _FakeFavoritesStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      favoritesStore: favorites,
+    )));
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    // 默认顺序：叶子节点按名称（日本 02 在 香港 01 之前）。
+    expect(
+      _comesBefore(
+        tester,
+        const Key('proxy_nodes_sheet_member_日本 02'),
+        const Key('proxy_nodes_sheet_member_香港 01'),
+      ),
+      isTrue,
+    );
+
+    // 左滑 香港 01 行 -> 显示收藏动作（初始未收藏）。
+    await tester.drag(
+      find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
+      const Offset(-300, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('proxy_nodes_row_favorite_香港 01')),
+      findsOneWidget,
+    );
+    expect(find.text('收藏'), findsOneWidget);
+
+    // 面板开着时推一个延迟事件（触发 `_latencyTick` 重建）：动作必须存活且可命中。
+    facade.controller.add(const ProxyNodeDelayEvent(
+      group: 'PROXY',
+      node: '日本 02',
+      delayMs: 88,
+    ));
+    await tester.pump();
+    final Finder action = find.byKey(
+      const Key('proxy_nodes_row_favorite_香港 01'),
+    );
+    expect(action, findsOneWidget);
+    expect(tester.getCenter(action).dx, greaterThan(0));
+    expect(find.text('88 ms'), findsOneWidget);
+
+    // 点收藏动作 -> 收藏生效并持久化。
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    expect(favorites.writes, 1);
+    expect(
+      favorites.value,
+      contains(proxyNodeFavoriteKey('PROXY', '香港 01')),
+    );
+    expect(tester.takeException(), isNull);
+
+    // 关闭并重开弹层：收藏节点置顶（香港 01 排在 日本 02 之前）。
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+    expect(
+      _comesBefore(
+        tester,
+        const Key('proxy_nodes_sheet_member_香港 01'),
+        const Key('proxy_nodes_sheet_member_日本 02'),
+      ),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('节点弹层：底部无收藏动作，收藏走左滑；复制 / 详情保留',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final favorites = _FakeFavoritesStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _groups,
+      hasProxyGroups: false,
+      facade: facade,
+      favoritesStore: favorites,
+    )));
+
+    // 打开节点弹层（单节点模式）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')));
+    await tester.pumpAndSettle();
+
+    // 底部动作行：收藏已移除；复制地址 + 详情保留。
+    expect(find.byKey(const Key('proxy_nodes_node_favorite')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_node_copy')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_node_detail')), findsOneWidget);
+
+    // 左滑节点行 -> 收藏动作可用；点击后持久化。
+    await tester.drag(
+      find.byKey(const Key('proxy_nodes_sheet_node')),
+      const Offset(-300, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('proxy_nodes_row_favorite_香港 01')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('proxy_nodes_row_favorite_香港 01')));
+    await tester.pumpAndSettle();
+    expect(favorites.writes, 1);
+    expect(favorites.value, contains(proxyNodeFavoriteKey('PROXY', '香港 01')));
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
