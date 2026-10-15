@@ -1693,4 +1693,98 @@ void main() {
 
     await facade.controller.close();
   });
+
+  testWidgets('分组弹层：每个节点行有测速按钮，点击发单节点请求（带分组名）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 打开分组弹层（分组模式）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    // 每个叶子节点行都有行内测速按钮。
+    expect(
+      find.byKey(const Key('proxy_nodes_row_test_香港 01')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_row_test_日本 02')),
+      findsOneWidget,
+    );
+
+    // 组引用成员（AUTO）不渲染测速按钮。
+    expect(find.byKey(const Key('proxy_nodes_row_test_AUTO')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('proxy_nodes_sheet_member_AUTO')),
+        matching: find.byIcon(TablerIcons.gauge),
+      ),
+      findsNothing,
+    );
+
+    // 点某节点行的测速按钮：只测该节点，且带分组名消歧同名节点。
+    await tester.tap(find.byKey(const Key('proxy_nodes_row_test_香港 01')));
+    await tester.pump();
+
+    expect(facade.lastDelayRequest?.node, '香港 01');
+    expect(facade.lastDelayRequest?.group, 'PROXY');
+    expect(facade.lastDelayRequest?.targets, isEmpty);
+    // 单节点不带批量超时（null，走引擎默认 10s）。
+    expect(facade.lastDelayRequest?.timeoutMs, isNull);
+    // 该行延迟徽标仍在（挂在该节点行，供回填）。
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_delay_香港 01')),
+      findsOneWidget,
+    );
+
+    // 收尾在途请求，避免悬挂。
+    facade.completerFor('PROXY', '香港 01').complete(const DelayTestResult(
+      group: 'PROXY',
+      results: <DelayResult>[
+        DelayResult(node: '香港 01', delayMs: 42, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('节点弹层（单节点模式）不渲染行内测速按钮',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _groups,
+      hasProxyGroups: false,
+      facade: facade,
+    )));
+
+    // 节点模式：点节点磁贴 -> 节点弹层。
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')));
+    await tester.pumpAndSettle();
+
+    // 节点模式行不渲染行内测速按钮（否则 onTestNode! 空断言崩溃）。
+    expect(
+      find.byKey(const Key('proxy_nodes_row_test_香港 01')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_row_test_日本 02')),
+      findsNothing,
+    );
+    // 头部测速仍保留。
+    expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
 }

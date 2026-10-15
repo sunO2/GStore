@@ -709,6 +709,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
           pending: targets,
           timeoutMs: _kBatchTestTimeoutMs,
         ),
+        onTestNode: (String n) =>
+            _runDelayTest(group: group.name, node: n, pending: <String>[n]),
         onSelect: (String n) => _selectNode(group.name, n),
       ),
     );
@@ -1308,6 +1310,7 @@ class _NodePickerSheet extends StatelessWidget {
     required this.isPending,
     required this.onTest,
     required this.onSelect,
+    this.onTestNode,
     this.favoriteOf,
     this.onToggleFavorite,
     this.onDetail,
@@ -1326,6 +1329,11 @@ class _NodePickerSheet extends StatelessWidget {
   final bool Function(String node) isPending;
   final Future<void> Function() onTest;
   final Future<void> Function(String name) onSelect;
+
+  /// 分组弹层内每个节点行的单节点测速（带分组名以消歧同名节点）。
+  ///
+  /// 仅分组弹层传入；节点弹层不传，故节点模式的行不渲染该按钮。
+  final Future<void> Function(String name)? onTestNode;
 
   /// 该节点是否已收藏（分组弹层内联星标 + 节点弹层动作共用）。
   final bool Function(String name)? favoriteOf;
@@ -1489,23 +1497,20 @@ class _NodePickerSheet extends StatelessWidget {
                 state: delayOf(entry.name),
                 pending: isPending(entry.name),
               ),
-            // 分组弹层内联收藏星标（节点弹层用底部动作行，避免重复键）。
-            if (!nodeMode && !entry.isGroupRef && favoriteOf != null)
+            // 分组弹层内每个节点行提供一个单节点测速按钮（节点弹层用底部
+            // 动作行 / 头部测速，故 `!nodeMode`；组引用无节点可测）。
+            if (!nodeMode && !entry.isGroupRef && onTestNode != null)
               IconButton(
-                key: Key('proxy_nodes_favorite_${entry.name}'),
-                tooltip: favoriteOf!(entry.name) ? '取消收藏' : '收藏',
-                icon: Icon(
-                  favoriteOf!(entry.name)
-                      ? TablerIcons.star_filled
-                      : TablerIcons.star,
+                key: Key('proxy_nodes_row_test_${entry.name}'),
+                tooltip: '测速',
+                icon: const Icon(
+                  TablerIcons.gauge,
                   size: AppTypography.iconMD,
                 ),
-                color: favoriteOf!(entry.name)
-                    ? scheme.primary
-                    : scheme.onSurfaceVariant,
-                onPressed: onToggleFavorite == null
+                color: scheme.onSurfaceVariant,
+                onPressed: isPending(entry.name)
                     ? null
-                    : () => onToggleFavorite!(entry.name),
+                    : () => onTestNode!(entry.name),
               ),
             if (selected && selectable)
               Padding(
