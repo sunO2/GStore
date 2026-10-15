@@ -1174,7 +1174,7 @@ class _PickerEntry {
 /// 按钮，右对齐并与标题+副标题块垂直居中（调用方经 [onTest] 触发）。
 /// 列表项点击即选择并关闭；节点模式另在底部提供显式「选择」动作。
 /// 延迟状态来自页面（[revision] 变更时重建），不在此重复探测逻辑。
-class _NodePickerSheet extends StatelessWidget {
+class _NodePickerSheet extends StatefulWidget {
   const _NodePickerSheet({
     required this.title,
     required this.subtitle,
@@ -1220,53 +1220,121 @@ class _NodePickerSheet extends StatelessWidget {
   final bool selectable;
   final bool nodeMode;
 
+  @override
+  State<_NodePickerSheet> createState() => _NodePickerSheetState();
+}
+
+class _NodePickerSheetState extends State<_NodePickerSheet> {
+  /// 分组弹层内的排布模式：false = 列表（默认），true = 2 列宫格。
+  /// 状态仅存在于当前打开的弹层实例，每次重新打开都重置为列表。
+  bool _gridMode = false;
+
   Future<void> _select(BuildContext context, String name) async {
-    if (!selectable) return;
-    await onSelect(name);
+    if (!widget.selectable) return;
+    await widget.onSelect(name);
     if (context.mounted) Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
     // 整个弹层随 [revision] 重建：头部「测速」与列表延迟徽标同步刷新。
+    // [_gridMode] 由本 State 持有，故延迟事件触发的重建不会丢失切换状态。
     return ValueListenableBuilder<int>(
-      valueListenable: revision,
+      valueListenable: widget.revision,
       builder: (BuildContext context, int _, __) {
-        final bool testing = entries.any((_PickerEntry e) => isPending(e.name));
+        final bool testing =
+            widget.entries.any((_PickerEntry e) => widget.isPending(e.name));
         return AppSheetScaffold(
-          title: title,
-          subtitle: subtitle,
-          icon: Icon(icon),
+          title: widget.title,
+          subtitle: widget.subtitle,
+          icon: Icon(widget.icon),
           contentPadding: AppSpacing.onlyHorizontalXL,
-          // 测速按钮：钉在标题行尾部，右对齐且相对标题块垂直居中，不随列表滚动。
-          headerTrailing: FilledButton.tonalIcon(
-            key: const Key('proxy_nodes_sheet_test'),
-            onPressed: testing ? null : () => onTest(),
-            icon: const Icon(TablerIcons.gauge, size: AppTypography.iconMD),
-            label: Text(testing ? '正在测速…' : '测速'),
+          // 头部行内动作（钉在标题行尾部，相对标题块垂直居中，不随内容滚动）：
+          // 测速按钮（不变）+ 分组弹层的列表/宫格切换按钮。
+          headerTrailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              FilledButton.tonalIcon(
+                key: const Key('proxy_nodes_sheet_test'),
+                onPressed: testing ? null : () => widget.onTest(),
+                icon: const Icon(TablerIcons.gauge, size: AppTypography.iconMD),
+                label: Text(testing ? '正在测速…' : '测速'),
+              ),
+              // 单节点弹层只有一个条目，无需切换排布。
+              if (!widget.nodeMode) ...[
+                const SizedBox(width: AppSpacing.sm),
+                IconButton(
+                  key: const Key('proxy_nodes_sheet_view_toggle'),
+                  tooltip: _gridMode ? '列表显示' : '宫格显示',
+                  icon: Icon(
+                    _gridMode ? TablerIcons.list : TablerIcons.layout_grid,
+                    size: AppTypography.iconMD,
+                  ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  onPressed: () => setState(() => _gridMode = !_gridMode),
+                ),
+              ],
+            ],
           ),
-          actions: nodeMode
+          actions: widget.nodeMode
               ? <Widget>[
                   FilledButton(
                     key: const Key('proxy_nodes_node_select'),
-                    onPressed: selectable
-                        ? () => _select(context, entries.first.name)
+                    onPressed: widget.selectable
+                        ? () => _select(context, widget.entries.first.name)
                         : null,
                     child: const Text('选择'),
                   ),
                 ]
               : const <Widget>[],
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              for (final _PickerEntry entry in entries)
-                _buildEntry(context, entry),
-              if (nodeMode) _buildNodeActions(context),
-            ],
-          ),
+          content: _gridMode
+              ? _buildGridContent(context)
+              : _buildListContent(context),
         );
       },
+    );
+  }
+
+  /// 列表模式内容：竖排条目（默认），节点弹层尾部追加动作行。
+  Widget _buildListContent(BuildContext context) {
+    return Column(
+      key: const Key('proxy_nodes_sheet_list'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        for (final _PickerEntry entry in widget.entries)
+          _buildEntry(context, entry),
+        if (widget.nodeMode) _buildNodeActions(context),
+      ],
+    );
+  }
+
+  /// 宫格模式内容：2 列磁贴；不引入嵌套滚动（外层骨架已包滚动视图）。
+  Widget _buildGridContent(BuildContext context) {
+    return Column(
+      key: const Key('proxy_nodes_sheet_grid'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final double cellWidth =
+                (constraints.maxWidth - AppSpacing.md) / 2;
+            return Wrap(
+              spacing: AppSpacing.md,
+              runSpacing: AppSpacing.md,
+              children: <Widget>[
+                for (final _PickerEntry entry in widget.entries)
+                  SizedBox(
+                    width: cellWidth,
+                    child: _buildGridCell(context, entry),
+                  ),
+              ],
+            );
+          },
+        ),
+        if (widget.nodeMode) _buildNodeActions(context),
+      ],
     );
   }
 
@@ -1277,19 +1345,19 @@ class _NodePickerSheet extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: <Widget>[
-          if (onCopy != null)
+          if (widget.onCopy != null)
             _SheetAction(
               key: const Key('proxy_nodes_node_copy'),
               icon: TablerIcons.copy,
               label: '复制地址',
-              onTap: onCopy!,
+              onTap: widget.onCopy!,
             ),
-          if (onDetail != null)
+          if (widget.onDetail != null)
             _SheetAction(
               key: const Key('proxy_nodes_node_detail'),
               icon: TablerIcons.info_circle,
               label: '详情',
-              onTap: onDetail!,
+              onTap: widget.onDetail!,
             ),
         ],
       ),
@@ -1299,14 +1367,14 @@ class _NodePickerSheet extends StatelessWidget {
   Widget _buildEntry(BuildContext context, _PickerEntry entry) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme scheme = theme.colorScheme;
-    final bool selected = entry.name == activeName;
+    final bool selected = entry.name == widget.activeName;
     final Widget row = InkWell(
       key: Key(
-        nodeMode
+        widget.nodeMode
             ? 'proxy_nodes_sheet_node'
             : 'proxy_nodes_sheet_member_${entry.name}',
       ),
-      onTap: selectable ? () => _select(context, entry.name) : null,
+      onTap: widget.selectable ? () => _select(context, entry.name) : null,
       borderRadius: AppRadius.allSM,
       child: Padding(
         padding: const EdgeInsets.symmetric(
@@ -1352,12 +1420,12 @@ class _NodePickerSheet extends StatelessWidget {
             if (!entry.isGroupRef)
               _LatencyBadge(
                 key: Key('proxy_nodes_sheet_delay_${entry.name}'),
-                state: delayOf(entry.name),
-                pending: isPending(entry.name),
+                state: widget.delayOf(entry.name),
+                pending: widget.isPending(entry.name),
               ),
             // 分组弹层内每个节点行提供一个单节点测速按钮（节点弹层用底部
             // 动作行 / 头部测速，故 `!nodeMode`；组引用无节点可测）。
-            if (!nodeMode && !entry.isGroupRef && onTestNode != null)
+            if (!widget.nodeMode && !entry.isGroupRef && widget.onTestNode != null)
               IconButton(
                 key: Key('proxy_nodes_row_test_${entry.name}'),
                 tooltip: '测速',
@@ -1366,11 +1434,11 @@ class _NodePickerSheet extends StatelessWidget {
                   size: AppTypography.iconMD,
                 ),
                 color: scheme.onSurfaceVariant,
-                onPressed: isPending(entry.name)
+                onPressed: widget.isPending(entry.name)
                     ? null
-                    : () => onTestNode!(entry.name),
+                    : () => widget.onTestNode!(entry.name),
               ),
-            if (selected && selectable)
+            if (selected && widget.selectable)
               Padding(
                 padding: AppSpacing.onlyLeftSM,
                 child: Icon(
@@ -1385,6 +1453,105 @@ class _NodePickerSheet extends StatelessWidget {
     );
 
     return row;
+  }
+
+  /// 宫格模式下的单个磁贴。
+  ///
+  /// 与列表行共享同一套选择语义 / 测试键（成员键、延迟徽标键、行内测速键），
+  /// 仅排布改为纵向紧凑卡片，颜色与字号严格取自主题 / 设计令牌。
+  Widget _buildGridCell(BuildContext context, _PickerEntry entry) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final bool selected = entry.name == widget.activeName;
+    final bool showRowTest =
+        !widget.nodeMode && !entry.isGroupRef && widget.onTestNode != null;
+
+    return InkWell(
+      key: Key(
+        widget.nodeMode
+            ? 'proxy_nodes_sheet_node'
+            : 'proxy_nodes_sheet_member_${entry.name}',
+      ),
+      onTap: widget.selectable ? () => _select(context, entry.name) : null,
+      borderRadius: AppRadius.allSM,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: AppSpacing.md,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(
+                  entry.isGroupRef ? TablerIcons.folder : TablerIcons.server,
+                  size: AppTypography.iconMD,
+                  color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    entry.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: selected ? scheme.primary : scheme.onSurface,
+                      fontWeight: selected
+                          ? AppTypography.weightMedium
+                          : AppTypography.weightRegular,
+                    ),
+                  ),
+                ),
+                if (selected && widget.selectable)
+                  Icon(
+                    TablerIcons.circle_check_filled,
+                    size: AppTypography.iconMD,
+                    color: scheme.primary,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              entry.subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            if (!entry.isGroupRef || showRowTest) ...[
+              const SizedBox(height: AppSpacing.sm),
+              Row(
+                children: <Widget>[
+                  if (!entry.isGroupRef)
+                    _LatencyBadge(
+                      key: Key('proxy_nodes_sheet_delay_${entry.name}'),
+                      state: widget.delayOf(entry.name),
+                      pending: widget.isPending(entry.name),
+                    ),
+                  const Spacer(),
+                  if (showRowTest)
+                    IconButton(
+                      key: Key('proxy_nodes_row_test_${entry.name}'),
+                      tooltip: '测速',
+                      icon: const Icon(
+                        TablerIcons.gauge,
+                        size: AppTypography.iconMD,
+                      ),
+                      color: scheme.onSurfaceVariant,
+                      onPressed: widget.isPending(entry.name)
+                          ? null
+                          : () => widget.onTestNode!(entry.name),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -1832,4 +1832,72 @@ void main() {
 
     await facade.controller.close();
   });
+
+  testWidgets('分组弹层：头部按钮在列表 / 宫格间切换，切换状态在延迟事件后保持',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 打开分组弹层（分组模式）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pumpAndSettle();
+
+    // 默认列表模式：列表容器在、宫格容器不在，切换按钮可见。
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsNothing);
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_view_toggle')),
+      findsOneWidget,
+    );
+
+    // 切到宫格：宫格容器**真的**出现（不只是点击生效），列表容器消失，
+    // 成员条目仍以同一测试键存在（保留选择语义）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_view_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsNothing);
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
+      findsOneWidget,
+    );
+    // 宫格磁贴保留行内测速键。
+    expect(
+      find.byKey(const Key('proxy_nodes_row_test_香港 01')),
+      findsOneWidget,
+    );
+
+    // stale_state：宫格模式下触发一次延迟事件（revision 变更触发弹层重建），
+    // 切换状态必须存活，不被打回列表。
+    await tester.tap(find.byKey(const Key('proxy_nodes_row_test_香港 01')));
+    await tester.pump();
+    facade.completerFor('PROXY', '香港 01').complete(const DelayTestResult(
+      group: 'PROXY',
+      results: <DelayResult>[
+        DelayResult(node: '香港 01', delayMs: 42, alive: true),
+      ],
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsNothing);
+    expect(find.text('42 ms'), findsOneWidget);
+
+    // 再点一次切回列表。
+    await tester.tap(find.byKey(const Key('proxy_nodes_sheet_view_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('proxy_nodes_sheet_list')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_sheet_grid')), findsNothing);
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
 }
