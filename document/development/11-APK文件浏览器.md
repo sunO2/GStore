@@ -127,8 +127,12 @@ ExportedEntry{ path, size, crc32, out_path }
 ### 未闭环项（明确记录，不夹带）
 - **视频/音频内置播放**：需新增 `video_player` / `just_audio`，会改动 Android 构建面，
   按「优先复用、少引依赖」暂不加；当前只给元数据与导出路径。
-- **证书字段解析**：当前 PEM 直接显示文本、DER 显示十六进制；
-  完整 X.509 字段（主题/有效期/扩展）未接入（可复用平台侧 `CertificateFactory`）。
+- **证书字段解析（已闭环）**：X.509 字段（主题 / 有效期 / 扩展等）解析已由 Rust 模块
+  `gstore_mod_analyzer` 实现（决策 D1：解析在 Rust，Dart 只消费结构化 JSON），
+  不再复用平台侧解析器。格式覆盖：PEM / DER / PKCS#7（`.p7b`）/ PKCS#12（`.p12`）/ JKS
+  可提取字段；**BKS / JCEKS / BER 不定长仅识别**（`status=unsupported`，只标为容器不解析字段）。
+  错误约定：method 恒以 `Ok(status=…)` 返回——模块不可用时 Dart 侧得 `null`，
+  格式损坏或不受支持时返回非空结果（`malformed` / `unsupported`），不抛异常。
 - **DEX 结构浏览 / 反汇编 / JAR**：见 P2，未开工。
 - **真机端到端验证**：未做（见第 7 节）。
 
@@ -190,6 +194,9 @@ ExportedEntry{ path, size, crc32, out_path }
 - **APK 已构建并核对**：`build/app/outputs/flutter-apk/app-{arm64-v8a,armeabi-v7a,x86_64}-release.apk`；
   包内 `lib/arm64-v8a/libgstore_mod_analyzer.so` 确认为新构建（含 `browse_apk_entries`）。
   4 个 ABI 的 `.so` 已同步 jniLibs 与 release-modules。
+- 证书解析随本轮并入 analyzer：模块版本 0.1.0 → **0.1.1**；4 ABI 均重建（LOAD `p_align=0x4000`、
+  `gstore_mod_analyzer_register` 导出）。arm64 `libgstore_mod_analyzer.so` 体积增量
+  **459.73 KB（470760 B）≤ 500 KB 上限，未触发体积降级**。
 
 ### 未验证（不要当成已修好）
 
