@@ -271,7 +271,11 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       splitTunnelFacade: widget.splitTunnelFacade ?? ProxyModuleSettingsFacade(),
     );
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
-    _load();
+    // 延后到首帧之后再启动加载：路由转场的前几帧不承载 `_load` 的发起与随之而来
+    // 的重内容构建，降低进入页面时的卡顿。`mounted` 守卫避免销毁后仍触发加载。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _load();
+    });
   }
 
   @override
@@ -290,35 +294,52 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       _loadError = null;
     });
     try {
-      final ping = await _facade.ping();
-      final version = await _facade.version();
-      // 只读展示数据，失败不影响主状态（best-effort）。
-      final profiles = await _safe(() => _facade.profileList());
-      final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 3));
-      final lan = await _safe(() => _facade.lanStatus());
-      final nodeList = await _safe(() => _facade.nodeList());
-      final shaper = await _safe(() => _facade.loadShaperConfig());
-      // 抓包门控配置（best-effort）：`null` = 模块未提供 `capture.*` → 区块禁用。
-      final capture = await _safe(() => _facade.captureConfigGet());
-      // 启动对账：`routing` 应用范围抓包与 VPN 分流不一致（漂移）→ 自动关闭抓包。
-      // 非 null 即发生了自动关闭，需把展示配置同步为关闭并提示用户。
+      // 首屏并行加载：以下读取彼此独立，用一次 `Future.wait` 并发发起，避免逐个
+      // `await` 造成约 16 次串行往返（time-to-content = 各往返之和）。
+      // `ping` / `version` 仍**不**包 `_safe`：它们负责把模块错误上抛给下方
+      // `ProxyModuleException` / `catch` 分支；`Future.wait` 默认会等全部完成后再
+      // 抛出首个错误，因此错误路径语义不变（best-effort 读取返回 null）。
+      final List<Object?> results = await Future.wait<Object?>(<Future<Object?>>[
+        _facade.ping(),
+        _facade.version(),
+        // 只读展示数据，失败不影响主状态（best-effort）。
+        _safe(() => _facade.profileList()),
+        _safe(() => _facade.statsTrafficGet(topDomains: 3)),
+        _safe(() => _facade.lanStatus()),
+        _safe(() => _facade.nodeList()),
+        _safe(() => _facade.loadShaperConfig()),
+        // 抓包门控配置（best-effort）：`null` = 模块未提供 `capture.*` → 区块禁用。
+        _safe(() => _facade.captureConfigGet()),
+        _safe<ProxyActiveNode?>(() => _nodeStore.read()),
+        // 用户选择的运行模式（与引擎上报的当前模式分离）。
+        _safe<ProxyMode?>(() => _runModeStore.read()),
+        // 用户选择的路由模式（新隧道默认 rule，连接后重放）。
+        _safe<ProxyRoutingMode?>(() => _routingStore.read()),
+      ]);
+      final ProxyPingResult ping = results[0] as ProxyPingResult;
+      final ProxyVersionInfo version = results[1] as ProxyVersionInfo;
+      final ProfileList? profiles = results[2] as ProfileList?;
+      final TrafficSnapshot? traffic = results[3] as TrafficSnapshot?;
+      final ProxyLanStatus? lan = results[4] as ProxyLanStatus?;
+      final NodeListResult? nodeList = results[5] as NodeListResult?;
+      final ProxyShaperSnapshot? shaper = results[6] as ProxyShaperSnapshot?;
+      final CaptureConfig? capture = results[7] as CaptureConfig?;
+      final ProxyActiveNode? activeNode = results[8] as ProxyActiveNode?;
+      final ProxyMode? storedRunMode = results[9] as ProxyMode?;
+      final ProxyRoutingMode? storedRouting = results[10] as ProxyRoutingMode?;
+
+      // 启动对账（依赖上一步 `capture`，保持批处理后串行）：`routing` 应用范围抓包
+      // 与 VPN 分流不一致（漂移）→ 自动关闭抓包。非 null 即发生了自动关闭，需把
+      // 展示配置同步为关闭并提示用户。
       final captureDrift = await _controller.reconcileCaptureAppScope();
       final captureCa =
           capture == null ? null : await _safe(() => _facade.captureCaGet());
 
-      // 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
-      // 持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
+      // 解析「当前订阅」（依赖 `profiles`）：优先沿用持久化 id；失效时若只剩 1 个
+      // 订阅则自动选中并持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
       final ProfileSummary? selected = await _resolveSelectedProfile(
         profiles?.profiles ?? const <ProfileSummary>[],
       );
-      final ProxyActiveNode? activeNode =
-          await _safe<ProxyActiveNode?>(() => _nodeStore.read());
-      // 用户选择的运行模式（与引擎上报的当前模式分离）。
-      final ProxyMode? storedRunMode =
-          await _safe<ProxyMode?>(() => _runModeStore.read());
-      // 用户选择的路由模式（新隧道默认 rule，连接后重放）。
-      final ProxyRoutingMode? storedRouting =
-          await _safe<ProxyRoutingMode?>(() => _routingStore.read());
 
       if (!mounted) return;
       setState(() {
