@@ -1,7 +1,7 @@
 /// 「请求调试」全屏请求编辑器（plan todo 31）。
 ///
 /// 结构：
-/// - 顶部：`Method 下拉 + URL + 发送`；
+/// - 顶部：`请求名称 + URL`，请求方法为 AppBar 右上角胶囊（点按弹出下拉列表）；
 /// - 分段：`参数 / 头 / 体 / 认证 / Cookie / 响应`（复用 [AppSegmentedButton]）；
 /// - 环境变量：URL 预览高亮（已定义解析、未定义红色标记）与「插入变量」；
 /// - 底部动作：`发送 / 保存 / 另存为 / 导出 cURL`；
@@ -1077,16 +1077,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             icon: const Icon(TablerIcons.arrow_left),
             onPressed: _handleLeave,
           ),
-          title: TextField(
-            key: const Key('request-editor-name'),
-            controller: _name,
-            textInputAction: TextInputAction.done,
-            decoration: const InputDecoration(
-              hintText: '请求名称',
-              border: InputBorder.none,
-            ),
-            onChanged: (_) => _markDirty(),
-          ),
+          title: const Text('接口详情'),
+          actions: <Widget>[_buildMethodBadge(context)],
         ),
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1105,48 +1097,58 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   Widget _buildTopBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // 方法 + URL 收进单个圆角「请求栏」，方法选择器不再自带边框，
-    // 与环境预览一起构成干净的一条顶部区域。
+    // 请求名称（紧凑、无边框）+ URL 请求栏：方法已上移到 AppBar 胶囊，
+    // 此处只保留名称与 URL，构成干净的一条顶部区域。
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          TextField(
+            key: const Key('request-editor-name'),
+            controller: _name,
+            textInputAction: TextInputAction.next,
+            style: Theme.of(context).textTheme.titleMedium,
+            decoration: InputDecoration(
+              hintText: '请求名称',
+              isDense: true,
+              border: InputBorder.none,
+              prefixIcon: Icon(
+                TablerIcons.pencil,
+                size: AppTypography.iconSM,
+                color: scheme.onSurfaceVariant,
+              ),
+              contentPadding: EdgeInsets.zero,
+            ),
+            onChanged: (_) => _markDirty(),
+          ),
+          const SizedBox(height: AppSpacing.sm),
           Container(
             padding: AppSpacing.allSM,
             decoration: BoxDecoration(
               color: scheme.surfaceContainerHighest,
               borderRadius: AppRadius.allMD,
             ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                _buildMethodDropdown(context),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: KeyedSubtree(
-                    key: const Key('request-editor-url'),
-                    child: AppEditableField(
-                      key: _urlFieldKey,
-                      controller: _url,
-                      mode: AppEditableFieldMode.sheet,
-                      label: '请求地址',
-                      hintText: 'https://api.example/path',
-                      textInputAction: TextInputAction.done,
-                      onSubmitted: (_) {
-                        // 先同步 URL 查询到参数行（sync-before-send），再发送：
-                        // 否则刚输入的 `?a=1&b=2` 会在 composeDraft 规范化时被丢弃。
-                        _syncParamsFromUrl();
-                        _send();
-                      },
-                      toolbarBuilder: _sheetToolbar(
-                        fieldKey: _urlFieldKey,
-                        allowInsertVar: true,
-                      ),
-                    ),
-                  ),
+            child: KeyedSubtree(
+              key: const Key('request-editor-url'),
+              child: AppEditableField(
+                key: _urlFieldKey,
+                controller: _url,
+                mode: AppEditableFieldMode.sheet,
+                label: '请求地址',
+                hintText: 'https://api.example/path',
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) {
+                  // 先同步 URL 查询到参数行（sync-before-send），再发送：
+                  // 否则刚输入的 `?a=1&b=2` 会在 composeDraft 规范化时被丢弃。
+                  _syncParamsFromUrl();
+                  _send();
+                },
+                toolbarBuilder: _sheetToolbar(
+                  fieldKey: _urlFieldKey,
+                  allowInsertVar: true,
                 ),
-              ],
+              ),
             ),
           ),
           _buildEnvPreview(context),
@@ -1155,37 +1157,83 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
   }
 
-  Widget _buildMethodDropdown(BuildContext context) {
-    // 非标准方法（如 PROPFIND）：把自定义值补进下拉选项，避免 DropdownButton
-    // 因 value 不在 items 中断言失败，从而保留方法字符串（todo 13）。
+  /// AppBar 右上角的方法胶囊：展示当前 [_method]，点按弹出方法下拉列表。
+  ///
+  /// 非标准方法（如 PROPFIND）会被补进列表首位，保留自定义方法字符串（todo 13）。
+  /// 颜色一律取自主题令牌，按方法语义区分容器 / 前景色对。
+  Widget _buildMethodBadge(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final methods = _httpMethods.contains(_method)
         ? _httpMethods
         : <String>[_method, ..._httpMethods];
-    // 无独立边框：作为请求栏容器内的紧凑选择器（水平内边距与 URL 文本对齐）。
+    final (Color background, Color foreground) = _methodBadgeColors(scheme);
     return Padding(
-      padding: AppSpacing.onlyHorizontalSM,
-      child: DropdownButton<String>(
+      padding: AppSpacing.onlyRightSM,
+      child: PopupMenuButton<String>(
         key: const Key('request-editor-method'),
-        value: _method,
-        underline: const SizedBox.shrink(),
-        borderRadius: AppRadius.allMD,
-        items: methods
-            .map(
-              (method) => DropdownMenuItem<String>(
-                value: method,
-                child: Text(method),
-              ),
-            )
-            .toList(),
-        onChanged: (value) {
-          if (value == null || value == _method) return;
+        tooltip: '请求方法',
+        onSelected: (value) {
+          if (value == _method) return;
           setState(() {
             _method = value;
             _dirty = true;
           });
         },
+        itemBuilder: (_) => methods
+            .map(
+              (method) => PopupMenuItem<String>(
+                value: method,
+                child: Text(method),
+              ),
+            )
+            .toList(),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: background,
+            borderRadius: AppRadius.allCircle,
+          ),
+          child: Padding(
+            padding: AppSpacing.horizontalMD_verticalXS,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _method,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: foreground,
+                    fontWeight: AppTypography.weightSemiBold,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Icon(
+                  TablerIcons.chevron_down,
+                  size: AppTypography.iconSM,
+                  color: foreground,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
+  }
+
+  /// 方法语义 → 主题色对（容器色 / 前景色）；未知方法用中性表面色。
+  (Color, Color) _methodBadgeColors(ColorScheme scheme) {
+    switch (_method) {
+      case 'GET':
+        return (scheme.primaryContainer, scheme.onPrimaryContainer);
+      case 'POST':
+        return (scheme.tertiaryContainer, scheme.onTertiaryContainer);
+      case 'PUT':
+      case 'PATCH':
+        return (scheme.secondaryContainer, scheme.onSecondaryContainer);
+      case 'DELETE':
+        return (scheme.errorContainer, scheme.onErrorContainer);
+      default:
+        return (scheme.surfaceContainerHighest, scheme.onSurfaceVariant);
+    }
   }
 
   Widget _buildEnvPreview(BuildContext context) {

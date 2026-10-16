@@ -1117,14 +1117,13 @@ void main() {
         collectionId: collection.id,
       );
 
-      // 下拉当前值仍是自定义方法（未被回退成 GET）。
+      // 方法胶囊当前展示仍是自定义方法（未被回退成 GET）。
       expect(
-        tester
-            .widget<DropdownButton<String>>(
-              find.byKey(const Key('request-editor-method')),
-            )
-            .value,
-        'PROPFIND',
+        find.descendant(
+          of: find.byKey(const Key('request-editor-method')),
+          matching: find.text('PROPFIND'),
+        ),
+        findsOneWidget,
       );
 
       await _tapMore(tester, const Key('request-editor-save'));
