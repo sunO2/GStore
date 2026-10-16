@@ -48,6 +48,10 @@ pub struct BrowseEntry {
     /// 是否以 STORED（不压缩）存放
     pub stored: bool,
     /// 类型标签：dir/zip/apk/jar/dex/so/image/text/json/font/cert/video/audio/binary…
+    ///
+    /// `cert` 覆盖证书与密钥库扩展名：PEM/DER 证书（`pem`/`der`/`crt`/`cer`）、
+    /// PKCS#7（`p7b`/`p7c`/`p7s`）以及 keystore 容器
+    /// （`p12`/`pfx`/`jks`/`bks`/`keystore`/`jceks`）。
     pub kind: String,
     /// 是否可进入（仅 zip 家族）
     pub browsable: bool,
@@ -351,7 +355,8 @@ fn classify(path: &str) -> &'static str {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" | "heic"
         | "avif" => "image",
         "ttf" | "otf" | "ttc" | "woff" | "woff2" => "font",
-        "pem" | "der" | "crt" | "cer" | "p12" | "pfx" | "jks" | "bks" => "cert",
+        "pem" | "der" | "crt" | "cer" | "p12" | "pfx" | "jks" | "bks" | "p7b" | "p7c"
+        | "p7s" | "keystore" | "jceks" => "cert",
         "mp4" | "webm" | "mkv" | "3gp" | "mov" | "avi" | "flv" | "m4v" | "ts" => "video",
         "mp3" | "ogg" | "wav" | "m4a" | "aac" | "flac" | "opus" | "mid" | "midi" => "audio",
         "json" => "json",
@@ -579,5 +584,15 @@ mod tests {
         assert!(split_chain("").is_empty());
         assert_eq!(split_chain("a.zip").len(), 1);
         assert_eq!(split_chain("a.zip\u{1}b/c.zip").len(), 2);
+    }
+
+    #[test]
+    fn classify_cert_exts() {
+        assert_eq!(classify("x.p7b"), "cert");
+        assert_eq!(classify("x.p7c"), "cert");
+        assert_eq!(classify("x.p7s"), "cert");
+        assert_eq!(classify("x.keystore"), "cert");
+        assert_eq!(classify("x.jceks"), "cert");
+        assert_eq!(classify("x.bin"), "binary");
     }
 }
