@@ -860,3 +860,252 @@ class ApkExportedEntry {
     required this.outPath,
   });
 }
+
+// ==================== 证书解析 ====================
+// 模块方法：parse_certificate
+// 契约：Frozen JSON schema (CertInfo v1)（.omo/plans/apk-browser-cert-preview.md）
+// 字段名为 Dart 侧 camelCase，与 Rust 线格式的 snake_case 一一对应。
+
+/// 证书解析状态（模块 `status` 字段）
+enum CertInfoStatus {
+  /// 解析成功，`certificates` 非空
+  ok('ok'),
+
+  /// 容器受密码保护，需要密码
+  passwordRequired('password_required'),
+
+  /// 提供了错误的密码
+  badPassword('bad_password'),
+
+  /// 非空且无任何已知魔数，无法识别
+  unrecognized('unrecognized'),
+
+  /// 结构性失败（损坏 / 截断 / 空输入）
+  malformed('malformed'),
+
+  /// 已识别但本模块不支持解析（BKS/JCEKS/BER/私钥/公钥等）
+  unsupported('unsupported');
+
+  const CertInfoStatus(this.wire);
+
+  /// 线格式字符串（snake_case）
+  final String wire;
+
+  /// 线格式字符串 → 枚举；未知值回落 [unrecognized]
+  static CertInfoStatus fromWire(String value) {
+    for (final status in CertInfoStatus.values) {
+      if (status.wire == value) return status;
+    }
+    return CertInfoStatus.unrecognized;
+  }
+}
+
+/// 证书容器格式（模块 `format` 字段）
+enum CertFormat {
+  pem('pem'),
+  der('der'),
+  pkcs7('pkcs7'),
+  pkcs12('pkcs12'),
+  jks('jks'),
+  bks('bks'),
+  jceks('jceks'),
+  unknown('unknown');
+
+  const CertFormat(this.wire);
+
+  /// 线格式字符串（snake_case）
+  final String wire;
+
+  /// 线格式字符串 → 枚举；未知值回落 [unknown]
+  static CertFormat fromWire(String value) {
+    for (final format in CertFormat.values) {
+      if (format.wire == value) return format;
+    }
+    return CertFormat.unknown;
+  }
+}
+
+/// 证书解析结果（模块 parse_certificate 响应）
+class CertInfo {
+  /// 解析状态
+  final CertInfoStatus status;
+
+  /// 识别到的容器格式
+  final CertFormat format;
+
+  /// 容器是否加密（未知为 false）
+  final bool passwordProtected;
+
+  /// 非 `ok` 时的人类可读说明（永不含密码）
+  final String message;
+
+  /// 解析出的证书（未解析格式为 `[]`）
+  final List<CertEntry> certificates;
+
+  const CertInfo({
+    required this.status,
+    required this.format,
+    required this.passwordProtected,
+    required this.message,
+    required this.certificates,
+  });
+}
+
+/// 单张 X.509 证书的解析结果
+class CertEntry {
+  /// 主体
+  final CertName subject;
+
+  /// 颁发者
+  final CertName issuer;
+
+  /// 序列号（十六进制，小写无分隔）
+  final String serialNumberHex;
+
+  /// 生效时间（RFC3339 UTC；缺失为 ""）
+  final String notBefore;
+
+  /// 失效时间（RFC3339 UTC；缺失为 ""）
+  final String notAfter;
+
+  /// 签名算法
+  final String signatureAlgorithm;
+
+  /// 公钥算法
+  final String publicKeyAlgorithm;
+
+  /// 公钥位数（0 = 未知）
+  final int publicKeyBits;
+
+  /// 公钥曲线（非 EC 为 ""）
+  final String publicKeyCurve;
+
+  /// X.509 版本号
+  final int version;
+
+  /// Subject Alternative Name 列表
+  final List<CertSan> san;
+
+  /// Subject Key Identifier（大写冒号分隔）
+  final String subjectKeyIdentifier;
+
+  /// Authority Key Identifier（大写冒号分隔）
+  final String authorityKeyIdentifier;
+
+  /// Key Usage 枚举字符串列表
+  final List<String> keyUsage;
+
+  /// Extended Key Usage 枚举字符串列表
+  final List<String> extendedKeyUsage;
+
+  /// Basic Constraints
+  final CertBasicConstraints basicConstraints;
+
+  /// CRL Distribution Points
+  final List<String> crlDistributionPoints;
+
+  /// Authority Information Access
+  final List<CertAia> authorityInfoAccess;
+
+  /// SHA-256 指纹（大写冒号分隔）
+  final String sha256Fingerprint;
+
+  /// SHA-1 指纹（大写冒号分隔）
+  final String sha1Fingerprint;
+
+  /// PEM armor
+  final String pem;
+
+  const CertEntry({
+    required this.subject,
+    required this.issuer,
+    required this.serialNumberHex,
+    required this.notBefore,
+    required this.notAfter,
+    required this.signatureAlgorithm,
+    required this.publicKeyAlgorithm,
+    required this.publicKeyBits,
+    required this.publicKeyCurve,
+    required this.version,
+    required this.san,
+    required this.subjectKeyIdentifier,
+    required this.authorityKeyIdentifier,
+    required this.keyUsage,
+    required this.extendedKeyUsage,
+    required this.basicConstraints,
+    required this.crlDistributionPoints,
+    required this.authorityInfoAccess,
+    required this.sha256Fingerprint,
+    required this.sha1Fingerprint,
+    required this.pem,
+  });
+}
+
+/// X.509 名称（主体 / 颁发者）
+class CertName {
+  /// Common Name（无则 ""）
+  final String commonName;
+
+  /// RFC4514 风格全串
+  final String full;
+
+  /// 逐字段明细
+  final List<CertNameField> fields;
+
+  const CertName({
+    required this.commonName,
+    required this.full,
+    required this.fields,
+  });
+}
+
+/// X.509 名称中的单个 RDN 字段
+class CertNameField {
+  /// 对象标识符
+  final String oid;
+
+  /// 短名（如 CN / O / C）
+  final String name;
+
+  /// 字段值
+  final String value;
+
+  const CertNameField({
+    required this.oid,
+    required this.name,
+    required this.value,
+  });
+}
+
+/// Subject Alternative Name 条目
+class CertSan {
+  /// 类型：DNS/IP/EMAIL/URI/OTHER
+  final String type;
+
+  /// 值
+  final String value;
+
+  const CertSan({required this.type, required this.value});
+}
+
+/// Basic Constraints 扩展
+class CertBasicConstraints {
+  /// 是否为 CA
+  final bool isCa;
+
+  /// 路径长度约束（可为 null）
+  final int? pathLen;
+
+  const CertBasicConstraints({required this.isCa, this.pathLen});
+}
+
+/// Authority Information Access 条目
+class CertAia {
+  /// 类型：OCSP/caIssuers
+  final String type;
+
+  /// URL
+  final String url;
+
+  const CertAia({required this.type, required this.url});
+}
