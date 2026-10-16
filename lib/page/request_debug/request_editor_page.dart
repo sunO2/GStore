@@ -121,6 +121,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   DebugCancellationToken? _cancelToken;
   bool _dirty = false;
 
+  /// 当前分段内容滚动越过阈值时收起顶部 URL 栏，回到顶部时展开。
+  /// 仅影响顶部栏的显示高度（URL 编辑走底部弹层，不打断编辑）。
+  bool _urlCollapsed = false;
+
   /// 请求体 JSON 格式化失败的内联错误；成功格式化或再次编辑后清除。
   String? _bodyError;
 
@@ -1078,10 +1082,34 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildTopBar(context),
+            // 顶部 URL 栏：分段内容向上滚动越过阈值时收起（动画），回到顶部还原。
+            AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              alignment: Alignment.topCenter,
+              child: _urlCollapsed
+                  ? const SizedBox(width: double.infinity)
+                  : _buildTopBar(context),
+            ),
             _buildSegmentSwitch(context),
             const Divider(height: 1),
-            Expanded(child: _buildSegmentBody(context)),
+            Expanded(
+              // 监听任意后代可滚动区域的滚动通知：无需 controller 即可驱动收起。
+              child: NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  if (notification is ScrollUpdateNotification ||
+                      notification is ScrollMetricsNotification) {
+                    final bool collapsed = notification.metrics.pixels > 24;
+                    if (collapsed != _urlCollapsed) {
+                      setState(() => _urlCollapsed = collapsed);
+                    }
+                  }
+                  // 不消费通知：让滚动继续传递给其它监听者。
+                  return false;
+                },
+                child: _buildSegmentBody(context),
+              ),
+            ),
             const Divider(height: 1),
             _buildBottomActions(context),
           ],

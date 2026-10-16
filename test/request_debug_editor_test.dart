@@ -1210,6 +1210,63 @@ void main() {
     });
   });
 
+  group('请求编辑器 · URL 栏随滚动收起', () {
+    testWidgets('分段内容上滑越过阈值 → 顶部 URL 行收起；回到顶部还原', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-collapse',
+          name: 'collapse',
+          method: 'GET',
+          url: 'https://api.example/list',
+          query: <DebugQueryParam>[
+            for (int i = 0; i < 40; i++)
+              DebugQueryParam(name: 'k$i', value: 'v$i'),
+          ],
+        ),
+      )!;
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      // 初始：顶部 URL 行可见，分段内容可滚动。
+      expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
+      final list = find.byType(ReorderableListView);
+      expect(list, findsOneWidget);
+
+      // 上滑参数列表越过 24px 阈值 → URL 行收起（子树消失，而非仅平移）。
+      await tester.drag(list, const Offset(0, -300));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-editor-url')),
+        findsNothing,
+        reason: '分段内容上滑后顶部 URL 行应收起',
+      );
+      // 分段切换（主 tab 栏）保持可见。
+      expect(
+        find.byKey(const Key('request-editor-segment-params')),
+        findsOneWidget,
+        reason: '主 tab 栏必须常驻可见',
+      );
+
+      // 下滑回顶部 → URL 行还原。
+      await tester.drag(list, const Offset(0, 800));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-editor-url')),
+        findsOneWidget,
+        reason: '回到顶部后顶部 URL 行应还原',
+      );
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('设计系统约束', () {
     testWidgets('编辑器分区使用 AppSegmentedButton（分段 参数/头/体/认证/Cookie/响应）',
         (tester) async {
