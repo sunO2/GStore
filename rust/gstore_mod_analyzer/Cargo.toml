@@ -2,6 +2,7 @@
 name = "gstore_mod_analyzer"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 
 [lib]
 name = "gstore_mod_analyzer"
@@ -25,6 +26,14 @@ apk-info-xml = "=1.0.11"
 libc = "0.2"
 # 日志（debug_print 宏）
 log = "0.4"
+# X.509 证书解析（parse-only：默认 feature 为空 []，不启用 verify/verify-aws → 无加密后端）
+x509-parser = { version = "0.18", default-features = false }
+# SHA-1 指纹（仓库既有大写冒号分隔格式）
+sha1 = "0.11"
+# PKCS#12(.p12/.pfx) 解析（传递引入 cms，故不直接依赖 cms）
+p12-keystore = "0.4"
+# JKS 解析（default-features=false 必须：默认 `pkcs12` feature 会拉入 p12-keystore 0.3.2 → 与 jks 0.3.3 不兼容、编译失败并重复引入 P12 栈）
+jks = { version = "0.3", default-features = false }
 
 # 模块发布构建：panic 必须 unwind（宿主是 abort），边界 catch_unwind 兜底
 [profile.release]
