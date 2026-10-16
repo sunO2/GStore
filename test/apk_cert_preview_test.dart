@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/rust/Contract.dart' show decodeCertInfo;
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
+import 'package:gstore/core/service/apk_browser_service.dart';
 
 /// 全字段内联金样本（构造样式对齐 Frozen JSON schema (CertInfo v1)）。
 ///
@@ -181,6 +182,28 @@ void main() {
       // basic_constraints 缺失 → isCa=false, pathLen=null
       expect(cert.basicConstraints.isCa, isFalse);
       expect(cert.basicConstraints.pathLen, isNull);
+    });
+  });
+
+  group('service parseCertificate', () {
+    // 限制：`ApkBrowserService` 无（也不需要）可注入 decoder 缝——它是直接转发
+    // `AnalyzerRustDecoder` 的宿主薄封装（见 apk_browser_service.dart）。因此这里
+    // 无法把假 decoder 注入去断言「返回非 null 的 malformed CertInfo」（那需给服务
+    // 加注入面，属越界）。测试环境无 analyzer 模块 → 转发链返回 null；本组锁定
+    // 「模块不可用 = null 且不抛」这一真实行为。
+    test('模块不可用：返回 null 且不抛', () async {
+      final result = await ApkBrowserService.instance.parseCertificate(
+        '/nonexistent/cert.pem',
+      );
+      expect(result, isNull);
+    });
+
+    test('携带密码转发：模块不可用仍返回 null 且不抛', () async {
+      final result = await ApkBrowserService.instance.parseCertificate(
+        '/nonexistent/store.p12',
+        password: 'secret',
+      );
+      expect(result, isNull);
     });
   });
 }

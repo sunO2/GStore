@@ -114,6 +114,24 @@ class ApkBrowserService {
     return head + utf8.decode(bytes, allowMalformed: true);
   }
 
+  /// 解析**已导出**的证书 / 证书容器文件（复用 [exportToCache]/[exportEntry] 的落地路径）。
+  ///
+  /// [exportedPath] 是 [exportToCache]/[exportEntry] 返回的缓存**绝对路径**——
+  /// 本方法**不再重新导出**，只把该路径（与可选 [password]）薄转发给
+  /// [AnalyzerRustDecoder.parseCertificate]。
+  ///
+  /// 返回 null = 分析模块不可用（调用方应降级提示）；解析失败（损坏/需密码等）
+  /// 属 Rust `Ok(status=...)`，此处仍返回**非 null** 的 [CertInfo]。
+  Future<CertInfo?> parseCertificate(
+    String exportedPath, {
+    String password = '',
+  }) {
+    return AnalyzerRustDecoder.parseCertificate(
+      exportedPath,
+      password: password,
+    );
+  }
+
   /// 清空导出缓存（浏览器页退出时可调用）
   Future<void> clearCache() async {
     final dir = _cacheDir;
