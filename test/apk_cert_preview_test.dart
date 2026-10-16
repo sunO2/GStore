@@ -696,4 +696,164 @@ void main() {
       expect(selectableText(tester), contains(lastOffsetLine(read)));
     });
   });
+
+  group('password sheet flow', () {
+    // Todo 16：加密容器的统一底部密码层（`AppSheet.showCustom`）。
+    // 经注入缝提供假 preparer：无密码 → password_required；正确密码 → ok 字段卡；
+    // 错误密码 → bad_password。全程不依赖真机 / Rust 模块。
+
+    ApkBrowsableEntry certEntry() => const ApkBrowsableEntry(
+          path: 'META-INF/store.p12',
+          name: 'store.p12',
+          isDir: false,
+          size: 200,
+          compressedSize: 180,
+          crc32: 0xabcdef,
+          stored: false,
+          kind: 'cert',
+          browsable: false,
+        );
+
+    CertInfo passwordRequired() => const CertInfo(
+          status: CertInfoStatus.passwordRequired,
+          format: CertFormat.pkcs12,
+          passwordProtected: true,
+          message: '',
+          certificates: [],
+        );
+
+    CertInfo badPassword() => const CertInfo(
+          status: CertInfoStatus.badPassword,
+          format: CertFormat.pkcs12,
+          passwordProtected: true,
+          message: '密码错误',
+          certificates: [],
+        );
+
+    /// 假 preparer：按传入密码返回不同解析结果，并把每次收到的密码记入 [seen]。
+    ApkEntryPreparer fakePreparer(List<String?> seen) {
+      return ({
+        required String apkPath,
+        required ApkBrowsableEntry entry,
+        required String containerChain,
+        String? password,
+      }) async {
+        seen.add(password);
+        final bytes = Uint8List.fromList([0x30, 0x82, 0x01]);
+        final CertInfo info;
+        if (password == null || password.isEmpty) {
+          info = passwordRequired();
+        } else if (password == 'changeit') {
+          info = _certInfoOk();
+        } else {
+          info = badPassword();
+        }
+        return ApkEntryPreviewData(
+          path: '/tmp/store.p12',
+          size: bytes.length,
+          crc32: 1,
+          bytes: bytes,
+          certInfo: info,
+        );
+      };
+    }
+
+    Future<void> pumpCert(WidgetTester tester, ApkEntryPreparer preparer) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(),
+            preparer: preparer,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('password_required → 打开底部密码层（obscureText + 确认/取消）', (tester) async {
+      await pumpCert(tester, fakePreparer(<String?>[]));
+
+      expect(find.text('需要密码'), findsOneWidget);
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+
+      // 统一底部弹层：单行密码输入 + obscureText + 确认/取消
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.obscureText, isTrue);
+      expect(find.widgetWithText(TextButton, '取消'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '确认'), findsOneWidget);
+      // 不得使用裸 showDialog（本应用弹层统一 BottomSheet）
+      expect(find.byType(BottomSheet), findsOneWidget);
+    });
+
+    testWidgets('正确密码 → 重新 prepare 并刷新为字段卡', (tester) async {
+      final seen = <String?>[];
+      await pumpCert(tester, fakePreparer(seen));
+      expect(seen, [null]);
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'changeit');
+      await tester.tap(find.byKey(const Key('apk-cert-password-confirm')));
+      await tester.pumpAndSettle();
+
+      // 带密码重解析（缝收到密码）
+      expect(seen, [null, 'changeit']);
+      expect(find.text('证书字段'), findsOneWidget);
+      expect(find.text('需要密码'), findsNothing);
+      expect(find.textContaining('CN=example.com'), findsWidgets);
+    });
+
+    testWidgets('错误密码：自动重试一次后内联提示（无死循环）', (tester) async {
+      final seen = <String?>[];
+      await pumpCert(tester, fakePreparer(seen));
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'wrong1');
+      await tester.tap(find.byKey(const Key('apk-cert-password-confirm')));
+      await tester.pumpAndSettle();
+
+      // 第一次错误 → 自动重开一次密码层
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'wrong2');
+      await tester.tap(find.byKey(const Key('apk-cert-password-confirm')));
+      await tester.pumpAndSettle();
+
+      // 第二次错误 → 不再自动重弹，转为内联提示
+      expect(seen, [null, 'wrong1', 'wrong2']);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('密码错误'), findsWidgets);
+    });
+
+    testWidgets('取消 → 容器信息 + 原始查看器（保留原文/Hex）', (tester) async {
+      await pumpCert(tester, fakePreparer(<String?>[]));
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, '取消'));
+      await tester.pumpAndSettle();
+
+      // 降级：容器信息卡 + 原始查看器，不再提示输入密码
+      expect(find.text('容器格式：PKCS#12'), findsOneWidget);
+      expect(find.text('未提供密码，仅显示原始内容。'), findsOneWidget);
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '输入密码'), findsNothing);
+    });
+
+    testWidgets('留空确认 → 同样降级为容器信息 + 原始查看器', (tester) async {
+      await pumpCert(tester, fakePreparer(<String?>[]));
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('apk-cert-password-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('容器格式：PKCS#12'), findsOneWidget);
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+    });
+  });
 }

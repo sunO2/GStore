@@ -7,6 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/logger/LogManager.dart';
@@ -166,6 +167,12 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   /// 证书原始内容视图（「原文」/「Hex」）；仅证书条目使用。
   _CertRawView _certRawView = _CertRawView.text;
 
+  /// 密码流状态（Todo 16）：
+  /// - [_passwordCancelled]：用户取消 / 留空 → 降级为容器信息 + 原始查看器；
+  /// - [_passwordError]：错误密码重试耗尽后的内联提示（非空即不再自动重弹，杜绝死循环）。
+  bool _passwordCancelled = false;
+  String? _passwordError;
+
   /// 已加载的字体族（字体预览用）
   String? _fontFamily;
 
@@ -177,13 +184,14 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
 
   String get _kind => widget.entry.kind;
 
-  Future<void> _prepare() async {
+  Future<void> _prepare({String? password}) async {
     try {
       final preparer = widget.preparer ?? defaultApkEntryPreparer;
       final data = await preparer(
         apkPath: widget.apkPath,
         entry: widget.entry,
         containerChain: widget.containerChain,
+        password: password,
       );
       if (!mounted) return;
       if (data == null) {
@@ -199,6 +207,14 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
         _fileSize = data.size;
         certInfo = data.certInfo;
         _error = data.error;
+        // 解析成功（非「需要密码 / 密码错误」）→ 清除密码流降级 / 错误态，
+        // 否则重解析后的字段卡不会残留旧的密码提示。
+        final status = data.certInfo?.status;
+        if (status != CertInfoStatus.passwordRequired &&
+            status != CertInfoStatus.badPassword) {
+          _passwordCancelled = false;
+          _passwordError = null;
+        }
         // 初次/重解析后按内容选默认原始视图（文本含 PEM 头 → 原文，否则 Hex）。
         _certRawView = _defaultCertRawViewFor(data.bytes);
         _loading = false;
@@ -278,7 +294,7 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: AppLoading(size: AppLoadingSize.large))
           : ListView(
               padding: AppSpacing.onlyVerticalSM,
               children: [
@@ -714,13 +730,19 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
     );
   }
 
-  /// `password_required` / `bad_password`：提示 + 密码入口（底部弹层见 Todo 16）。
+  /// `password_required` / `bad_password`：提示 + 密码入口（统一底部弹层，见 Todo 16）。
+  ///
+  /// - 用户取消 / 留空 → 降级为「容器信息 + 原始查看器」（[_certPasswordDegradedCard]）；
+  /// - 错误密码自动重试一次后 → 内联错误提示（不再自动重弹，杜绝死循环）。
   Widget _certPasswordCard(CertInfo info) {
+    if (_passwordCancelled) return _certPasswordDegradedCard(info);
     final theme = Theme.of(context);
     final bad = info.status == CertInfoStatus.badPassword;
-    final message = info.message.isNotEmpty
-        ? info.message
-        : (bad ? '密码错误，请重新输入。' : '该证书容器受密码保护，需输入密码才能解析字段。');
+    final exhausted = _passwordError != null;
+    final message = _passwordError ??
+        (info.message.isNotEmpty
+            ? info.message
+            : (bad ? '密码错误，请重新输入。' : '该证书容器受密码保护，需输入密码才能解析字段。'));
     return AppCard(
       margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
       child: Column(
@@ -732,23 +754,88 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(message, style: theme.textTheme.bodySmall),
-          const SizedBox(height: AppSpacing.sm),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: _requestPasswordEntry,
-              icon: const Icon(TablerIcons.lock),
-              label: Text(bad ? '重新输入密码' : '输入密码'),
+          if (!exhausted) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _requestPasswordEntry,
+                icon: const Icon(TablerIcons.lock),
+                label: Text(bad ? '重新输入密码' : '输入密码'),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
   }
 
-  /// 密码入口占位：Todo 16 接入统一底部密码层后在此弹出。
-  void _requestPasswordEntry() {
-    appLog.debug('ApkEntryPreviewPage: 请求证书容器密码（底部密码层见 Todo 16）');
+  /// 取消 / 留空密码后的降级卡：容器信息 + （下方）原始查看器。
+  Widget _certPasswordDegradedCard(CertInfo info) {
+    final theme = Theme.of(context);
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '容器格式：${_certFormatLabel(info.format)}',
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text('未提供密码，仅显示原始内容。', style: theme.textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+
+  /// 密码入口：弹出统一底部密码层，确认后带密码重解析并刷新字段卡。
+  ///
+  /// 重试策略：错误密码自动重弹**一次**；仍错误则落 `_passwordError` 内联提示。
+  Future<void> _requestPasswordEntry() async {
+    if (mounted) {
+      setState(() {
+        _passwordCancelled = false;
+        _passwordError = null;
+      });
+    }
+    await _promptPassword(remainingRetries: 1);
+  }
+
+  Future<void> _promptPassword({required int remainingRetries}) async {
+    final info = certInfo;
+    final result = await AppSheet.showCustom<String>(
+      context: context,
+      builder: (_) => _CertPasswordSheet(
+        isRetry: info?.status == CertInfoStatus.badPassword,
+      ),
+    );
+    if (!mounted) return;
+    final password = (result ?? '').trim();
+    if (password.isEmpty) {
+      // 取消 / 留空 → 降级为容器信息 + 原始查看器。
+      setState(() {
+        _passwordCancelled = true;
+        _passwordError = null;
+      });
+      return;
+    }
+    setState(() => _loading = true);
+    await _prepare(password: password);
+    if (!mounted) return;
+    final wrong =
+        _error == null && certInfo?.status == CertInfoStatus.badPassword;
+    if (wrong && remainingRetries > 0) {
+      await _promptPassword(remainingRetries: remainingRetries - 1);
+      return;
+    }
+    if (wrong) {
+      final msg = certInfo?.message ?? '';
+      setState(() {
+        _passwordError =
+            msg.isNotEmpty ? msg : '密码错误，无法解析该容器的证书字段。';
+      });
+    }
   }
 
   /// `unsupported`：容器类型提示（BKS/JCEKS/PKCS#12/BER/私钥/公钥等）。
@@ -901,6 +988,71 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 证书容器密码输入弹层（Todo 16）。
+///
+/// 统一走 [AppSheet.showCustom] + [AppSheetScaffold]（AGENTS.md：弹层一律走统一
+/// 底部弹层，禁止 `showDialog` / `Get.defaultDialog` / 手写 `showModalBottomSheet`）。
+/// 确认返回去空白后的密码字符串；取消 / 关闭返回 `null`。
+class _CertPasswordSheet extends StatefulWidget {
+  const _CertPasswordSheet({required this.isRetry});
+
+  /// 是否为「密码错误后重试」态（影响标题 / 副标题文案）。
+  final bool isRetry;
+
+  @override
+  State<_CertPasswordSheet> createState() => _CertPasswordSheetState();
+}
+
+class _CertPasswordSheetState extends State<_CertPasswordSheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final value = _controller.text;
+    Navigator.of(context).pop(value.trim().isEmpty ? null : value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: widget.isRetry ? '密码错误' : '输入密码',
+      subtitle: widget.isRetry
+          ? '密码不正确，请重新输入容器密码。'
+          : '该证书容器受密码保护，输入密码以解析证书字段。',
+      icon: const Icon(TablerIcons.lock),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: TextField(
+        key: const Key('apk-cert-password-field'),
+        controller: _controller,
+        autofocus: true,
+        obscureText: true,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(
+          labelText: '密码',
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: (_) => _confirm(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('apk-cert-password-confirm'),
+          onPressed: _confirm,
+          child: const Text('确认'),
+        ),
+      ],
     );
   }
 }
