@@ -1,0 +1,181 @@
+{
+  "status": "ok",
+  "format": "pem",
+  "password_protected": false,
+  "message": "",
+  "certificates": [
+    {
+      "subject": {
+        "common_name": "example.com",
+        "full": "CN=example.com, O=Example Org, C=US",
+        "fields": [
+          {
+            "oid": "2.5.4.3",
+            "name": "CN",
+            "value": "example.com"
+          },
+          {
+            "oid": "2.5.4.10",
+            "name": "O",
+            "value": "Example Org"
+          },
+          {
+            "oid": "2.5.4.6",
+            "name": "C",
+            "value": "US"
+          }
+        ]
+      },
+      "issuer": {
+        "common_name": "example.com",
+        "full": "CN=example.com, O=Example Org, C=US",
+        "fields": [
+          {
+            "oid": "2.5.4.3",
+            "name": "CN",
+            "value": "example.com"
+          },
+          {
+            "oid": "2.5.4.10",
+            "name": "O",
+            "value": "Example Org"
+          },
+          {
+            "oid": "2.5.4.6",
+            "name": "C",
+            "value": "US"
+          }
+        ]
+      },
+      "serial_number_hex": "78853cd0d49c66a421b79748d9133f666b72c698",
+      "not_before": "2026-10-16T16:56:31Z",
+      "not_after": "2036-10-13T16:56:31Z",
+      "signature_algorithm": "sha256WithRSAEncryption (1.2.840.113549.1.1.11)",
+      "public_key_algorithm": "RSA",
+      "public_key_bits": 2048,
+      "public_key_curve": "",
+      "version": 3,
+      "san": [
+        {
+          "type": "DNS",
+          "value": "example.com"
+        },
+        {
+          "type": "DNS",
+          "value": "www.example.com"
+        },
+        {
+          "type": "IP",
+          "value": "127.0.0.1"
+        },
+        {
+          "type": "EMAIL",
+          "value": "admin@example.com"
+        },
+        {
+          "type": "URI",
+          "value": "https://example.com/"
+        }
+      ],
+      "subject_key_identifier": "14:F7:85:C5:17:E9:A9:CE:C1:D0:63:DD:FB:D7:8B:CF:6A:A2:72:82",
+      "authority_key_identifier": "",
+      "key_usage": [
+        "digitalSignature",
+        "keyEncipherment"
+      ],
+      "extended_key_usage": [
+        "serverAuth",
+        "clientAuth"
+      ],
+      "basic_constraints": {
+        "is_ca": false,
+        "path_len": null
+      },
+      "crl_distribution_points": [
+        "http://crl.example.com/a.crl"
+      ],
+      "authority_info_access": [
+        {
+          "type": "OCSP",
+          "url": "http://ocsp.example.com"
+        },
+        {
+          "type": "caIssuers",
+          "url": "http://ca.example.com/ca.crt"
+        }
+      ],
+      "sha256_fingerprint": "64:77:9E:22:81:E3:C4:89:3A:D6:2A:F0:FD:07:E4:51:FB:FE:69:87:21:69:06:E2:23:C7:9F:6B:63:FF:D0:2E",
+      "sha1_fingerprint": "E7:F1:35:AF:AB:4D:E2:18:46:2E:A3:62:7E:FA:AF:AA:E4:29:E6:77",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIEpTCCA42gAwIBAgIUeIU80NScZqQht5dI2RM/ZmtyxpgwDQYJKoZIhvcNAQEL\nBQAwOTEUMBIGA1UEAwwLZXhhbXBsZS5jb20xFDASBgNVBAoMC0V4YW1wbGUgT3Jn\nMQswCQYDVQQGEwJVUzAeFw0yNjEwMTYxNjU2MzFaFw0zNjEwMTMxNjU2MzFaMDkx\nFDASBgNVBAMMC2V4YW1wbGUuY29tMRQwEgYDVQQKDAtFeGFtcGxlIE9yZzELMAkG\nA1UEBhMCVVMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC2IkuQtwgT\nGpWoJ2l3x9pzatGp2ed2PXBxO2I/JWJ8lZQk5ubk9YKCJZsMDEzGgl+AoRzxy3YY\n8dsgLUlIl3i8QojTCE/S7vCsNqScYeLq0ZrguQhpNIJ6W3+sEK34hppGBdaxHP90\ndATZ22pYwLGI2zIyBCxdXk8djjLvprYMQx8I2W7qVlOGwiGwsdlkHmeZyCCKXtcm\nawNNuCg97F9ExO8raH0wi0wJsw3xTpSZVYzuMZ/c4vdhQTlaJVXZ4tx+4sBDdiZh\nVAqBiAV0ZRv0XSAdIq8B+N844KIi3LfgvQhEKV1+9MDGbT1eipsJADX+/vKA4A5u\nl+HK3Ej5Hv6VAgMBAAGjggGjMIIBnzBWBgNVHREETzBNggtleGFtcGxlLmNvbYIP\nd3d3LmV4YW1wbGUuY29thwR/AAABgRFhZG1pbkBleGFtcGxlLmNvbYYUaHR0cHM6\nLy9leGFtcGxlLmNvbS8wCwYDVR0PBAQDAgWgMB0GA1UdJQQWMBQGCCsGAQUFBwMB\nBggrBgEFBQcDAjAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBQU94XFF+mpzsHQY937\n14vPaqJygjBeBgNVHSMEVzBVoT2kOzA5MRQwEgYDVQQDDAtleGFtcGxlLmNvbTEU\nMBIGA1UECgwLRXhhbXBsZSBPcmcxCzAJBgNVBAYTAlVTghR4hTzQ1JxmpCG3l0jZ\nEz9ma3LGmDAtBgNVHR8EJjAkMCKgIKAehhxodHRwOi8vY3JsLmV4YW1wbGUuY29t\nL2EuY3JsMF0GCCsGAQUFBwEBBFEwTzAjBggrBgEFBQcwAYYXaHR0cDovL29jc3Au\nZXhhbXBsZS5jb20wKAYIKwYBBQUHMAKGHGh0dHA6Ly9jYS5leGFtcGxlLmNvbS9j\nYS5jcnQwDQYJKoZIhvcNAQELBQADggEBAJlZBUnsit5OT+h1oeZYPDJiDjMyu/IF\ngy9QXba9iDOACh5PjSGB+jkxarbmpoPlM1TkTC39ocrNqkRQ37qN2oxjB27f6j8I\ncBbqN1QAl7Fqnf7yomdMicBmkx1gqip1FHrr3K62R091oEsQiSsmNLsixz0vUYuZ\nreofktoMfHZTWAxa/k3RaEsVSc7OfRPW3MzQHuowQSRSW802tP3vQmPlEqC4c/96\nkZLP3Wvtf3jAqhnEJnTC/VQnm2obSp7TyCKoQ9rIboiIDxnYLcGvCfd7FeOgb7xw\nNThfgW83JUlL+s2s9RGSV7xDNKL1O+LNtHTIJnCXI2qzCjk9AzMJJ8A=\n-----END CERTIFICATE-----\n"
+    },
+    {
+      "subject": {
+        "common_name": "Example CA",
+        "full": "CN=Example CA, O=Example Org, C=US",
+        "fields": [
+          {
+            "oid": "2.5.4.3",
+            "name": "CN",
+            "value": "Example CA"
+          },
+          {
+            "oid": "2.5.4.10",
+            "name": "O",
+            "value": "Example Org"
+          },
+          {
+            "oid": "2.5.4.6",
+            "name": "C",
+            "value": "US"
+          }
+        ]
+      },
+      "issuer": {
+        "common_name": "Example CA",
+        "full": "CN=Example CA, O=Example Org, C=US",
+        "fields": [
+          {
+            "oid": "2.5.4.3",
+            "name": "CN",
+            "value": "Example CA"
+          },
+          {
+            "oid": "2.5.4.10",
+            "name": "O",
+            "value": "Example Org"
+          },
+          {
+            "oid": "2.5.4.6",
+            "name": "C",
+            "value": "US"
+          }
+        ]
+      },
+      "serial_number_hex": "557bd44a310dd9d03fafb111c6a91ccab80abaea",
+      "not_before": "2026-10-16T16:56:31Z",
+      "not_after": "2036-10-13T16:56:31Z",
+      "signature_algorithm": "sha256WithRSAEncryption (1.2.840.113549.1.1.11)",
+      "public_key_algorithm": "RSA",
+      "public_key_bits": 2048,
+      "public_key_curve": "",
+      "version": 3,
+      "san": [],
+      "subject_key_identifier": "77:85:D6:85:EF:E4:0F:0D:76:F2:CE:B1:F8:67:26:52:19:C7:AE:03",
+      "authority_key_identifier": "77:85:D6:85:EF:E4:0F:0D:76:F2:CE:B1:F8:67:26:52:19:C7:AE:03",
+      "key_usage": [
+        "keyCertSign",
+        "cRLSign"
+      ],
+      "extended_key_usage": [],
+      "basic_constraints": {
+        "is_ca": true,
+        "path_len": null
+      },
+      "crl_distribution_points": [],
+      "authority_info_access": [],
+      "sha256_fingerprint": "3D:6A:AD:B0:5E:B8:E5:89:6A:30:85:C4:F5:F8:AA:64:82:D1:66:EE:4D:3B:90:ED:E1:15:9D:5D:8C:89:F4:3D",
+      "sha1_fingerprint": "F3:6E:C9:BC:4B:FD:17:0A:B8:37:43:15:28:73:CA:1C:42:E3:BB:6D",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIDYTCCAkmgAwIBAgIUVXvUSjEN2dA/r7ERxqkcyrgKuuowDQYJKoZIhvcNAQEL\nBQAwODETMBEGA1UEAwwKRXhhbXBsZSBDQTEUMBIGA1UECgwLRXhhbXBsZSBPcmcx\nCzAJBgNVBAYTAlVTMB4XDTI2MTAxNjE2NTYzMVoXDTM2MTAxMzE2NTYzMVowODET\nMBEGA1UEAwwKRXhhbXBsZSBDQTEUMBIGA1UECgwLRXhhbXBsZSBPcmcxCzAJBgNV\nBAYTAlVTMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz1Ijab5F+o37\nDsx5UiSsj3kzkXKhSvgHZW64uyZcRbnF3ZL4Uz4L/fkNC5IgNgcRAgt7VecOWfzc\n6W6Tc289gxgBYWyjZwt+w8yvXa3FqTbieZzr4xagxhpVLGmC9SztMf8/QMZe4Mx4\n26Km1mXUTSkqNClCcuMntVhCMb9UqMcq0t8vIdBWOlEUks0OZAJSmQOxyF24O4zN\nPR0tM09SFyvTZVL8nDP1ns+Ep4WpNGlXvdQjSSsI+oP5SHd5roSEkptGie4DwUwx\naJsKkaqrE0/XfVIVVIWnZsBQ8BrUwTza6EEKe0B1qQa4vKntJTCxFbFpIoc3Wq3f\n49IXY8a4PwIDAQABo2MwYTAfBgNVHSMEGDAWgBR3hdaF7+QPDXbyzrH4ZyZSGceu\nAzAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUd4XW\nhe/kDw128s6x+GcmUhnHrgMwDQYJKoZIhvcNAQELBQADggEBAGeTW/HwGt6O3wwv\n1AK1AWvDXF9j/suDeH29QH0To9VdQEkyibZFwveG5iWr+BhgDHgUtTVl6+G2EBdJ\nFjlF+IHmHXQhOE0MKabbVBvXf0UDtGzUEQstRzLiy6qfuDR8RXo9hWfU0P/hjjyk\nalr9Axy7kpyqpzFuNZx7m3vrFjTndlukKzzSAI6vHGHTZ8BqxdSR1eozAXGYnUsp\n5nI8tJ5dgR/vasByvyhgXSd8Lcz6ImcJ+vD4tDE9uklnqZwtMHAxCsRM8iv24uc7\noa7v4O0AnVfkh335Wfasf8BI6Pb/3Mjx/5JySXGieZU1is+nB08FCMzbNgbHLaPt\n6KM3fwA=\n-----END CERTIFICATE-----\n"
+    }
+  ]
+}
