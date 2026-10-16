@@ -1046,4 +1046,320 @@ void main() {
       expect(instance.payloads.single, equals(expectedBytes));
     });
   });
+
+  group('widget preview', () {
+    // Todo 20：证书预览**端到端** widget 测试（经注入缝 `ApkEntryPreparer`，
+    // 无真机 / Rust / FFI）。逐项覆盖成功准则 #1/#2/#3：
+    //   ok 字段卡 + [原文|Hex] 切换；4KB/256KB 边界 + 300KB 截断；
+    //   password_required → 密码层 → 正确密码重解析；取消 → 容器信息 + 原始查看器；
+    //   certInfo==null → 降级提示（非「解析失败」）+ 原始查看器保留；
+    //   unsupported(BKS/JCEKS) → 容器提示（用 message）。
+    // 复用文件内既有 fixture 构造器（_fullCertEntry / _certInfoOk），不重复
+    // contract/golden 的假模块 harness。
+
+    const pem =
+        '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
+
+    ApkBrowsableEntry certEntry({
+      String kind = 'cert',
+      String name = 'CERT.RSA',
+      String path = 'META-INF/CERT.RSA',
+    }) =>
+        ApkBrowsableEntry(
+          path: path,
+          name: name,
+          isDir: false,
+          size: 200,
+          compressedSize: 180,
+          crc32: 0xabcdef,
+          stored: false,
+          kind: kind,
+          browsable: false,
+        );
+
+    /// 注入固定 bytes/size/certInfo 的准备器（缝替代真实导出 + 解析）。
+    ApkEntryPreparer dataPreparer({
+      Uint8List? bytes,
+      required int size,
+      CertInfo? certInfo,
+    }) =>
+        ({
+          required String apkPath,
+          required ApkBrowsableEntry entry,
+          required String containerChain,
+          String? password,
+        }) async =>
+            ApkEntryPreviewData(
+              path: '/tmp/fake/cert.bin',
+              size: size,
+              crc32: 1,
+              bytes: bytes,
+              certInfo: certInfo,
+            );
+
+    /// 密码容器：无密码 → password_required；`changeit` → ok；其它 → bad_password。
+    ApkEntryPreparer passwordPreparer(List<String?> seen) => ({
+          required String apkPath,
+          required ApkBrowsableEntry entry,
+          required String containerChain,
+          String? password,
+        }) async {
+          seen.add(password);
+          final bytes = Uint8List.fromList(utf8.encode(pem));
+          final CertInfo info;
+          if (password == null || password.isEmpty) {
+            info = const CertInfo(
+              status: CertInfoStatus.passwordRequired,
+              format: CertFormat.pkcs12,
+              passwordProtected: true,
+              message: '',
+              certificates: [],
+            );
+          } else if (password == 'changeit') {
+            info = _certInfoOk();
+          } else {
+            info = const CertInfo(
+              status: CertInfoStatus.badPassword,
+              format: CertFormat.pkcs12,
+              passwordProtected: true,
+              message: '密码错误',
+              certificates: [],
+            );
+          }
+          return ApkEntryPreviewData(
+            path: '/tmp/store.p12',
+            size: bytes.length,
+            crc32: 1,
+            bytes: bytes,
+            certInfo: info,
+          );
+        };
+
+    Future<void> pumpCert(
+      WidgetTester tester,
+      ApkEntryPreparer preparer, {
+      ApkBrowsableEntry? entry,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: entry ?? certEntry(),
+            preparer: preparer,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// 拼接全部 [SelectableText] 内容（字段卡 PEM 与原始查看器都在其中）。
+    String selectableText(WidgetTester tester) => tester
+        .widgetList<SelectableText>(find.byType(SelectableText))
+        .map((w) => w.data ?? '')
+        .join('\n');
+
+    /// 最后一整行的偏移（16 字节/行）：校验 Hex 是否渲染到文件末尾。
+    String lastOffsetLine(int n) => (n - 16).toRadixString(16).padLeft(8, '0');
+
+    /// 点按分段（字段卡可能很长，先把控件滚入可视区再点）。
+    Future<void> tapView(WidgetTester tester, String label) async {
+      final finder = find.text(label);
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      await tester.tap(finder);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('ok → 字段卡渲染 + [原文|Hex] 切换存在', (tester) async {
+      final bytes = Uint8List.fromList(utf8.encode(pem));
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: bytes.length, certInfo: _certInfoOk()),
+      );
+
+      expect(find.text('证书字段'), findsOneWidget);
+      expect(find.text('主体'), findsOneWidget);
+      expect(find.textContaining('CN=example.com'), findsWidgets);
+      // 仅证书条目提供 [原文 | Hex] 分段切换
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+    });
+
+    testWidgets('切换 原文 ↔ Hex 两态可用', (tester) async {
+      final bytes = Uint8List.fromList(utf8.encode(pem));
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: bytes.length, certInfo: _certInfoOk()),
+      );
+
+      // 默认原文态
+      expect(selectableText(tester), contains('BEGIN CERTIFICATE'));
+      // → Hex
+      await tapView(tester, 'Hex');
+      expect(find.text('十六进制预览'), findsOneWidget);
+      expect(selectableText(tester), contains('00000000'));
+      // → 原文
+      await tapView(tester, '原文');
+      expect(find.text('十六进制预览'), findsNothing);
+      expect(selectableText(tester), contains('BEGIN CERTIFICATE'));
+    });
+
+    testWidgets('4 KB 边界：Hex 完整渲染且无截断提示', (tester) async {
+      const n = 4 * 1024;
+      final bytes = Uint8List.fromList(List.generate(n, (i) => i & 0xff));
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: n, certInfo: _certInfoOk()),
+      );
+      // 无截断 → 纯「十六进制预览」
+      expect(find.text('十六进制预览'), findsOneWidget);
+      final dump = selectableText(tester);
+      expect(dump, contains('00000000'));
+      expect(dump, contains(lastOffsetLine(n))); // 00000ff0
+    });
+
+    testWidgets('256 KB 边界：Hex 渲染全部读到的字节且无截断提示', (tester) async {
+      const n = 256 * 1024;
+      final bytes = Uint8List.fromList(List.generate(n, (i) => i & 0xff));
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: n, certInfo: _certInfoOk()),
+      );
+      expect(find.text('十六进制预览'), findsOneWidget);
+      // 旧默认 limit=4096 只能到 00000ff0，这里必须到 0003fff0
+      expect(selectableText(tester), contains(lastOffsetLine(n)));
+    });
+
+    testWidgets('300 KB 边界：截断提示 + 渲染全部读到字节', (tester) async {
+      const read = 256 * 1024;
+      const total = 300 * 1024;
+      final bytes = Uint8List.fromList(List.generate(read, (i) => i & 0xff));
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: total, certInfo: _certInfoOk()),
+      );
+      // 有截断 → 不再是纯提示
+      expect(find.text('十六进制预览'), findsNothing);
+      expect(
+        find.text('十六进制预览（前 ${byteSize(read)}，共 ${byteSize(total)}）'),
+        findsOneWidget,
+      );
+      // 读到的 256 KB 必须完整渲染（不是被默认 4096 截掉）
+      expect(selectableText(tester), contains(lastOffsetLine(read)));
+    });
+
+    testWidgets('password_required → 密码层 → 正确密码重解析显示字段卡', (tester) async {
+      final seen = <String?>[];
+      await pumpCert(
+        tester,
+        passwordPreparer(seen),
+        entry: certEntry(name: 'store.p12', path: 'META-INF/store.p12'),
+      );
+      expect(seen, [null]);
+      expect(find.text('需要密码'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      // 统一底部密码层
+      expect(find.byType(BottomSheet), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('apk-cert-password-field')),
+        'changeit',
+      );
+      await tester.tap(find.byKey(const Key('apk-cert-password-confirm')));
+      await tester.pumpAndSettle();
+
+      // 带密码重解析（缝收到密码）→ 字段卡
+      expect(seen, [null, 'changeit']);
+      expect(find.text('证书字段'), findsOneWidget);
+      expect(find.text('需要密码'), findsNothing);
+      expect(find.textContaining('CN=example.com'), findsWidgets);
+    });
+
+    testWidgets('取消密码层 → 容器信息 + 原始查看器', (tester) async {
+      final seen = <String?>[];
+      await pumpCert(
+        tester,
+        passwordPreparer(seen),
+        entry: certEntry(name: 'store.p12', path: 'META-INF/store.p12'),
+      );
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '输入密码'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, '取消'));
+      await tester.pumpAndSettle();
+
+      // 优雅降级：容器信息 + 原始查看器，且不再提示输入密码
+      expect(find.text('容器格式：PKCS#12'), findsOneWidget);
+      expect(find.text('未提供密码，仅显示原始内容。'), findsOneWidget);
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '输入密码'), findsNothing);
+    });
+
+    testWidgets('certInfo == null → 降级提示（非「解析失败」）+ 原始查看器保留',
+        (tester) async {
+      final bytes = Uint8List.fromList([0x30, 0x82, 0x01]);
+      await pumpCert(
+        tester,
+        dataPreparer(bytes: bytes, size: bytes.length, certInfo: null),
+      );
+
+      expect(find.textContaining('模块不可用'), findsOneWidget);
+      // 必须不误报「解析失败」
+      expect(find.textContaining('解析失败'), findsNothing);
+      // 原始查看器保留（二进制默认 Hex）+ 切换仍在
+      expect(find.text('十六进制预览'), findsOneWidget);
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+    });
+
+    testWidgets('unsupported BKS → 容器提示（用 message）', (tester) async {
+      final bytes = Uint8List.fromList([0x00, 0x00, 0x00, 0x01]);
+      await pumpCert(
+        tester,
+        dataPreparer(
+          bytes: bytes,
+          size: bytes.length,
+          certInfo: const CertInfo(
+            status: CertInfoStatus.unsupported,
+            format: CertFormat.bks,
+            passwordProtected: false,
+            message: 'BKS 容器不支持字段解析',
+            certificates: [],
+          ),
+        ),
+      );
+      expect(find.text('容器格式：BKS'), findsOneWidget);
+      expect(find.text('BKS 容器不支持字段解析'), findsOneWidget);
+      expect(find.text('证书字段'), findsNothing);
+      // 容器降级 = 容器信息 + 原始查看器（hex/原文）
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+    });
+
+    testWidgets('unsupported JCEKS → 容器提示（用 message）', (tester) async {
+      final bytes = Uint8List.fromList([0xce, 0xce, 0xce, 0xce]);
+      await pumpCert(
+        tester,
+        dataPreparer(
+          bytes: bytes,
+          size: bytes.length,
+          certInfo: const CertInfo(
+            status: CertInfoStatus.unsupported,
+            format: CertFormat.jceks,
+            passwordProtected: false,
+            message: 'JCEKS 不支持字段解析',
+            certificates: [],
+          ),
+        ),
+      );
+      expect(find.text('容器格式：JCEKS'), findsOneWidget);
+      expect(find.text('JCEKS 不支持字段解析'), findsOneWidget);
+      expect(find.text('证书字段'), findsNothing);
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+    });
+  });
 }
