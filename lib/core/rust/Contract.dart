@@ -409,3 +409,89 @@ QrDecodeResult? decodeQrDecodeResult(dynamic json) {
     orientation: (json['orientation'] as num?)?.toInt() ?? 0,
   );
 }
+
+/// JSON → CertInfo（模块 parse_certificate 响应）
+///
+/// 契约见 `.omo/plans/apk-browser-cert-preview.md`「Frozen JSON schema (CertInfo v1)」。
+/// 非 Map 输入返回 null；缺失可选字段回落 schema 规定的空值。
+CertInfo? decodeCertInfo(dynamic json) {
+  if (json is! Map<String, dynamic>) return null;
+  return CertInfo(
+    status: CertInfoStatus.fromWire(json['status'] as String? ?? ''),
+    format: CertFormat.fromWire(json['format'] as String? ?? ''),
+    passwordProtected: json['password_protected'] as bool? ?? false,
+    message: json['message'] as String? ?? '',
+    certificates: [
+      for (final e in (json['certificates'] as List? ?? []))
+        _decodeCertEntry(e as Map<String, dynamic>),
+    ],
+  );
+}
+
+CertEntry _decodeCertEntry(Map<String, dynamic> m) => CertEntry(
+      subject: _decodeCertName(m['subject']),
+      issuer: _decodeCertName(m['issuer']),
+      serialNumberHex: m['serial_number_hex'] as String? ?? '',
+      notBefore: m['not_before'] as String? ?? '',
+      notAfter: m['not_after'] as String? ?? '',
+      signatureAlgorithm: m['signature_algorithm'] as String? ?? '',
+      publicKeyAlgorithm: m['public_key_algorithm'] as String? ?? '',
+      publicKeyBits: (m['public_key_bits'] as num?)?.toInt() ?? 0,
+      publicKeyCurve: m['public_key_curve'] as String? ?? '',
+      version: (m['version'] as num?)?.toInt() ?? 0,
+      san: [
+        for (final e in (m['san'] as List? ?? []))
+          _decodeCertSan(e as Map<String, dynamic>),
+      ],
+      subjectKeyIdentifier: m['subject_key_identifier'] as String? ?? '',
+      authorityKeyIdentifier: m['authority_key_identifier'] as String? ?? '',
+      keyUsage: _strList(m['key_usage']),
+      extendedKeyUsage: _strList(m['extended_key_usage']),
+      basicConstraints: _decodeCertBasicConstraints(m['basic_constraints']),
+      crlDistributionPoints: _strList(m['crl_distribution_points']),
+      authorityInfoAccess: [
+        for (final e in (m['authority_info_access'] as List? ?? []))
+          _decodeCertAia(e as Map<String, dynamic>),
+      ],
+      sha256Fingerprint: m['sha256_fingerprint'] as String? ?? '',
+      sha1Fingerprint: m['sha1_fingerprint'] as String? ?? '',
+      pem: m['pem'] as String? ?? '',
+    );
+
+CertName _decodeCertName(dynamic json) {
+  if (json is! Map<String, dynamic>) {
+    return const CertName(commonName: '', full: '', fields: []);
+  }
+  return CertName(
+    commonName: json['common_name'] as String? ?? '',
+    full: json['full'] as String? ?? '',
+    fields: [
+      for (final e in (json['fields'] as List? ?? []))
+        CertNameField(
+          oid: (e as Map<String, dynamic>)['oid'] as String? ?? '',
+          name: e['name'] as String? ?? '',
+          value: e['value'] as String? ?? '',
+        ),
+    ],
+  );
+}
+
+CertSan _decodeCertSan(Map<String, dynamic> m) => CertSan(
+      type: m['type'] as String? ?? '',
+      value: m['value'] as String? ?? '',
+    );
+
+CertBasicConstraints _decodeCertBasicConstraints(dynamic json) {
+  if (json is! Map<String, dynamic>) {
+    return const CertBasicConstraints(isCa: false);
+  }
+  return CertBasicConstraints(
+    isCa: json['is_ca'] as bool? ?? false,
+    pathLen: (json['path_len'] as num?)?.toInt(),
+  );
+}
+
+CertAia _decodeCertAia(Map<String, dynamic> m) => CertAia(
+      type: m['type'] as String? ?? '',
+      url: m['url'] as String? ?? '',
+    );
