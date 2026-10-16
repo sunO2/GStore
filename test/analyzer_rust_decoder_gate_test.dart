@@ -195,6 +195,21 @@ void main() {
         expect(result, isNull, reason: '${entry.key} 在模块不可用时必须返回 null');
       }
 
+      // 聚焦断言：parseCertificate 的模块失败门必须同时满足「不抛」与「返回 null」。
+      // 上面的通用枚举已覆盖它，但这里显式捕获异常，使「不抛异常」这一点不依赖
+      // 循环的隐式语义，覆盖无歧义。
+      var certThrew = false;
+      Object? certResult;
+      try {
+        certResult = await AnalyzerRustDecoder.parseCertificate('/tmp/cert.p12');
+      } catch (_) {
+        certThrew = true;
+      }
+      expect(certThrew, isFalse,
+          reason: '模块不可用时 parseCertificate 不得抛出异常');
+      expect(certResult, isNull,
+          reason: '模块不可用时 parseCertificate 必须返回 null');
+
       expect(ensureCalls, greaterThan(0),
           reason: '每次调用都应尝试一次（并因失败重试）自举');
     });
