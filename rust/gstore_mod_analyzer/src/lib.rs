@@ -232,6 +232,35 @@ fn call_impl(
                     .map(|info| serde_json::to_vec(&info).unwrap_or_default())
                     .map_err(ModuleError::internal)
             }
+            // 证书解析：payload = path NUL password
+            // NUL 始终存在（空密码 => 两段 ["path",""]）；仅 1 段视为空密码兜底。
+            // 密码含 NUL（>2 段）或 > 1024 字节 => invalid_arg（本方法唯一的 Err 路径）。
+            // 解析失败 / 文件读取失败仍是 Ok JSON（cert::parse 内部 fail-soft，返回
+            // Ok(status=malformed,...)），避免被 catch_unwind 吞成「模块不可用」。
+            // 密码绝不写入日志 / 错误消息。
+            "parse_certificate" => {
+                let parts = split_nul(payload, payload_len)
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| ModuleError::invalid_arg("bad cert args"))?;
+                let path = parts[0].clone();
+                if path.is_empty() {
+                    return Err(ModuleError::invalid_arg("missing cert path"));
+                }
+                let password = match parts.len() {
+                    1 => String::new(),
+                    2 => parts[1].clone(),
+                    // >2 段：密码内含 NUL（分隔符歧义）=> 参数错误
+                    _ => {
+                        return Err(ModuleError::invalid_arg(
+                            "cert password must not contain NUL",
+                        ))
+                    }
+                };
+                if password.len() > 1024 {
+                    return Err(ModuleError::invalid_arg("cert password too long"));
+                }
+                Ok(serde_json::to_vec(&cert::parse(&path, &password)).unwrap_or_default())
+            }
             "ping" => Ok(b"pong".to_vec()),
             _ => Err(ModuleError::method_not_found(&method)),
         }
@@ -483,6 +512,104 @@ pub extern "C" fn free_export(ptr: *mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 捕获模块日志的共享缓冲（HOST_LOG 进程内唯一）
+    static CAPTURED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    extern "C" fn capture_log(_level: c_int, msg: *const c_char) {
+        if msg.is_null() {
+            return;
+        }
+        let s = unsafe { CStr::from_ptr(msg) }.to_string_lossy().into_owned();
+        if let Ok(mut v) = CAPTURED_LOGS.lock() {
+            v.push(s);
+        }
+    }
+
+    /// 以原始字节调用 call_export，返回 (rc, 响应体) 并释放模块分配的内存
+    fn call_method(method_name: &str, payload: &[u8]) -> (c_int, Vec<u8>) {
+        let method = CString::new(method_name).unwrap();
+        let mut out_data: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = call_export(
+            0,
+            method.as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            &mut out_data,
+            &mut out_len,
+        );
+        let body = if out_data.is_null() || out_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(out_data, out_len).to_vec() }
+        };
+        if !out_data.is_null() {
+            free_export(out_data as *mut c_void);
+        }
+        (rc, body)
+    }
+
+    /// 构造线格式 payload `path\0password`（NUL 始终存在）
+    fn cert_payload(path: &str, password: &str) -> Vec<u8> {
+        let mut p = Vec::with_capacity(path.len() + 1 + password.len());
+        p.extend_from_slice(path.as_bytes());
+        p.push(0);
+        p.extend_from_slice(password.as_bytes());
+        p
+    }
+
+    fn fixture(name: &str) -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn dispatch_parse_certificate() {
+        let _ = HOST_LOG.set(capture_log);
+        CAPTURED_LOGS.lock().unwrap().clear();
+
+        let store = fixture("store.p12");
+        let empty_pw = fixture("store-empty-pw.p12");
+        let correct = "changeit";
+        let wrong = "definitely-wrong-password";
+
+        // 1) `path\0`（两段、空密码）=> Ok（fail-soft，返回 Ok JSON）
+        let (rc, body) = call_method("parse_certificate", &cert_payload(&empty_pw, ""));
+        assert_eq!(rc, ABI_OK, "empty-password payload must return Ok");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(v["status"], "ok", "empty-password P12 should parse ok: {v}");
+
+        // 2) 正确密码 => ok（仍 Ok 边界）
+        let (rc, body) = call_method("parse_certificate", &cert_payload(&store, correct));
+        assert_eq!(rc, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(v["status"], "ok", "correct password should parse ok: {v}");
+
+        // 3) 错误密码 => bad_password（解析失败但仍是 Ok JSON）
+        let (rc, body) = call_method("parse_certificate", &cert_payload(&store, wrong));
+        assert_eq!(rc, ABI_OK, "wrong password must still be Ok JSON, not Err");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(v["status"], "bad_password", "wrong password => bad_password: {v}");
+
+        // 4) 密码含 NUL（>2 段）=> invalid_arg（唯一 Err 路径）
+        let (rc, body) = call_method(
+            "parse_certificate",
+            &cert_payload(&store, &format!("pa{}ss", '\0')),
+        );
+        assert_ne!(rc, ABI_OK, "password containing NUL must be Err");
+        let err: serde_json::Value = serde_json::from_slice(&body).expect("error payload json");
+        assert_eq!(err["code"], "INVALID_ARGUMENT", "expected invalid_arg: {err}");
+
+        // 5) 捕获日志绝不包含任何密码串
+        let logs = CAPTURED_LOGS.lock().unwrap().join("\n");
+        assert!(!logs.contains(correct), "log leaked correct password: {logs}");
+        assert!(!logs.contains(wrong), "log leaked wrong password: {logs}");
+        assert!(!logs.contains("pa\0ss"), "log leaked NUL password");
+    }
 
     #[test]
     fn create_parses_module_context() {
