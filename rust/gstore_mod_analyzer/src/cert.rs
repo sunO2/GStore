@@ -195,9 +195,9 @@ pub(crate) fn parse_bytes(bytes: &[u8], ext_hint: Option<&str>, _password: &str)
 
 fn parse_pem(b: &[u8]) -> CertInfo {
     let mut certs: Vec<CertEntry> = Vec::new();
+    let mut pkcs7_blocks: Vec<Vec<u8>> = Vec::new();
     let mut saw_private = false;
     let mut saw_public = false;
-    let mut saw_pkcs7 = false;
     let mut other_label: Option<String> = None;
 
     for item in Pem::iter_from_buffer(b) {
@@ -211,8 +211,8 @@ fn parse_pem(b: &[u8]) -> CertInfo {
                     certs.push(entry_from_cert(&cert));
                 }
             }
-            // TODO(Todo 3): `BEGIN PKCS7` 应路由到 PKCS#7 提取
-            "PKCS7" | "PKCS #7 SIGNED DATA" => saw_pkcs7 = true,
+            // `BEGIN PKCS7` 块 → 交由 PKCS#7 提取器（下方统一处理）
+            "PKCS7" | "PKCS #7 SIGNED DATA" => pkcs7_blocks.push(pem.contents.clone()),
             "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY" | "DSA PRIVATE KEY"
             | "ENCRYPTED PRIVATE KEY" => saw_private = true,
             "PUBLIC KEY" | "RSA PUBLIC KEY" => saw_public = true,
@@ -232,9 +232,30 @@ fn parse_pem(b: &[u8]) -> CertInfo {
             ..Default::default()
         };
     }
-    if saw_pkcs7 {
-        // TODO(Todo 3): 实现 PKCS#7 提取后替换此分支
-        return unsupported(CertFormat::Pkcs7, "PEM PKCS#7 解析尚未实现");
+    if !pkcs7_blocks.is_empty() {
+        let mut all: Vec<CertEntry> = Vec::new();
+        let mut ber = false;
+        let mut bad: Option<&'static str> = None;
+        for block in &pkcs7_blocks {
+            match extract_pkcs7(block) {
+                Pkcs7Outcome::Certs(mut c) => all.append(&mut c),
+                Pkcs7Outcome::BerIndefinite => ber = true,
+                Pkcs7Outcome::Malformed => bad = Some("PEM PKCS#7 结构损坏或无可解析证书"),
+                Pkcs7Outcome::NotPkcs7 => bad = Some("PEM PKCS#7 块内容不是 SignedData"),
+            }
+        }
+        if !all.is_empty() {
+            return CertInfo {
+                status: CertStatus::Ok,
+                format: CertFormat::Pkcs7,
+                certificates: all,
+                ..Default::default()
+            };
+        }
+        if ber {
+            return unsupported(CertFormat::Pkcs7, "PKCS#7 使用 BER 不定长编码，暂不支持");
+        }
+        return malformed(CertFormat::Pkcs7, bad.unwrap_or("PEM PKCS#7 未找到证书"));
     }
     if saw_private {
         return unsupported(CertFormat::Pem, "PEM 私钥（不支持解析为证书）");
@@ -260,9 +281,23 @@ fn parse_der(der: &[u8], ext_hint: Option<&str>) -> CertInfo {
             ..Default::default()
         };
     }
-    // 2. PKCS#7（Todo 3：当前仅识别，返回 unsupported）
-    if detect_pkcs7(der) {
-        return unsupported(CertFormat::Pkcs7, "PKCS#7 解析尚未实现");
+    // 2. PKCS#7 / CMS：提取 SignedData 中全部证书
+    match extract_pkcs7(der) {
+        Pkcs7Outcome::Certs(certs) => {
+            return CertInfo {
+                status: CertStatus::Ok,
+                format: CertFormat::Pkcs7,
+                certificates: certs,
+                ..Default::default()
+            };
+        }
+        Pkcs7Outcome::BerIndefinite => {
+            return unsupported(CertFormat::Pkcs7, "PKCS#7 使用 BER 不定长编码，暂不支持");
+        }
+        Pkcs7Outcome::Malformed => {
+            return malformed(CertFormat::Pkcs7, "PKCS#7 结构损坏或 SignedData 不含证书");
+        }
+        Pkcs7Outcome::NotPkcs7 => {}
     }
     // 3. PKCS#12（Todo 4：当前仅识别，返回 unsupported）
     if detect_pkcs12(der) || matches!(ext_hint, Some("p12") | Some("pfx")) {
@@ -610,21 +645,123 @@ fn children(b: &[u8], start: usize, end: usize) -> Vec<Tlv> {
     out
 }
 
-/// PKCS#7 `ContentInfo`：SEQUENCE{ OID signedData(1.2.840.113549.1.7.2), [0] ... }
-fn detect_pkcs7(der: &[u8]) -> bool {
-    const SIGNED_DATA_OID: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
-    let (t, _, v, e) = match read_tlv(der, 0) {
-        Some(x) => x,
-        None => return false,
+/// 长度字节是否为 BER 不定长（`0x80`）
+fn is_indefinite_len(b: &[u8], head: usize) -> bool {
+    head + 2 <= b.len() && b[head + 1] == 0x80
+}
+
+enum TlvRead {
+    Ok(Tlv),
+    Indefinite,
+    Fail,
+}
+
+/// 读 TLV，并显式区分「BER 不定长」与「读取失败」
+fn read_tlv_ex(b: &[u8], head: usize) -> TlvRead {
+    if is_indefinite_len(b, head) {
+        return TlvRead::Indefinite;
+    }
+    match read_tlv(b, head) {
+        Some(t) => TlvRead::Ok(t),
+        None => TlvRead::Fail,
+    }
+}
+
+enum ChildrenRead {
+    Ok(Vec<Tlv>),
+    Indefinite,
+}
+
+fn children_ex(b: &[u8], start: usize, end: usize) -> ChildrenRead {
+    let mut out = Vec::new();
+    let mut off = start;
+    while off < end {
+        match read_tlv_ex(b, off) {
+            TlvRead::Ok(t) if t.3 <= end => {
+                out.push(t);
+                off = t.3;
+            }
+            TlvRead::Indefinite => return ChildrenRead::Indefinite,
+            _ => break,
+        }
+    }
+    ChildrenRead::Ok(out)
+}
+
+/// PKCS#7 `SignedData` 的 contentType OID（1.2.840.113549.1.7.2）
+const SIGNED_DATA_OID: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
+
+/// PKCS#7 提取结果
+enum Pkcs7Outcome {
+    /// 成功提取到的全部证书（保证非空）
+    Certs(Vec<CertEntry>),
+    /// 检测到 BER 不定长编码
+    BerIndefinite,
+    /// 不是 PKCS#7 ContentInfo（首元素 OID 非 signedData）
+    NotPkcs7,
+    /// 是 PKCS#7，但结构损坏 / SignedData 不含可解析证书
+    Malformed,
+}
+
+/// 从 PKCS#7 `ContentInfo` 提取 `SignedData` 的 `certificates [0] IMPLICIT SET OF Certificate`（全部证书）
+fn extract_pkcs7(der: &[u8]) -> Pkcs7Outcome {
+    // ContentInfo ::= SEQUENCE { contentType OID, content [0] EXPLICIT SignedData }
+    let (t, _, v, e) = match read_tlv_ex(der, 0) {
+        TlvRead::Ok(t) => t,
+        TlvRead::Indefinite => return Pkcs7Outcome::BerIndefinite,
+        TlvRead::Fail => return Pkcs7Outcome::NotPkcs7,
     };
     if t != 0x30 {
-        return false;
+        return Pkcs7Outcome::NotPkcs7;
     }
-    let kids = children(der, v, e);
-    match kids.first() {
-        Some(first) if first.0 == 0x06 => der.get(first.2..first.3) == Some(SIGNED_DATA_OID),
-        _ => false,
+    let kids = match children_ex(der, v, e) {
+        ChildrenRead::Ok(k) => k,
+        ChildrenRead::Indefinite => return Pkcs7Outcome::BerIndefinite,
+    };
+    let oid = match kids.iter().find(|c| c.0 == 0x06) {
+        Some(o) => o,
+        None => return Pkcs7Outcome::NotPkcs7,
+    };
+    if der.get(oid.2..oid.3) != Some(SIGNED_DATA_OID) {
+        return Pkcs7Outcome::NotPkcs7;
     }
+    let content = match kids.iter().find(|c| c.0 == 0xa0) {
+        Some(c) => *c,
+        None => return Pkcs7Outcome::Malformed,
+    };
+    let (t1, _, v1, e1) = match read_tlv_ex(der, content.2) {
+        TlvRead::Ok(t) => t,
+        TlvRead::Indefinite => return Pkcs7Outcome::BerIndefinite,
+        TlvRead::Fail => return Pkcs7Outcome::Malformed,
+    };
+    if t1 != 0x30 {
+        return Pkcs7Outcome::Malformed;
+    }
+    let sd = match children_ex(der, v1, e1) {
+        ChildrenRead::Ok(k) => k,
+        ChildrenRead::Indefinite => return Pkcs7Outcome::BerIndefinite,
+    };
+    let certs_set = match sd.iter().find(|c| c.0 == 0xa0) {
+        Some(c) => *c,
+        None => return Pkcs7Outcome::Malformed,
+    };
+    let cert_tlvs = match children_ex(der, certs_set.2, certs_set.3) {
+        ChildrenRead::Ok(k) => k,
+        ChildrenRead::Indefinite => return Pkcs7Outcome::BerIndefinite,
+    };
+    let mut entries: Vec<CertEntry> = Vec::new();
+    for ct in cert_tlvs {
+        if ct.0 != 0x30 {
+            continue;
+        }
+        if let Ok((_, cert)) = parse_x509_certificate(der.get(ct.1..ct.3).unwrap_or(&[])) {
+            entries.push(entry_from_cert(&cert));
+        }
+    }
+    if entries.is_empty() {
+        return Pkcs7Outcome::Malformed;
+    }
+    Pkcs7Outcome::Certs(entries)
 }
 
 /// PKCS#12 `PFX`：SEQUENCE{ INTEGER version(3), ContentInfo authSafe, [MacData] }
@@ -1134,6 +1271,131 @@ OmaznZD+bC4TZxwbCsrEdTqCCB5jO5ApBGB7l2q6iz/tgrZGzuiwr8CYnYRiAsUI
         assert_eq!(cert["subject"]["common_name"], "example.com");
         assert!(cert["subject"]["fields"].is_array());
         assert_eq!(cert["san"][0]["type"].is_string(), true);
+    }
+
+    // ---------- Todo 3: PKCS#7 ----------
+
+    fn der_wrap(tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        let n = body.len();
+        if n < 0x80 {
+            out.push(n as u8);
+        } else if n <= 0xff {
+            out.push(0x81);
+            out.push(n as u8);
+        } else {
+            out.push(0x82);
+            out.push((n >> 8) as u8);
+            out.push(n as u8);
+        }
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// SignedData SEQUENCE（`certificates [0]` 内为完整 Certificate DER 的拼接）
+    fn signed_data(certs: &[Vec<u8>]) -> Vec<u8> {
+        let version = der_wrap(0x02, &[0x01]);
+        let algos = der_wrap(0x31, &[]);
+        let encap = der_wrap(0x30, &[]);
+        let body: Vec<u8> = certs.iter().flatten().copied().collect();
+        let certs_field = der_wrap(0xa0, &body);
+        der_wrap(0x30, &[version, algos, encap, certs_field].concat())
+    }
+
+    /// 合成 PKCS#7 ContentInfo
+    fn synth_pkcs7(certs: &[Vec<u8>]) -> Vec<u8> {
+        let oid = der_wrap(0x06, &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02]);
+        let content = der_wrap(0xa0, &signed_data(certs));
+        der_wrap(0x30, &[oid, content].concat())
+    }
+
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in data.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(T[((n >> 18) & 63) as usize] as char);
+            out.push(T[((n >> 12) & 63) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                T[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                T[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn pkcs7_all_certs() {
+        let p7 = synth_pkcs7(&[der_of(LEAF_PEM), der_of(CA_PEM)]);
+        let info = parse_bytes(&p7, Some("p7b"), "");
+        assert_eq!(info.status, CertStatus::Ok, "message={}", info.message);
+        assert_eq!(info.format, CertFormat::Pkcs7);
+        assert!(
+            info.certificates.len() >= 2,
+            "应返回全部证书，实际 {}",
+            info.certificates.len()
+        );
+        let names: Vec<&str> = info
+            .certificates
+            .iter()
+            .map(|c| c.subject.common_name.as_str())
+            .collect();
+        assert!(names.contains(&"example.com"), "names={names:?}");
+        assert!(names.contains(&"Example CA"), "names={names:?}");
+    }
+
+    #[test]
+    fn pkcs7_ber_unsupported() {
+        let mut p7 = synth_pkcs7(&[der_of(LEAF_PEM), der_of(CA_PEM)]);
+        assert_eq!(p7[0], 0x30);
+        p7[1] = 0x80; // BER 不定长
+        let info = parse_bytes(&p7, Some("p7b"), "");
+        assert_eq!(info.status, CertStatus::Unsupported);
+        assert_eq!(info.format, CertFormat::Pkcs7);
+        assert!(
+            info.message.contains("BER") || info.message.contains("不定长"),
+            "message={}",
+            info.message
+        );
+    }
+
+    #[test]
+    fn corrupt_p7_malformed() {
+        // (a) SignedData 无 certificates → Malformed(Pkcs7)
+        let no_certs = synth_pkcs7(&[]);
+        let info = parse_bytes(&no_certs, Some("p7b"), "");
+        assert_eq!(info.status, CertStatus::Malformed, "message={}", info.message);
+        assert!(info.certificates.is_empty());
+        // (b) 截断 → Malformed，不 panic
+        let mut truncated = synth_pkcs7(&[der_of(LEAF_PEM), der_of(CA_PEM)]);
+        truncated.truncate(truncated.len().saturating_sub(8));
+        let info = parse_bytes(&truncated, Some("p7b"), "");
+        assert_eq!(info.status, CertStatus::Malformed);
+        assert!(info.certificates.is_empty());
+    }
+
+    #[test]
+    fn pem_pkcs7_routes_to_extraction() {
+        let p7 = synth_pkcs7(&[der_of(LEAF_PEM), der_of(CA_PEM)]);
+        let mut body = String::new();
+        for chunk in b64(&p7).as_bytes().chunks(64) {
+            body.push_str(std::str::from_utf8(chunk).unwrap());
+            body.push('\n');
+        }
+        let pem = format!("-----BEGIN PKCS7-----\n{body}-----END PKCS7-----\n");
+        let info = parse_bytes(pem.as_bytes(), Some("p7b"), "");
+        assert_eq!(info.status, CertStatus::Ok, "message={}", info.message);
+        assert_eq!(info.format, CertFormat::Pkcs7);
+        assert!(info.certificates.len() >= 2);
     }
 
     /// 把 SAN 扩展的内层内容首字节改成 0xFF（令其解析失败）
