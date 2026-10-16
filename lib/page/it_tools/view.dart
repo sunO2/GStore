@@ -73,12 +73,33 @@ class _ItToolsPageState extends State<ItToolsPage> {
   /// 上次下发给页面的主题指纹，用于只在主题变化时重新下发
   String? _appliedTheme;
 
+  /// WebView 平台视图只构建一次后缓存：父级 `setState`（主题同步 / JS 桥回调）
+  /// 复用同一 widget 实例时 Flutter 会跳过该子树，避免 `didUpdateWidget` 触发的
+  /// 平台视图重建开销。
+  Widget? _webView;
+
+  /// WebView 初始化设置（构建一次后复用）。
+  late final InAppWebViewSettings _webViewSettings = InAppWebViewSettings(
+    javaScriptEnabled: true,
+    transparentBackground: true,
+    // file 源加载所需：不开 universal，页面会白屏且无报错
+    // （入口是 type="module" 脚本，被跨源策略拦截）。
+    allowFileAccess: true,
+    allowFileAccessFromFileURLs: true,
+    allowUniversalAccessFromFileURLs: true,
+  );
+
   @override
   void initState() {
     super.initState();
     // 存活保护：页面/WebView 存活期间，缓存清理不得删除正在使用的离线目录
     ItToolsService.beginUse();
-    _prepare();
+    // 延后到首帧之后再解压/准备：路由转场的前几帧不承载 `ensureExtracted` 的发起
+    // 与随后重内容（WebView 平台视图）的构建，降低进入页面时的卡顿。
+    // `mounted` 守卫避免销毁后仍启动准备。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _prepare();
+    });
   }
 
   @override
@@ -264,17 +285,14 @@ class _ItToolsPageState extends State<ItToolsPage> {
       return _buildError(context);
     }
 
+    return _webView ??= _buildWebView();
+  }
+
+  /// 构建（并缓存）WebView 平台视图：仅在 [_entryPath] 首次可用时调用一次。
+  Widget _buildWebView() {
     return InAppWebView(
       initialUrlRequest: URLRequest(url: WebUri(_entryUri().toString())),
-      initialSettings: InAppWebViewSettings(
-        javaScriptEnabled: true,
-        transparentBackground: true,
-        // file 源加载所需：不开 universal，页面会白屏且无报错
-        // （入口是 type="module" 脚本，被跨源策略拦截）。
-        allowFileAccess: true,
-        allowFileAccessFromFileURLs: true,
-        allowUniversalAccessFromFileURLs: true,
-      ),
+      initialSettings: _webViewSettings,
       onWebViewCreated: (controller) {
         _controller = controller;
         // 页面通过 itToolsState 回传自身状态（导航头据此同步）

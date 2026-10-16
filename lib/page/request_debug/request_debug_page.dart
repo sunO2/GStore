@@ -84,7 +84,11 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     _section = widget.initialSection ?? RequestDebugSection.collections;
     _rulePrefill = widget.rulePrefill;
     _facade = widget.facade ?? RequestDebugFacadeProvider.instance;
-    unawaited(_load());
+    // 延后到首帧之后再发起加载：路由转场的前几帧不承载 `load` 的发起与随后的
+    // 重内容构建，降低进入页面时的卡顿。`mounted` 守卫避免销毁后仍触发加载。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_load());
+    });
   }
 
   Future<void> _load() async {
