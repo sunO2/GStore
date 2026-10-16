@@ -432,16 +432,291 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
     }
   }
 
-  /// 证书：PEM 文本直接显示；DER 等二进制给十六进制
+  /// 证书卡：按模块返回的 [certInfo] 状态渲染。
+  ///
+  /// - `ok` → 逐证书字段分节（链序编号）
+  /// - `password_required` / `bad_password` → 密码入口 + 提示（弹层见 Todo 16）
+  /// - `unsupported` → 容器类型提示（BKS/JCEKS/PKCS#12/BER/私钥/公钥）
+  /// - `unrecognized` / `malformed` → 内联错误文案
+  /// - `certInfo == null`（模块不可用）→ 「模块不可用」提示 + 保留原始查看器，
+  ///   **不**报「解析失败」
   Widget _certCard() {
+    final info = certInfo;
+    if (info == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _certHintCard('证书解析模块不可用，仅显示原始内容'),
+          _rawCertViewer(),
+        ],
+      );
+    }
+    return switch (info.status) {
+      CertInfoStatus.ok => _certFieldCard(info),
+      CertInfoStatus.passwordRequired ||
+      CertInfoStatus.badPassword =>
+        _certPasswordCard(info),
+      CertInfoStatus.unsupported => _certContainerHintCard(info),
+      CertInfoStatus.unrecognized ||
+      CertInfoStatus.malformed =>
+        _certErrorCard(info),
+    };
+  }
+
+  /// `ok`：逐证书字段卡（链序编号）。
+  Widget _certFieldCard(CertInfo info) {
+    final theme = Theme.of(context);
+    final certs = info.certificates;
+    if (certs.isEmpty) {
+      return _certHintCard('未解析到证书字段');
+    }
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '证书字段',
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          for (var i = 0; i < certs.length; i++) ...[
+            if (i > 0) const Divider(height: AppSpacing.xxl),
+            _certSection(certs[i], index: i, total: certs.length),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 单张证书分节：链序标题（仅多证书时显示）+ 全部字段行。
+  Widget _certSection(CertEntry cert, {required int index, required int total}) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (total > 1) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            '证书 ${index + 1} / $total',
+            style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.primary),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+        ],
+        _certNameRows('主体', cert.subject),
+        _certNameRows('颁发者', cert.issuer),
+        _certRow('有效期', _validityText(cert)),
+        _certRow('序列号', cert.serialNumberHex, mono: true),
+        _certRow('签名算法', cert.signatureAlgorithm),
+        _certRow('公钥算法', _publicKeyText(cert)),
+        _certRow('版本', cert.version > 0 ? 'v${cert.version}' : ''),
+        _certRow('SAN', _sanText(cert.san)),
+        _certRow('SKI', cert.subjectKeyIdentifier, mono: true),
+        _certRow('AKI', cert.authorityKeyIdentifier, mono: true),
+        _certRow('KeyUsage', _listText(cert.keyUsage)),
+        _certRow('EKU', _listText(cert.extendedKeyUsage)),
+        _certRow('是否 CA', cert.basicConstraints.isCa ? '是' : '否'),
+        _certRow('路径长度', cert.basicConstraints.pathLen?.toString() ?? ''),
+        _certRow('CRL 分发点', _listText(cert.crlDistributionPoints)),
+        _certRow('AIA', _aiaText(cert.authorityInfoAccess)),
+        _certRow('SHA-256 指纹', cert.sha256Fingerprint, mono: true),
+        _certRow('SHA-1 指纹', cert.sha1Fingerprint, mono: true),
+        if (cert.pem.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            'PEM',
+            style: theme.textTheme.labelMedium
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          SelectableText(cert.pem, style: AppTypography.code),
+        ],
+      ],
+    );
+  }
+
+  /// 主体 / 颁发者：全串 + 逐字段明细（有明细时）。
+  Widget _certNameRows(String label, CertName name) {
+    final full = name.full.isNotEmpty ? name.full : name.commonName;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _certRow(label, full),
+        if (name.fields.isNotEmpty)
+          _certRow(
+            '$label字段',
+            name.fields.map((f) => '${f.name}=${f.value}').join(', '),
+            mono: true,
+          ),
+      ],
+    );
+  }
+
+  /// 证书字段行：值缺省统一渲染「无」；hex / 指纹行用等宽字体。
+  Widget _certRow(String label, String value, {bool mono = false}) {
+    final theme = Theme.of(context);
+    final display = value.trim().isEmpty ? '无' : value;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: theme.textTheme.labelMedium
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              display,
+              style: mono ? AppTypography.code : theme.textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 原始查看器：PEM 文本直显，其余二进制走 hex。
+  ///
+  /// 模块不可用（[certInfo] == null）时的兜底——保留原始内容而非空白。
+  Widget _rawCertViewer() {
     final raw = _decodeText();
     if (raw.contains('-----BEGIN')) {
       return _textCard(raw, mono: true);
     }
-    return _hexCard(
-      hint: '二进制证书（DER/P12 等）：完整字段解析待接入（可复用平台侧 X.509 解析）',
+    return _hexCard();
+  }
+
+  /// 纯提示卡（模块不可用 / 空证书集）。
+  Widget _certHintCard(String text) {
+    final theme = Theme.of(context);
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Text(text, style: theme.textTheme.bodySmall),
     );
   }
+
+  /// `password_required` / `bad_password`：提示 + 密码入口（底部弹层见 Todo 16）。
+  Widget _certPasswordCard(CertInfo info) {
+    final theme = Theme.of(context);
+    final bad = info.status == CertInfoStatus.badPassword;
+    final message = info.message.isNotEmpty
+        ? info.message
+        : (bad ? '密码错误，请重新输入。' : '该证书容器受密码保护，需输入密码才能解析字段。');
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            bad ? '密码错误' : '需要密码',
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(message, style: theme.textTheme.bodySmall),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _requestPasswordEntry,
+              icon: const Icon(TablerIcons.lock),
+              label: Text(bad ? '重新输入密码' : '输入密码'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 密码入口占位：Todo 16 接入统一底部密码层后在此弹出。
+  void _requestPasswordEntry() {
+    appLog.debug('ApkEntryPreviewPage: 请求证书容器密码（底部密码层见 Todo 16）');
+  }
+
+  /// `unsupported`：容器类型提示（BKS/JCEKS/PKCS#12/BER/私钥/公钥等）。
+  Widget _certContainerHintCard(CertInfo info) {
+    final theme = Theme.of(context);
+    final message = info.message.isNotEmpty
+        ? info.message
+        : '该证书容器暂不支持字段解析，仅识别为容器。';
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '容器格式：${_certFormatLabel(info.format)}',
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(message, style: theme.textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+
+  /// `unrecognized` / `malformed`：内联错误文案。
+  Widget _certErrorCard(CertInfo info) {
+    final theme = Theme.of(context);
+    final message = info.message.isNotEmpty
+        ? info.message
+        : (info.status == CertInfoStatus.malformed
+            ? '证书数据损坏或无法解析。'
+            : '无法识别的证书格式。');
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(TablerIcons.alert_triangle, color: theme.colorScheme.error),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(message, style: theme.textTheme.bodySmall),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 容器格式 → 展示标签。
+  static String _certFormatLabel(CertFormat format) => switch (format) {
+        CertFormat.pem => 'PEM',
+        CertFormat.der => 'DER',
+        CertFormat.pkcs7 => 'PKCS#7',
+        CertFormat.pkcs12 => 'PKCS#12',
+        CertFormat.jks => 'JKS',
+        CertFormat.bks => 'BKS',
+        CertFormat.jceks => 'JCEKS',
+        CertFormat.unknown => '未知',
+      };
+
+  /// 有效期：not_before ~ not_after（单侧缺失渲染「无」；两侧皆缺为空 → 行显示「无」）。
+  static String _validityText(CertEntry cert) {
+    if (cert.notBefore.isEmpty && cert.notAfter.isEmpty) return '';
+    final from = cert.notBefore.isEmpty ? '无' : cert.notBefore;
+    final to = cert.notAfter.isEmpty ? '无' : cert.notAfter;
+    return '$from ~ $to';
+  }
+
+  /// 公钥算法：算法 + 位数（仅 `publicKeyBits != 0`）+ 曲线（非空时）。
+  static String _publicKeyText(CertEntry cert) {
+    final parts = <String>[];
+    if (cert.publicKeyAlgorithm.isNotEmpty) parts.add(cert.publicKeyAlgorithm);
+    if (cert.publicKeyBits != 0) parts.add('${cert.publicKeyBits} 位');
+    if (cert.publicKeyCurve.isNotEmpty) parts.add(cert.publicKeyCurve);
+    return parts.join(' · ');
+  }
+
+  static String _listText(List<String> values) => values.join(', ');
+
+  static String _sanText(List<CertSan> san) =>
+      san.map((s) => '${s.type}: ${s.value}').join(', ');
+
+  static String _aiaText(List<CertAia> aia) =>
+      aia.map((a) => '${a.type}: ${a.url}').join(', ');
 
   /// 视频/音频：内置播放需新增依赖，先给元数据与导出位置
   Widget _mediaCard() {

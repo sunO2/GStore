@@ -65,6 +65,55 @@ const _inlineCertInfoJson = {
   ],
 };
 
+/// 构造一张字段齐全的 [CertEntry]（供证书卡状态分支测试）。
+///
+/// [san] 为 null 时给一条 DNS SAN；显式传 `const []` 可覆盖为「无 SAN」。
+CertEntry _fullCertEntry({List<CertSan>? san}) => CertEntry(
+      subject: const CertName(
+        commonName: 'example.com',
+        full: 'CN=example.com,O=Example,C=US',
+        fields: [
+          CertNameField(oid: '2.5.4.3', name: 'CN', value: 'example.com'),
+          CertNameField(oid: '2.5.4.10', name: 'O', value: 'Example'),
+        ],
+      ),
+      issuer: const CertName(
+        commonName: 'Example CA',
+        full: 'CN=Example CA,O=Example,C=US',
+        fields: [CertNameField(oid: '2.5.4.3', name: 'CN', value: 'Example CA')],
+      ),
+      serialNumberHex: '0a1b2c',
+      notBefore: '2024-01-01T00:00:00Z',
+      notAfter: '2025-01-01T00:00:00Z',
+      signatureAlgorithm: 'sha256WithRSAEncryption (1.2.840.113549.1.1.11)',
+      publicKeyAlgorithm: 'RSA',
+      publicKeyBits: 2048,
+      publicKeyCurve: '',
+      version: 3,
+      san: san ?? const [CertSan(type: 'DNS', value: 'example.com')],
+      subjectKeyIdentifier: 'AB:CD:EF',
+      authorityKeyIdentifier: '12:34:56',
+      keyUsage: const ['digitalSignature', 'keyEncipherment'],
+      extendedKeyUsage: const ['serverAuth'],
+      basicConstraints: const CertBasicConstraints(isCa: false),
+      crlDistributionPoints: const ['http://crl.example.com/a.crl'],
+      authorityInfoAccess: const [
+        CertAia(type: 'OCSP', url: 'http://ocsp.example.com'),
+      ],
+      sha256Fingerprint: 'AA:BB:CC',
+      sha1Fingerprint: 'DD:EE:FF',
+      pem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    );
+
+/// `ok` 状态、默认单证书的 [CertInfo]（可覆盖证书列表以测链序编号）。
+CertInfo _certInfoOk({List<CertEntry>? certs}) => CertInfo(
+      status: CertInfoStatus.ok,
+      format: CertFormat.pem,
+      passwordProtected: false,
+      message: '',
+      certificates: certs ?? [_fullCertEntry()],
+    );
+
 void main() {
   group('decodeCertInfo', () {
     test('金样本 JSON → 全字段 CertInfo', () {
@@ -297,7 +346,52 @@ void main() {
       expect(find.textContaining('导出失败'), findsOneWidget);
     });
 
-    testWidgets('注入含 certInfo 的数据可渲染（缝对字段卡友好）', (tester) async {
+    testWidgets('注入含 certInfo 的数据渲染字段卡（缝对字段卡友好）', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(),
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async =>
+                ApkEntryPreviewData(
+              path: '/tmp/fake/cert.pem',
+              size: 3,
+              crc32: 1,
+              bytes: Uint8List.fromList([0x30, 0x82, 0x01]),
+              certInfo: _certInfoOk(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ApkEntryPreviewPage), findsOneWidget);
+      // 注入的 `ok` CertInfo → 字段卡（Todo 14），而非原始十六进制
+      expect(find.text('证书字段'), findsOneWidget);
+      expect(find.textContaining('CN=example.com'), findsWidgets);
+    });
+  });
+
+  group('cert status branches', () {
+    // 注入缝（Todo 13）让每个 status 分支都能在无真机 / Rust 模块下渲染断言。
+    ApkBrowsableEntry certEntry() => const ApkBrowsableEntry(
+          path: 'META-INF/CERT.RSA',
+          name: 'CERT.RSA',
+          isDir: false,
+          size: 200,
+          compressedSize: 180,
+          crc32: 0xabcdef,
+          stored: false,
+          kind: 'cert',
+          browsable: false,
+        );
+
+    Future<void> pumpCert(WidgetTester tester, CertInfo? info) async {
       await tester.pumpWidget(
         MaterialApp(
           home: ApkEntryPreviewPage(
@@ -314,22 +408,114 @@ void main() {
               size: 3,
               crc32: 1,
               bytes: Uint8List.fromList([0x30, 0x82, 0x01]),
-              certInfo: const CertInfo(
-                status: CertInfoStatus.ok,
-                format: CertFormat.der,
-                passwordProtected: false,
-                message: '',
-                certificates: [],
-              ),
+              certInfo: info,
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
+    }
 
-      expect(find.byType(ApkEntryPreviewPage), findsOneWidget);
-      // DER 二进制（无 BEGIN）→ 十六进制卡；证明注入的 certInfo 不影响既有渲染
+    testWidgets('ok → 字段卡（主体/序列号/指纹/版本/公钥/PEM）', (tester) async {
+      await pumpCert(tester, _certInfoOk());
+
+      expect(find.text('证书字段'), findsOneWidget);
+      expect(find.text('主体'), findsOneWidget);
+      expect(find.textContaining('CN=example.com'), findsWidgets);
+      expect(find.text('序列号'), findsOneWidget);
+      expect(find.text('0a1b2c'), findsOneWidget);
+      expect(find.text('SHA-256 指纹'), findsOneWidget);
+      expect(find.text('AA:BB:CC'), findsOneWidget);
+      expect(find.text('版本'), findsOneWidget);
+      expect(find.text('v3'), findsOneWidget);
+      // publicKeyBits != 0 → 展示位数
+      expect(find.text('RSA · 2048 位'), findsOneWidget);
+
+      final pemTexts = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .map((w) => w.data ?? '')
+          .toList();
+      expect(pemTexts.any((t) => t.contains('BEGIN CERTIFICATE')), isTrue);
+    });
+
+    testWidgets('多证书 → 链序编号分节', (tester) async {
+      await pumpCert(
+        tester,
+        _certInfoOk(certs: [_fullCertEntry(), _fullCertEntry()]),
+      );
+      expect(find.text('证书 1 / 2'), findsOneWidget);
+      expect(find.text('证书 2 / 2'), findsOneWidget);
+    });
+
+    testWidgets('无 SAN → SAN 行为「无」', (tester) async {
+      await pumpCert(
+        tester,
+        _certInfoOk(certs: [_fullCertEntry(san: const [])]),
+      );
+      expect(find.text('SAN'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.ancestor(of: find.text('SAN'), matching: find.byType(Row)),
+          matching: find.text('无'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('DNS: example.com'), findsNothing);
+    });
+
+    testWidgets('unsupported → 容器类型提示（用 message）', (tester) async {
+      await pumpCert(
+        tester,
+        const CertInfo(
+          status: CertInfoStatus.unsupported,
+          format: CertFormat.bks,
+          passwordProtected: false,
+          message: 'BKS 容器不支持字段解析',
+          certificates: [],
+        ),
+      );
+      expect(find.text('容器格式：BKS'), findsOneWidget);
+      expect(find.text('BKS 容器不支持字段解析'), findsOneWidget);
+      expect(find.text('证书字段'), findsNothing);
+    });
+
+    testWidgets('malformed → 内联错误文案', (tester) async {
+      await pumpCert(
+        tester,
+        const CertInfo(
+          status: CertInfoStatus.malformed,
+          format: CertFormat.der,
+          passwordProtected: false,
+          message: '证书数据损坏',
+          certificates: [],
+        ),
+      );
+      expect(find.text('证书数据损坏'), findsOneWidget);
+      expect(find.textContaining('模块不可用'), findsNothing);
+    });
+
+    testWidgets('password_required → 提示 + 密码入口', (tester) async {
+      await pumpCert(
+        tester,
+        const CertInfo(
+          status: CertInfoStatus.passwordRequired,
+          format: CertFormat.pkcs12,
+          passwordProtected: true,
+          message: '',
+          certificates: [],
+        ),
+      );
+      expect(find.text('需要密码'), findsOneWidget);
+      expect(find.textContaining('受密码保护'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '输入密码'), findsOneWidget);
+    });
+
+    testWidgets('certInfo == null → 「模块不可用」提示 + 保留原始查看器', (tester) async {
+      await pumpCert(tester, null);
+      expect(find.textContaining('模块不可用'), findsOneWidget);
       expect(find.textContaining('十六进制预览'), findsOneWidget);
+      // 不得误报「解析失败」
+      expect(find.textContaining('解析失败'), findsNothing);
     });
   });
 }
