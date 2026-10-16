@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/rust/Contract.dart' show decodeCertInfo;
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
+import 'package:gstore/page/apk_browser/preview.dart';
 
 /// 全字段内联金样本（构造样式对齐 Frozen JSON schema (CertInfo v1)）。
 ///
@@ -204,6 +209,127 @@ void main() {
         password: 'secret',
       );
       expect(result, isNull);
+    });
+  });
+
+  group('injectable preparer', () {
+    // 注入缝：`ApkEntryPreviewPage.preparer` 为 null 时才走真实导出；
+    // 注入假 data 即可在无真机/Rust 模块下渲染预览（Todo 20 的 widget 测试基础）。
+
+    ApkBrowsableEntry certEntry({String kind = 'cert'}) => ApkBrowsableEntry(
+          path: 'META-INF/CERT.RSA',
+          name: 'CERT.RSA',
+          isDir: false,
+          size: 200,
+          compressedSize: 180,
+          crc32: 0xabcdef,
+          stored: false,
+          kind: kind,
+          browsable: false,
+        );
+
+    const pem =
+        '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
+
+    testWidgets('注入 preparer 用注入数据渲染，不触真实服务', (tester) async {
+      var calls = 0;
+      String? seenApkPath;
+      String? seenChain;
+      final data = ApkEntryPreviewData(
+        path: '/tmp/fake/cert.pem',
+        size: pem.length,
+        crc32: 0xabcdef,
+        bytes: Uint8List.fromList(utf8.encode(pem)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(),
+            containerChain: 'inner.jar',
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async {
+              calls++;
+              seenApkPath = apkPath;
+              seenChain = containerChain;
+              return data;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 缝被调用一次，且拿到宿主参数
+      expect(calls, 1);
+      expect(seenApkPath, '/no/such.apk');
+      expect(seenChain, 'inner.jar');
+      // 证书原文（含 BEGIN）→ 原文卡渲染注入字节（未触碰真实导出）
+      final selectable = tester.widget<SelectableText>(
+        find.byType(SelectableText),
+      );
+      expect(selectable.data, contains('BEGIN CERTIFICATE'));
+    });
+
+    testWidgets('注入 preparer 返回 null → 降级提示而非崩溃', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(),
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async =>
+                null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ApkEntryPreviewPage), findsOneWidget);
+      expect(find.textContaining('导出失败'), findsOneWidget);
+    });
+
+    testWidgets('注入含 certInfo 的数据可渲染（缝对字段卡友好）', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(),
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async =>
+                ApkEntryPreviewData(
+              path: '/tmp/fake/cert.der',
+              size: 3,
+              crc32: 1,
+              bytes: Uint8List.fromList([0x30, 0x82, 0x01]),
+              certInfo: const CertInfo(
+                status: CertInfoStatus.ok,
+                format: CertFormat.der,
+                passwordProtected: false,
+                message: '',
+                certificates: [],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ApkEntryPreviewPage), findsOneWidget);
+      // DER 二进制（无 BEGIN）→ 十六进制卡；证明注入的 certInfo 不影响既有渲染
+      expect(find.textContaining('十六进制预览'), findsOneWidget);
     });
   });
 }

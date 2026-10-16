@@ -36,6 +36,86 @@ IconData apkEntryIcon(String kind, {bool isDir = false}) {
   };
 }
 
+/// 条目预览的准备缝（可注入，便于测试）。
+///
+/// 默认实现 [defaultApkEntryPreparer] 走 [ApkBrowserService] 真实导出；
+/// 测试可注入假数据渲染字段卡 / 切换 / 密码流，而不触碰真机与 Rust 模块。
+typedef ApkEntryPreparer = Future<ApkEntryPreviewData?> Function({
+  required String apkPath,
+  required ApkBrowsableEntry entry,
+  required String containerChain,
+  String? password,
+});
+
+/// 预览准备结果：导出路径 + 元数据 + 可选证书解析结果。
+///
+/// [bytes] 可空：仅需字段（如证书字段卡）时可只带元数据；
+/// [certInfo] 仅在 `kind == 'cert'` 时由默认准备器填充——模块不可用为 null。
+/// [error] 非空时页面显示降级提示（而非崩溃）。
+class ApkEntryPreviewData {
+  const ApkEntryPreviewData({
+    required this.path,
+    required this.size,
+    required this.crc32,
+    this.bytes,
+    this.certInfo,
+    this.error,
+  });
+
+  /// 落地绝对路径（原始查看器消费）
+  final String path;
+
+  /// 实际写出字节数
+  final int size;
+
+  /// 条目 CRC32
+  final int crc32;
+
+  /// 读取到的内容字节（按类型限长；仅字段预览时为 null）
+  final Uint8List? bytes;
+
+  /// 证书解析结果（仅证书条目；模块不可用为 null）
+  final CertInfo? certInfo;
+
+  /// 准备失败原因（可选；非空即降级）
+  final String? error;
+}
+
+/// 默认准备器：真实导出**一次**（`ApkBrowserService.exportEntry`），按类型读取头部字节；
+/// 证书条目额外对**同一个**导出路径调用 `parseCertificate`（不重复导出）。
+Future<ApkEntryPreviewData?> defaultApkEntryPreparer({
+  required String apkPath,
+  required ApkBrowsableEntry entry,
+  required String containerChain,
+  String? password,
+}) async {
+  final result = await ApkBrowserService.instance.exportEntry(
+    apkPath,
+    entryPath: entry.path,
+    containerChain: containerChain,
+  );
+  if (result == null) return null;
+  final limit = _ApkEntryPreviewPageState._needsBytesFor(entry.kind)
+      ? _ApkEntryPreviewPageState._limitFor(entry.kind)
+      : 0;
+  final bytes =
+      await _ApkEntryPreviewPageState._readHead(File(result.outPath), limit);
+  CertInfo? certInfo;
+  if (entry.kind == 'cert') {
+    certInfo = await ApkBrowserService.instance.parseCertificate(
+      result.outPath,
+      password: password ?? '',
+    );
+  }
+  return ApkEntryPreviewData(
+    path: result.outPath,
+    size: result.size,
+    crc32: result.crc32,
+    bytes: bytes,
+    certInfo: certInfo,
+  );
+}
+
 /// 单条内容预览页
 ///
 /// 取舍：Rust 只把内容**导出成缓存文件**（字节不跨 FFI），
@@ -46,6 +126,7 @@ class ApkEntryPreviewPage extends StatefulWidget {
     required this.apkPath,
     required this.entry,
     this.containerChain = '',
+    this.preparer,
   });
 
   final String apkPath;
@@ -53,6 +134,9 @@ class ApkEntryPreviewPage extends StatefulWidget {
 
   /// 嵌套容器链（空 = APK 根）
   final String containerChain;
+
+  /// 可注入的预览准备器（null = 走 [defaultApkEntryPreparer] 真实导出）
+  final ApkEntryPreparer? preparer;
 
   @override
   State<ApkEntryPreviewPage> createState() => _ApkEntryPreviewPageState();
@@ -71,6 +155,11 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   bool _loading = true;
   int _fileSize = 0;
 
+  /// 证书解析结果（Todo 14 字段卡消费；模块不可用为 null）。
+  ///
+  /// 非下划线命名：Todo 13 先落存储，字段卡在 Todo 14 消费（避免暂未使用的私有字段告警）。
+  CertInfo? certInfo;
+
   /// 已加载的字体族（字体预览用）
   String? _fontFamily;
 
@@ -84,30 +173,30 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
 
   Future<void> _prepare() async {
     try {
-      final result = await ApkBrowserService.instance.exportEntry(
-        widget.apkPath,
-        entryPath: widget.entry.path,
+      final preparer = widget.preparer ?? defaultApkEntryPreparer;
+      final data = await preparer(
+        apkPath: widget.apkPath,
+        entry: widget.entry,
         containerChain: widget.containerChain,
       );
-      if (result == null) {
-        if (!mounted) return;
+      if (!mounted) return;
+      if (data == null) {
         setState(() {
           _loading = false;
           _error = '导出失败：分析模块未就绪或条目不可读';
         });
         return;
       }
-      final file = File(result.outPath);
-      _fileSize = result.size;
-      final head = await _readHead(file, _needsBytes ? _limitFor(_kind) : 0);
-      if (!mounted) return;
       setState(() {
-        _filePath = result.outPath;
-        _head = head;
+        _filePath = data.path;
+        _head = data.bytes;
+        _fileSize = data.size;
+        certInfo = data.certInfo;
+        _error = data.error;
         _loading = false;
       });
-      if (_kind == 'font' && head != null) {
-        await _loadFont(head);
+      if (_error == null && _kind == 'font' && data.bytes != null) {
+        await _loadFont(data.bytes!);
       }
     } catch (e) {
       appLog.error('ApkEntryPreviewPage: 预览失败 - $e');
@@ -120,13 +209,13 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   }
 
   /// 该类型是否需要把内容读进内存
-  bool get _needsBytes => switch (_kind) {
+  static bool _needsBytesFor(String kind) => switch (kind) {
         'image' => false,
         'font' || 'json' || 'text' || 'cert' => true,
         _ => true,
       };
 
-  int _limitFor(String kind) => switch (kind) {
+  static int _limitFor(String kind) => switch (kind) {
         'font' => 8 * 1024 * 1024,
         'json' || 'text' => _textLimit,
         _ => _hexLimit,
