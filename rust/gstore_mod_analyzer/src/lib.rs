@@ -26,6 +26,7 @@ mod apk;
 mod arsc;
 mod browser;
 mod build_versions;
+mod cert;
 mod components;
 mod dex_scan;
 mod dex_stats;
