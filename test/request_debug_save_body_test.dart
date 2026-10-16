@@ -150,6 +150,8 @@ void main() {
       )));
       await tester.pumpAndSettle();
 
+      await tester.tap(find.byKey(const Key('response-overflow')));
+      await tester.pumpAndSettle();
       expect(find.byKey(const Key('response-save-body')), findsOneWidget);
       await tester.tap(find.byKey(const Key('response-save-body')));
       await tester.pumpAndSettle();

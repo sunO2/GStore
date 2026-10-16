@@ -1,8 +1,9 @@
 /// 「请求调试」响应查看器（plan todo 32）。
 ///
 /// 消费 [DebugResponse]（todo 26）展示一次发送的结果：
-/// - 头部：状态码 / 耗时 / 大小 + `格式化 / 原始` 切换 + `复制` + `保存为改写响应`；
-/// - 分段：`头 / Body / Cookie / 原始`（复用 [AppSegmentedButton]）；
+/// - 头部（单行）：左侧状态码 / 耗时 / 大小 / 已截断，右侧 `格式化 / 原始` 切换、
+///   `复制` 与 `⋮` 更多菜单（内含 `保存响应体` / `保存为改写响应`）；
+/// - 分段：`头 / Body / Cookie`（复用 [AppSegmentedButton]）；
 /// - Body：按 `Content-Type` 渲染 JSON / XML / HTML / 文本，非文本走安全占位；
 /// - Cookie：名称 / 值 / 域 / 过期 表格；
 /// - 大 Body **分块**渲染（首屏只建首个分块的文本，超出经「展开更多」续载），
@@ -39,8 +40,8 @@ enum ResponseBodyKind {
   binary,
 }
 
-/// 查看器内部的分段（头 / Body / Cookie / 原始）。
-enum ResponseViewerTab { headers, body, cookies, raw }
+/// 查看器内部的分段（头 / Body / Cookie）。
+enum ResponseViewerTab { headers, body, cookies }
 
 /// 格式化开关。
 enum ResponseBodyFormat { formatted, raw }
@@ -230,27 +231,36 @@ class _ResponseViewerState extends State<ResponseViewer> {
     final theme = Theme.of(context);
     return Padding(
       padding: AppSpacing.allLG,
-      child: Wrap(
-        spacing: AppSpacing.sm,
-        runSpacing: AppSpacing.sm,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          _buildStatusBadge(context),
-          Text(
-            formatDuration(_response.durationMs),
-            key: const Key('response-duration'),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
+          // 左侧摘要可伸缩：窄屏时在 Wrap 内换行，绝不与右侧控件争宽溢出。
+          Expanded(
+            child: Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.sm,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _buildStatusBadge(context),
+                Text(
+                  formatDuration(_response.durationMs),
+                  key: const Key('response-duration'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  byteSize(_response.sizeBytes),
+                  key: const Key('response-size'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                if (_response.truncated) _buildTruncatedBadge(context),
+              ],
             ),
           ),
-          Text(
-            byteSize(_response.sizeBytes),
-            key: const Key('response-size'),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          if (_response.truncated) _buildTruncatedBadge(context),
+          const SizedBox(width: AppSpacing.sm),
           AppPillToggle<ResponseBodyFormat>(
             value: _format,
             segments: const <AppSegment<ResponseBodyFormat>>[
@@ -275,17 +285,31 @@ class _ResponseViewerState extends State<ResponseViewer> {
             icon: const Icon(TablerIcons.copy),
             onPressed: _copyBody,
           ),
-          IconButton(
-            key: const Key('response-save-body'),
-            tooltip: '保存响应体',
-            icon: const Icon(TablerIcons.download),
-            onPressed: _saveBody,
-          ),
-          TextButton.icon(
-            key: const Key('response-save-rewrite'),
-            onPressed: _canSaveAsRewrite ? _saveAsRewrite : null,
-            icon: const Icon(TablerIcons.device_floppy),
-            label: const Text('保存为改写响应'),
+          PopupMenuButton<String>(
+            key: const Key('response-overflow'),
+            tooltip: '更多',
+            icon: const Icon(TablerIcons.dots_vertical),
+            onSelected: (value) {
+              switch (value) {
+                case 'save-body':
+                  _saveBody();
+                case 'save-rewrite':
+                  _saveAsRewrite();
+              }
+            },
+            itemBuilder: (context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                key: Key('response-save-body'),
+                value: 'save-body',
+                child: Text('保存响应体'),
+              ),
+              PopupMenuItem<String>(
+                key: const Key('response-save-rewrite'),
+                value: 'save-rewrite',
+                enabled: _canSaveAsRewrite,
+                child: const Text('保存为改写响应'),
+              ),
+            ],
           ),
         ],
       ),
@@ -366,11 +390,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
                 label: 'Cookie',
                 key: Key('response-tab-cookies'),
               ),
-              AppSegment(
-                value: ResponseViewerTab.raw,
-                label: '原始',
-                key: Key('response-tab-raw'),
-              ),
             ],
             onChanged: (value) => setState(() {
               _tab = value;
@@ -394,8 +413,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
         return _buildBody(context);
       case ResponseViewerTab.cookies:
         return _buildCookies(context);
-      case ResponseViewerTab.raw:
-        return _buildRaw(context);
     }
   }
 
@@ -475,19 +492,6 @@ class _ResponseViewerState extends State<ResponseViewer> {
       sizeBytes: _response.sizeBytes,
       keyPrefix: 'response-body',
       onFullscreen: _openFullScreenBody,
-      onCopy: _copyBody,
-    );
-  }
-
-  Widget _buildRaw(BuildContext context) {
-    return _ResponseBodyPane(
-      key: const ValueKey<String>('response-raw-pane'),
-      rawText: _response.bodyText,
-      bodyKind: _bodyKind,
-      format: _format,
-      sizeBytes: _response.sizeBytes,
-      keyPrefix: 'response-raw',
-      forceRaw: true,
       onCopy: _copyBody,
     );
   }
@@ -607,6 +611,8 @@ class _ResponseBodyPane extends StatefulWidget {
     required this.sizeBytes,
     required this.keyPrefix,
     this.showSearch = false,
+    // `原始` 分段已移除，恒为 false；保留该参数以免改动 _ResponseBodyPane 本体。
+    // ignore: unused_element_parameter
     this.forceRaw = false,
     this.onFullscreen,
     this.onCopy,

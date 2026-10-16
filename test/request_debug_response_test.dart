@@ -271,7 +271,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('原始分段始终展示未格式化原文', (tester) async {
+    testWidgets('原始格式始终展示未格式化原文', (tester) async {
       const raw = '{"a":1}';
       await _pump(
         tester,
@@ -282,9 +282,9 @@ void main() {
           body: raw,
         ),
       );
-      await tester.tap(find.byKey(const Key('response-tab-raw')));
+      await tester.tap(find.byKey(const Key('response-format-raw')));
       await tester.pumpAndSettle();
-      expect(_bodyText(tester, prefix: 'response-raw'), raw);
+      expect(_bodyText(tester), raw);
       expect(tester.takeException(), isNull);
     });
   });
@@ -834,12 +834,10 @@ void main() {
       );
 
       await _pump(tester, first);
-      // 手动切到原始分段 + 原始格式，模拟用户上一次交互残留。
-      await tester.tap(find.byKey(const Key('response-tab-raw')));
-      await tester.pumpAndSettle();
+      // 手动切到原始格式，模拟用户上一次交互残留。
       await tester.tap(find.byKey(const Key('response-format-raw')));
       await tester.pumpAndSettle();
-      expect(_bodyText(tester, prefix: 'response-raw'), '{"first":1}');
+      expect(_bodyText(tester), '{"first":1}');
 
       // 重发：换一个响应实例，查看器应重置回 Body + 格式化（高亮树）。
       await _pump(tester, second);
@@ -1102,10 +1100,12 @@ void main() {
         ),
       );
 
-      final button = tester.widget<TextButton>(
+      await tester.tap(find.byKey(const Key('response-overflow')));
+      await tester.pumpAndSettle();
+      final item = tester.widget<PopupMenuItem<String>>(
         find.byKey(const Key('response-save-rewrite')),
       );
-      expect(button.onPressed, isNull, reason: '错误响应必须禁用保存');
+      expect(item.enabled, isFalse, reason: '错误响应必须禁用保存');
       await tester.tap(
         find.byKey(const Key('response-save-rewrite')),
         warnIfMissed: false,
@@ -1179,6 +1179,8 @@ void main() {
         ),
       );
 
+      await tester.tap(find.byKey(const Key('response-overflow')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('response-save-rewrite')));
       await tester.pumpAndSettle();
       expect(find.text('保存为改写响应？'), findsOneWidget);
