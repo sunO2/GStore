@@ -1,14 +1,43 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 import 'package:gstore/core/rust/Contract.dart' show decodeCertInfo;
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
 import 'package:gstore/core/service/apk_browser_service.dart';
 import 'package:gstore/core/utils/unit.dart' show byteSize;
 import 'package:gstore/page/apk_browser/preview.dart';
+import 'package:mockito/mockito.dart';
+
+/// 伪造的宿主模块句柄：仅经 `loadOverride` 原样返回，不触碰 FFI。
+class _FakeModuleHandle extends Mock implements ModuleHandle {}
+
+/// 捕获 `parse_certificate` 实际发出的 payload 字节（不触碰 FFI）。
+class _CapturingModuleInstance implements RustModuleInstance {
+  _CapturingModuleInstance(this.response);
+
+  final Uint8List response;
+  final List<String> methods = <String>[];
+  final List<Uint8List?> payloads = <Uint8List?>[];
+
+  @override
+  Future<Uint8List> callModule(String method, [Uint8List? payload]) async {
+    methods.add(method);
+    payloads.add(payload);
+    return response;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 /// 全字段内联金样本（构造样式对齐 Frozen JSON schema (CertInfo v1)）。
 ///
@@ -854,6 +883,167 @@ void main() {
       expect(find.text('容器格式：PKCS#12'), findsOneWidget);
       expect(find.text('原文'), findsOneWidget);
       expect(find.text('Hex'), findsOneWidget);
+    });
+  });
+
+  group('contract/golden', () {
+    // Todo 19：跨 FFI 契约锁定 —— 读取与 Rust `golden_cert_info_json` / 线格式
+    // 测试**共享同一文件**（Verification strategy：禁止两侧各写独立字面量）：
+    //   - rust/gstore_mod_analyzer/tests/fixtures/cert_info_golden.json（CertInfo JSON）
+    //   - rust/gstore_mod_analyzer/tests/fixtures/wire_payload.hex（`path\0password` 字节）
+    // `flutter test` 的 CWD = 仓库根，故相对路径可直接解析。
+
+    final bootstrap = ModuleBootstrap.instance;
+
+    setUp(() {
+      // 线格式测试经 ModuleBootstrap 注入假模块，确保 binding 已初始化且不留状态。
+      TestWidgetsFlutterBinding.ensureInitialized();
+      bootstrap.debugReset();
+    });
+
+    tearDown(() {
+      bootstrap.debugReset();
+    });
+
+    String readFixture(String name) =>
+        File('rust/gstore_mod_analyzer/tests/fixtures/$name').readAsStringSync();
+
+    Uint8List hexDecode(String hex) {
+      final out = <int>[];
+      for (var i = 0; i + 1 < hex.length; i += 2) {
+        out.add(int.parse(hex.substring(i, i + 2), radix: 16));
+      }
+      return Uint8List.fromList(out);
+    }
+
+    test('共享金样本 JSON → 全字段 CertInfo（多证书 / SAN / path_len:null）', () {
+      final golden = jsonDecode(readFixture('cert_info_golden.json'));
+      final info = decodeCertInfo(golden);
+
+      expect(info, isNotNull, reason: '金样本必为 Map → 解码出 CertInfo');
+      expect(info!.status, CertInfoStatus.ok);
+      expect(info.format, CertFormat.pem);
+      expect(info.passwordProtected, isFalse);
+      expect(info.message, '');
+      expect(info.certificates.length, 2, reason: 'chain.pem 含 2 张证书');
+
+      // —— 叶子证书（第 1 张）：逐字段核对真实值（非「非空」占位）——
+      final leaf = info.certificates[0];
+      expect(leaf.subject.commonName, 'example.com');
+      expect(leaf.subject.full, 'CN=example.com, O=Example Org, C=US');
+      expect(leaf.subject.fields.length, 3);
+      expect(leaf.subject.fields[2].name, 'C');
+      expect(leaf.subject.fields[2].value, 'US');
+      expect(leaf.issuer.commonName, 'example.com');
+      expect(leaf.serialNumberHex, '78853cd0d49c66a421b79748d9133f666b72c698');
+      expect(leaf.notBefore, '2026-10-16T16:56:31Z');
+      expect(leaf.notAfter, '2036-10-13T16:56:31Z');
+      expect(leaf.signatureAlgorithm, 'sha256WithRSAEncryption (1.2.840.113549.1.1.11)');
+      expect(leaf.publicKeyAlgorithm, 'RSA');
+      expect(leaf.publicKeyBits, 2048);
+      expect(leaf.version, 3);
+
+      // SAN 列表：DNS×2 / IP / EMAIL / URI
+      expect(leaf.san.length, 5);
+      expect(leaf.san.map((s) => s.type).toList(),
+          ['DNS', 'DNS', 'IP', 'EMAIL', 'URI']);
+      expect(leaf.san[0].value, 'example.com');
+      expect(leaf.san[1].value, 'www.example.com');
+      expect(leaf.san[2].value, '127.0.0.1');
+      expect(leaf.san[3].value, 'admin@example.com');
+      expect(leaf.san[4].value, 'https://example.com/');
+
+      expect(leaf.subjectKeyIdentifier,
+          '14:F7:85:C5:17:E9:A9:CE:C1:D0:63:DD:FB:D7:8B:CF:6A:A2:72:82');
+      // 空可选字段：叶片证书无 AKI → 空串（非 null）
+      expect(leaf.authorityKeyIdentifier, '');
+      expect(leaf.keyUsage, ['digitalSignature', 'keyEncipherment']);
+      expect(leaf.extendedKeyUsage, ['serverAuth', 'clientAuth']);
+      expect(leaf.basicConstraints.isCa, isFalse);
+      expect(leaf.basicConstraints.pathLen, isNull);
+      expect(leaf.crlDistributionPoints, ['http://crl.example.com/a.crl']);
+      expect(leaf.authorityInfoAccess.length, 2);
+      expect(leaf.authorityInfoAccess[1].type, 'caIssuers');
+      expect(leaf.authorityInfoAccess[1].url, 'http://ca.example.com/ca.crt');
+      expect(leaf.sha256Fingerprint,
+          '64:77:9E:22:81:E3:C4:89:3A:D6:2A:F0:FD:07:E4:51:FB:FE:69:87:21:69:06:E2:23:C7:9F:6B:63:FF:D0:2E');
+      expect(leaf.sha1Fingerprint,
+          'E7:F1:35:AF:AB:4D:E2:18:46:2E:A3:62:7E:FA:AF:AA:E4:29:E6:77');
+      expect(leaf.pem, contains('BEGIN CERTIFICATE'));
+
+      // —— CA 证书（第 2 张）：空可选列表 + path_len:null ——
+      final ca = info.certificates[1];
+      expect(ca.subject.commonName, 'Example CA');
+      expect(ca.serialNumberHex, '557bd44a310dd9d03fafb111c6a91ccab80abaea');
+      expect(ca.san, isEmpty);
+      expect(ca.extendedKeyUsage, isEmpty);
+      expect(ca.crlDistributionPoints, isEmpty);
+      expect(ca.authorityInfoAccess, isEmpty);
+      expect(ca.basicConstraints.isCa, isTrue);
+      expect(ca.basicConstraints.pathLen, isNull);
+      expect(ca.keyUsage, ['keyCertSign', 'cRLSign']);
+      expect(ca.sha1Fingerprint,
+          'F3:6E:C9:BC:4B:FD:17:0A:B8:37:43:15:28:73:CA:1C:42:E3:BB:6D');
+    });
+
+    test('非 Map 输入 → null', () {
+      expect(decodeCertInfo(3), isNull);
+      expect(decodeCertInfo('x'), isNull);
+    });
+
+    test('独立内联 JSON（非金样本）：未知 status/format 回落', () {
+      final info = decodeCertInfo({
+        'status': 'totally_unknown_status',
+        'format': 'totally_unknown_format',
+        'certificates': [],
+      })!;
+      expect(info.status, CertInfoStatus.unrecognized);
+      expect(info.format, CertFormat.unknown);
+      expect(info.certificates, isEmpty);
+    });
+
+    test('线格式：parseCertificate 发出的 payload 与 wire_payload.hex 逐字节相同',
+        () async {
+      // 该 fixture 由 Todo 6 用 path=`store.p12` + password=`changeit` 构造；
+      // 独立重建 utf8("store.p12") + 0x00 + utf8("changeit") 校验 fixture 内容。
+      final expectedHex = readFixture('wire_payload.hex').trim();
+      final expectedBytes = hexDecode(expectedHex);
+      final rebuilt = Uint8List.fromList(<int>[
+        ...utf8.encode('store.p12'),
+        0x00,
+        ...utf8.encode('changeit'),
+      ]);
+      expect(rebuilt, equals(expectedBytes),
+          reason: 'fixture 必须等于 path\\0password 的独立重建结果');
+      expect(expectedHex, '73746f72652e703132006368616e67656974');
+
+      final instance = _CapturingModuleInstance(
+        Uint8List.fromList(
+          utf8.encode('{"status":"ok","format":"der","certificates":[]}'),
+        ),
+      );
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          expect(module, 'analyzer');
+          return true;
+        },
+        loadOverride: (String module) async => _FakeModuleHandle(),
+        factoryOverride: (ModuleHandle handle) async => instance,
+      );
+
+      final info = await AnalyzerRustDecoder.parseCertificate(
+        'store.p12',
+        password: 'changeit',
+      );
+      expect(info, isNotNull, reason: '假模块返回合法 JSON → 解码成功');
+      expect(instance.methods, ['parse_certificate']);
+      expect(instance.payloads, hasLength(1));
+      // 逐字节比对解码器实际发出的 payload 与共享 fixture。
+      expect(instance.payloads.single, equals(expectedBytes));
     });
   });
 }
