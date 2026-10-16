@@ -230,7 +230,10 @@ class _ResponseViewerState extends State<ResponseViewer> {
   Widget _buildHeader(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: AppSpacing.allLG,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.xs,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -238,21 +241,21 @@ class _ResponseViewerState extends State<ResponseViewer> {
           Expanded(
             child: Wrap(
               spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 _buildStatusBadge(context),
                 Text(
                   formatDuration(_response.durationMs),
                   key: const Key('response-duration'),
-                  style: theme.textTheme.bodySmall?.copyWith(
+                  style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
                 Text(
                   byteSize(_response.sizeBytes),
                   key: const Key('response-size'),
-                  style: theme.textTheme.bodySmall?.copyWith(
+                  style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -283,12 +286,18 @@ class _ResponseViewerState extends State<ResponseViewer> {
             key: const Key('response-copy'),
             tooltip: '复制',
             icon: const Icon(TablerIcons.copy),
+            visualDensity: VisualDensity.compact,
+            iconSize: AppTypography.iconSM,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             onPressed: _copyBody,
           ),
           PopupMenuButton<String>(
             key: const Key('response-overflow'),
             tooltip: '更多',
             icon: const Icon(TablerIcons.dots_vertical),
+            iconSize: AppTypography.iconSM,
+            padding: EdgeInsets.zero,
             onSelected: (value) {
               switch (value) {
                 case 'save-body':
@@ -322,7 +331,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
     final scheme = theme.colorScheme;
     return Container(
       key: const Key('response-truncated'),
-      padding: AppSpacing.horizontalSM_verticalXS,
+      padding: AppSpacing.horizontalXS_verticalXS,
       decoration: BoxDecoration(
         color: scheme.errorContainer,
         borderRadius: AppRadius.allSM,
@@ -342,7 +351,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
     final scheme = theme.colorScheme;
     final color = _statusColor(scheme);
     return Container(
-      padding: AppSpacing.horizontalSM_verticalXS,
+      padding: AppSpacing.horizontalXS_verticalXS,
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
         borderRadius: AppRadius.allSM,
@@ -350,7 +359,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
       child: Text(
         '${_response.statusCode}',
         key: const Key('request-editor-response-status'),
-        style: theme.textTheme.titleMedium?.copyWith(
+        style: theme.textTheme.labelMedium?.copyWith(
           color: color,
           fontWeight: AppTypography.weightSemiBold,
         ),
