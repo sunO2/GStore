@@ -185,6 +185,8 @@ void main() {
               entryPath: 'AndroidManifest.xml',
               outPath: '/tmp/out.bin',
             ),
+        'parseCertificate':
+            () => AnalyzerRustDecoder.parseCertificate('/tmp/cert.p12'),
       };
 
       for (final entry in calls.entries) {

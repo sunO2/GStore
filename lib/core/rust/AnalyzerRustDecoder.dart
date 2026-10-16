@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/core/rust/Contract.dart' show decodeApkFeatures, decodeApkReport, decodeApkBuildVersions, decodeApkInfo, decodeApkComponents, decodeApkDexStats, decodeApkManifestInfo, decodeApkStructure, decodeElfScanResult, decodeDexClasses, decodeRuleMatchResult, decodeSignatureSchemes, decodeApkBrowseListing, decodeApkExportedEntry;
+import 'package:gstore/core/rust/Contract.dart' show decodeApkFeatures, decodeApkReport, decodeApkBuildVersions, decodeApkInfo, decodeApkComponents, decodeApkDexStats, decodeApkManifestInfo, decodeApkStructure, decodeElfScanResult, decodeDexClasses, decodeRuleMatchResult, decodeSignatureSchemes, decodeApkBrowseListing, decodeApkExportedEntry, decodeCertInfo;
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/contract/GStoreException.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
@@ -251,6 +251,28 @@ class AnalyzerRustDecoder {
       'export_apk_entry',
       payload.takeBytes(),
       (json) => decodeApkExportedEntry(json),
+    );
+  }
+
+  /// 解析证书 / 证书容器（APK 内容浏览器的 cert 条目）。
+  ///
+  /// payload = `path NUL password`（**始终带 NUL**；空密码即 `path NUL`）。
+  /// [path] 为宿主已导出的缓存文件路径，[password] 为容器密码（默认空）。
+  /// 返回 null 表示模块不可用（调用方应降级提示）；解析失败属 Rust `Ok(status=...)`，
+  /// 此处仍返回非 null 的 [CertInfo]（模块不可用与解析失败语义不同）。
+  static Future<CertInfo?> parseCertificate(
+    String path, {
+    String password = '',
+  }) async {
+    final payload = Uint8List.fromList(<int>[
+      ...utf8.encode(path),
+      0x00,
+      ...utf8.encode(password),
+    ]);
+    return _roundtripJson<CertInfo?>(
+      'parse_certificate',
+      payload,
+      (json) => decodeCertInfo(json),
     );
   }
 
