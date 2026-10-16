@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/rust/Contract.dart' show decodeCertInfo;
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
+import 'package:gstore/core/utils/unit.dart' show byteSize;
 import 'package:gstore/page/apk_browser/preview.dart';
 
 /// 全字段内联金样本（构造样式对齐 Frozen JSON schema (CertInfo v1)）。
@@ -516,6 +517,183 @@ void main() {
       expect(find.textContaining('十六进制预览'), findsOneWidget);
       // 不得误报「解析失败」
       expect(find.textContaining('解析失败'), findsNothing);
+    });
+  });
+
+  group('raw text/hex toggle', () {
+    // Todo 15：证书卡内的「原文 ↔ Hex」分段切换（仅证书条目），经注入缝提供
+    // bytes/size/certInfo，不依赖真机 / Rust 模块。
+    ApkBrowsableEntry certEntry({String kind = 'cert'}) => ApkBrowsableEntry(
+          path: 'META-INF/CERT.RSA',
+          name: 'CERT.RSA',
+          isDir: false,
+          size: 200,
+          compressedSize: 180,
+          crc32: 0xabcdef,
+          stored: false,
+          kind: kind,
+          browsable: false,
+        );
+
+    Future<void> pump(
+      WidgetTester tester, {
+      required Uint8List bytes,
+      required int size,
+      CertInfo? certInfo,
+      String kind = 'cert',
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/no/such.apk',
+            entry: certEntry(kind: kind),
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async =>
+                ApkEntryPreviewData(
+              path: '/tmp/fake/cert.bin',
+              size: size,
+              crc32: 1,
+              bytes: bytes,
+              certInfo: certInfo,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// 拼接全部 [SelectableText] 的内容（字段卡 PEM 与原始查看器都在其中）。
+    String selectableText(WidgetTester tester) => tester
+        .widgetList<SelectableText>(find.byType(SelectableText))
+        .map((w) => w.data ?? '')
+        .join('\n');
+
+    /// 最后一整行的偏移（16 字节/行）：校验 Hex 是否渲染到文件末尾。
+    String lastOffsetLine(int n) => (n - 16).toRadixString(16).padLeft(8, '0');
+
+    /// 点按分段（字段卡可能很长，先把控件滚入可视区再点）。
+    Future<void> tapView(WidgetTester tester, String label) async {
+      final finder = find.text(label);
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      await tester.tap(finder);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('非证书类型无 [原文|Hex] 切换', (tester) async {
+      await pump(
+        tester,
+        bytes: Uint8List.fromList(List.filled(64, 0xab)),
+        size: 64,
+        kind: 'dex',
+      );
+      expect(find.text('原文'), findsNothing);
+      expect(find.text('Hex'), findsNothing);
+    });
+
+    testWidgets('PEM 字节 → 默认原文显示 PEM，无二进制误报', (tester) async {
+      const pem =
+          '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
+      await pump(
+        tester,
+        bytes: Uint8List.fromList(utf8.encode(pem)),
+        size: pem.length,
+      );
+      // 仅证书条目有该分段控件
+      expect(find.text('原文'), findsOneWidget);
+      expect(find.text('Hex'), findsOneWidget);
+      expect(selectableText(tester), contains('BEGIN CERTIFICATE'));
+      expect(find.textContaining('二进制原文'), findsNothing);
+    });
+
+    testWidgets('切换 原文 ↔ Hex 两态可用', (tester) async {
+      const pem =
+          '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
+      await pump(
+        tester,
+        bytes: Uint8List.fromList(utf8.encode(pem)),
+        size: pem.length,
+      );
+      // 原文态
+      expect(selectableText(tester), contains('BEGIN CERTIFICATE'));
+      // → Hex
+      await tapView(tester, 'Hex');
+      expect(find.text('十六进制预览'), findsOneWidget);
+      expect(selectableText(tester), contains('00000000'));
+      // → 原文
+      await tapView(tester, '原文');
+      expect(find.text('十六进制预览'), findsNothing);
+      expect(selectableText(tester), contains('BEGIN CERTIFICATE'));
+    });
+
+    testWidgets('DER 二进制 + 已解析证书 → 原文显示 PEM armor（多证书按序拼接）', (tester) async {
+      final bytes = Uint8List.fromList([0x30, 0x82, 0x01, 0x02, 0x03]);
+      await pump(
+        tester,
+        bytes: bytes,
+        size: bytes.length,
+        certInfo: _certInfoOk(certs: [_fullCertEntry(), _fullCertEntry()]),
+      );
+      // 二进制默认展示 Hex
+      expect(find.text('十六进制预览'), findsOneWidget);
+      // 切到原文 → 出现「单块含两张证书」的 armor
+      await tapView(tester, '原文');
+      final datas = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .map((w) => w.data ?? '');
+      expect(
+        datas.any((t) => 'BEGIN CERTIFICATE'.allMatches(t).length == 2),
+        isTrue,
+      );
+      expect(find.textContaining('二进制原文'), findsNothing);
+    });
+
+    testWidgets('未解析二进制 → 原文宽容 UTF-8 + 「二进制原文，可能不可读」', (tester) async {
+      final bytes = Uint8List.fromList([0x30, 0x82, 0x01, 0x00, 0xff, 0xfe]);
+      await pump(tester, bytes: bytes, size: bytes.length);
+      expect(find.text('十六进制预览'), findsOneWidget);
+      await tapView(tester, '原文');
+      expect(find.text('二进制原文，可能不可读'), findsOneWidget);
+    });
+
+    testWidgets('4 KB 边界：Hex 完整渲染且无截断提示', (tester) async {
+      const n = 4 * 1024;
+      final bytes = Uint8List.fromList(List.generate(n, (i) => i & 0xff));
+      await pump(tester, bytes: bytes, size: n);
+      // 无截断 → 提示为纯「十六进制预览」
+      expect(find.text('十六进制预览'), findsOneWidget);
+      final dump = selectableText(tester);
+      expect(dump, contains('00000000'));
+      expect(dump, contains(lastOffsetLine(n))); // 00000ff0
+    });
+
+    testWidgets('256 KB 边界：Hex 渲染全部读到的字节且无截断提示', (tester) async {
+      const n = 256 * 1024;
+      final bytes = Uint8List.fromList(List.generate(n, (i) => i & 0xff));
+      await pump(tester, bytes: bytes, size: n);
+      expect(find.text('十六进制预览'), findsOneWidget);
+      final dump = selectableText(tester);
+      // 旧默认 limit=4096 只能渲染到 00000ff0，这里必须到 0003fff0
+      expect(dump, contains(lastOffsetLine(n)));
+    });
+
+    testWidgets('300 KB 文件（读 256 KB）→ 截断提示 + 渲染全部读到字节', (tester) async {
+      const read = 256 * 1024;
+      const total = 300 * 1024;
+      final bytes = Uint8List.fromList(List.generate(read, (i) => i & 0xff));
+      await pump(tester, bytes: bytes, size: total);
+      // 有截断 → 不再是纯提示
+      expect(find.text('十六进制预览'), findsNothing);
+      expect(
+        find.text('十六进制预览（前 ${byteSize(read)}，共 ${byteSize(total)}）'),
+        findsOneWidget,
+      );
+      // 读到的 256 KB 必须完整渲染（不是被默认 4096 截掉）
+      expect(selectableText(tester), contains(lastOffsetLine(read)));
     });
   });
 }

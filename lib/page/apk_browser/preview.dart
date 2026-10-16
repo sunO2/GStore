@@ -142,6 +142,9 @@ class ApkEntryPreviewPage extends StatefulWidget {
   State<ApkEntryPreviewPage> createState() => _ApkEntryPreviewPageState();
 }
 
+/// 证书原始内容的展示方式（仅证书条目提供该切换）。
+enum _CertRawView { text, hex }
+
 class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   /// 文本类预览的读取上限（超出只显示前段并提示）
   static const int _textLimit = 256 * 1024;
@@ -159,6 +162,9 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   ///
   /// 非下划线命名：Todo 13 先落存储，字段卡在 Todo 14 消费（避免暂未使用的私有字段告警）。
   CertInfo? certInfo;
+
+  /// 证书原始内容视图（「原文」/「Hex」）；仅证书条目使用。
+  _CertRawView _certRawView = _CertRawView.text;
 
   /// 已加载的字体族（字体预览用）
   String? _fontFamily;
@@ -193,6 +199,8 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
         _fileSize = data.size;
         certInfo = data.certInfo;
         _error = data.error;
+        // 初次/重解析后按内容选默认原始视图（文本含 PEM 头 → 原文，否则 Hex）。
+        _certRawView = _defaultCertRawViewFor(data.bytes);
         _loading = false;
       });
       if (_error == null && _kind == 'font' && data.bytes != null) {
@@ -218,6 +226,9 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   static int _limitFor(String kind) => switch (kind) {
         'font' => 8 * 1024 * 1024,
         'json' || 'text' => _textLimit,
+        // 证书读取上限固定 256 KB：Hex 用显式 limit 渲染全部读到的字节，
+        // 避免 hexDump 默认 4096 造成的「假满屏」（不改 _hexLimit 与其它 kind）。
+        'cert' => 256 * 1024,
         _ => _hexLimit,
       };
 
@@ -231,6 +242,17 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
     } finally {
       await raf.close();
     }
+  }
+
+  /// 默认原始视图：读到文本且含 PEM 头 → 「原文」，其余（如 DER 二进制）→ 「Hex」。
+  ///
+  /// 与旧 `_rawCertViewer` 的「PEM 直显、二进制走 hex」语义一致，
+  /// 只是现在可由用户在证书卡内切换。
+  static _CertRawView _defaultCertRawViewFor(Uint8List? bytes) {
+    if (bytes == null || bytes.isEmpty) return _CertRawView.text;
+    return utf8.decode(bytes, allowMalformed: true).contains('-----BEGIN')
+        ? _CertRawView.text
+        : _CertRawView.hex;
   }
 
   Future<void> _loadFont(Uint8List bytes) async {
@@ -442,25 +464,29 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
   ///   **不**报「解析失败」
   Widget _certCard() {
     final info = certInfo;
+    final Widget body;
     if (info == null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _certHintCard('证书解析模块不可用，仅显示原始内容'),
-          _rawCertViewer(),
-        ],
-      );
+      body = _certHintCard('证书解析模块不可用，仅显示原始内容');
+    } else {
+      body = switch (info.status) {
+        CertInfoStatus.ok => _certFieldCard(info),
+        CertInfoStatus.passwordRequired ||
+        CertInfoStatus.badPassword =>
+          _certPasswordCard(info),
+        CertInfoStatus.unsupported => _certContainerHintCard(info),
+        CertInfoStatus.unrecognized ||
+        CertInfoStatus.malformed =>
+          _certErrorCard(info),
+      };
     }
-    return switch (info.status) {
-      CertInfoStatus.ok => _certFieldCard(info),
-      CertInfoStatus.passwordRequired ||
-      CertInfoStatus.badPassword =>
-        _certPasswordCard(info),
-      CertInfoStatus.unsupported => _certContainerHintCard(info),
-      CertInfoStatus.unrecognized ||
-      CertInfoStatus.malformed =>
-        _certErrorCard(info),
-    };
+    // 仅证书条目：状态卡之后固定附「原文 ↔ Hex」原始内容卡（含模块不可用兜底）。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        body,
+        _certRawCard(),
+      ],
+    );
   }
 
   /// `ok`：逐证书字段卡（链序编号）。
@@ -579,16 +605,105 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
     );
   }
 
-  /// 原始查看器：PEM 文本直显，其余二进制走 hex。
+  /// 证书原始内容卡：`[原文 | Hex]` 分段切换（仅证书条目）。
   ///
-  /// 模块不可用（[certInfo] == null）时的兜底——保留原始内容而非空白。
-  Widget _rawCertViewer() {
-    final raw = _decodeText();
-    if (raw.contains('-----BEGIN')) {
-      return _textCard(raw, mono: true);
-    }
-    return _hexCard();
+  /// - 「原文」：可读 PEM 直显；二进制但已解析出证书时显示 Rust 返回的 PEM armor
+  ///   （多证书按链序拼接）；未解析二进制则宽容 UTF-8 + 「二进制原文，可能不可读」。
+  /// - 「Hex」：`hexDump(bytes, limit: bytes.length)`——**显式 limit** 渲染全部读到的
+  ///   字节（覆盖默认 4096），截断提示按**实际渲染字节数**比较，杜绝「假满屏」。
+  Widget _certRawCard() {
+    final theme = Theme.of(context);
+    return AppCard(
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppSegmentedButton<_CertRawView>(
+            value: _certRawView,
+            segments: const [
+              AppSegment(value: _CertRawView.text, label: '原文'),
+              AppSegment(value: _CertRawView.hex, label: 'Hex'),
+            ],
+            onChanged: (view) => setState(() => _certRawView = view),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          if (_certRawView == _CertRawView.text)
+            _certRawTextView(theme)
+          else
+            _certRawHexView(theme),
+        ],
+      ),
+    );
   }
+
+  /// 「原文」视图（见 [_certRawCard] 语义）。
+  Widget _certRawTextView(ThemeData theme) {
+    final bytes = _head;
+    if (bytes == null || bytes.isEmpty) return const Text('（空文件）');
+    final decoded = utf8.decode(bytes, allowMalformed: true);
+    final readablePem = decoded.contains('-----BEGIN');
+    // 二进制但已解析出证书 → 用 Rust 返回的 PEM armor（多证书按链序拼接）。
+    final armor = readablePem ? null : _parsedPemArmor();
+    final binaryWarn = armor == null && !readablePem;
+    // armor 来自解析结果（完整），不按读取量提示截断；字节视图才按实际渲染字节数比较。
+    final truncated = armor == null && _fileSize > bytes.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (binaryWarn) _rawHint(theme, '二进制原文，可能不可读'),
+        if (truncated)
+          _rawHint(
+            theme,
+            '内容较长，仅显示前 ${byteSize(bytes.length)}（共 ${byteSize(_fileSize)}）',
+          ),
+        SelectableText(armor ?? decoded, style: AppTypography.code),
+      ],
+    );
+  }
+
+  /// 「Hex」视图：显式 limit = 已读取字节数，渲染全部读到的字节；按实际渲染量提示截断。
+  Widget _certRawHexView(ThemeData theme) {
+    final bytes = _head;
+    if (bytes == null || bytes.isEmpty) return const Text('（空文件）');
+    final renderedBytes = bytes.length;
+    final dump = hexDump(bytes, limit: renderedBytes);
+    final truncated = _fileSize > renderedBytes;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _rawHint(
+          theme,
+          truncated
+              ? '十六进制预览（前 ${byteSize(renderedBytes)}，共 ${byteSize(_fileSize)}）'
+              : '十六进制预览',
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        SelectableText(dump, style: AppTypography.code),
+      ],
+    );
+  }
+
+  /// Rust 返回的 PEM armor：多证书按链序拼接（无证书或无 PEM 时为 null）。
+  String? _parsedPemArmor() {
+    final info = certInfo;
+    if (info == null || info.certificates.isEmpty) return null;
+    final parts = info.certificates
+        .map((c) => c.pem)
+        .where((p) => p.trim().isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return null;
+    return parts.join('\n');
+  }
+
+  /// 原始视图内的小号提示文案（等宽区上方的次要说明）。
+  Widget _rawHint(ThemeData theme, String text) => Padding(
+        padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+        child: Text(
+          text,
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      );
 
   /// 纯提示卡（模块不可用 / 空证书集）。
   Widget _certHintCard(String text) {
