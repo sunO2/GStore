@@ -90,9 +90,9 @@ class _FakeSender implements DebugSender {
 /// 用空操作覆盖；store 的内存 CRUD 语义完整保留。
 class _RecordingFacade extends DefaultRequestDebugFacade {
   _RecordingFacade({
-    required RequestDebugStore store,
-    required DebugSender sender,
-  }) : super(store: store, sender: sender);
+    required super.store,
+    required super.sender,
+  });
 
   int loadCalls = 0;
   int saveCalls = 0;
@@ -270,7 +270,6 @@ void main() {
       // 编辑器已打开（新建草稿）。
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
 
-      await tester.enterText(find.byKey(const Key('request-editor-name')), '登录');
       await _setUrlViaSheet(tester, 'https://api.example/login');
       await tester.tap(find.byKey(const Key('request-editor-method')));
       await tester.pumpAndSettle();
@@ -281,7 +280,7 @@ void main() {
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
-      expect(saved.single.name, '登录');
+      expect(saved.single.name, 'https://api.example/login');
       expect(saved.single.url, 'https://api.example/login');
       expect(saved.single.method, 'POST');
       expect(saved.single.collectionId, collection.id);
@@ -457,7 +456,6 @@ void main() {
 
       await _pumpEditor(tester, facade: facade, collectionId: collection.id);
 
-      await tester.enterText(find.byKey(const Key('request-editor-name')), '创建用户');
       await _setUrlViaSheet(tester, 'https://api.example/users');
       await tester.tap(find.byKey(const Key('request-editor-method')));
       await tester.pumpAndSettle();
@@ -467,7 +465,7 @@ void main() {
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
-      expect(saved.single.name, '创建用户');
+      expect(saved.single.name, 'https://api.example/users');
       expect(saved.single.url, 'https://api.example/users');
       expect(saved.single.method, 'POST');
       expect(saved.single.collectionId, collection.id);

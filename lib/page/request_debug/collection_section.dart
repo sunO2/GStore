@@ -542,7 +542,7 @@ class RequestDebugCollectionSectionState
         borderRadius: AppRadius.allSM,
         child: Padding(
           padding: AppSpacing.horizontalMD_verticalSM,
-          child: Text(request.name.isEmpty ? request.url : request.name),
+          child: Text(request.url),
         ),
       ),
       childWhenDragging: Opacity(
@@ -561,17 +561,12 @@ class RequestDebugCollectionSectionState
     bool reorderable,
   ) {
     return ListTile(
-      contentPadding: EdgeInsets.only(
-        left: AppSpacing.xxl + depth * AppSpacing.lg,
+      contentPadding: const EdgeInsets.only(
+        left: AppSpacing.md,
         right: AppSpacing.sm,
       ),
       leading: _methodChip(context, request.method),
       title: Text(
-        request.name.isEmpty ? request.url : request.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
         request.url,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,

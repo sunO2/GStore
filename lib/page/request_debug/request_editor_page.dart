@@ -77,7 +77,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     'OPTIONS',
   ];
 
-  late final TextEditingController _name;
   late final TextEditingController _url;
   late final TextEditingController _body;
   late final TextEditingController _authUser;
@@ -154,7 +153,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     final initialParams = storedQuery.isEmpty
         ? parsed.params
         : mergeParams(parsed.params, storedQuery);
-    _name = TextEditingController(text: request?.name ?? '');
     _url = TextEditingController(
       text: rebuildUrl(parsed.base, parsed.fragment, initialParams),
     );
@@ -174,7 +172,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _authKeyName = TextEditingController(text: request?.auth?.apiKeyName ?? '');
     _authKeyValue = TextEditingController(text: request?.auth?.apiKeyValue ?? '');
     for (final controller in <TextEditingController>[
-      _name,
       _url,
       _body,
       _authUser,
@@ -198,7 +195,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   @override
   void dispose() {
-    _name.dispose();
     _url.dispose();
     _body.dispose();
     _authUser.dispose();
@@ -449,10 +445,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     // 规范化持久化：显示 URL 的查询移入 `query[]`，`url` 只留 path + `#fragment`。
     final parsed = parseUrlQuery(_url.text.trim());
     final url = rebuildUrl(parsed.base, parsed.fragment, const <DebugQueryParam>[]);
-    final rawName = _name.text.trim();
     return DebugRequest(
       id: _draftId,
-      name: rawName.isEmpty ? (url.isEmpty ? '未命名请求' : url) : rawName,
+      name: url.isEmpty ? '未命名请求' : url,
       method: _method,
       url: url,
       headers: _headers
@@ -1097,32 +1092,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   Widget _buildTopBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // 请求名称（紧凑、无边框）+ URL 请求栏：方法已上移到 AppBar 胶囊，
-    // 此处只保留名称与 URL，构成干净的一条顶部区域。
+    // URL 请求栏：方法已上移到 AppBar 胶囊，请求名称由 URL 自动派生，
+    // 此处只保留 URL，构成干净的一条顶部区域。
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            key: const Key('request-editor-name'),
-            controller: _name,
-            textInputAction: TextInputAction.next,
-            style: Theme.of(context).textTheme.titleMedium,
-            decoration: InputDecoration(
-              hintText: '请求名称',
-              isDense: true,
-              border: InputBorder.none,
-              prefixIcon: Icon(
-                TablerIcons.pencil,
-                size: AppTypography.iconSM,
-                color: scheme.onSurfaceVariant,
-              ),
-              contentPadding: EdgeInsets.zero,
-            ),
-            onChanged: (_) => _markDirty(),
-          ),
-          const SizedBox(height: AppSpacing.sm),
           Container(
             padding: AppSpacing.allSM,
             decoration: BoxDecoration(

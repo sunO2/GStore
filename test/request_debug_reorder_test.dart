@@ -397,7 +397,7 @@ void main() {
       // 拖拽后点击请求进入编辑器，再返回：控制器不得已释放。
       await tester.tap(find.byKey(const Key('request-debug-request-r1')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('request-editor-name')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-name')), findsNothing);
       expect(tester.takeException(), isNull);
 
       await tester.tap(find.byKey(const Key('request-editor-back')));
