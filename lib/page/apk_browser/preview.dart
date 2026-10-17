@@ -326,7 +326,14 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
           _metaRow('大小', byteSize(_fileSize == 0 ? e.size : _fileSize)),
           if (e.compressedSize > 0)
             _metaRow('压缩后', byteSize(e.compressedSize)),
-          _metaRow('存放方式', e.stored ? 'STORED（未压缩）' : 'DEFLATE'),
+          _metaRow('存放方式', _compressionLabel(e)),
+          if (e.compressedSize > 0 && e.compressedSize < e.size)
+            _metaRow('压缩率', _compressionRate(e)),
+          _metaRow('修改时间', e.modified ?? '无'),
+          if (e.created != null) _metaRow('创建时间', e.created!),
+          if (e.accessed != null) _metaRow('访问时间', e.accessed!),
+          if (e.unixMode != null) _metaRow('权限', _permText(e.unixMode!)),
+          _metaRow('加密', e.encrypted ? '是' : '否'),
           if (e.crc32 != 0)
             _metaRow(
               'CRC32',
@@ -362,6 +369,37 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
         ],
       ),
     );
+  }
+
+  /// 存放方式展示：优先用模块的 `compression`；空串回落旧的 `stored` 布尔。
+  static String _compressionLabel(ApkBrowsableEntry e) {
+    final c = e.compression;
+    if (c.isEmpty) return e.stored ? 'STORED（未压缩）' : 'DEFLATE';
+    return switch (c.toLowerCase()) {
+      'stored' => 'STORED（未压缩）',
+      'deflate' => 'DEFLATE',
+      _ => c.toUpperCase(),
+    };
+  }
+
+  /// 压缩率：仅在压缩确实生效（`0 < compressedSize < size`）时展示，`节省 N%`。
+  static String _compressionRate(ApkBrowsableEntry e) {
+    final saved = ((e.size - e.compressedSize) / e.size * 100).round();
+    return '节省 $saved%';
+  }
+
+  /// Unix 权限：`0o<octal> · rwxrwxrwx`（仅取低 9 位）。
+  static String _permText(int unixMode) {
+    // 0x1FF = 低 9 位权限（Dart 无八进制字面量，0o777 用十六进制表达）。
+    final mode = unixMode & 0x1FF;
+    final octal = '0o${mode.toRadixString(8).padLeft(3, '0')}';
+    final rwx = [
+      for (final shift in const [6, 3, 0])
+        '${(mode >> shift) & 4 != 0 ? 'r' : '-'}'
+            '${(mode >> shift) & 2 != 0 ? 'w' : '-'}'
+            '${(mode >> shift) & 1 != 0 ? 'x' : '-'}',
+    ].join();
+    return '$octal · $rwx';
   }
 
   Widget _messageCard(String text) => AppCard(

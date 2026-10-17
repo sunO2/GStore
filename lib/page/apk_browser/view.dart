@@ -128,30 +128,25 @@ class _ApkBrowserPageState extends State<ApkBrowserPage> {
           // 标题栏返回按钮：直接退出本页（不逐层回退），与手势返回区分
           leading: BackButton(onPressed: () => Navigator.of(context).pop()),
         ),
-        body: Column(
+        body: IndexedStack(
+          index: _dirs.length - 1,
           children: [
-            _headerCard(),
-            Expanded(
-              child: IndexedStack(
-                index: _dirs.length - 1,
-                children: [
-                  for (final dir in _dirs)
-                    ApkDirectoryView(
-                      // 按「容器 + 目录」做 key：栈内各层各自保活
-                      key: ValueKey('${widget.initialChain}#$dir'),
-                      apkPath: widget.apkPath,
-                      containerChain: widget.initialChain,
-                      containerLabel: _containerLabel,
-                      dir: dir,
-                      loader: _loader,
-                      onUp: _goUp,
-                      onJumpTo: _jumpTo,
-                      onOpenZip: _openZip,
-                      onOpenFile: _openFile,
-                    ),
-                ],
+            for (final dir in _dirs)
+              ApkDirectoryView(
+                // 按「容器 + 目录」做 key：栈内各层各自保活
+                key: ValueKey('${widget.initialChain}#$dir'),
+                apkPath: widget.apkPath,
+                containerChain: widget.initialChain,
+                containerLabel: _containerLabel,
+                dir: dir,
+                loader: _loader,
+                onUp: _goUp,
+                onJumpTo: _jumpTo,
+                onOpenZip: _openZip,
+                onOpenFile: _openFile,
+                // 顶部信息卡片随本层列表滚动折叠 / 回顶展开
+                header: _headerCard(),
               ),
-            ),
           ],
         ),
       ),

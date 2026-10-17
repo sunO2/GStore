@@ -55,6 +55,21 @@ pub struct BrowseEntry {
     pub kind: String,
     /// 是否可进入（仅 zip 家族）
     pub browsable: bool,
+    /// ZIP 条目修改时间（DOS 时间，`YYYY-MM-DD HH:MM:SS`，无时区，2 秒精度）；
+    /// 未设置 / 非法 → `None`
+    pub modified: Option<String>,
+    /// 创建时间：来自 extra 时间戳（UT `0x5455` ctime 或 NTFS `0x000A` ctime）；
+    /// 缺失 → `None`
+    pub created: Option<String>,
+    /// 访问时间：来自 extra 时间戳（UT `0x5455` atime 或 NTFS `0x000A` atime）；
+    /// 缺失 → `None`
+    pub accessed: Option<String>,
+    /// 原始 unix 权限位（`ZipFile::unix_mode()`）；缺失 → `None`
+    pub unix_mode: Option<u32>,
+    /// 是否加密（`ZipFile::encrypted()`）
+    pub encrypted: bool,
+    /// 压缩方式（`stored` / `deflate` / …；目录为空串）
+    pub compression: String,
 }
 
 /// 一层目录的列举结果
@@ -199,6 +214,18 @@ pub fn browse_entries(
         let compressed_size = entry.compressed_size();
         let crc32 = entry.crc32();
         let stored = entry.compression() == zip::CompressionMethod::Stored;
+        // ZIP 条目元数据（缺失字段 → None/缺省）；extra 引用须在 drop(entry) 前用完
+        let (modified, created, accessed, unix_mode, encrypted, compression) = {
+            let extra: Vec<&zip::ExtraField> = entry.extra_data_fields().collect();
+            (
+                entry.last_modified().and_then(|dt| format_zip_datetime(&dt)),
+                extra_created(&extra),
+                extra_accessed(&extra),
+                entry.unix_mode(),
+                entry.encrypted(),
+                entry.compression().to_string().to_ascii_lowercase(),
+            )
+        };
         drop(entry);
 
         let Some(rest) = path.strip_prefix(prefix.as_str()) else {
@@ -226,6 +253,12 @@ pub fn browse_entries(
                     stored,
                     browsable: is_browsable(&kind),
                     kind: kind.to_string(),
+                    modified,
+                    created,
+                    accessed,
+                    unix_mode,
+                    encrypted,
+                    compression,
                 });
                 if files.len() + dir_sizes.len() >= MAX_LIST_ENTRIES {
                     truncated = true;
@@ -249,6 +282,12 @@ pub fn browse_entries(
             stored: false,
             kind: "dir".to_string(),
             browsable: false,
+            modified: None,
+            created: None,
+            accessed: None,
+            unix_mode: None,
+            encrypted: false,
+            compression: String::new(),
         })
         .collect();
     if entries.len() + files.len() > MAX_LIST_ENTRIES {
@@ -331,6 +370,105 @@ pub fn export_entry(
 /// zip 家族：可进入下一层
 fn is_browsable(kind: &str) -> bool {
     matches!(kind, "zip" | "apk" | "jar" | "aar")
+}
+
+/// zip DOS 时间 → `YYYY-MM-DD HH:MM:SS`（无时区，2 秒精度）；非法值返回 None。
+///
+/// zip 中央目录里的 DOS 时间字段可能未设置（月/日为 0），故显式校验。
+fn format_zip_datetime(dt: &zip::DateTime) -> Option<String> {
+    let (year, month, day) = (dt.year(), dt.month(), dt.day());
+    let (hour, minute, second) = (dt.hour(), dt.minute(), dt.second());
+    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some(format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+    ))
+}
+
+/// Unix 纪元秒 → `YYYY-MM-DD HH:MM:SS`（UTC，无时区）；负值返回 None。
+///
+/// 不能依赖 `zip` 的 `time` feature（未启用），故手工做 civil-from-days 换算。
+fn format_unix_secs(secs: i64) -> Option<String> {
+    if secs < 0 {
+        return None;
+    }
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    if !(0..=9999).contains(&year) {
+        return None;
+    }
+    Some(format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+    ))
+}
+
+/// Howard Hinnant `civil_from_days`：自 1970-01-01 起的天数 → (年, 月, 日)
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (y + if month <= 2 { 1 } else { 0 }, month, day)
+}
+
+/// NTFS FILETIME（100ns，自 1601-01-01 UTC）→ Unix 纪元秒；0 / 越界返回 None。
+fn ntfs_filetime_secs(filetime: u64) -> Option<i64> {
+    // 1601-01-01 到 1970-01-01 之间的秒数
+    const EPOCH_DIFF_SECS: i64 = 11_644_473_600;
+    if filetime == 0 {
+        return None;
+    }
+    let secs = (filetime / 10_000_000) as i64 - EPOCH_DIFF_SECS;
+    if secs < 0 {
+        return None;
+    }
+    Some(secs)
+}
+
+/// 创建时间：优先 UT `0x5455` ctime，其次 NTFS `0x000A` ctime；均无 → None
+fn extra_created(fields: &[&zip::ExtraField]) -> Option<String> {
+    for f in fields {
+        if let zip::ExtraField::ExtendedTimestamp(ts) = f {
+            if let Some(v) = ts.cr_time() {
+                return format_unix_secs(v as i64);
+            }
+        }
+    }
+    for f in fields {
+        if let zip::ExtraField::Ntfs(n) = f {
+            if let Some(v) = ntfs_filetime_secs(n.ctime()) {
+                return format_unix_secs(v);
+            }
+        }
+    }
+    None
+}
+
+/// 访问时间：优先 UT `0x5455` atime，其次 NTFS `0x000A` atime；均无 → None
+fn extra_accessed(fields: &[&zip::ExtraField]) -> Option<String> {
+    for f in fields {
+        if let zip::ExtraField::ExtendedTimestamp(ts) = f {
+            if let Some(v) = ts.ac_time() {
+                return format_unix_secs(v as i64);
+            }
+        }
+    }
+    for f in fields {
+        if let zip::ExtraField::Ntfs(n) = f {
+            if let Some(v) = ntfs_filetime_secs(n.atime()) {
+                return format_unix_secs(v);
+            }
+        }
+    }
+    None
 }
 
 /// 按扩展名归类（展示层据此选预览器）
@@ -509,6 +647,43 @@ mod tests {
         let libs = browse_entries(path.to_str().unwrap(), "", "lib/arm64-v8a").unwrap();
         assert_eq!(libs.entries[0].kind, "so");
         assert!(libs.entries[0].stored);
+    }
+
+    #[test]
+    fn exposes_entry_metadata() {
+        let path = tmp_apk("meta");
+        {
+            let file = File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let when = zip::DateTime::from_date_and_time(2021, 3, 5, 12, 34, 56).unwrap();
+            let deflated = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .last_modified_time(when);
+            let stored = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .last_modified_time(when);
+            zip.start_file("assets/meta.txt", deflated).unwrap();
+            zip.write_all(b"meta").unwrap();
+            zip.start_file("assets/raw.bin", stored).unwrap();
+            zip.write_all(b"raw").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let l = browse_entries(path.to_str().unwrap(), "", "assets").unwrap();
+
+        let meta = l.entries.iter().find(|e| e.name == "meta.txt").unwrap();
+        assert_eq!(meta.modified.as_deref(), Some("2021-03-05 12:34:56"));
+        assert_eq!(meta.compression, "deflated");
+        assert!(!meta.encrypted);
+        assert_eq!(meta.created, None, "无 extra 时间戳应为 None");
+        assert_eq!(meta.accessed, None, "无 extra 时间戳应为 None");
+        assert_eq!(meta.unix_mode, Some(0o100644), "写入器默认权限位 S_IFREG|0644");
+
+        let raw = l.entries.iter().find(|e| e.name == "raw.bin").unwrap();
+        assert_eq!(raw.modified.as_deref(), Some("2021-03-05 12:34:56"));
+        assert_eq!(raw.compression, "stored");
+        assert!(raw.stored);
+        assert_eq!(raw.encrypted, meta.encrypted);
     }
 
     #[test]

@@ -783,6 +783,24 @@ class ApkBrowsableEntry {
   /// 是否可进入下一层（仅 zip 家族）
   final bool browsable;
 
+  /// 修改时间（`YYYY-MM-DD HH:MM:SS`；旧模块 / 不可用为 null）
+  final String? modified;
+
+  /// 创建时间（`YYYY-MM-DD HH:MM:SS`；不可用为 null）
+  final String? created;
+
+  /// 访问时间（`YYYY-MM-DD HH:MM:SS`；不可用为 null）
+  final String? accessed;
+
+  /// Unix 权限位（`u32`；不可用为 null）
+  final int? unixMode;
+
+  /// 是否加密（旧模块缺省 false）
+  final bool encrypted;
+
+  /// 压缩方式（`stored` / `deflate`；旧模块缺省空串）
+  final String compression;
+
   const ApkBrowsableEntry({
     required this.path,
     required this.name,
@@ -793,6 +811,12 @@ class ApkBrowsableEntry {
     required this.stored,
     required this.kind,
     required this.browsable,
+    this.modified,
+    this.created,
+    this.accessed,
+    this.unixMode,
+    this.encrypted = false,
+    this.compression = '',
   });
 }
 

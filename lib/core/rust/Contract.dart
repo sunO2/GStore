@@ -170,6 +170,12 @@ ApkBrowsableEntry _decodeBrowsableEntry(Map<String, dynamic> m) => ApkBrowsableE
       stored: m['stored'] as bool? ?? false,
       kind: m['kind'] as String? ?? 'binary',
       browsable: m['browsable'] as bool? ?? false,
+      modified: m['modified'] as String?,
+      created: m['created'] as String?,
+      accessed: m['accessed'] as String?,
+      unixMode: (m['unix_mode'] as num?)?.toInt(),
+      encrypted: m['encrypted'] as bool? ?? false,
+      compression: m['compression'] as String? ?? '',
     );
 
 /// JSON → ApkExportedEntry（模块 export_apk_entry 响应）

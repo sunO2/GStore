@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "gstore_mod_analyzer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apk-info-axml",
  "apk-info-xml",

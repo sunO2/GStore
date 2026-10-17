@@ -9,6 +9,7 @@ import 'package:gstore/core/rust/Contract.dart' show decodeApkBrowseListing, dec
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
 import 'package:gstore/page/apk_browser/directory_view.dart';
+import 'package:gstore/page/apk_browser/preview.dart';
 import 'package:gstore/page/apk_browser/view.dart';
 
 const _listingJson = {
@@ -66,6 +67,13 @@ void main() {
       expect(file.stored, isTrue);
       expect(file.kind, 'text');
       expect(file.browsable, isFalse);
+      // 新元数据字段：旧响应缺 key → schema 默认（null / false / ''）
+      expect(file.modified, isNull);
+      expect(file.created, isNull);
+      expect(file.accessed, isNull);
+      expect(file.unixMode, isNull);
+      expect(file.encrypted, isFalse);
+      expect(file.compression, '');
 
       final dir = listing.entries[1];
       expect(dir.isDir, isTrue);
@@ -81,6 +89,38 @@ void main() {
 
     test('非 Map 输入返回 null（模块异常时不炸）', () {
       expect(decodeApkBrowseListing('oops'), isNull);
+    });
+
+    test('decodeApkBrowseListing 解码条目元数据（时间/权限/加密/压缩）', () {
+      final listing = decodeApkBrowseListing({
+        ..._listingJson,
+        'entries': [
+          {
+            'path': 'res/raw/inner.txt',
+            'name': 'inner.txt',
+            'is_dir': false,
+            'size': 100,
+            'compressed_size': 38,
+            'crc32': 0,
+            'stored': false,
+            'kind': 'text',
+            'browsable': false,
+            'modified': '2026-01-02 03:04:05',
+            'created': '2026-01-01 00:00:00',
+            'accessed': '2026-01-03 00:00:00',
+            'unix_mode': 420, // 0o644
+            'encrypted': true,
+            'compression': 'deflate',
+          },
+        ],
+      })!;
+      final e = listing.entries.single;
+      expect(e.modified, '2026-01-02 03:04:05');
+      expect(e.created, '2026-01-01 00:00:00');
+      expect(e.accessed, '2026-01-03 00:00:00');
+      expect(e.unixMode, 420);
+      expect(e.encrypted, isTrue);
+      expect(e.compression, 'deflate');
     });
 
     test('decodeApkExportedEntry 还原落地信息', () {
@@ -392,6 +432,191 @@ void main() {
       expect(find.textContaining('条目 1'), findsOneWidget);
       final afterTop = tester.getTopLeft(find.byType(TextField)).dy;
       expect(afterTop, beforeTop, reason: '统计行出现不应导致搜索栏位移');
+    });
+
+    testWidgets('列表上滑时头部卡片折叠收起，回顶后恢复', (tester) async {
+      // 足够长的列表，保证可以滚动
+      ApkBrowseListing longListing() => listing(
+            '',
+            '',
+            entries: [
+              for (var i = 0; i < 60; i++)
+                fileEntry('assets/file_${i.toString().padLeft(2, '0')}.txt', 'text'),
+            ],
+          );
+
+      Future<ApkBrowseListing?> longLoader({
+        required String apkPath,
+        required String containerChain,
+        required String dir,
+      }) async =>
+          longListing();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkBrowserPage(
+            apkPath: '/tmp/base.apk',
+            appLabel: 'Demo',
+            listingLoader: longLoader,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 初始状态：头部卡片可见（展示 APK 路径），列表在顶部
+      expect(find.textContaining('/tmp/base.apk'), findsOneWidget);
+
+      // 向上拖动列表 → 头部卡片折叠隐藏
+      await tester.drag(
+        find.byKey(const Key('apk_browser_entries')),
+        const Offset(0, -400),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('/tmp/base.apk'), findsNothing,
+          reason: '列表上滑后头部卡片应折叠收起');
+
+      // 向下拖回顶部 → 头部卡片恢复
+      await tester.drag(
+        find.byKey(const Key('apk_browser_entries')),
+        const Offset(0, 400),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('/tmp/base.apk'), findsOneWidget,
+          reason: '回到顶部后头部卡片应重新展开');
+    });
+  });
+
+  group('ApkEntryPreviewPage 文件详情卡（新增条目元数据）', () {
+    // 经注入 listingLoader 提供带元数据的条目，点开预览页断言「文件详情」卡。
+    // 模块不可用 → 预览正文降级，但元信息卡仍必渲染（正是本组要断言的）。
+    ApkBrowsableEntry metaEntry({
+      String path = 'res/raw/inner.bin',
+      String? modified,
+      String? created,
+      String? accessed,
+      int? unixMode,
+      bool encrypted = false,
+      String compression = '',
+      int size = 100,
+      int compressedSize = 38,
+      bool stored = false,
+    }) =>
+        ApkBrowsableEntry(
+          path: path,
+          name: path.split('/').last,
+          isDir: false,
+          size: size,
+          compressedSize: compressedSize,
+          crc32: 0,
+          stored: stored,
+          kind: 'binary',
+          browsable: false,
+          modified: modified,
+          created: created,
+          accessed: accessed,
+          unixMode: unixMode,
+          encrypted: encrypted,
+          compression: compression,
+        );
+
+    ApkListingLoader loader(List<ApkBrowsableEntry> entries) =>
+        ({
+          required String apkPath,
+          required String containerChain,
+          required String dir,
+        }) async =>
+            ApkBrowseListing(
+              container: '',
+              dir: '',
+              parentDir: '',
+              canGoUp: false,
+              entries: entries,
+              totalFiles: entries.length,
+              containerSize: 0,
+              truncated: false,
+            );
+
+    /// 经注入的 [loader]（= listingLoader）取条目，再泵入预览页。
+    ///
+    /// 预览正文的默认导出器会等待不可用的 Rust 模块（测试环境无模块 → 永不 settle），
+    /// 故注入返回 null 的准备器让正文走降级分支；「文件详情」卡仍按条目元数据渲染。
+    Future<void> openPreview(
+      WidgetTester tester,
+      List<ApkBrowsableEntry> entries,
+    ) async {
+      final listing = await loader(entries)(
+        apkPath: '/tmp/base.apk',
+        containerChain: '',
+        dir: '',
+      );
+      final entry = listing!.entries.single;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApkEntryPreviewPage(
+            apkPath: '/tmp/base.apk',
+            entry: entry,
+            preparer: ({
+              required String apkPath,
+              required ApkBrowsableEntry entry,
+              required String containerChain,
+              String? password,
+            }) async =>
+                null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('带元数据条目 → 显示 修改时间/创建时间/访问时间/权限/加密/压缩率', (tester) async {
+      await openPreview(
+        tester,
+        [
+          metaEntry(
+            modified: '2026-01-02 03:04:05',
+            created: '2026-01-01 00:00:00',
+            accessed: '2026-01-03 00:00:00',
+            unixMode: 420, // 0o644
+            encrypted: true,
+            compression: 'deflate',
+          ),
+        ],
+      );
+
+      expect(find.text('修改时间'), findsOneWidget);
+      expect(find.text('2026-01-02 03:04:05'), findsOneWidget);
+      expect(find.text('创建时间'), findsOneWidget);
+      expect(find.text('访问时间'), findsOneWidget);
+      expect(find.text('权限'), findsOneWidget);
+      expect(find.text('0o644 · rw-r--r--'), findsOneWidget);
+      expect(find.text('加密'), findsOneWidget);
+      expect(find.text('是'), findsOneWidget);
+      expect(find.text('存放方式'), findsOneWidget);
+      expect(find.text('DEFLATE'), findsOneWidget);
+      expect(find.text('压缩率'), findsOneWidget);
+      expect(find.text('节省 62%'), findsOneWidget);
+    });
+
+    testWidgets('created/accessed 为 null → 不渲染 创建时间/访问时间 行', (tester) async {
+      await openPreview(
+        tester,
+        [
+          metaEntry(
+            modified: '2026-01-02 03:04:05',
+            encrypted: false,
+            compression: '',
+            stored: true,
+          ),
+        ],
+      );
+
+      expect(find.text('修改时间'), findsOneWidget);
+      expect(find.text('2026-01-02 03:04:05'), findsOneWidget);
+      expect(find.text('创建时间'), findsNothing);
+      expect(find.text('访问时间'), findsNothing);
+      // 旧模块缺省压缩 → 回落 STORED；无加密 → 否
+      expect(find.text('STORED（未压缩）'), findsOneWidget);
+      expect(find.text('否'), findsOneWidget);
     });
   });
 }

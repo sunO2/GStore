@@ -49,9 +49,17 @@ class ApkDirectoryView extends StatefulWidget {
     required this.onJumpTo,
     required this.onOpenZip,
     required this.onOpenFile,
+    required this.header,
   });
 
   final String apkPath;
+
+  /// 顶部信息卡片（展示应用名 / 容器 / APK 路径）。
+  ///
+  /// 由宿主页提供；本层把它放在列表可滚动区的最上方：列表一上滑就折叠收起，
+  /// 回到顶部再展开（见 [_onScroll]）。每层各自保活本状态，因此返回上一层
+  /// 时折叠态与滚动位置一致恢复。
+  final Widget header;
 
   /// 当前容器链（本页所属容器，空 = APK 根）
   final String containerChain;
@@ -82,22 +90,41 @@ class ApkDirectoryView extends StatefulWidget {
 
 class _ApkDirectoryViewState extends State<ApkDirectoryView> {
   final TextEditingController _queryCtrl = TextEditingController();
+  final ScrollController _scrollCtrl = ScrollController();
 
   ApkBrowseListing? _listing;
   bool _loading = true;
   String? _error;
   String _query = '';
 
+  /// 顶部信息卡片是否已折叠：列表一离开顶部就收起，回到顶部再展开。
+  bool _headerCollapsed = false;
+
   @override
   void initState() {
     super.initState();
+    _scrollCtrl.addListener(_onScroll);
     _load();
   }
 
   @override
   void dispose() {
+    _scrollCtrl.removeListener(_onScroll);
+    _scrollCtrl.dispose();
     _queryCtrl.dispose();
     super.dispose();
+  }
+
+  /// 列表滚动：offset > 0（已上滑）→ 折叠头部；offset <= 0（回到顶部）→ 展开。
+  ///
+  /// 只负责切换布尔折叠态（`AnimatedSize` 负责平滑收起/展开），
+  /// 每层各自持有 [_scrollCtrl]，所以 IndexedStack 保活时滚动位置与折叠态一并保留。
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final collapsed = _scrollCtrl.offset > 0;
+    if (collapsed != _headerCollapsed) {
+      setState(() => _headerCollapsed = collapsed);
+    }
   }
 
   Future<void> _load() async {
@@ -148,6 +175,14 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // 顶部信息卡片：随列表上滑折叠收起、回顶展开（AnimatedSize 平滑高度过渡）。
+        // 折叠后整张卡片移出树（高度归零），因此不占位、不可交互。
+        AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeInOut,
+          alignment: Alignment.topCenter,
+          child: _headerCollapsed ? const SizedBox.shrink() : widget.header,
+        ),
         _toolbar(),
         _statsLine(),
         _searchBar(),
@@ -293,6 +328,8 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
       );
     }
     return ListView.builder(
+      key: const Key('apk_browser_entries'),
+      controller: _scrollCtrl,
       padding: AppSpacing.onlyBottomSM,
       itemCount: entries.length,
       itemBuilder: (context, index) => _entryRow(entries[index]),
