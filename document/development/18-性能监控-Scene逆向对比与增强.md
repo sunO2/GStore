@@ -357,3 +357,75 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
    或 `环境受限·待真机确认`（基础设施项）；真机到位后按探针正向证据把相应项重定值为 `confirmed`。
 2. **todo 9（一致性自检）**：核对每条建议 → 差距行 → todo id 的映射，剔除孤儿建议；
    确认 Must-NOT #2（无 Scene 逐字拷贝）。
+
+---
+
+## 九、建议 → 差距 → todo 追踪表（todo 9 一致性自检）
+
+> 自检输入：§四 的 **10 条建议**、§三 的差距行（监控 MG1–MG7 / 控制 CG-*，含 §2.1 的「重启设备」行）、
+> 以及本计划 Wave 4/5 的 todo 集（todos 10–29、37）。结论：**零孤儿建议**；
+> 每条可行性为 `unavailable-on-shell` 或 `环境受限·待真机确认` 的建议均已按探针 fail-closed **DEFERRED**（无静默承诺）。
+
+### 9.1 建议 → 差距行 → todo id（或 DEFERRED + 原因）
+
+| # | §四 建议 | 对应差距行 | todo id / 处置 | 可行性（§四）|
+|---|---|---|---|---|
+| R1 | P0 `privileged_shell.dart` 传输底座 | CG-SYSFS-1（通用写入原语）＋ CG-CPU-1/2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | **todo 10**（另 todo 12 只读回读、todo 37 Binder 回退）| 环境受限·待真机确认（运行时门控）|
+| R2 | P0 Rust `perf.tunables` 只读枚举 | CG-CPU-1、CG-CPU-2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | **todo 11**（镜像 todo 14）| 环境受限·待真机确认（运行时门控）|
+| R3 | P1 能力探针（capability-probe） | 全部 CG-* | **todo 15** | 环境受限·待真机确认（运行时门控）|
+| R4 | P1 CPU governor 设置 | CG-CPU-1 | **todo 16**（`control_cpu.dart`）| `unavailable-on-shell` → **DEFERRED**（探针门控·无设备）|
+| R5 | P1 CPU 频率上下限设置 | CG-CPU-2 | **todo 16**（同动作）| `unavailable-on-shell` → **DEFERRED**（探针门控·无设备）|
+| R6 | P2 温控阈值 / 开关 | CG-THERMAL-1 | **todo 19**（危险确认门控）| `unavailable-on-shell` → **DEFERRED**（探针门控·无设备）|
+| R7 | P2 GPU 频率 / 功率模式 | CG-GPU-1 | **todo 17**（`control_gpu.dart`）| `unavailable-on-shell` → **DEFERRED**（探针门控·无设备）|
+| R8 | P2 cpuset / 进程亲和性 | CG-CPUSET-1 | **todo 18**（`control_cpuset.dart`）| `unavailable-on-shell` → **DEFERRED**（探针门控·无设备）|
+| R9 | P3 每应用性能档（profiles）| CG-PROFILE-1 | **todos 20、22、23、24、25、26、27** | `unavailable-on-shell` → **DEFERRED（shipped-disabled）**|
+| R10 | P3 性能数据导出扩展（含控制前后对比）| MG4 | **todo 29**（只读扩展复核后 = no-op）；「控制前后对比」部分 **DEFERRED** | `unavailable-on-shell` → **DEFERRED（依赖控制项·无设备）**|
+
+### 9.2 控制 / 调优差距行 → 覆盖 todo / 显式延期（无遗漏）
+
+| 差距行 | 能力 | 覆盖 todo / 显式延期 |
+|---|---|---|
+| CG-CPU-1 | CPU governor 写入 | **todo 16** |
+| CG-CPU-2 | CPU 频率上下限写入 | **todo 16** |
+| CG-GPU-1 | GPU 频率 / 功率写入 | **todo 17** |
+| CG-CPUSET-1 | cpuset / 亲和性 | **todo 18** |
+| CG-THERMAL-1 | 温控开关 / 阈值 | **todo 19** |
+| CG-PROFILE-1 | 每应用性能档 | **todos 22**（模型/存储）、**23**（前台监视）、**24**（自动应用）、**25**（编辑页）、**26**（设置开关）、**27**（HUD）|
+| CG-SYSFS-1 | 通用 sysfs 写入原语 | **todo 10**（白名单写入传输）＋ **todo 12**（只读回读）＋ **todo 37**（Binder 回退）|
+| CG-ROOT-1 | root / `su` / remount / SELinux 绕过 | **DEFERRED（永久禁止）**：无 todo；Must-NOT #1（§六.1），绝无实现路径 |
+| （§2.1「控制/调优 · 重启设备」）| 设备重启 | **DEFERRED**：§四 无对应建议；不复制 Scene 的 `REBOOT` 权限（`manifest-summary.md:22`），非 Wave 4/5 范围 |
+
+> 覆盖自证：CG-CPU-1/2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1、CG-PROFILE-1、CG-SYSFS-1 均落入 Wave 4/5 todo（10–27、37）；
+> CG-ROOT-1 与「重启设备」行**显式延期并给原因**。无一条控制 / 调优差距被静默丢弃。
+> 监控类差距 MG1–MG7 无一条对应「建议」（§3.1 结论：无阻断性监控缺口），故 9.1 无监控类建议行——**非孤儿遗漏**。
+
+### 9.3 可行性一致性（`unverified` / `unavailable-on-shell` 必须 DEFERRED）
+
+- 全文 `pending-probe` 计数 = **0**（todo 38 已清零）；§四 无任何一行可行性为 `unverified`。
+- 7 条设备依赖建议（R4–R10）可行性 = `unavailable-on-shell` → §9.1 **全部标 DEFERRED**（探针门控 / shipped-disabled / 依赖控制项），无静默承诺。
+- 3 条基础设施建议（R1–R3）可行性 = `环境受限·待真机确认（运行时门控）`：实现已交付并单测，**运行时门控待真机**（等价于「待真机验证」的延期，不承诺真机可写）。
+
+### 9.4 Must-NOT #2 核验：无 Scene 包名 / 资产 / 逐字字符串进入 GStore
+
+命令（本环境无 `rg`，用 `grep -r -F`）：
+
+```
+grep -r -F 'com.omarea.vtools' lib/   -> 0 matches（absent）
+grep -r -F 'com.jumang.scene'  lib/   -> 0 matches（absent）
+grep -r -F 'jumang' lib/              -> 0 matches（absent）
+grep -r -F 'omarea' lib/              -> 0 matches（absent）
+grep -r -F 'vtools' lib/              -> 0 matches（absent）
+grep -r -F 'scene'  lib/              -> 1 match，仅 lib/core/perf/control_cpu.dart:4 文档注释中的
+                                          本计划文件名 `scene-perf-reverse-gstore.md`
+                                          （GStore 自有计划名，非 Scene 代码 / 资产 / 字符串）
+```
+
+结论：**无 Scene 包名（含著名 id `com.omarea.vtools` 与真实 id `com.jumang.scene`）/ 资产 / 逐字字符串被复制进 GStore `lib/`**。
+证据见 `.omo/evidence/scene-perf-reverse-gstore/task-9-traceability.txt`。
+
+### 9.5 自检结论
+
+- **孤儿建议 = 0**：§四 全部 10 条建议均有差距行 + todo id，或显式 DEFERRED。
+- **无可行性 `unverified` 建议**；`unavailable-on-shell` 建议 100% 带 DEFERRED 标记。
+- **控制 / 调优差距全覆盖**：C1–C8 落入 Wave 4/5（或 CG-ROOT-1 显式永久禁止）；矩阵「重启设备」行显式延期。
+- **Must-NOT #2 通过**（§9.4）。
