@@ -298,6 +298,23 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
   DISABLED）与 `task-15-failure.txt`（全零 → 五类全 DISABLED）；最终定值映射见
   `.omo/evidence/scene-perf-reverse-gstore/task-38-feasibility.txt`。
 
+### 5.6 只读 Rust 模块 ⇄ Dart 控制层（实现对照）
+
+> 本计划把「监控（只读）」与「控制（写入）」**彻底分层**：Rust 模块只读，写入只发生在 Dart 侧。
+
+- **Rust 模块（`rust/gstore_mod_perf`）保持只读**：全部 24 个方法只读 `/proc`、`/sys`、`getprop`
+  或解析宿主传入的文本，**没有写入路径**。为控制面新增的三个方法同样只读：
+  `perf.tunables`（只枚举可调旋钮与取值范围）、`perf.sysfs.read`（只按白名单读单个节点，
+  供「写前原值 / 写后回读」校验）、`perf.foreground`（纯文本解析）。详见
+  `rust/gstore_mod_perf/README.md` §只读边界。
+- **控制（CONTROL）全部在 Dart 侧**，经 Shizuku shell（uid 2000）执行：
+  - 传输 / 安全底座 `lib/core/perf/privileged_shell.dart`（`timeout` 自限 + `&&`/`||` 哨兵 + token 校验）；
+  - fail-closed 能力探测 `lib/core/perf/perf_capability_probe.dart`（逐节点 `test -w`，零可写 → 类别 shipped-disabled）；
+  - 控制动作 `lib/core/perf/control_cpu.dart` / `control_gpu.dart` / `control_cpuset.dart` / `control_thermal.dart`（读-改-校验-回滚）；
+  - 会话与有保证还原 `lib/core/perf/perf_control_session.dart`（记录「节点 → 原值」并 `revertAll` 精确还原、崩溃恢复）；
+  - Binder-command 回退 `lib/core/perf/binder_control_channel.dart`；Agent 危险确认门禁 `lib/core/agent/tools/perf_control_tools.dart`。
+- **边界重申**：Rust 模块**从不执行写入**；`perf.tunables` / `perf.sysfs.read` 仅为控制层提供目标与校验数据。
+
 ---
 
 ## 六、Must NOT have（重申）

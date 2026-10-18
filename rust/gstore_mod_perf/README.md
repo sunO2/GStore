@@ -8,6 +8,23 @@ GStore 设备性能监控模块（Phase 1：采集器 + C ABI 模块 + 单测；
 - **依赖最小**：`gstore_contract` + `serde`/`serde_json` + `libc`，直接解析 `/proc`/`/sys`。
 - **ABI**：`gstore_contract` v3，模块名 `perf`，注册符号 `gstore_mod_perf_register`。
 
+## 只读边界（CONTROL 在 Dart 侧）
+
+本模块**只读**：全部 24 个方法只读 `/proc`、`/sys`、`getprop` 或解析宿主传入的文本，
+**没有任何写入路径**、不需要 root、不写 sysfs。控制面新增的方法同样是只读：
+`perf.tunables` 只枚举可调旋钮与取值范围，`perf.sysfs.read` 只按白名单读取**单个**节点
+（供「写前原值 / 写后回读」校验），`perf.foreground` 只做纯文本解析。
+
+**控制 / 调优（CONTROL，即一切写入）全部在 Dart 侧**，经 Shizuku shell（uid 2000）执行。
+Rust 模块只为控制层提供「可调面地图 + 白名单回读」，供写入目标推导与回读校验，**实际写入从不发生在本模块内**：
+
+- 传输与安全底座：`lib/core/perf/privileged_shell.dart`（`timeout` 自限 + `&&`/`||` 哨兵 + token 校验 + 结构化结果）。
+- 能力探测（fail-closed）：`lib/core/perf/perf_capability_probe.dart`（逐节点 `test -w`；零可写类别 → shipped-disabled）。
+- 控制动作：`lib/core/perf/control_cpu.dart` / `control_gpu.dart` / `control_cpuset.dart` / `control_thermal.dart`（读-改-校验-回滚）。
+- 会话与有保证还原：`lib/core/perf/perf_control_session.dart`（记录「节点 → 原值」，`revertAll` 精确还原 + 崩溃恢复）。
+- Binder-command 回退：`lib/core/perf/binder_control_channel.dart`。
+- Agent 危险操作确认门禁：`lib/core/agent/tools/perf_control_tools.dart`。
+
 ## 构建
 
 ```bash
