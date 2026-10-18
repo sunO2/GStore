@@ -34,7 +34,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 - 采样事件：模块经宿主 `emit_event` 上报 `perf.sample`，载荷为采样快照 JSON
   （宿主负载约定：前 4 字节为事件类型长度，小端）。
 
-## 方法 schema（21 个）
+## 方法 schema（22 个）
 
 所有实例方法需有效 `instance`（`ping` 除外）。`data` 内单位显式标注（`*_kb`/`*_mhz`/`*_c`/`*_ma`/`*_bytes`/`*_us`/`*_uah`）。
 
@@ -48,6 +48,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 | `perf.battery_health` | — | `{present, base_path, charge_full_uah, charge_full_design_uah, cycle_count, health, status, technology, charge_counter_uah, capacity_percent, voltage_v, temperature_c}` |
 | `perf.thermal` | — | `{zone_count, max_temp_c, zones:[{source, zone, kind, temp_c}]}` |
 | `perf.cooling` | — | `{count, devices:[{device, type, cur_state, max_state}]}` |
+| `perf.tunables` | — | `{cpu_clusters:[{policy, related_cpus[], available_governors[], governor, available_frequencies_mhz[], min_freq_mhz, max_freq_mhz}], cpusets:[{name, cpus, mems}], thermal_zones:[{zone, type, mode}], cooling_devices:[{device, type, cur_state, max_state}], gpu:{available_frequencies_mhz[], freq_source, governor, governor_source, power_levels, power_source}}` |
 | `perf.pressure` | — | `{cpu:{some,full}, memory:{some,full}, io:{some,full}}`，其中每条记录 `{avg10, avg60, avg300, total_us}`（`some`/`full` 缺失为 `null`） |
 | `perf.gpu` | — | `{name, freq_mhz, freq_source, busy_percent, busy_source}` |
 | `perf.network` | — | `{rx_bytes, tx_bytes, rx_bytes_per_sec, tx_bytes_per_sec, interfaces:[{name, rx_bytes, tx_bytes, rx_packets, tx_packets, rx_bytes_per_sec, tx_bytes_per_sec, rx_errors, tx_errors, rx_dropped, tx_dropped, rx_fifo, tx_fifo, rx_frame, rx_compressed, tx_compressed, multicast}]}` |
@@ -74,6 +75,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 | 电池健康 | `/sys/class/power_supply/{battery,bms,\*}` | 满充/设计容量 µAh、循环次数、`charge_counter`（µAh）、health/status/technology、容量%；电压/温度复用 battery 缩放；无电池 → `present:false` |
 | 热区 | `thermal_zone*/{type,temp}` + `hwmon*/temp*_input` | 枚举全部热区；`|raw|>1000` 视为毫摄氏度 ÷1000 |
 | 散热设备 | `/sys/class/thermal/cooling_device*/{type,cur_state,max_state}` | 枚举全部 `cooling_device*`；无设备 → `count:0, devices:[]` |
+| 可控面枚举 | `cpufreq/policy*`、`/dev/cpuset/*`、`thermal_zone*/{type,mode}`、`cooling_device*`、GPU `available_frequencies`/`governor`/`num_pwrlevels` | **只读**枚举可控旋钮与取值范围：每策略簇 `related_cpus`/governors/freqs/governor/min/max；cpuset `cpus`/`mems`；热区 `mode`；散热 `cur_state`；GPU 频率（路径表 + `gpu.rs` 缩放）与功耗档位。节点缺失 → `[]`/`null`，绝不写盘 |
 | PSI 压力 | `/proc/pressure/{cpu,memory,io}` | 逐行 `some`/`full avg10=.. avg60=.. avg300=.. total=<us>`；`total` 微秒（内核定义）；cpu 通常只有 `some`；文件缺失 → 该资源 `some`/`full` 为 `null` |
 | 存储 | `/proc/mounts` + `libc::statvfs` | 仅真实 fs，跳过 proc/sysfs/tmpfs/devpts/cgroup/overlay 等伪 fs；按挂载点去重；`total=f_blocks·frsize/1024`、`free=f_bavail·…`、`used=(f_blocks−f_bfree)·…`、`used_percent=used/total×100` |
 | GPU | kgsl/devfreq/kernel/mali 多路径 | freq 列表 A（Hz→÷1e6）+ 列表 B（`>1e6→/1e6`，`>1000→/1000`）；busy 去 `%`；name 走 `getprop ro.hardware.gpu\|ro.board.platform\|ro.hardware.vulkan` |
@@ -144,7 +146,7 @@ src/
 ├── sampler.rs      # 后台采样线程 + 采样环
 ├── state.rs        # 实例状态、宿主回调注册表
 ├── abi_io.rs       # 输出缓冲 / 结构化错误 / 成功信封
-└── collectors/     # 纯逻辑采集器（cpu/memory/battery/battery_health/thermal/cooling/pressure/gpu/network/storage/processes/device/app_dumps/app_render/app_power/app_info/app_smaps/app_crash/app_activity/app_startup/util）
+└── collectors/     # 纯逻辑采集器（cpu/memory/battery/battery_health/thermal/cooling/tunables/pressure/gpu/network/storage/processes/device/app_dumps/app_render/app_power/app_info/app_smaps/app_crash/app_activity/app_startup/util）
 tests/
 └── abi_integration.rs   # 真实 C ABI 端到端测试
 ```

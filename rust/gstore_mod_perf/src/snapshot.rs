@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::collectors::{
     battery, battery_health, cooling, cpu, device, gpu, memory, network, pressure, processes,
-    storage, thermal,
+    storage, thermal, tunables,
 };
 use crate::collectors::processes::{ProcQuery, ProcSort};
 use crate::state::PerfInstance;
@@ -87,6 +87,11 @@ pub fn battery_health() -> Value {
 /// 存储容量报告（`/proc/mounts` + statvfs）。
 pub fn storage() -> Value {
     to_value(&storage::collect())
+}
+
+/// 可控面枚举报告（只读；CPU 簇 / cpuset / 热区 / 散热设备 / GPU）。
+pub fn tunables() -> Value {
+    to_value(&tunables::collect())
 }
 
 /// 聚合快照。`include_processes` 控制是否附带进程 Top-N（默认关，成本较高）。

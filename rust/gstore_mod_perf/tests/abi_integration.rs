@@ -72,6 +72,7 @@ fn every_method_round_trips_over_the_c_abi() {
         "perf.cooling",
         "perf.battery_health",
         "perf.storage",
+        "perf.tunables",
     ];
     for m in simple {
         let (rc, bytes) = call(instance, m, b"");
