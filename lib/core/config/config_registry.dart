@@ -52,6 +52,9 @@ class ConfigKeys {
   /// 发现页选中的渠道（字符串列表）
   static const String selectedChannels = 'selected_channels';
 
+  /// 每应用性能档案（JSON：包名 → 档案，见 `PerfProfile`）
+  static const String perfProfiles = 'perf.profiles';
+
   // ---- 模块开关（module.<name>.enabled，见 ModuleToggleConfig.keyOf）----
 
   /// 渠道模块开关
@@ -204,6 +207,17 @@ class AppCoreConfigModule extends ConfigModule {
           category: 'discovery',
           description: '发现页选中的渠道',
           descriptionEn: 'Selected channels on discovery page',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.perfProfiles,
+          type: ConfigValueType.json,
+          defaultValue: <String, dynamic>{},
+          agentAccessible: false,
+          category: 'perf',
+          example: '{"com.example.app":{"enabled":true,"gpu_level":2}}',
+          description: '每应用性能档案（JSON：包名 → 档案；空 = 无档案）',
+          descriptionEn:
+              'Per-app performance profiles (JSON: package → profile; empty = none)',
         ),
         // ---- 模块开关（持久化，未设置默认启用）----
         const ConfigEntry(
