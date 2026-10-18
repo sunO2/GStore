@@ -130,11 +130,23 @@ void main() {
       expect(calls.single.arguments, <String, Object?>{'mode': 'target'});
     });
 
-    test('modes 包含三种合法模式', () {
+    test('modes 包含四种合法模式（Kotlin/Dart 常量对齐）', () {
       expect(
         PerfOverlayController.modes,
-        <String>{'compact', 'expanded', 'target'},
+        <String>{'compact', 'expanded', 'target', 'live'},
       );
+      expect(PerfOverlayController.modeLive, 'live');
+    });
+
+    test('setMode live 合法值 → 调用原生并返回 true', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return true;
+      });
+
+      expect(await controller.setMode(PerfOverlayController.modeLive), isTrue);
+      expect(methods(), <String>['setMode']);
+      expect(calls.single.arguments, <String, Object?>{'mode': 'live'});
     });
 
     test('getMode → target 原样返回，未知回退 compact', () async {
@@ -259,6 +271,86 @@ void main() {
       expect(await controller.setTarget('com.example.app'), isFalse);
       expect(await controller.clearTarget(), isFalse);
       expect(await controller.getTarget(), isNull);
+    });
+  });
+
+  group('setProfile / getProfile', () {
+    test('setProfile 非空 → 调用原生并传 name，返回 true', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return true;
+      });
+
+      expect(await controller.setProfile('balanced'), isTrue);
+      expect(methods(), <String>['setProfile']);
+      expect(
+        calls.single.arguments,
+        <String, Object?>{'name': 'balanced'},
+      );
+    });
+
+    test('setProfile 归一化 bool 返回值（非 bool 强转不抛）', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return 1; // 原生意外返回非 bool：归一化后为 false，但不触发 _CastError
+      });
+
+      expect(await controller.setProfile('balanced'), isFalse);
+      expect(methods(), <String>['setProfile']);
+    });
+
+    test('setProfile 空串 → 仍调用原生（清除），不本地拒绝', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return true;
+      });
+
+      expect(await controller.setProfile('   '), isTrue);
+      expect(calls.single.arguments, <String, Object?>{'name': ''});
+    });
+
+    test('getProfile → 返回字符串；空 / null 回退 null', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return 'performance';
+      });
+      expect(await controller.getProfile(), 'performance');
+
+      installHandler((call) async {
+        calls.add(call);
+        return '';
+      });
+      expect(await controller.getProfile(), isNull);
+
+      installHandler((call) async {
+        calls.add(call);
+        return null;
+      });
+      expect(await controller.getProfile(), isNull);
+    });
+
+    test('getProfile 原生返回 bool → toString 归一化，不抛 _CastError', () async {
+      installHandler((call) async {
+        calls.add(call);
+        return false;
+      });
+      expect(await controller.getProfile(), 'false');
+    });
+
+    test('通道缺失 → setProfile false / getProfile null', () async {
+      installHandler(null);
+
+      expect(await controller.setProfile('balanced'), isFalse);
+      expect(await controller.getProfile(), isNull);
+    });
+
+    test('PlatformException → 二者 graceful 不抛', () async {
+      installHandler((call) async {
+        throw PlatformException(code: 'X', message: 'boom');
+      });
+
+      expect(await controller.setProfile('balanced'), isFalse);
+      expect(await controller.getProfile(), isNull);
     });
   });
 

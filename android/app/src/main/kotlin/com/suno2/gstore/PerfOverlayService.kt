@@ -77,28 +77,42 @@ class PerfOverlayService : Service() {
         private const val ACTION_CLEAR_TARGET = "com.suno2.gstore.perf_overlay.CLEAR_TARGET"
         private const val EXTRA_TARGET = "target"
 
+        /** 当前生效的性能档案名：Dart 推送（运行中实时刷新；未运行仅持久化）。 */
+        private const val ACTION_SET_PROFILE = "com.suno2.gstore.perf_overlay.SET_PROFILE"
+        private const val EXTRA_PROFILE = "profile"
+
         /**
          * 悬浮窗模式：
          * - `compact` = 单行系统紧凑（CPU/MEM/温度）；
          * - `expanded` = 多行系统（网络/压力/温度）+ 目标行；
-         * - `target` = 目标专注，仅显示所选第三方应用（CPU/FPS/jank/MEM）。
+         * - `target` = 目标专注，仅显示所选第三方应用（CPU/FPS/jank/MEM）；
+         * - `live` = 前台应用 + 当前生效档案（均带刷新时间戳 / 过期指示）。
          */
         const val MODE_COMPACT = "compact"
         const val MODE_EXPANDED = "expanded"
         const val MODE_TARGET = "target"
+        const val MODE_LIVE = "live"
 
         /** 长按停止悬浮窗的判定时长（ms）。 */
         private const val LONG_PRESS_MS = 500L
 
-        /** 持久化（位置 / 模式 / 目标）文件与键；服务未运行时亦可供读取。 */
+        /** 持久化（位置 / 模式 / 目标 / 档案）文件与键；服务未运行时亦可供读取。 */
         private const val PREFS = "gstore_perf_overlay"
         private const val KEY_MODE = "mode"
         private const val KEY_POS_X = "pos_x"
         private const val KEY_POS_Y = "pos_y"
         private const val KEY_TARGET = "target_package"
+        private const val KEY_PROFILE = "profile_name"
+        private const val KEY_PROFILE_TS = "profile_updated_ms"
 
         /** 第三方目标指标刷新间隔（与系统指标 1s 刷新的**独立**节流）。 */
         private const val TARGET_REFRESH_INTERVAL_MS = 2000L
+
+        /** 前台应用读取刷新间隔（live 模式；dumpsys 较慢，独立节流）。 */
+        private const val FOREGROUND_REFRESH_INTERVAL_MS = 2000L
+
+        /** 读数超过该秒数即标记为可能过期（⚠ 前缀），避免把陈旧值当实时值展示。 */
+        private const val STALE_AFTER_SECONDS = 10L
 
         /** `dumpsys cpuinfo` 行：`12.3% 1234/pkg.name: ...` → (percent, pid, name)。 */
         private val CPU_LINE_RE = Regex("""^([0-9]+(?:\.[0-9]+)?)%\s+(\d+)/(\S+):""")
@@ -108,6 +122,9 @@ class PerfOverlayService : Service() {
 
         /** `dumpsys gfxinfo` 汇总：`Janky frames: M (X%)` → 百分比。 */
         private val GFX_JANK_RE = Regex("""Janky frames:\s*(\d+)\s*\(([0-9]+(?:\.[0-9]+)?)%\)""")
+
+        /** `dumpsys activity activities` 的 `<pkg>/<activity>` 令牌（取包名分组）。 */
+        private val RESUMED_ACTIVITY_RE = Regex("""([A-Za-z][A-Za-z0-9_.]*)/[^\s}]+""")
 
         /** 视图首次添加的位置缺省值（无持久化记录时使用）。 */
         private const val DEFAULT_X = 24
@@ -122,6 +139,7 @@ class PerfOverlayService : Service() {
         fun normalizeMode(mode: String?): String = when (mode) {
             MODE_EXPANDED -> MODE_EXPANDED
             MODE_TARGET -> MODE_TARGET
+            MODE_LIVE -> MODE_LIVE
             else -> MODE_COMPACT
         }
 
@@ -199,6 +217,45 @@ class PerfOverlayService : Service() {
                 }.onFailure { Log.w(TAG, "实时清除目标失败（忽略）: ${it.message}") }
             }
         }
+
+        /** 读取当前生效档案名；无记录返回 null（服务未运行时亦可读）。 */
+        fun readProfile(context: Context): String? {
+            val raw = runCatching {
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_PROFILE, null)
+            }.getOrNull()
+            return raw?.takeIf { it.isNotEmpty() }
+        }
+
+        /** 读取档案名最近一次更新时间戳（ms）；无记录返回 0。 */
+        fun readProfileUpdatedMs(context: Context): Long = runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getLong(KEY_PROFILE_TS, 0L)
+        }.getOrDefault(0L)
+
+        /** 设置并持久化当前生效档案名（空白清除）；运行中经 ACTION_SET_PROFILE 实时刷新。 */
+        fun setProfile(context: Context, name: String?) {
+            val trimmed = name?.trim().orEmpty()
+            val now = System.currentTimeMillis()
+            runCatching {
+                val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                if (trimmed.isEmpty()) {
+                    editor.remove(KEY_PROFILE).remove(KEY_PROFILE_TS)
+                } else {
+                    editor.putString(KEY_PROFILE, trimmed).putLong(KEY_PROFILE_TS, now)
+                }
+                editor.apply()
+            }
+            if (isRunning) {
+                runCatching {
+                    context.startService(
+                        Intent(context, PerfOverlayService::class.java)
+                            .setAction(ACTION_SET_PROFILE)
+                            .putExtra(EXTRA_PROFILE, trimmed)
+                    )
+                }.onFailure { Log.w(TAG, "实时设置档案失败（忽略）: ${it.message}") }
+            }
+        }
     }
 
     private var windowManager: WindowManager? = null
@@ -217,9 +274,12 @@ class PerfOverlayService : Service() {
     /** `dumpsys gfxinfo` 汇总：累计帧数 + jank 百分比。 */
     private data class Gfxinfo(val frames: Long?, val jankPct: Double?)
 
+    /** 前台应用一次采样的结果（后台线程产出，主线程渲染）。 */
+    private data class ForegroundSnapshot(val packageName: String?)
+
     private val handler = Handler(Looper.getMainLooper())
 
-    /** 当前模式（compact / expanded），启动时从 SharedPreferences 恢复。 */
+    /** 当前模式（compact / expanded / target / live），启动时从 SharedPreferences 恢复。 */
     private var mode: String = MODE_COMPACT
 
     /** CPU 上一次采样的总 jiffies 与空闲 jiffies（含 iowait）。 */
@@ -248,6 +308,18 @@ class PerfOverlayService : Service() {
     /** 目标读取节流与在途标记（避免重入 / 阻塞主线程）。 */
     private var lastTargetMs = 0L
     private var targetPending = false
+
+    /** 前台应用（live 模式）当前包名与最近成功读取时间戳。 */
+    private var foregroundPackage: String? = null
+    private var foregroundUpdatedMs = 0L
+
+    /** 前台读取节流与在途标记（独立于目标读取）。 */
+    private var lastForegroundMs = 0L
+    private var foregroundPending = false
+
+    /** 当前生效档案名及其推送时间戳（由 Dart 推送；null = 未应用）。 */
+    private var profileName: String? = null
+    private var profileUpdatedMs = 0L
 
     /** Shizuku 读取专用后台线程（dumpsys 较慢，绝不占用主线程）。 */
     private var shizukuThread: HandlerThread? = null
@@ -292,6 +364,15 @@ class PerfOverlayService : Service() {
             return START_STICKY
         }
 
+        // 运行中实时设置 / 清除当前档案：仅更新字段 + 刷新文本。
+        if (intent?.action == ACTION_SET_PROFILE) {
+            profileName = intent.getStringExtra(EXTRA_PROFILE)?.takeIf { it.isNotEmpty() }
+            profileUpdatedMs = if (profileName != null) System.currentTimeMillis() else 0L
+            if (overlayView == null) return START_NOT_STICKY
+            renderOverlayText()
+            return START_STICKY
+        }
+
         // 必须 5s 内进入前台（startForegroundService 拉起时否则系统崩溃）。
         startForegroundCompat()
 
@@ -313,6 +394,9 @@ class PerfOverlayService : Service() {
         mode = readMode(this)
         // 恢复持久化的监控目标（服务重启后仍生效）。
         targetPackage = readTarget(this)
+        // 恢复持久化的当前档案名与时间戳。
+        profileName = readProfile(this)
+        profileUpdatedMs = readProfileUpdatedMs(this)
 
         try {
             addOverlayView()
@@ -457,11 +541,12 @@ class PerfOverlayService : Service() {
         }
     }
 
-    /** 轻点循环：`compact → expanded → target → compact`，并持久化当前模式。 */
+    /** 轻点循环：`compact → expanded → target → live → compact`，并持久化当前模式。 */
     private fun cycleMode() {
         mode = when (mode) {
             MODE_COMPACT -> MODE_EXPANDED
             MODE_EXPANDED -> MODE_TARGET
+            MODE_TARGET -> MODE_LIVE
             else -> MODE_COMPACT
         }
         runCatching {
@@ -487,6 +572,7 @@ class PerfOverlayService : Service() {
 
     private fun updateOverlayText() {
         maybeRefreshTargetMetrics()
+        maybeRefreshForegroundMetrics()
         renderOverlayText()
     }
 
@@ -501,6 +587,7 @@ class PerfOverlayService : Service() {
 
         view.text = when (mode) {
             MODE_TARGET -> targetFocusedText()
+            MODE_LIVE -> liveFocusedText()
             MODE_EXPANDED -> {
                 val net = readNetRateKbs()
                 val psi = readPsiSomeAvg10()
@@ -544,6 +631,30 @@ class PerfOverlayService : Service() {
         )
         if (parts.isEmpty()) return "▸ ${shortPackage(pkg)}  等待数据..."
         return "▸ ${shortPackage(pkg)}  $parts"
+    }
+
+    /**
+     * 前台模式文本：当前前台应用 + 当前生效档案，各附刷新时间戳。
+     * 未知值回退清晰占位（`前台 --` / `档案 未应用`）；读数过期加 `⚠` 前缀，
+     * 绝不把陈旧数据当作实时值静默展示。
+     */
+    private fun liveFocusedText(): String {
+        val now = System.currentTimeMillis()
+        val fgLine = foregroundPackage?.let {
+            "前台 ${shortPackage(it)}  (${ageIndicator(foregroundUpdatedMs, now)})"
+        } ?: "前台 --"
+        val profileLine = profileName?.let {
+            "档案 $it  (${ageIndicator(profileUpdatedMs, now)})"
+        } ?: "档案 未应用"
+        return "▸ $fgLine\n   $profileLine"
+    }
+
+    /** 相对时间指示：`刚刚` / `Ns前`；超 [STALE_AFTER_SECONDS] 追加 `⚠`；无时间戳返回提示。 */
+    private fun ageIndicator(updatedMs: Long, now: Long): String {
+        if (updatedMs <= 0L) return "无时间戳"
+        val seconds = ((now - updatedMs) / 1000L).coerceAtLeast(0L)
+        val relative = if (seconds <= 2L) "刚刚" else "${seconds}s前"
+        return if (seconds > STALE_AFTER_SECONDS) "⚠$relative" else relative
     }
 
     /**
@@ -622,6 +733,54 @@ class PerfOverlayService : Service() {
             shizukuThread = thread
             Handler(thread.looper).also { shizukuHandler = it }
         }.getOrNull()
+    }
+
+    /**
+     * 前台应用刷新节流 + 调度（仅 `live` 模式）：每 [FOREGROUND_REFRESH_INTERVAL_MS]
+     * 一次、单飞在途，读取投递到 [shizukuThread]，结果经主线程回写并重渲染。
+     * 读取失败保留旧值（由时间戳标记陈旧），不把失败当作“无前台应用”。
+     */
+    private fun maybeRefreshForegroundMetrics() {
+        if (mode != MODE_LIVE) return
+        val now = System.currentTimeMillis()
+        if (foregroundPending || now - lastForegroundMs < FOREGROUND_REFRESH_INTERVAL_MS) return
+        val bgHandler = ensureShizukuHandler() ?: return
+        foregroundPending = true
+        lastForegroundMs = now
+        bgHandler.post {
+            val result = runCatching { readForegroundPackage() }.getOrNull()
+            handler.post {
+                foregroundPending = false
+                if (result != null) {
+                    foregroundPackage = result.packageName
+                    foregroundUpdatedMs = System.currentTimeMillis()
+                }
+                renderOverlayText()
+            }
+        }
+    }
+
+    /** 经 Shizuku 读取当前前台包名（后台线程调用）；不可用 / 无法判定返回 null（不抛）。 */
+    private fun readForegroundPackage(): ForegroundSnapshot? {
+        if (!shizukuUsable()) return null
+        val output = execShizuku("dumpsys activity activities") ?: return null
+        return ForegroundSnapshot(parseForegroundPackage(output))
+    }
+
+    /**
+     * 从 `dumpsys activity activities` 文本解析前台包名：含 RESUMED 标记
+     * （`ResumedActivity` / `mResumedActivity` / `topResumedActivity`）的行里，
+     * 取首个 `<pkg>/<activity>` 令牌的包名分组。多窗口出现多个不同包名时判为
+     * 歧义 → null（fail-closed）；无标记 / 无令牌同样 null，绝不猜测。
+     */
+    private fun parseForegroundPackage(dumpsys: String): String? {
+        val packages = LinkedHashSet<String>()
+        for (raw in dumpsys.split('\n')) {
+            if (!raw.contains("ResumedActivity")) continue
+            val pkg = RESUMED_ACTIVITY_RE.find(raw)?.groupValues?.get(1) ?: continue
+            if (pkg.isNotEmpty()) packages.add(pkg)
+        }
+        return if (packages.size == 1) packages.first() else null
     }
 
     /** Shizuku 是否可用：Binder 存活且已授权（任何异常视为不可用）。 */

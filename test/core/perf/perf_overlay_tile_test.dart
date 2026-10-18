@@ -104,7 +104,7 @@ void main() {
     });
   });
 
-  testWidgets('运行中：三种模式可选，选择目标专注调用原生 setMode', (tester) async {
+  testWidgets('运行中：四种模式可选，选择前台调用原生 setMode', (tester) async {
     installHandler((call) async {
       calls.add(call);
       switch (call.method) {
@@ -130,14 +130,16 @@ void main() {
     expect(find.byKey(const Key('perf_overlay_mode_compact')), findsOneWidget);
     expect(find.byKey(const Key('perf_overlay_mode_expanded')), findsOneWidget);
     expect(find.byKey(const Key('perf_overlay_mode_target')), findsOneWidget);
+    expect(find.byKey(const Key('perf_overlay_mode_live')), findsOneWidget);
     expect(find.text('目标专注'), findsOneWidget);
+    expect(find.text('前台'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('perf_overlay_mode_target')));
+    await tester.tap(find.byKey(const Key('perf_overlay_mode_live')));
     await tester.pumpAndSettle();
 
     final setModeCall = calls.firstWhere((c) => c.method == 'setMode');
     expect(setModeCall.arguments, <String, Object?>{
-      'mode': PerfOverlayController.modeTarget,
+      'mode': PerfOverlayController.modeLive,
     });
   });
 

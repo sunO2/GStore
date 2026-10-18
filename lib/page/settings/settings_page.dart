@@ -2058,6 +2058,11 @@ class _PerfOverlayTileState extends State<PerfOverlayTile> {
                 label: '目标专注',
                 key: Key('perf_overlay_mode_target'),
               ),
+              AppSegment<String>(
+                value: PerfOverlayController.modeLive,
+                label: '前台',
+                key: Key('perf_overlay_mode_live'),
+              ),
             ],
             onChanged: _setMode,
           ),

@@ -22,8 +22,16 @@ class PerfOverlayController {
   /// 目标专注模式：仅显示所选第三方应用 `CPU / FPS / jank / MEM`。
   static const String modeTarget = 'target';
 
+  /// 前台模式：当前前台应用 + 当前生效档案（各带刷新时间戳 / 过期指示）。
+  static const String modeLive = 'live';
+
   /// 全部合法模式（客户端校验用）。
-  static const Set<String> modes = {modeCompact, modeExpanded, modeTarget};
+  static const Set<String> modes = {
+    modeCompact,
+    modeExpanded,
+    modeTarget,
+    modeLive,
+  };
 
   final MethodChannel channel;
 
@@ -84,6 +92,36 @@ class PerfOverlayController {
   Future<String?> getTarget() async {
     try {
       final value = await channel.invokeMethod<Object?>('getTarget');
+      final text = value?.toString();
+      return (text == null || text.isEmpty) ? null : text;
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  /// 推送当前生效的性能档案名（空串清除）；持久化并在运行中实时刷新 HUD。
+  ///
+  /// 原生返回 bool；用 `invokeMethod<Object?>` + 归一化，避免泛型强转异常。
+  Future<bool> setProfile(String name) async {
+    try {
+      final value = await channel.invokeMethod<Object?>(
+        'setProfile',
+        <String, Object?>{'name': name.trim()},
+      );
+      return value == true;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// 读取当前生效档案名；未设置 / 通道缺失返回 `null`（不抛）。
+  Future<String?> getProfile() async {
+    try {
+      final value = await channel.invokeMethod<Object?>('getProfile');
       final text = value?.toString();
       return (text == null || text.isEmpty) ? null : text;
     } on PlatformException {

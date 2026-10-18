@@ -367,20 +367,27 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "isRunning" -> result.success(PerfOverlayService.isRunning)
-                    // 悬浮窗模式（compact | expanded | target）：持久化 + 运行中实时刷新。
+                    // 悬浮窗模式（compact | expanded | target | live）：持久化 + 运行中实时刷新。
                     "setMode" -> {
                         val mode = call.argument<String>("mode")
                         if (mode != PerfOverlayService.MODE_COMPACT &&
                             mode != PerfOverlayService.MODE_EXPANDED &&
-                            mode != PerfOverlayService.MODE_TARGET
+                            mode != PerfOverlayService.MODE_TARGET &&
+                            mode != PerfOverlayService.MODE_LIVE
                         ) {
-                            result.error("ARG", "mode must be compact|expanded|target", null)
+                            result.error("ARG", "mode must be compact|expanded|target|live", null)
                             return@setMethodCallHandler
                         }
                         PerfOverlayService.setMode(this, mode)
                         result.success(true)
                     }
                     "getMode" -> result.success(PerfOverlayService.readMode(this))
+                    // 当前生效档案名（由 Dart 推送）：持久化 + 运行中实时刷新 HUD。
+                    "setProfile" -> {
+                        PerfOverlayService.setProfile(this, call.argument<String>("name"))
+                        result.success(true)
+                    }
+                    "getProfile" -> result.success(PerfOverlayService.readProfile(this))
                     // 悬浮窗监控目标（第三方应用包名）：持久化 + 运行中实时刷新。
                     "setTarget" -> {
                         val pkg = call.argument<String>("package")
