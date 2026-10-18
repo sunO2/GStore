@@ -40,11 +40,20 @@ class PerfMethods {
   /// 解析 `am start -W` 输出为启动耗时（冷 / 热启动）。
   static const String parseStartup = 'perf.parse_startup';
 
+  /// 从 `dumpsys activity activities` 原文抽取当前前台包名（纯解析）。
+  static const String foreground = 'perf.foreground';
+
   /// `/proc/pressure/*` PSI 压力（CPU / 内存 / IO 的 some/full）。
   static const String pressure = 'perf.pressure';
 
   /// `/sys/class/thermal/cooling_device*` 散热设备枚举。
   static const String cooling = 'perf.cooling';
+
+  /// 可控面枚举（CPU cpufreq 策略簇 / cpuset / 热区 / 散热设备 / GPU；**只读**）。
+  static const String tunables = 'perf.tunables';
+
+  /// 白名单内**单个** sysfs / cpuset 节点读取（写回校验用；**只读**）。
+  static const String sysfsRead = 'perf.sysfs.read';
 
   /// 电池健康深读（充电满电 / 设计容量 / 循环次数等；可为 `null`）。
   static const String batteryHealth = 'perf.battery_health';
@@ -73,8 +82,11 @@ class PerfMethods {
     parseStartup,
     pressure,
     cooling,
+    tunables,
+    sysfsRead,
     batteryHealth,
     storage,
+    foreground,
   ];
 }
 
@@ -790,6 +802,255 @@ class PerfCoolingReport {
 
   /// 散热设备列表。
   final List<PerfCoolingDevice> devices;
+}
+
+/// 单个 cpufreq 策略簇（`tunables.cpu_clusters[]`）。
+///
+/// 对应 Rust `collectors::tunables::CpuCluster`：字段缺失 / `null` 一律宽容为
+/// 空列表 / `null`（节点缺失是预期状态，绝不抛错）。
+class PerfCpuCluster {
+  const PerfCpuCluster({
+    this.policy = '',
+    this.relatedCpus = const <int>[],
+    this.availableGovernors = const <String>[],
+    this.governor,
+    this.availableFrequenciesMhz = const <double>[],
+    this.minFreqMhz,
+    this.maxFreqMhz,
+  });
+
+  factory PerfCpuCluster.fromJson(Map<String, dynamic> json) => PerfCpuCluster(
+        policy: _asString(json['policy']),
+        relatedCpus: _intList(json['related_cpus']),
+        availableGovernors: _stringList(json['available_governors']),
+        governor: _asStringOrNull(json['governor']),
+        availableFrequenciesMhz: _finiteDoubleList(
+          json['available_frequencies_mhz'],
+        ),
+        minFreqMhz: _finiteDoubleOrNull(json['min_freq_mhz']),
+        maxFreqMhz: _finiteDoubleOrNull(json['max_freq_mhz']),
+      );
+
+  /// 策略目录名（如 `policy0`）。
+  final String policy;
+
+  /// `related_cpus` 展开后的核编号（升序去重）。
+  final List<int> relatedCpus;
+
+  /// `scaling_available_governors`（有序）。
+  final List<String> availableGovernors;
+
+  /// 当前 `scaling_governor`。
+  final String? governor;
+
+  /// `scaling_available_frequencies` → MHz（去重升序）。
+  final List<double> availableFrequenciesMhz;
+
+  /// 当前下限（`scaling_min_freq`，回退 `cpuinfo_min_freq`）→ MHz。
+  final double? minFreqMhz;
+
+  /// 当前上限（`scaling_max_freq`，回退 `cpuinfo_max_freq`）→ MHz。
+  final double? maxFreqMhz;
+}
+
+/// 单个 cpuset（`tunables.cpusets[]`，如 `top-app` / `foreground`）。
+class PerfCpuset {
+  const PerfCpuset({this.name = '', this.cpus, this.mems});
+
+  factory PerfCpuset.fromJson(Map<String, dynamic> json) => PerfCpuset(
+        name: _asString(json['name']),
+        cpus: _asStringOrNull(json['cpus']),
+        mems: _asStringOrNull(json['mems']),
+      );
+
+  /// cpuset 名称。
+  final String name;
+
+  /// `cpus`（原始字符串，如 `0-7`）。
+  final String? cpus;
+
+  /// `mems`（原始字符串，如 `0`）。
+  final String? mems;
+}
+
+/// 单个热区的可控面（`tunables.thermal_zones[]`；`type` + 可写 `mode`）。
+class PerfThermalTunable {
+  const PerfThermalTunable({this.zone = '', this.type, this.mode});
+
+  factory PerfThermalTunable.fromJson(Map<String, dynamic> json) =>
+      PerfThermalTunable(
+        zone: _asString(json['zone']),
+        type: _asStringOrNull(json['type']),
+        mode: _asStringOrNull(json['mode']),
+      );
+
+  /// zone 标识（如 `thermal_zone0`）。
+  final String zone;
+
+  /// `type`（如 `cpu-0-0-0`）。
+  final String? type;
+
+  /// 可写 `mode`（如 `enabled` / `disabled` / `step_wise`）。
+  final String? mode;
+}
+
+/// 单个散热设备的可控面（`tunables.cooling_devices[]`）。
+class PerfCoolingTunable {
+  const PerfCoolingTunable({
+    this.device = '',
+    this.type,
+    this.curState,
+    this.maxState,
+  });
+
+  factory PerfCoolingTunable.fromJson(Map<String, dynamic> json) =>
+      PerfCoolingTunable(
+        device: _asString(json['device']),
+        type: _asStringOrNull(json['type']),
+        curState: _asIntOrNull(json['cur_state']),
+        maxState: _asIntOrNull(json['max_state']),
+      );
+
+  /// 设备名（如 `cooling_device0`）。
+  final String device;
+
+  /// 设备类型（`type`）。
+  final String? type;
+
+  /// 当前散热状态档位。
+  final int? curState;
+
+  /// 最大散热状态档位。
+  final int? maxState;
+}
+
+/// GPU 可控面（`tunables.gpu`；字段缺失为 `null`）。
+class PerfGpuTunables {
+  const PerfGpuTunables({
+    this.availableFrequenciesMhz = const <double>[],
+    this.freqSource,
+    this.governor,
+    this.governorSource,
+    this.powerLevels,
+    this.powerSource,
+  });
+
+  factory PerfGpuTunables.fromJson(Map<String, dynamic> json) =>
+      PerfGpuTunables(
+        availableFrequenciesMhz: _finiteDoubleList(
+          json['available_frequencies_mhz'],
+        ),
+        freqSource: _asStringOrNull(json['freq_source']),
+        governor: _asStringOrNull(json['governor']),
+        governorSource: _asStringOrNull(json['governor_source']),
+        powerLevels: _asIntOrNull(json['power_levels']),
+        powerSource: _asStringOrNull(json['power_source']),
+      );
+
+  /// GPU 可用频率（MHz，去重升序）。
+  final List<double> availableFrequenciesMhz;
+
+  /// 频率来源路径（命中哪条路径表）。
+  final String? freqSource;
+
+  /// 当前 GPU governor。
+  final String? governor;
+
+  /// governor 来源路径。
+  final String? governorSource;
+
+  /// 功耗档位数（`num_pwrlevels`）。
+  final int? powerLevels;
+
+  /// 功耗档位来源路径。
+  final String? powerSource;
+}
+
+/// `perf.tunables` 响应（**只读**可控面枚举）。
+///
+/// 节点缺失时各数组为空、[gpu] 各字段为 `null`（预期状态，绝不报错）；
+/// 用于 Wave 4 的动作校验与能力探测。
+class TunablesReport {
+  const TunablesReport({
+    this.cpuClusters = const <PerfCpuCluster>[],
+    this.cpusets = const <PerfCpuset>[],
+    this.thermalZones = const <PerfThermalTunable>[],
+    this.coolingDevices = const <PerfCoolingTunable>[],
+    this.gpu = const PerfGpuTunables(),
+  });
+
+  factory TunablesReport.fromJson(Map<String, dynamic> json) => TunablesReport(
+        cpuClusters: _objectList(json['cpu_clusters'])
+            .map(PerfCpuCluster.fromJson)
+            .toList(growable: false),
+        cpusets: _objectList(json['cpusets'])
+            .map(PerfCpuset.fromJson)
+            .toList(growable: false),
+        thermalZones: _objectList(json['thermal_zones'])
+            .map(PerfThermalTunable.fromJson)
+            .toList(growable: false),
+        coolingDevices: _objectList(json['cooling_devices'])
+            .map(PerfCoolingTunable.fromJson)
+            .toList(growable: false),
+        gpu: json['gpu'] == null
+            ? const PerfGpuTunables()
+            : PerfGpuTunables.fromJson(_asMap(json['gpu'])),
+      );
+
+  /// CPU cpufreq 策略簇。
+  final List<PerfCpuCluster> cpuClusters;
+
+  /// cpuset 列表。
+  final List<PerfCpuset> cpusets;
+
+  /// 热区可控面。
+  final List<PerfThermalTunable> thermalZones;
+
+  /// 散热设备可控面。
+  final List<PerfCoolingTunable> coolingDevices;
+
+  /// GPU 可控面。
+  final PerfGpuTunables gpu;
+}
+
+/// `perf.sysfs.read` 响应：白名单内**单个**节点读取结果。
+///
+/// 节点不存在 / 不可读 / 内容为空时 [value] 为 `null`；[exists] 表示是否可读
+/// （存在但内容为空仍为 `true`）。非白名单路径不会走到这里（Rust 侧返回结构化
+/// `invalid_arg`）。
+class SysfsReadResult {
+  const SysfsReadResult({this.path = '', this.value, this.exists = false});
+
+  factory SysfsReadResult.fromJson(Map<String, dynamic> json) =>
+      SysfsReadResult(
+        path: _asString(json['path']),
+        value: _asStringOrNull(json['value']),
+        exists: json['exists'] == true,
+      );
+
+  /// 读取的绝对路径（回显请求）。
+  final String path;
+
+  /// 文件内容（去首尾空白）；不存在 / 不可读 / 空 → `null`。
+  final String? value;
+
+  /// 文件是否存在且可读（存在但内容为空仍为 `true`）。
+  final bool exists;
+}
+
+/// `perf.foreground` 响应：当前前台包名（无法判定时为 `null`）。
+///
+/// 从 `dumpsys activity activities` 的 resumed 行（`mResumedActivity` /
+/// `topResumedActivity` / `ResumedActivity`）抽取；无 resumed 行 / 多窗口歧义 →
+/// [package] 为 `null`（**绝不报错、绝不猜测**）。
+class ForegroundReport {
+  const ForegroundReport({this.package});
+
+  factory ForegroundReport.fromJson(Map<String, dynamic> json) =>
+      ForegroundReport(package: _asStringOrNull(json['package']));
+
+  /// 当前前台包名；无法判定时为 `null`。
+  final String? package;
 }
 
 /// `perf.battery_health` 响应（无电池 / 无 sysfs 数据时 `present=false` 且字段为 null）。
@@ -1912,6 +2173,28 @@ List<double> _doubleList(Object? value) {
   if (value is! List) return const <double>[];
   return value
       .map(_asDoubleOrNull)
+      .whereType<double>()
+      .toList(growable: false);
+}
+
+/// JSON 数组 → 整数列表（跳过缺值项，绝不抛错）。
+List<int> _intList(Object? value) {
+  if (value is! List) return const <int>[];
+  return value.map(_asIntOrNull).whereType<int>().toList(growable: false);
+}
+
+/// 非有限值（NaN / ±Infinity）视作缺失：**绝不把坏数据解码为 NaN**。
+double? _finiteDoubleOrNull(Object? value) {
+  final d = _asDoubleOrNull(value);
+  if (d == null || !d.isFinite) return null;
+  return d;
+}
+
+/// 同上，但用于列表：跳过非有限 / 缺值项。
+List<double> _finiteDoubleList(Object? value) {
+  if (value is! List) return const <double>[];
+  return value
+      .map(_finiteDoubleOrNull)
       .whereType<double>()
       .toList(growable: false);
 }

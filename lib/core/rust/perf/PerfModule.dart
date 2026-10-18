@@ -260,6 +260,23 @@ class PerfModule {
   Future<PerfCoolingReport> cooling() =>
       invoke(PerfMethods.cooling, PerfCoolingReport.fromJson);
 
+  /// `perf.tunables`：可控面枚举（CPU 簇 / cpuset / 热区 / 散热 / GPU；只读）。
+  Future<TunablesReport> tunables() =>
+      invoke(PerfMethods.tunables, TunablesReport.fromJson);
+
+  /// `perf.sysfs.read`：读取白名单内**单个** sysfs / cpuset 节点（写回校验用）。
+  ///
+  /// [path] 必须命中 Rust 侧白名单（cpufreq `scaling_*` / cpuset `cpus` / 热区
+  /// `temp` 等，见 README 与 `collectors::sysfs_read::SYSFS_ALLOWLIST`），否则
+  /// Rust 返回结构化 `invalid_arg`（门面抛 [PerfModuleException]），**永不返回值**。
+  /// 节点不存在 / 不可读不是错误：此时 [SysfsReadResult.exists] 为 false、
+  /// [SysfsReadResult.value] 为 `null`。
+  Future<SysfsReadResult> readSysfs(String path) => invoke(
+        PerfMethods.sysfsRead,
+        SysfsReadResult.fromJson,
+        payload: <String, dynamic>{'path': path},
+      );
+
   /// `perf.battery_health`：电池健康深读（满电 / 设计容量、循环次数等）。
   Future<PerfBatteryHealthReport> batteryHealth() =>
       invoke(PerfMethods.batteryHealth, PerfBatteryHealthReport.fromJson);
@@ -377,6 +394,17 @@ class PerfModule {
           'output': output,
           'mode': mode ?? 'cold',
         },
+      );
+
+  /// `perf.foreground`：从 `dumpsys activity activities` 原文抽取当前前台包名。
+  ///
+  /// [activity] 由调用方经 Shizuku 采集后原样传入（Rust 不跑 shell）；纯解析。
+  /// 无法判定（无 resumed 行 / 多窗口歧义）时 [ForegroundReport.package] 为
+  /// `null`（**绝不报错、绝不猜测**）；仅回传包名，不保留活动全文。
+  Future<ForegroundReport> foreground(String activity) => invoke(
+        PerfMethods.foreground,
+        ForegroundReport.fromJson,
+        payload: <String, dynamic>{'activity': activity},
       );
 
   // ---- 事件流 ----
