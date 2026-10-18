@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -14,6 +15,7 @@ import 'package:gstore/core/perf/perf_report_store.dart';
 import 'package:gstore/core/perf/perf_target_store.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/perf/logic.dart';
+import 'package:gstore/page/perf/reports_page.dart';
 import 'package:gstore/page/perf/view.dart';
 
 /// 假网关：始终抛「模块不可用」，页面降级为单张提示卡（缩短页面）。
@@ -24,6 +26,27 @@ class _UnavailableGateway implements PerfModuleGateway {
   @override
   Future<Uint8List> call(String method, [Uint8List? payload]) async =>
       throw PerfModuleUnavailableException();
+
+  @override
+  Stream<PerfRawEvent> get events => _events.stream;
+}
+
+/// 就绪网关：`perf.start` 返回 `running=true`；其余方法返回空 `data` 信封。
+class _ReadyGateway implements PerfModuleGateway {
+  final StreamController<PerfRawEvent> _events =
+      StreamController<PerfRawEvent>.broadcast();
+
+  @override
+  Future<Uint8List> call(String method, [Uint8List? payload]) async {
+    final Map<String, dynamic> data = switch (method) {
+      'perf.start' => <String, dynamic>{'running': true, 'interval_ms': 2000},
+      'perf.stop' => <String, dynamic>{'running': false, 'was_running': true},
+      _ => <String, dynamic>{},
+    };
+    return Uint8List.fromList(
+      utf8.encode(jsonEncode(<String, dynamic>{'ok': true, 'data': data})),
+    );
+  }
 
   @override
   Stream<PerfRawEvent> get events => _events.stream;
@@ -129,7 +152,7 @@ Widget _harness({
     // scaffoldMessengerKey，避免 Snackbar 计时器在测试结尾残留。
     child: MaterialApp(
       navigatorKey: appNavigatorKey,
-      home: const PerfMonitorPage(),
+      home: const PerfReportsPage(),
     ),
   );
 }
@@ -257,6 +280,68 @@ void main() {
 
     expect(find.textContaining('perf_2000.csv'), findsNothing);
     expect(find.textContaining('perf_1000.json'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('回归：概览开启采样即驱动自动导出服务（无需报告页挂载）',
+      (tester) async {
+    _useTallViewport(tester);
+    final container = ProviderContainer(
+      overrides: [
+        perfModuleProvider
+            .overrideWithValue(PerfModule(gateway: _ReadyGateway())),
+        perfFrameMonitorProvider.overrideWithValue(_publishedMonitor()),
+        perfAvailabilityStreamProvider
+            .overrideWithValue(Stream<PerfAvailability>.value(
+          PerfAvailability.ready,
+        )),
+        perfReportStoreProvider.overrideWithValue(_MemoryReportStore()),
+        perfHistoryStoreProvider.overrideWithValue(_FakeHistoryStore()),
+        perfTargetStoreProvider.overrideWithValue(InMemoryPerfTargetStore()),
+        perfAutoExportSettingsStoreProvider.overrideWithValue(
+          InMemoryPerfAutoExportSettingsStore(
+            const PerfAutoExportSettings(enabled: true),
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    // 只挂概览页：报告页（_AutoExportCard）不参与，服务必须仍由 provider 驱动。
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: PerfMonitorPage()),
+      ),
+    );
+    await _settleAsync(tester);
+
+    // 前置：模块就绪（采样开关可交互），自动导出服务尚未运行。
+    final samplingSwitch = tester.widget<SwitchListTile>(
+      find.byKey(const Key('perf_sampling_switch')),
+    );
+    expect(samplingSwitch.onChanged, isNotNull);
+    expect(container.read(perfAutoExportServiceProvider).isRunning, isFalse);
+
+    // 开启后台采样 → provider 的 `ref.listen` 驱动服务启动。
+    await tester.tap(find.byKey(const Key('perf_sampling_switch')));
+    await _settleAsync(tester);
+    expect(container.read(perfMonitorProvider).sampling, isTrue);
+    expect(container.read(perfAutoExportServiceProvider).isRunning, isTrue);
+
+    // 关闭采样 → 服务停止。（采样关闭路径会 `await _sampleSub.cancel()`，在
+    // fake-async 下该 future 需真实事件循环才完成，故经 runAsync 驱动真实开关回调。）
+    await tester.runAsync(() async {
+      final tile = tester.widget<SwitchListTile>(
+        find.byKey(const Key('perf_sampling_switch')),
+      );
+      tile.onChanged!(!tile.value);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await _settleAsync(tester);
+    expect(container.read(perfMonitorProvider).sampling, isFalse);
+    expect(container.read(perfAutoExportServiceProvider).isRunning, isFalse);
+
     expect(tester.takeException(), isNull);
   });
 }

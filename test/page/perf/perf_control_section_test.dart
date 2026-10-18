@@ -17,8 +17,9 @@ import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
+import 'package:gstore/page/perf/control_page.dart';
 import 'package:gstore/page/perf/logic.dart';
-import 'package:gstore/page/perf/view.dart';
+import 'package:gstore/page/perf/perf_control_actions.dart';
 
 /// 假网关：受控返回信封响应；**不触碰 FFI**。
 class _FakeGateway implements PerfModuleGateway {
@@ -216,7 +217,7 @@ Widget _harness({
       // 挂载全局弹层 / Snackbar 通道（[AppDialogs] 统一走全局 key）。
       navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-      home: const PerfMonitorPage(),
+      home: const PerfControlPage(),
     ),
   );
 }

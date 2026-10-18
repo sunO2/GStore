@@ -69,8 +69,10 @@ final perfAutoExportSettingsProvider =
 
 /// 自动导出服务（生产接线；随 ProviderScope 释放取消定时器）。
 ///
-/// 报告内容复用 [buildPerfReportJson] / [buildPerfReportCsv]（与手动导出同源），
-/// 只在 `settings.enabled` 且页面处于实时 / 采样态时由 UI 调用 `start()`。
+/// 报告内容复用 [buildPerfReportJson] / [buildPerfReportCsv]（与手动导出同源）。
+/// 服务的 start/stop 由本 provider 统一驱动（`ref.listen` 监听监控态与设置），
+/// 因此即使报告页未挂载，只要概览页开启「实时刷新 / 后台采样」且设置启用，
+/// 服务也会运行——不再依赖任何页面挂载。
 final perfAutoExportServiceProvider = Provider<PerfAutoExportService>((ref) {
   final service = PerfAutoExportService(
     store: ref.watch(perfReportStoreProvider),
@@ -107,6 +109,36 @@ final perfAutoExportServiceProvider = Provider<PerfAutoExportService>((ref) {
       );
     },
   );
+
+  // 服务生命周期由 provider 驱动：`shouldRun = (live || sampling) && enabled`，
+  // 签名（enabled|interval|format|maxKeep）变化时重启定时器以应用新间隔。
+  bool? appliedRunning;
+  String? appliedSignature;
+
+  void sync() {
+    final perfState = ref.read(perfMonitorProvider);
+    final settings = ref.read(perfAutoExportSettingsProvider);
+    final shouldRun = (perfState.live || perfState.sampling) && settings.enabled;
+    final signature = '${settings.enabled}|${settings.intervalMinutes}'
+        '|${settings.format.value}|${settings.maxKeep}';
+    if (appliedRunning == shouldRun && appliedSignature == signature) return;
+    final restart = appliedSignature != null && appliedSignature != signature;
+    appliedRunning = shouldRun;
+    appliedSignature = signature;
+    if (shouldRun) {
+      if (restart) service.stop();
+      service.start();
+    } else {
+      service.stop();
+    }
+  }
+
+  // 概览页切换「实时刷新 / 后台采样」或设置变更时重新评估运行态。
+  ref.listen(perfMonitorProvider, (_, __) => sync());
+  ref.listen(perfAutoExportSettingsProvider, (_, __) => sync());
+  // 构造时先评估一次（例如设置已持久化为启用）。
+  sync();
+
   ref.onDispose(service.dispose);
   return service;
 });
@@ -478,17 +510,17 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         debugPrint('[PerfMonitor] 开启采样失败: $error');
         AppDialogs.showError('开启采样失败');
       }
-    } else {
-      await _sampleSub?.cancel();
-      _sampleSub = null;
-      try {
-        await _module.stopSampling();
-      } catch (error) {
-        debugPrint('[PerfMonitor] 停止采样失败（忽略）: $error');
-      }
-      if (_disposed) return;
-      state = state.copyWith(sampling: false);
+  } else {
+    await _sampleSub?.cancel();
+    _sampleSub = null;
+    try {
+      await _module.stopSampling();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 停止采样失败（忽略）: $error');
     }
+    if (_disposed) return;
+    state = state.copyWith(sampling: false);
+  }
     _syncTicker();
   }
 

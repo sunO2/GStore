@@ -9,8 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
+import 'package:gstore/page/perf/hardware_page.dart';
 import 'package:gstore/page/perf/logic.dart';
-import 'package:gstore/page/perf/view.dart';
 
 /// 假网关：受控返回信封响应；未提供 stub 的方法抛 [StateError]（由页面
 /// [_softFetch] 捕获 → 该卡片降级，不影响其它卡片）；**不触碰 FFI**。
@@ -75,7 +75,7 @@ Widget _harness({
         Stream<PerfAvailability>.value(PerfAvailability.ready),
       ),
     ],
-    child: const MaterialApp(home: PerfMonitorPage()),
+    child: const MaterialApp(home: PerfHardwarePage()),
   );
 }
 

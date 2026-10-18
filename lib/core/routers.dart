@@ -1,5 +1,3 @@
-import 'package:gstore/core/core.dart';
-
 class AppRoute {
   static String home = "/";
   static String appDetail = "/GStore/appDetail";
@@ -29,6 +27,10 @@ class AppRoute {
   static String moduleManage = "/GStore/moduleManage";
   static String perfMonitor = "/GStore/perfMonitor";
   static String perfProfiles = "/GStore/perfProfiles";
+  static String perfHardware = "/GStore/perfHardware";
+  static String perfControl = "/GStore/perfControl";
+  static String perfReports = "/GStore/perfReports";
+  static String perfThirdParty = "/GStore/perfThirdParty";
   static String cacheManage = "/GStore/cacheManage";
   static String databaseManage = "/GStore/databaseManage";
   static String licenses = "/GStore/licenses";

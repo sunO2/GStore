@@ -13,6 +13,7 @@ import 'package:gstore/core/perf/perf_report_store.dart';
 import 'package:gstore/core/perf/perf_target_store.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/perf/logic.dart';
+import 'package:gstore/page/perf/reports_page.dart';
 import 'package:gstore/page/perf/view.dart';
 
 /// 假网关：全部方法返回空数据（不触碰 FFI）。
@@ -94,6 +95,7 @@ Future<void> _settleAsync(WidgetTester tester) async {
 }
 
 Widget _harness({
+  required Widget home,
   required PerfReportStore reportStore,
   required PerfHistoryStore historyStore,
   required PerfTargetStore targetStore,
@@ -108,7 +110,7 @@ Widget _harness({
       perfHistoryStoreProvider.overrideWithValue(historyStore),
       perfTargetStoreProvider.overrideWithValue(targetStore),
     ],
-    child: const MaterialApp(home: PerfMonitorPage()),
+    child: MaterialApp(home: home),
   );
 }
 
@@ -118,6 +120,7 @@ void main() {
   testWidgets('基线卡：设为基线 → 对比显示逐指标 delta 行', (tester) async {
     _useTallViewport(tester);
     await tester.pumpWidget(_harness(
+      home: const PerfMonitorPage(),
       reportStore: _FakeReportStore(),
       historyStore: _FakeHistoryStore(),
       targetStore: InMemoryPerfTargetStore(),
@@ -143,6 +146,7 @@ void main() {
     _useTallViewport(tester);
     final reportStore = _FakeReportStore();
     await tester.pumpWidget(_harness(
+      home: const PerfReportsPage(),
       reportStore: reportStore,
       historyStore: _FakeHistoryStore(),
       targetStore: InMemoryPerfTargetStore(
@@ -175,6 +179,7 @@ void main() {
     _useTallViewport(tester);
     final reportStore = _FakeReportStore();
     await tester.pumpWidget(_harness(
+      home: const PerfReportsPage(),
       reportStore: reportStore,
       historyStore: _FakeHistoryStore(),
       targetStore: InMemoryPerfTargetStore(),

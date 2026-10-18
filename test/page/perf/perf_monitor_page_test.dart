@@ -5,11 +5,14 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:gstore/compent/line_chart.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
+import 'package:gstore/page/perf/hardware_page.dart';
 import 'package:gstore/page/perf/logic.dart';
 import 'package:gstore/page/perf/view.dart';
 
@@ -63,100 +66,9 @@ FrameMonitor _publishedMonitor() {
   return monitor;
 }
 
-/// 铺满大视口（ListView 懒构建，避免 offscreen 卡片找不到）。
-void _useTallViewport(WidgetTester tester) {
-  tester.view.physicalSize = const Size(1080, 6000);
-  tester.view.devicePixelRatio = 1.0;
-  addTearDown(tester.view.reset);
-}
-
-Widget _harness({
-  required PerfModule module,
-  required FrameMonitor monitor,
-  required Stream<PerfAvailability> availability,
-}) {
-  return ProviderScope(
-    overrides: [
-      perfModuleProvider.overrideWithValue(module),
-      perfFrameMonitorProvider.overrideWithValue(monitor),
-      perfAvailabilityStreamProvider.overrideWithValue(availability),
-    ],
-    child: const MaterialApp(home: PerfMonitorPage()),
-  );
-}
-
-/// 推进若干帧让 availability 流与异步 refresh 完成（不使用 pumpAndSettle：
-/// 加载态含 [AppLoading] 无限动画会使其超时）。
-Future<void> _settleAsync(WidgetTester tester) async {
-  for (var i = 0; i < 4; i++) {
-    await tester.pump(const Duration(milliseconds: 20));
-  }
-}
-
-void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-
-  testWidgets('模块不可用：FPS 区仍渲染 + 友好「安装 / 重试」卡片（不崩溃）',
-      (tester) async {
-    _useTallViewport(tester);
-    final gateway = _FakeGateway(data: const {}, unavailable: true);
-    final monitor = _publishedMonitor();
-
-    await tester.pumpWidget(_harness(
-      module: PerfModule(gateway: gateway),
-      monitor: monitor,
-      availability: Stream<PerfAvailability>.value(PerfAvailability.failed),
-    ));
-    await _settleAsync(tester);
-
-    // 页面骨架恒存在。
-    expect(find.text('性能监控'), findsOneWidget);
-    expect(find.text('渲染 / FPS'), findsOneWidget);
-    // FPS 纯 Dart，模块不可用也应展示数值。
-    expect(find.text('60.0'), findsOneWidget);
-
-    // 图表区（趋势卡）恒渲染：FPS sparkline 不受模块可用性影响。
-    expect(find.text('指标趋势'), findsOneWidget);
-    expect(find.byType(LineChart), findsWidgets);
-
-    // 友好降级卡片 + 显式安装入口。
-    expect(find.text('原生性能模块未就绪'), findsOneWidget);
-    expect(find.text('安装 / 重试'), findsOneWidget);
-    expect(find.byKey(const Key('perf_retry')), findsOneWidget);
-
-    // 采样开关在模块未就绪时禁用。
-    final sw = tester.widget<SwitchListTile>(
-      find.byKey(const Key('perf_sampling_switch')),
-    );
-    expect(sw.onChanged, isNull);
-
-    // 无裸异常泄漏。
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('重试在模块仍不可用时：不崩溃且保持降级卡片', (tester) async {
-    _useTallViewport(tester);
-    final gateway = _FakeGateway(data: const {}, unavailable: true);
-    final monitor = _publishedMonitor();
-
-    await tester.pumpWidget(_harness(
-      module: PerfModule(gateway: gateway),
-      monitor: monitor,
-      availability: Stream<PerfAvailability>.value(PerfAvailability.failed),
-    ));
-    await _settleAsync(tester);
-
-    await tester.tap(find.byKey(const Key('perf_retry')));
-    await _settleAsync(tester);
-
-    expect(tester.takeException(), isNull);
-    expect(find.text('原生性能模块未就绪'), findsOneWidget);
-  });
-
-  testWidgets('模块就绪：渲染 CPU / 内存 / 电池 / 温度 / GPU / 网络 / 进程 数值',
-      (tester) async {
-    _useTallViewport(tester);
-    final gateway = _FakeGateway(data: {
+/// 模块就绪时的完整基线数据（含深度卡片所需的 CPU / 内存 / 电池 / 温度 / GPU /
+/// 网络 / 进程字段），供「概览·模块就绪」与「硬件·模块就绪」用例复用。
+Map<String, Map<String, dynamic>> _moduleReadyData() => {
       'perf.cpu': {
         'usage_percent': 37.5,
         'per_core_usage': <dynamic>[10.0, 20.5, 30.0],
@@ -245,19 +157,151 @@ void main() {
           },
         ],
       },
-    });
+    };
+
+/// 铺满大视口（ListView 懒构建，避免 offscreen 卡片找不到）。
+void _useTallViewport(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1080, 6000);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+}
+
+/// 单 harness：页面由 [home] 注入（概览 `PerfMonitorPage` / 硬件 `PerfHardwarePage`）。
+Widget _harness({
+  required Widget home,
+  required PerfModule module,
+  required FrameMonitor monitor,
+  required Stream<PerfAvailability> availability,
+}) {
+  return ProviderScope(
+    overrides: [
+      perfModuleProvider.overrideWithValue(module),
+      perfFrameMonitorProvider.overrideWithValue(monitor),
+      perfAvailabilityStreamProvider.overrideWithValue(availability),
+    ],
+    child: MaterialApp(home: home),
+  );
+}
+
+/// 推进若干帧让 availability 流与异步 refresh 完成（不使用 pumpAndSettle：
+/// 加载态含 [AppLoading] 无限动画会使其超时）。
+Future<void> _settleAsync(WidgetTester tester) async {
+  for (var i = 0; i < 4; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+  }
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  // ==================== 概览页（PerfMonitorPage） ====================
+
+  testWidgets('概览·模块不可用：FPS / 趋势仍渲染 + 采样开关禁用（不崩溃）',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: const {}, unavailable: true);
     final monitor = _publishedMonitor();
 
     await tester.pumpWidget(_harness(
+      home: const PerfMonitorPage(),
+      module: PerfModule(gateway: gateway),
+      monitor: monitor,
+      availability: Stream<PerfAvailability>.value(PerfAvailability.failed),
+    ));
+    await _settleAsync(tester);
+
+    // 页面骨架恒存在。
+    expect(find.text('性能监控'), findsOneWidget);
+    expect(find.text('渲染 / FPS'), findsOneWidget);
+    // FPS 纯 Dart，模块不可用也应展示数值。
+    expect(find.text('60.0'), findsOneWidget);
+
+    // 图表区（趋势卡）恒渲染：FPS sparkline 不受模块可用性影响。
+    expect(find.text('指标趋势'), findsOneWidget);
+    expect(find.byType(LineChart), findsWidgets);
+
+    // 采样开关在模块未就绪时禁用。
+    final sw = tester.widget<SwitchListTile>(
+      find.byKey(const Key('perf_sampling_switch')),
+    );
+    expect(sw.onChanged, isNull);
+
+    // 概览页底部「更多功能」导航卡：4 个入口 Key 均在（滚到卡处以触发懒构建）。
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('perf_nav_perfHardware')),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.byKey(const Key('perf_nav_perfHardware')), findsOneWidget);
+    expect(find.byKey(const Key('perf_nav_perfControl')), findsOneWidget);
+    expect(find.byKey(const Key('perf_nav_perfReports')), findsOneWidget);
+    expect(find.byKey(const Key('perf_nav_perfThirdParty')), findsOneWidget);
+
+    // 无裸异常泄漏。
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('概览·导航卡：点击「硬件详情」push 到 AppRoute.perfHardware',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: const {}, unavailable: true);
+    final monitor = _publishedMonitor();
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const PerfMonitorPage(),
+        ),
+        GoRoute(
+          path: AppRoute.perfHardware,
+          builder: (context, state) =>
+              const Scaffold(body: Text('HARDWARE_DEST')),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          perfModuleProvider.overrideWithValue(PerfModule(gateway: gateway)),
+          perfFrameMonitorProvider.overrideWithValue(monitor),
+          perfAvailabilityStreamProvider.overrideWithValue(
+            Stream<PerfAvailability>.value(PerfAvailability.failed),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await _settleAsync(tester);
+
+    final navFinder = find.byKey(const Key('perf_nav_perfHardware'));
+    await tester.scrollUntilVisible(
+      navFinder,
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(navFinder);
+    await _settleAsync(tester);
+
+    // 导航确实到达 stub 目的页（证明 onTap -> context.push(AppRoute.perfHardware)）。
+    expect(find.text('HARDWARE_DEST'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('概览·模块就绪：趋势 / FPS 渲染 + 采样开关可交互',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: _moduleReadyData());
+    final monitor = _publishedMonitor();
+
+    await tester.pumpWidget(_harness(
+      home: const PerfMonitorPage(),
       module: PerfModule(gateway: gateway),
       monitor: monitor,
       availability: Stream<PerfAvailability>.value(PerfAvailability.ready),
     ));
     await _settleAsync(tester);
-
-    // 降级卡片不再出现，模块区域正常渲染。
-    expect(find.text('原生性能模块未就绪'), findsNothing);
-    expect(tester.takeException(), isNull);
 
     // 趋势图表区 + 每个指标的 sparkline 卡片。
     expect(find.text('指标趋势'), findsOneWidget);
@@ -267,27 +311,8 @@ void main() {
     // FPS。
     expect(find.text('60.0'), findsOneWidget);
 
-    // CPU：聚合占用 + 调速器。
+    // CPU 聚合占用（趋势卡 CPU tile 文本）。
     expect(find.text('37.5%'), findsOneWidget);
-    expect(find.textContaining('schedutil'), findsOneWidget);
-
-    // 内存：使用 / 总量。
-    expect(find.textContaining('8 GB / 16 GB'), findsOneWidget);
-
-    // 电池：容量。
-    expect(find.text('80%'), findsOneWidget);
-
-    // 温度：最高温度高亮。
-    expect(find.textContaining('最高 42.0'), findsOneWidget);
-
-    // GPU 型号。
-    expect(find.text('Adreno 650'), findsOneWidget);
-
-    // 网络接口。
-    expect(find.textContaining('wlan0'), findsOneWidget);
-
-    // 进程 Top-N。
-    expect(find.textContaining('com.example.app'), findsOneWidget);
 
     // 采样开关就绪后可交互（默认仍为关）。
     final sw = tester.widget<SwitchListTile>(
@@ -297,7 +322,7 @@ void main() {
     expect(sw.value, false);
   });
 
-  testWidgets('实时刷新开关：开启触发 1s 轮询，卸载后取消定时器（无 pending timer）',
+  testWidgets('概览·实时刷新开关：开启触发 1s 轮询，卸载后取消定时器（无 pending timer）',
       (tester) async {
     _useTallViewport(tester);
     final gateway = _FakeGateway(data: {
@@ -315,6 +340,7 @@ void main() {
     final monitor = _publishedMonitor();
 
     await tester.pumpWidget(_harness(
+      home: const PerfMonitorPage(),
       module: PerfModule(gateway: gateway),
       monitor: monitor,
       availability: Stream<PerfAvailability>.value(PerfAvailability.ready),
@@ -343,5 +369,75 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  // ==================== 硬件详情页（PerfHardwarePage） ====================
+
+  testWidgets('硬件·模块不可用：降级卡 + 重试后仍保持降级（不崩溃）',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: const {}, unavailable: true);
+    final monitor = _publishedMonitor();
+
+    await tester.pumpWidget(_harness(
+      home: const PerfHardwarePage(),
+      module: PerfModule(gateway: gateway),
+      monitor: monitor,
+      availability: Stream<PerfAvailability>.value(PerfAvailability.failed),
+    ));
+    await _settleAsync(tester);
+
+    // 友好降级卡片 + 显式安装入口。
+    expect(find.text('原生性能模块未就绪'), findsOneWidget);
+    expect(find.text('安装 / 重试'), findsOneWidget);
+    expect(find.byKey(const Key('perf_retry')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // 重试在模块仍不可用时：不崩溃且保持降级卡片。
+    await tester.tap(find.byKey(const Key('perf_retry')));
+    await _settleAsync(tester);
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('原生性能模块未就绪'), findsOneWidget);
+  });
+
+  testWidgets('硬件·模块就绪：渲染 CPU / 内存 / 电池 / 温度 / GPU / 网络 / 进程 数值',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: _moduleReadyData());
+    final monitor = _publishedMonitor();
+
+    await tester.pumpWidget(_harness(
+      home: const PerfHardwarePage(),
+      module: PerfModule(gateway: gateway),
+      monitor: monitor,
+      availability: Stream<PerfAvailability>.value(PerfAvailability.ready),
+    ));
+    await _settleAsync(tester);
+
+    // 降级卡片不再出现，模块区域正常渲染。
+    expect(find.text('原生性能模块未就绪'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    // CPU：调速器。
+    expect(find.textContaining('schedutil'), findsOneWidget);
+
+    // 内存：使用 / 总量。
+    expect(find.textContaining('8 GB / 16 GB'), findsOneWidget);
+
+    // 电池：容量。
+    expect(find.text('80%'), findsOneWidget);
+
+    // 温度：最高温度高亮。
+    expect(find.textContaining('最高 42.0'), findsOneWidget);
+
+    // GPU 型号。
+    expect(find.text('Adreno 650'), findsOneWidget);
+
+    // 网络接口。
+    expect(find.textContaining('wlan0'), findsOneWidget);
+
+    // 进程 Top-N。
+    expect(find.textContaining('com.example.app'), findsOneWidget);
   });
 }

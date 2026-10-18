@@ -289,12 +289,12 @@ class _SettingsPageState extends State<SettingsPage> {
             onTap: () => context.push(AppRoute.moduleManage),
           ),
           const Divider(height: 1),
-          // 性能监控（FPS/jank + 原生 perf 模块数据）
+          // 性能监控（概览：帧率/趋势/采样；子页：硬件/控制/报告/第三方）
           ListTile(
             key: const Key('perf_monitor_entry'),
             leading: const Icon(TablerIcons.gauge, size: AppTypography.iconMD),
             title: const Text('性能监控'),
-            subtitle: const Text('帧率 / CPU / 内存 / 电池 / 温度 / 网络 / 进程'),
+            subtitle: const Text('帧率 / 硬件 / 控制 / 报告 / 第三方'),
             trailing:
                 const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.perfMonitor),
