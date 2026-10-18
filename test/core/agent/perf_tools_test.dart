@@ -3,8 +3,12 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/agent/agent_tool_module.dart';
+import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/agent/tools/perf_control_tools.dart';
 import 'package:gstore/core/agent/tools/perf_tools.dart';
+import 'package:gstore/core/agent/tools/perf_tunables_tools.dart';
 import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/module_base.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/perf/third_party_perf_service.dart';
@@ -109,6 +113,78 @@ void main() {
       );
       expect(names.toSet().length, names.length,
           reason: '注册集合不得含重复 toolName');
+    });
+  });
+
+  group('AgentToolsModule 注册集合完整性（todos 21/31 注册 + 验证）', () {
+    // AgentService._init 只从 getModule('agent_tools').tools 拉取工具
+    // （agent_service.dart:977-979），故断言必须走同一路径；这里用
+    // AgentToolsModule().tools（该模块工具的唯一来源）。
+    // 不依赖 PerfMonitorModule.onInit 的 context.registerAgentTools —— 那在
+    // main.dart 未注入时是 no-op。
+    const perfToolNames = <String>[
+      'perfDeviceSnapshot',
+      'perfThirdPartyMetrics',
+      'perfFrameStats',
+      'perfTunables', // todo 31 新增只读工具
+      'perfControl', // todo 21 危险门控工具
+    ];
+
+    test('全量工具名集合：新增 perf 工具各一次，且全局无重复 toolName', () {
+      final names =
+          AgentToolsModule().tools.map((t) => t.toolName).toList();
+
+      for (final name in perfToolNames) {
+        expect(
+          names.where((n) => n == name).length,
+          1,
+          reason: '工具 $name 必须恰好在注册集合中出现一次（实际集合 $names）；'
+              '缺一 = 运行时永不注册，重复 = 有工具被 AgentService 静默丢弃',
+        );
+      }
+
+      expect(
+        names.toSet().length,
+        names.length,
+        reason: '注册集合不得含重复 toolName（AgentService 按 toolName 去重）',
+      );
+    });
+
+    test('注册集合 == 内置 ∪ perf 只读 ∪ perf 可调面 ∪ perf 危险控制', () {
+      final names =
+          AgentToolsModule().tools.map((t) => t.toolName).toSet();
+      final expected = <String>{
+        ...BuiltinAgentTools.all.map((t) => t.toolName),
+        ...PerfTools().tools.map((t) => t.toolName),
+        ...PerfTunablesTools().tools.map((t) => t.toolName),
+        ...PerfControlTools().tools.map((t) => t.toolName),
+      };
+
+      expect(
+        names,
+        expected,
+        reason: 'AgentToolsModule.tools 必须精确等于四组工具之并集'
+            '（多 = 未声明的注册，少 = 漏注册）',
+      );
+    });
+
+    test('onUnregister 与 onRegister 对称：注销全部已注册 toolName', () async {
+      final module = AgentToolsModule();
+      final registered = module.tools.map((t) => t.toolName).toSet();
+
+      List<String>? unregistered;
+      // bindService/deregister 之外的钩子均为 null-safe，无需真正的模块管理器。
+      final context = ModuleContext(
+        unregisterAgentTools: (names) => unregistered = names,
+      );
+      await module.onUnregister(context);
+
+      expect(unregistered, isNotNull,
+          reason: 'onUnregister 必须调用 unregisterAgentTools');
+      expect(unregistered!.toSet(), registered,
+          reason: '注销集合必须与注册集合一一对应（对称下线）');
+      expect(unregistered!.toSet().containsAll(perfToolNames), isTrue,
+          reason: '新 perf 工具必须包含在注销集合中');
     });
   });
 
