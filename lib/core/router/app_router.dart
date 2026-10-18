@@ -183,6 +183,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const PerfMonitorPage(),
     ),
     GoRoute(
+      path: AppRoute.perfProfiles,
+      builder: (context, state) => const PerfProfilesPage(),
+    ),
+    GoRoute(
       path: AppRoute.cacheManage,
       builder: (context, state) => const CacheManagePage(),
     ),

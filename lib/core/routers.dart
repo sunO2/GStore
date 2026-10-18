@@ -28,6 +28,7 @@ class AppRoute {
   static String installedApps = "/GStore/installedApps";
   static String moduleManage = "/GStore/moduleManage";
   static String perfMonitor = "/GStore/perfMonitor";
+  static String perfProfiles = "/GStore/perfProfiles";
   static String cacheManage = "/GStore/cacheManage";
   static String databaseManage = "/GStore/databaseManage";
   static String licenses = "/GStore/licenses";
