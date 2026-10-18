@@ -55,6 +55,9 @@ class ConfigKeys {
   /// 每应用性能档案（JSON：包名 → 档案，见 `PerfProfile`）
   static const String perfProfiles = 'perf.profiles';
 
+  /// 按应用性能模式总开关（false = 不自动应用任何档案；默认关闭 fail-closed）
+  static const String perfProfilesEnabled = 'perf.profiles.enabled';
+
   // ---- 模块开关（module.<name>.enabled，见 ModuleToggleConfig.keyOf）----
 
   /// 渠道模块开关
@@ -218,6 +221,16 @@ class AppCoreConfigModule extends ConfigModule {
           description: '每应用性能档案（JSON：包名 → 档案；空 = 无档案）',
           descriptionEn:
               'Per-app performance profiles (JSON: package → profile; empty = none)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.perfProfilesEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: false,
+          agentAccessible: false,
+          category: 'perf',
+          description: '按应用性能模式总开关（默认关闭；开启后前台应用切换时自动应用其档案）',
+          descriptionEn:
+              'Per-app performance mode master switch (default off; auto-applies profiles on foreground switch)',
         ),
         // ---- 模块开关（持久化，未设置默认启用）----
         const ConfigEntry(
