@@ -15,7 +15,9 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/agent/tools/perf_control_tools.dart';
 import 'package:gstore/core/agent/tools/perf_tools.dart';
+import 'package:gstore/core/agent/tools/perf_tunables_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/download/download_core_config.dart';
@@ -323,9 +325,16 @@ class AgentToolsModule extends AppModule {
   ///
   /// 名称按 toolName 由 AgentService 去重；与 `PerfMonitorModule` 的注册
   /// （同为 no-op 或未来接线后）不会产生重复工具。
+  ///
+  /// 含 Wave 5 的性能扩展工具：只读 [PerfTools]（快照/第三方/帧）、只读
+  /// [PerfTunablesTools]（`perfTunables`：可控面 + 能力图）、危险门控
+  /// [PerfControlTools]（`perfControl`：需 confirm=true + 能力门禁）。
+  /// 注销走 [onUnregister] 的 `tools.map((t) => t.toolName)`，与上线对称。
   List<AgentToolModule> get tools => <AgentToolModule>[
         ...BuiltinAgentTools.all,
         ...PerfTools().tools,
+        ...PerfTunablesTools().tools,
+        ...PerfControlTools().tools,
       ];
 
   /// 模块自持的 AgentService 实例（替代 Get.put；模块上下线管理生命周期）
