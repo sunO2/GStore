@@ -1,6 +1,6 @@
 [package]
 name = "gstore_mod_perf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "GStore device performance monitor module (read-only /proc + /sys + getprop)"
 publish = false
