@@ -10,8 +10,9 @@
 > - GStore 性能能力清单：`.omo/evidence/scene-perf-reverse-gstore/gstore-perf-inventory.md`
 >
 > **立场（不可谈判）**：GStore 性能栈为**只读 / 无 root**（`rust/gstore_mod_perf/README.md:5`）。
-> 本文只**提出**增强方向，**不声称**任何控制能力已可用——所有控制类可行性一律初始为
-> `pending-probe`，由后续能力探针（todo 38）逐项定值。
+> 本文只**提出**增强方向，**不声称**任何控制能力已可用——所有控制类可行性由能力探针
+> （`lib/core/perf/perf_capability_probe.dart`，todo 15）逐节点定值。**本构建环境无 Shizuku 设备**，
+> 故设备依赖项一律记 `unavailable-on-shell`、基础设施项记 `环境受限·待真机确认`（详 §四 取值说明与 §5.5）。
 
 ---
 
@@ -197,29 +198,37 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
 
 > **注意范围 / 风险边界**：Scene 自身用的是 **root/exec 写路径**
 > （`ThermalControlActivity.java:293`），**不是** Shizuku-shell。因此 Scene 的「可写」
-> **不能**作为 GStore 在 uid 2000 下可写的证据——这正是所有控制类可行性保持
-> `pending-probe` 的原因。
+> **不能**作为 GStore 在 uid 2000 下可写的证据——这正是所有控制类可行性必须由**真机**能力探针
+> 逐节点验证、而**本构建环境**（无 Shizuku 设备）一律记 `unavailable-on-shell` 的原因（详 §5.5）。
 
 ---
 
 ## 四、优先级建议（映射姿态 (b)）
 
-> **可行性列初始值一律为 `pending-probe`**（由 todo 38 的能力探针输出定值；
-> 可能取值：`pending-probe` | `confirmed` | `unavailable-on-shell`）。
-> 本文**不**预先判定任何控制类可写性。
+> **可行性列取值**（由能力探针 todo 15 的输出定值，todo 38 最终化）：
+> `confirmed`（**仅**当探针给出**真机**正向证据时）| `unavailable-on-shell`（设备依赖的控制项：
+> 本环境无 Shizuku 设备，探针**无法**确认可写，一律记此值并按类别 shipped-disabled）|
+> `环境受限·待真机确认`（无设备依赖的基础设施项：实现已交付并单测，运行时门控待真机验证）。
+>
+> **环境限制（本构建环境无 Shizuku 设备）**：`lib/core/perf/perf_capability_probe.dart`
+> 的运行时探针在此环境**不可能**对任何节点给出正向可写判定（`test -w` 仅在真机 uid 2000
+> shell 下才有意义），因此本次**没有任何一行**可以记 `confirmed`。凡设备依赖项按探针
+> fail-closed 语义：类别零可写节点 → 该类别动作 **shipped-disabled / deferred**
+> （`perf_capability_probe.dart:139-140,183,398-413`）。
+> 定值映射证据：`.omo/evidence/scene-perf-reverse-gstore/task-38-feasibility.txt`。
 
 | 优先级 | 建议 | 对应差距 | 理由 | 可行性 |
 |---|---|---|---|---|
-| P0 | `lib/core/perf/privileged_shell.dart`：可测试的 Shizuku 特权 shell 封装（含 `&&`/`\|\|` 哨兵、`timeout` 自限、输入校验、结构化结果） | CG-SYSFS-1、CG-CPU-1、CG-CPU-2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | 一切控制动作的**传输与安全底座**；无它则任何写入都不可控、不可测 | `pending-probe` |
-| P0 | Rust `perf.tunables`：只读枚举 CPU/GPU/cpuset/thermal 可调面（governor/频率/cpuset/热区/冷却设备） | CG-CPU-1、CG-CPU-2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | **只读、零风险**，先建立「可调面地图」，为探针提供目标清单 | `pending-probe` |
-| P1 | 能力探针（capability-probe）：逐节点验证 Shizuku-shell 可写性 | 全部 CG-* | 没有探针证据不得声称可写；探针结果为 todo 38 定值来源 | `pending-probe` |
-| P1 | CPU governor 设置（读-改-校验-回滚） | CG-CPU-1 | 高频控制需求；但需 CCS/集群差异与 DAC 验证 | `pending-probe` |
-| P1 | CPU 频率上下限设置 | CG-CPU-2 | 与 governor 同层；`min>max` 顺序与内核钳制需回读校验 | `pending-probe` |
-| P2 | 温控阈值 / 开关 | CG-THERMAL-1 | **高风险**：误写可致过热保护失效；须最严格校验与回滚 | `pending-probe` |
-| P2 | GPU 频率 / 功率模式 | CG-GPU-1 | 厂商节点差异大（kgsl / devfreq / mali），可写面高度碎片化 | `pending-probe` |
-| P2 | cpuset / 进程亲和性 | CG-CPUSET-1 | 影响调度公平性，需按进程粒度谨慎 | `pending-probe` |
-| P3 | 每应用性能档（per-app profiles） | CG-PROFILE-1 | 建立在 P1/P2 之上；**跨会话持久化 + 冲突消解**复杂 | `pending-probe` |
-| P3 | 性能数据导出扩展（含控制前后对比） | MG4 | 依赖控制能力落地；导出本身已具备（`perf_export_service.dart:97`） | `pending-probe` |
+| P0 | `lib/core/perf/privileged_shell.dart`：可测试的 Shizuku 特权 shell 封装（含 `&&`/`\|\|` 哨兵、`timeout` 自限、输入校验、结构化结果） | CG-SYSFS-1、CG-CPU-1、CG-CPU-2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | 一切控制动作的**传输与安全底座**；无它则任何写入都不可控、不可测 | `环境受限·待真机确认（运行时门控）` |
+| P0 | Rust `perf.tunables`：只读枚举 CPU/GPU/cpuset/thermal 可调面（governor/频率/cpuset/热区/冷却设备） | CG-CPU-1、CG-CPU-2、CG-GPU-1、CG-CPUSET-1、CG-THERMAL-1 | **只读、零风险**，先建立「可调面地图」，为探针提供目标清单 | `环境受限·待真机确认（运行时门控）` |
+| P1 | 能力探针（capability-probe）：逐节点验证 Shizuku-shell 可写性 | 全部 CG-* | 没有探针证据不得声称可写；探针结果为 todo 38 定值来源 | `环境受限·待真机确认（运行时门控）` |
+| P1 | CPU governor 设置（读-改-校验-回滚） | CG-CPU-1 | 高频控制需求；但需 CCS/集群差异与 DAC 验证 | `unavailable-on-shell（探针门控·无设备）` |
+| P1 | CPU 频率上下限设置 | CG-CPU-2 | 与 governor 同层；`min>max` 顺序与内核钳制需回读校验 | `unavailable-on-shell（探针门控·无设备）` |
+| P2 | 温控阈值 / 开关 | CG-THERMAL-1 | **高风险**：误写可致过热保护失效；须最严格校验与回滚 | `unavailable-on-shell（探针门控·无设备）` |
+| P2 | GPU 频率 / 功率模式 | CG-GPU-1 | 厂商节点差异大（kgsl / devfreq / mali），可写面高度碎片化 | `unavailable-on-shell（探针门控·无设备）` |
+| P2 | cpuset / 进程亲和性 | CG-CPUSET-1 | 影响调度公平性，需按进程粒度谨慎 | `unavailable-on-shell（探针门控·无设备）` |
+| P3 | 每应用性能档（per-app profiles） | CG-PROFILE-1 | 建立在 P1/P2 之上；**跨会话持久化 + 冲突消解**复杂 | `unavailable-on-shell（探针门控·无设备）` |
+| P3 | 性能数据导出扩展（含控制前后对比） | MG4 | 依赖控制能力落地；导出本身已具备（`perf_export_service.dart:97`） | `unavailable-on-shell（依赖控制项·无设备）` |
 
 **优先级理由概述**：
 1. **先传输、后写入**：没有 `privileged_shell.dart`（P0）的哨兵 / 自限 / 校验，
@@ -252,7 +261,8 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
 - `CaInstaller.kt:358`（CA 存储不可写）的结论**不能**泛化到所有 sysfs（`notepad` 已警示）。
 - 部分节点（尤其 thermal / GPU 厂商节点）由内核或 HAL 独占，用户态写入可能被静默忽略
   （写入返回成功但读回不变）→ 必须**回读校验**，且以回读值为准。
-- 结论：**每个目标节点都必须单独经能力探针验证**，这正是可行性列保持 `pending-probe` 的原因。
+- 结论：**每个目标节点都必须单独经能力探针验证**，这正是可行性列须由**真机**探针逐节点定值、
+  而本环境一律记 `unavailable-on-shell` 的原因（详 §5.5）。
 
 ### 5.3 优雅降级（graceful degradation）要求
 
@@ -268,7 +278,25 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
   例如通过 `am` / `pm` / `cmd` 等已受权限模型约束的入口（而非提权）。
 - 回退面**不得**引入 root / `su` / remount / SELinux 绕过；`CG-ROOT-1` 永久 **ABSENT（禁止）**。
 - 回退路径同样必须走 §5.1 的哨兵 + 自限 + 校验，并保留 §5.3 的降级语义。
-- 回退面是否可用同样是**探针项**，初始 `pending-probe`。
+- 回退面是否可用同样是**探针项**；本环境无 Shizuku 设备，故同样记 `unavailable-on-shell`（详 §5.5）。
+
+### 5.5 本构建环境的可行性定值（环境受限 · 无 Shizuku 设备）
+
+- **环境事实**：本构建环境**没有**任何具备 Shizuku 的设备，故 `perf_capability_probe.dart`
+  的运行时探针在此环境**无法**对任何候选节点给出正向可写判定（`test -w` 仅在真机 uid 2000
+  shell 下才可能返回哨兵 `ok=1`）。因此本报告**没有任何一行**可以记 `confirmed`。
+- **定值规则**（与探针 fail-closed 语义一致）：
+  - **设备依赖的控制项**（CPU governor / 频率、GPU、cpuset、thermal、per-app profiles、
+    导出扩展）→ `unavailable-on-shell`（运行时探针门控；本环境无设备，未获正向证据）。
+  - **基础设施项**（`privileged_shell.dart` 传输层、`perf.tunables` 只读枚举、能力探针本身）
+    → `环境受限·待真机确认`（实现已交付并单测，运行时门控待真机验证）。
+- **fail-closed / shipped-disabled**：探针把「零可写节点」的类别判为不可用
+  （`perf_capability_probe.dart:139-140,183,398-413`）；据此，未获真机正向证据的类别动作
+  **shipped-disabled / deferred**，绝不因「路径存在」而假定可写。
+- **证据**：探针行为见 `.omo/evidence/scene-perf-reverse-gstore/task-15-happy.txt`
+  （混合 fixture：cpu/gpu/thermal/binder-levers 至少一个可写 → AVAILABLE；cpuset 零可写 →
+  DISABLED）与 `task-15-failure.txt`（全零 → 五类全 DISABLED）；最终定值映射见
+  `.omo/evidence/scene-perf-reverse-gstore/task-38-feasibility.txt`。
 
 ---
 
@@ -280,8 +308,9 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
    第三方路径**仅** Shizuku shell（uid 2000）。
 2. **不允许克隆 Scene**：不复制其包名、资产、字符串或任何逐字代码 / 文案；
    不引入 Scene 的伪造 CPU% 算法（`dex-evidence.md:30-31`）。
-3. **不允许无证据声称**：Scene 特性必须有证据 + 置信度；控制类可行性未经探针一律
-   `pending-probe`（**禁止**写成 `confirmed`）。
+3. **不允许无证据声称**：Scene 特性必须有证据 + 置信度；控制类可行性未经**真机**探针
+   （`lib/core/perf/perf_capability_probe.dart`）正向证据，一律**禁止**写成 `confirmed`；
+   本环境无 Shizuku 设备，故记 `unavailable-on-shell`（详 §5.5）。
 4. **不允许破坏只读立场**：既有监控能力（21 个只读 Rust 方法）必须保持只读、无副作用。
 5. **不允许越过 `timeout` 自限 / 无校验直接 `sh -c`**（§5.1、§5.2）。
 
@@ -306,7 +335,8 @@ per-app-profiles **五类控制能力全部缺失**，即**姿态 (b)** 所要�
 
 ## 八、后续步骤
 
-1. **todo 38（能力探针）**：以本报告 §四 建议表为输入，逐节点产出可写性证据，
-   把每一条 `pending-probe` 替换为 `confirmed` 或 `unavailable-on-shell`。
+1. **todo 38（能力探针 → 报告定值）**：以本报告 §四 建议表为输入，逐节点产出可写性证据。
+   本环境无 Shizuku 设备，故已把每条可行性定值为 `unavailable-on-shell`（设备依赖项）
+   或 `环境受限·待真机确认`（基础设施项）；真机到位后按探针正向证据把相应项重定值为 `confirmed`。
 2. **todo 9（一致性自检）**：核对每条建议 → 差距行 → todo id 的映射，剔除孤儿建议；
    确认 Must-NOT #2（无 Scene 逐字拷贝）。
