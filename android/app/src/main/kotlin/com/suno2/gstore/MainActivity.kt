@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -38,6 +39,10 @@ class MainActivity : FlutterActivity() {
         /// 代理 VPN 触发通道：只负责转发到 ProxyVpnService / VpnConsentActivity，
         /// 不在本 Activity 内承载任何 VPN 逻辑。
         private const val PROXY_VPN_CHANNEL = "gstore/proxy_vpn"
+
+        /// 性能悬浮窗触发通道：负责 SYSTEM_ALERT_WINDOW 授权引导与
+        /// PerfOverlayService 的启停（悬浮窗逻辑在 Service 内）。
+        private const val PERF_OVERLAY_CHANNEL = "gstore/perf_overlay"
 
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
@@ -143,6 +148,56 @@ class MainActivity : FlutterActivity() {
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
                     startActivity(intent)
                     result.success(true)
+                }
+                // 分享纯文本（性能报告导出等）：ACTION_SEND text/plain。
+                "shareText" -> {
+                    val text = call.argument<String>("text")
+                    if (text.isNullOrEmpty()) {
+                        result.error("ARG", "text required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, text)
+                            call.argument<String>("subject")?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+                        }
+                        startActivity(Intent.createChooser(send, call.argument<String>("title") ?: "分享"))
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "shareText 失败: ${e.message}")
+                        result.error("SHARE_TEXT", "分享文本失败: ${e.message}", null)
+                    }
+                }
+                // 分享文件（性能报告导出等）：ACTION_SEND + FileProvider Uri。
+                // 注意：FileProvider 的 file_paths 仅覆盖 external-files/downloads，
+                // 若目标路径未被覆盖会抛 IllegalArgumentException，此处转 result.error
+                // 由 Dart 侧降级为分享纯文本。
+                "shareFile" -> {
+                    val path = call.argument<String>("path")
+                    if (path.isNullOrEmpty()) {
+                        result.error("ARG", "path required", null)
+                        return@setMethodCallHandler
+                    }
+                    val file = File(path)
+                    if (!file.exists()) {
+                        result.error("NOTFOUND", "文件不存在: $path", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val uri = FileProvider.getUriForFile(this, "$packageName.fileProvider", file)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = call.argument<String>("mimeType") ?: "application/octet-stream"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            call.argument<String>("subject")?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+                        }
+                        startActivity(Intent.createChooser(send, call.argument<String>("title") ?: "分享"))
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "shareFile 失败: ${e.message}")
+                        result.error("SHARE_FILE", "分享文件失败: ${e.message}", null)
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -256,6 +311,91 @@ class MainActivity : FlutterActivity() {
                             result.error("CA_SYSTEM_STATUS", "系统证书状态检测失败: ${e.message}", null)
                         }
                     }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // 性能悬浮窗触发通道：授权引导 + PerfOverlayService 启停，悬浮窗逻辑在 Service 内。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PERF_OVERLAY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isPermissionGranted" -> result.success(Settings.canDrawOverlays(this))
+                    "requestPermission" -> {
+                        try {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "requestPermission 失败: ${e.message}")
+                            result.error("OVERLAY_PERMISSION", "无法打开悬浮窗权限设置: ${e.message}", null)
+                        }
+                    }
+                    "start" -> {
+                        // 无权限时 addView 必抛 BadTokenException，直接返回 false 不启动。
+                        if (!Settings.canDrawOverlays(this)) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            // 启动前写入目标（持久化，Service 启动时恢复）。
+                            call.argument<String>("targetPackage")
+                                ?.takeIf { it.isNotEmpty() }
+                                ?.let { PerfOverlayService.setTarget(this, it) }
+                            val intent = Intent(this, PerfOverlayService::class.java)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(intent)
+                            } else {
+                                startService(intent)
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "启动悬浮窗服务失败: ${e.message}")
+                            result.error("OVERLAY_START", "启动悬浮窗失败: ${e.message}", null)
+                        }
+                    }
+                    "stop" -> {
+                        try {
+                            stopService(Intent(this, PerfOverlayService::class.java))
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "停止悬浮窗服务失败: ${e.message}")
+                            result.error("OVERLAY_STOP", "停止悬浮窗失败: ${e.message}", null)
+                        }
+                    }
+                    "isRunning" -> result.success(PerfOverlayService.isRunning)
+                    // 悬浮窗模式（compact | expanded | target）：持久化 + 运行中实时刷新。
+                    "setMode" -> {
+                        val mode = call.argument<String>("mode")
+                        if (mode != PerfOverlayService.MODE_COMPACT &&
+                            mode != PerfOverlayService.MODE_EXPANDED &&
+                            mode != PerfOverlayService.MODE_TARGET
+                        ) {
+                            result.error("ARG", "mode must be compact|expanded|target", null)
+                            return@setMethodCallHandler
+                        }
+                        PerfOverlayService.setMode(this, mode)
+                        result.success(true)
+                    }
+                    "getMode" -> result.success(PerfOverlayService.readMode(this))
+                    // 悬浮窗监控目标（第三方应用包名）：持久化 + 运行中实时刷新。
+                    "setTarget" -> {
+                        val pkg = call.argument<String>("package")
+                        if (pkg.isNullOrEmpty()) {
+                            result.error("ARG", "package required", null)
+                            return@setMethodCallHandler
+                        }
+                        PerfOverlayService.setTarget(this, pkg)
+                        result.success(true)
+                    }
+                    "clearTarget" -> {
+                        PerfOverlayService.clearTarget(this)
+                        result.success(true)
+                    }
+                    "getTarget" -> result.success(PerfOverlayService.readTarget(this))
                     else -> result.notImplemented()
                 }
             }

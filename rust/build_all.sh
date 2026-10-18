@@ -25,6 +25,7 @@ CRATES=(
   "gstore_mod_qr"
   "gstore_mod_analyzer"
   "gstore_mod_repo"
+  "gstore_mod_perf"
 )
 
 for crate in "${CRATES[@]}"; do

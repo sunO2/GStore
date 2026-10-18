@@ -1,0 +1,27 @@
+[package]
+name = "gstore_mod_perf"
+version = "0.1.0"
+edition = "2021"
+description = "GStore device performance monitor module (read-only /proc + /sys + getprop)"
+publish = false
+
+[lib]
+name = "gstore_mod_perf"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 模块契约层（C ABI 结构体、错误模型、上下文约定）
+gstore_contract = { path = "../gstore_contract" }
+# JSON（方法入参/出参、事件载荷）
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# libc malloc/free（跨 .so 边界内存配对）+ sysconf（页大小/时钟频率）
+libc = "0.2"
+
+# 模块发布构建：panic 必须 unwind（宿主是 abort），边界 catch_unwind 兜底
+[profile.release]
+panic = "unwind"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

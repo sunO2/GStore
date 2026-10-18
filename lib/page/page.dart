@@ -18,6 +18,7 @@ export 'package:gstore/page/local_llm/view.dart';
 export 'package:gstore/page/installed_apps/view.dart';
 export 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 export 'package:gstore/page/module_manage/view.dart';
+export 'package:gstore/page/perf/view.dart';
 export 'package:gstore/page/proxy/proxy_home_page.dart';
 export 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 export 'package:gstore/page/proxy/proxy_capture_ca_page.dart';

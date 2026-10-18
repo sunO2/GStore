@@ -15,6 +15,10 @@
     <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 性能悬浮窗：显示在其他应用上层（SYSTEM_ALERT_WINDOW，需用户在系统设置授予） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 性能悬浮窗前台服务：Android 14 specialUse 类型所需权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:label="GStore"
@@ -91,6 +95,20 @@
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
                 android:value="true" />
+        </service>
+
+        <!-- 性能悬浮窗前台服务（HUD）：以 TYPE_APPLICATION_OVERLAY 添加一个
+             系统级悬浮视图，原生读 /proc、/sys 展示 CPU / 内存 / 电池温度。
+             同进程（不声明 android:process），故 isRunning 用静态标志即可跨组件共享。
+             Android 14 的 specialUse 类型须声明 FOREGROUND_SERVICE_SPECIAL_USE 权限
+             + PROPERTY_SPECIAL_USE_FGS_SUBTYPE 属性。 -->
+        <service
+            android:name=".PerfOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="performance_overlay" />
         </service>
 
         <!-- 代理 QS 磁贴：快捷设置开关，仅发信号给 App（连接由 Dart 编排）。

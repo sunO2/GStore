@@ -15,6 +15,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/agent/tools/perf_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/download/download_core_config.dart';
@@ -22,6 +23,7 @@ import 'package:gstore/core/download/manager/download_manager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
@@ -50,6 +52,7 @@ class CoreModules {
         AgentToolsModule(),
         UpdateModule(),
         BadgeModule(),
+        PerfMonitorModule(),
       ];
 
   /// 注册全部内置业务模块到 ModuleManager
@@ -310,8 +313,20 @@ class AgentToolsModule extends AppModule {
   @override
   int get priority => 90;
 
-  /// 内置工具模块列表
-  List<AgentToolModule> get tools => BuiltinAgentTools.all;
+  /// 内置工具模块列表（AgentService 实际消费的工具全集）
+  ///
+  /// 必须并入 [PerfTools]：`main.dart` 未向 [ModuleContext] 注入
+  /// `registerAgentTools`，故 `PerfMonitorModule.onInit` 里的
+  /// `context.registerAgentTools?.call(...)` 是 no-op；AgentService 初始化时
+  /// 只从 `getModule('agent_tools').tools` 拉取工具（见 agent_service.dart），
+  /// 若此处不含 perf 工具，三个性能工具运行时将永不注册。
+  ///
+  /// 名称按 toolName 由 AgentService 去重；与 `PerfMonitorModule` 的注册
+  /// （同为 no-op 或未来接线后）不会产生重复工具。
+  List<AgentToolModule> get tools => <AgentToolModule>[
+        ...BuiltinAgentTools.all,
+        ...PerfTools().tools,
+      ];
 
   /// 模块自持的 AgentService 实例（替代 Get.put；模块上下线管理生命周期）
   AgentService? _agentService;
@@ -381,5 +396,48 @@ class BadgeModule extends AppModule {
     unawaited(BadgeService.instance.checkAll().catchError((Object e, StackTrace st) {
       appLog.error('BadgeService: 启动检测异常 - $e');
     }));
+  }
+}
+
+/// 性能监控模块（Rust `perf` 原生模块的 AppModule 生命周期入口）。
+///
+/// 让应用模块体系「知道」`perf`：注册后 [ModuleManager] 会管理其上下线，
+/// 并把 [PerfModule] 门面绑定进服务注册表（消费方 `get<PerfModule>()`）。
+///
+/// **懒加载 / 启动零副作用**：[onInit] 为空操作，绝不预热、绝不调用
+/// `perf.start`——采样只能由用户在性能页显式开启（见 [PerfModule.startSampling]）。
+/// 门面在 [onRegister] 的绑定也只是构造网关（无 FFI / 无网络 / 无安装）；
+/// Rust 模块的下载与挂载仍由首次真实调用经 `ModuleBootstrap` 按需触发。
+class PerfMonitorModule extends AppModule {
+  @override
+  String get moduleName => 'perf_monitor';
+
+  /// 最后初始化：无业务依赖，排在全部既有模块之后。
+  @override
+  int get priority => 110;
+
+  /// 性能监控 Agent 工具（只读）。在 [onInit] 构建，[onUnregister] 用同一批名注销。
+  List<AgentToolModule> _perfTools = const <AgentToolModule>[];
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    // 纯按需功能：启动不预热 / 不采样 / 不触达 FFI（构造工具仅持有闭包），
+    // 仅把三个只读 Agent 工具登记到运行时工具清单。
+    _perfTools = PerfTools().tools;
+    context.registerAgentTools?.call(_perfTools);
+  }
+
+  @override
+  Future<void> onRegister(ModuleContext context) async {
+    context.bindService?.call(PerfModule, PerfModule.instance);
+  }
+
+  @override
+  Future<void> onUnregister(ModuleContext context) async {
+    context.unregisterAgentTools?.call(
+      _perfTools.map((t) => t.toolName).toList(),
+    );
+    _perfTools = const <AgentToolModule>[];
+    context.unbindService?.call(PerfModule);
   }
 }

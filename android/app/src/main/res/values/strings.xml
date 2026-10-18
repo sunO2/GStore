@@ -7,4 +7,9 @@
     <string name="proxy_vpn_notification_subtext">GStore</string>
     <string name="proxy_vpn_notification_action_stop">停止</string>
     <string name="proxy_tile_label">代理</string>
+    <string name="perf_overlay_channel_name">性能悬浮窗</string>
+    <string name="perf_overlay_channel_desc">GStore 性能悬浮窗运行时的常驻通知</string>
+    <string name="perf_overlay_notification_title">性能悬浮窗运行中</string>
+    <string name="perf_overlay_notification_text">实时显示 CPU / 内存 / 网络 / 温度</string>
+    <string name="perf_overlay_notification_action_stop">停止</string>
 </resources>

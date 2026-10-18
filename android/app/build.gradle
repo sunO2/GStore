@@ -104,4 +104,7 @@ flutter {
 dependencies {
     // core library desugaring（flutter_local_notifications 需要）
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+    // Shizuku API：悬浮窗服务内直接读取第三方应用 dumpsys（进程与 Flutter 无关）。
+    // provider 已由 shizuku_api 插件的 manifest 合并声明，此处仅需 api 供 Kotlin 编译。
+    implementation("dev.rikka.shizuku:api:13.1.0")
 }
