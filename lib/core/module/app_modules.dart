@@ -11,6 +11,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
@@ -20,11 +21,17 @@ import 'package:gstore/core/agent/tools/perf_tools.dart';
 import 'package:gstore/core/agent/tools/perf_tunables_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/download/download_core_config.dart';
 import 'package:gstore/core/download/manager/download_manager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/perf/perf_control_session.dart';
+import 'package:gstore/core/perf/perf_profile_store.dart';
+import 'package:gstore/core/perf/perf_profiles_coordinator.dart';
+import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/badge_service.dart';
@@ -413,10 +420,18 @@ class BadgeModule extends AppModule {
 /// 让应用模块体系「知道」`perf`：注册后 [ModuleManager] 会管理其上下线，
 /// 并把 [PerfModule] 门面绑定进服务注册表（消费方 `get<PerfModule>()`）。
 ///
-/// **懒加载 / 启动零副作用**：[onInit] 为空操作，绝不预热、绝不调用
+/// **懒加载 / 启动零副作用**：[onInit] 只登记只读 Agent 工具，绝不预热、绝不调用
 /// `perf.start`——采样只能由用户在性能页显式开启（见 [PerfModule.startSampling]）。
 /// 门面在 [onRegister] 的绑定也只是构造网关（无 FFI / 无网络 / 无安装）；
 /// Rust 模块的下载与挂载仍由首次真实调用经 `ModuleBootstrap` 按需触发。
+///
+/// **每应用性能模式（todos 20/23/24）生命周期**：全局开关
+/// `perf.profiles.enabled`（[ConfigKeys.perfProfilesEnabled]）**默认 OFF**。
+/// [onRegister] 订阅该开关并按现值同步：
+/// - OFF（默认）→ **不构造** [PerfProfilesCoordinator]：零轮询、零 Shizuku / FFI；
+/// - ON → 启动协调器（前台监视器 + 自动应用引擎，共用单例 [PerfControlSession]）；
+/// - 开关运行期变化 → 即时 start / stop；
+/// - [onUnregister]（模块下线）→ 停止并**还原**会话登记的所有覆盖项。
 class PerfMonitorModule extends AppModule {
   @override
   String get moduleName => 'perf_monitor';
@@ -425,13 +440,31 @@ class PerfMonitorModule extends AppModule {
   @override
   int get priority => 110;
 
+  /// 测试用：替换每应用性能模式运行时协调器的构造（注入假 shell / tunables /
+  /// 会话 / 监视器）。生产为 `null`（使用 [_buildCoordinator] 的真实装配）。
+  @visibleForTesting
+  static PerfProfilesCoordinator Function()? coordinatorFactoryOverride;
+
   /// 性能监控 Agent 工具（只读）。在 [onInit] 构建，[onUnregister] 用同一批名注销。
   List<AgentToolModule> _perfTools = const <AgentToolModule>[];
+
+  /// 每应用性能模式运行时；全局开关 OFF（或未启动）时为 `null`。
+  PerfProfilesCoordinator? _perfProfiles;
+
+  /// 全局开关变化订阅（[onUnregister] 取消）。
+  StreamSubscription<StorageChangeEvent>? _profilesToggleSub;
+
+  /// 当前全局开关缓存（供自动应用引擎的 `isGloballyEnabled` 读取）。
+  bool _profilesEnabled = false;
+
+  /// 当前每应用性能模式运行时（未启用 / 已关闭 / 启动失败时为 `null`）。
+  PerfProfilesCoordinator? get perfProfiles => _perfProfiles;
 
   @override
   Future<void> onInit(ModuleContext context) async {
     // 纯按需功能：启动不预热 / 不采样 / 不触达 FFI（构造工具仅持有闭包），
-    // 仅把三个只读 Agent 工具登记到运行时工具清单。
+    // 仅把只读 Agent 工具登记到运行时工具清单（`registerAgentTools` 在 main.dart
+    // 未注入时是 no-op；真正的注册路径是 `AgentToolsModule.tools`）。
     _perfTools = PerfTools().tools;
     context.registerAgentTools?.call(_perfTools);
   }
@@ -439,14 +472,87 @@ class PerfMonitorModule extends AppModule {
   @override
   Future<void> onRegister(ModuleContext context) async {
     context.bindService?.call(PerfModule, PerfModule.instance);
+    await _attachProfiles();
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    await _detachProfiles();
     context.unregisterAgentTools?.call(
       _perfTools.map((t) => t.toolName).toList(),
     );
     _perfTools = const <AgentToolModule>[];
     context.unbindService?.call(PerfModule);
+  }
+
+  // ==================== 每应用性能模式生命周期 ====================
+
+  /// 订阅全局开关（`perf.profiles.enabled`）并按现值同步运行时。
+  ///
+  /// 订阅本身零副作用；OFF 时**绝不**构造协调器（零轮询 / 零 Shizuku / FFI）。
+  Future<void> _attachProfiles() async {
+    try {
+      _profilesToggleSub = ConfigStore.instance
+          .watch(ConfigKeys.perfProfilesEnabled)
+          .listen(_onProfilesToggle);
+      final enabled =
+          await ConfigStore.instance.readBool(ConfigKeys.perfProfilesEnabled) ??
+              false;
+      await _syncProfiles(enabled);
+    } catch (error) {
+      debugPrint('[PerfMonitorModule] 每应用性能模式接线失败（降级，功能不可用）: $error');
+    }
+  }
+
+  void _onProfilesToggle(StorageChangeEvent event) {
+    unawaited(_syncProfiles(event.value == true));
+  }
+
+  /// 按开关值同步：ON → 启动（幂等）；OFF → 停止 + 会话还原（幂等）。绝不抛出。
+  Future<void> _syncProfiles(bool enabled) async {
+    _profilesEnabled = enabled;
+    if (enabled) {
+      if (_perfProfiles != null) return;
+      final coordinator = _buildCoordinator();
+      try {
+        final started = await coordinator.start();
+        if (started) {
+          _perfProfiles = coordinator;
+        } else {
+          // tunables 不可用（fail-closed）→ 不保留半成品运行时，允许重试。
+          await coordinator.stop();
+        }
+      } catch (error) {
+        debugPrint('[PerfMonitorModule] 每应用性能模式启动失败（降级）: $error');
+        await coordinator.stop();
+      }
+    } else {
+      final coordinator = _perfProfiles;
+      _perfProfiles = null;
+      if (coordinator != null) await coordinator.stop();
+    }
+  }
+
+  /// 构造生产运行时协调器（测试经 [coordinatorFactoryOverride] 覆盖）。
+  PerfProfilesCoordinator _buildCoordinator() {
+    final override = coordinatorFactoryOverride;
+    if (override != null) return override();
+    return PerfProfilesCoordinator(
+      store: const ConfigPerfProfileStore(),
+      session: sharedPerfControlSession,
+      shell: PrivilegedShell(),
+      tunablesLoader: () => PerfModule.instance.tunables(),
+      isGloballyEnabled: () => _profilesEnabled,
+    );
+  }
+
+  /// 取消订阅并停止运行时（模块下线）。绝不抛出。
+  Future<void> _detachProfiles() async {
+    await _profilesToggleSub?.cancel();
+    _profilesToggleSub = null;
+    final coordinator = _perfProfiles;
+    _perfProfiles = null;
+    _profilesEnabled = false;
+    if (coordinator != null) await coordinator.stop();
   }
 }

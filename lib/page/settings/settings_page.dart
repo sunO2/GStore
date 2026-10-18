@@ -2072,14 +2072,6 @@ class _PerfOverlayTileState extends State<PerfOverlayTile> {
   }
 }
 
-/// 每应用性能档案编辑页路由。
-///
-/// todo 25 已在 `lib/core/routers.dart` 定义 `AppRoute.perfProfiles` 并于
-/// `app_router.dart` 注册对应 `GoRoute`（值为 `/GStore/perfProfiles`，与下方常量
-/// 一致）。因本 todo 提交范围仅限 settings/config/test 文件，暂以同值局部常量引用；
-/// 路由定义合入主干后（todo 30 接线）应改为直接使用 `AppRoute.perfProfiles`。
-const String perfProfilesEditorRoute = '/GStore/perfProfiles';
-
 /// 控制能力加载器（返回 `null` = 尚未探测 → 不阻断开关，引擎侧 fail-closed）。
 typedef PerfProfilesCapabilityLoader = Future<PerfControlCapabilities?> Function();
 
@@ -2119,7 +2111,7 @@ class PerfProfilesTile extends StatefulWidget {
   /// 开关写入（默认经 [ConfigStore] 写 [ConfigKeys.perfProfilesEnabled]）。
   final PerfProfilesBoolWriter? enabledWriter;
 
-  /// 打开档案编辑页（默认 go_router `push` [perfProfilesEditorRoute]；测试注入捕获）。
+  /// 打开档案编辑页（默认 go_router `push` [AppRoute.perfProfiles]；测试注入捕获）。
   final VoidCallback? openProfiles;
 
   @override
@@ -2219,7 +2211,7 @@ class _PerfProfilesTileState extends State<PerfProfilesTile> {
       return;
     }
     try {
-      context.push(perfProfilesEditorRoute);
+      context.push(AppRoute.perfProfiles);
     } catch (e) {
       debugPrint('PerfProfilesTile: 打开档案编辑页失败 - $e');
       AppDialogs.showError('档案编辑页暂不可用（路由未就绪）');

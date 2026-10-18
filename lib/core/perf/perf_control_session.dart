@@ -53,7 +53,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -737,14 +737,37 @@ class PerfControlSession {
 
 // ==================== Riverpod 接线（镜像 existing perf providers） ====================
 
-/// 全 App 单例控制会话（生产 = SharedPreferences 持久化 + 30 分钟会话超时）。
+/// 全 App 共享的单例控制会话（生产 = SharedPreferences 持久化 + 30 分钟超时）。
+///
+/// **关键：单例语义**。自动应用引擎（todo 24，经 [PerfProfilesCoordinator]）与
+/// 性能页的手动控制（todo 28，`DefaultPerfControlActions`）**必须**共用同一实例
+/// —— `revertAll` 只遍历会话自己的登记表，两个会话各自登记同一节点会在还原时
+/// 互相踩踏。模块生命周期（todo 30）直接取用本 getter，Riverpod 的
+/// [perfControlSessionProvider] 也返回**同一对象**。
+///
+/// **惰性 / 零副作用**：构造 [PrivilegedShell] 与 [SharedPrefsPerfControlSessionStore]
+/// 都不会发命令、不触达 FFI / 平台通道；只有真正 [PerfControlSession.revertAll]
+/// 时才写节点。
+PerfControlSession? _sharedControlSession;
+
+/// 共享控制会话（惰性创建）。
+PerfControlSession get sharedPerfControlSession =>
+    _sharedControlSession ??= PerfControlSession(
+      shell: PrivilegedShell(),
+      store: const SharedPrefsPerfControlSessionStore(),
+      sessionTimeout: const Duration(minutes: 30),
+    );
+
+/// 测试用：替换 / 重置共享单例（避免跨测试污染）。
+@visibleForTesting
+void setSharedPerfControlSessionForTest(PerfControlSession? session) {
+  _sharedControlSession = session;
+}
+
+/// 全 App 单例控制会话（Riverpod 入口，返回 [sharedPerfControlSession]）。
 ///
 /// 消费方（todos 24/27/30）应在启动时调用 [PerfControlSession.restorePendingOnInit]，
 /// 并在模块注销 / App 退出 / 后台超时时调用对应的还原钩子。
 final perfControlSessionProvider = Provider<PerfControlSession>(
-  (ref) => PerfControlSession(
-    shell: PrivilegedShell(),
-    store: const SharedPrefsPerfControlSessionStore(),
-    sessionTimeout: const Duration(minutes: 30),
-  ),
+  (ref) => sharedPerfControlSession,
 );

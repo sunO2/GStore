@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 
 /// 至少一个类别可用（CPU）的能力图。
@@ -169,7 +170,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(perfProfilesEditorRoute, '/GStore/perfProfiles');
+    expect(AppRoute.perfProfiles, '/GStore/perfProfiles');
     await tester.tap(find.byKey(const Key('perf_profiles_entry')));
     await tester.pump();
 
