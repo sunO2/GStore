@@ -31,6 +31,7 @@ pub const DISPATCH_METHODS: &[&str] = &[
     "perf.pressure",
     "perf.cooling",
     "perf.tunables",
+    "perf.sysfs.read",
     "perf.battery_health",
     "perf.storage",
     "perf.start",
@@ -209,6 +210,32 @@ fn parse_startup(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     ok_data(data)
 }
 
+/// `perf.sysfs.read`：只读白名单内的**单个** sysfs / cpuset 节点（写回校验用）。
+///
+/// 请求 `{path: string}`。仅当 `path` 命中 `collectors::sysfs_read::SYSFS_ALLOWLIST`
+/// 时读取，返回 `{path, value, exists}`；非白名单路径（`/etc/passwd`、`/data/...`、
+/// 穿越路径）返回结构化 `invalid_arg`，**绝不返回值**。
+///
+/// **uid 上下文提醒**：本方法以**模块进程（App）自身 uid** 读取。Wave 4 的写操作
+/// 经 Shizuku 特权 shell（uid 2000）执行；对**非 world-readable** 的节点，App uid
+/// 可能读不到（`exists:false` / `value:null`，这不是错误）——此时应**同样经特权
+/// shell 回读**，且读取侧 uid / 上下文必须与写入侧一致，否则写回校验无意义。
+fn sysfs_read(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let v = parse_json(payload);
+    let path = v
+        .as_ref()
+        .and_then(|v| v.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if path.is_empty() {
+        return Err(ModuleError::invalid_arg(
+            "path is required and must be a non-empty string",
+        ));
+    }
+    ok_data(snapshot::sysfs_read(path)?)
+}
+
 /// 分发一次调用。
 pub fn dispatch(instance_id: u64, method: &str, payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     match method {
@@ -260,6 +287,10 @@ pub fn dispatch(instance_id: u64, method: &str, payload: &[u8]) -> Result<Vec<u8
         "perf.tunables" => {
             state::require_instance(instance_id)?;
             ok_data(snapshot::tunables())
+        }
+        "perf.sysfs.read" => {
+            state::require_instance(instance_id)?;
+            sysfs_read(payload)
         }
         "perf.battery_health" => {
             state::require_instance(instance_id)?;
@@ -489,6 +520,57 @@ mod tests {
     fn parse_startup_requires_instance() {
         let err = dispatch(424242, "perf.parse_startup", b"").unwrap_err();
         assert_eq!(err.status, gstore_contract::error::StatusCode::InstanceNotFound);
+    }
+
+    #[test]
+    fn sysfs_read_rejects_non_allowlisted_path_never_value() {
+        for payload in [
+            &br#"{"path":"/etc/passwd"}"#[..],
+            &br#"{"path":"/data/data/com.x/secret"}"#[..],
+            &br#"{"path":"/proc/self/environ"}"#[..],
+        ] {
+            let err = sysfs_read(payload).unwrap_err();
+            assert_eq!(
+                err.status,
+                gstore_contract::error::StatusCode::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
+    fn sysfs_read_requires_non_empty_path() {
+        for payload in [
+            &b"{}"[..],
+            &br#"{"path":""}"#[..],
+            &br#"{"path":123}"#[..],
+            &b""[..],
+        ] {
+            let err = sysfs_read(payload).unwrap_err();
+            assert_eq!(
+                err.status,
+                gstore_contract::error::StatusCode::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
+    fn sysfs_read_returns_ok_envelope_for_allowlisted_path() {
+        let bytes =
+            sysfs_read(br#"{"path":"/sys/class/thermal/thermal_zone0/temp"}"#).unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["path"], "/sys/class/thermal/thermal_zone0/temp");
+        assert!(v["data"]["exists"].is_boolean());
+    }
+
+    #[test]
+    fn sysfs_read_requires_instance_via_dispatch() {
+        let err = dispatch(u64::MAX, "perf.sysfs.read", br#"{"path":"/etc/passwd"}"#)
+            .unwrap_err();
+        assert_eq!(
+            err.status,
+            gstore_contract::error::StatusCode::InstanceNotFound
+        );
     }
 
     #[test]

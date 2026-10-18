@@ -182,6 +182,42 @@ fn parse_app_dumps_render_and_power_over_the_c_abi() {
 }
 
 #[test]
+fn sysfs_read_round_trips_over_the_c_abi() {
+    let mut instance: u64 = 0;
+    assert_eq!(create_export(std::ptr::null(), 0, &mut instance), ABI_OK);
+
+    let path = "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor";
+    let payload = format!(r#"{{"path":"{path}"}}"#);
+    let (rc, bytes) = call(instance, "perf.sysfs.read", payload.as_bytes());
+    assert_eq!(rc, ABI_OK);
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["path"], path);
+
+    let raw = std::fs::read_to_string(path).ok();
+    let expected_value = raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    assert_eq!(v["data"]["exists"], raw.is_some());
+    assert_eq!(
+        v["data"]["value"].as_str().map(str::to_string),
+        expected_value
+    );
+
+    let (rc, bytes) = call(instance, "perf.sysfs.read", br#"{"path":"/etc/passwd"}"#);
+    assert_eq!(rc, ABI_ERR_DETAIL);
+    let err = gstore_contract::error::ModuleError::from_payload(&bytes).unwrap();
+    assert_eq!(
+        err.code.as_ref(),
+        gstore_contract::error::ERR_INVALID_ARGUMENT
+    );
+
+    assert_eq!(destroy_export(instance), ABI_OK);
+}
+
+#[test]
 fn parse_startup_round_trips_over_the_c_abi() {
     let mut instance: u64 = 0;
     assert_eq!(create_export(std::ptr::null(), 0, &mut instance), ABI_OK);
