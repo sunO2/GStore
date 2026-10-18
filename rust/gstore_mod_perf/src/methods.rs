@@ -7,6 +7,7 @@ use gstore_contract::error::ModuleError;
 use serde_json::Value;
 
 use crate::abi_io::ok_data;
+use crate::collectors::app_activity;
 use crate::collectors::app_dumps::{self, AppDumpInput};
 use crate::collectors::app_startup;
 use crate::collectors::processes::{ProcQuery, ProcSort};
@@ -41,6 +42,7 @@ pub const DISPATCH_METHODS: &[&str] = &[
     "perf.reset",
     "perf.parse_app_dumps",
     "perf.parse_startup",
+    "perf.foreground",
 ];
 
 fn parse_json(payload: &[u8]) -> Option<Value> {
@@ -210,6 +212,24 @@ fn parse_startup(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     ok_data(data)
 }
 
+/// `perf.foreground`：从宿主经 Shizuku 采集的 `dumpsys activity activities` 文本中
+/// 抽取**当前前台包名**。请求 `{activity: string}`（原始文本，Rust 不跑 shell），
+/// 返回 `{package: string|null}`。
+///
+/// **纯解析**：不启动 shell、不做 JNI、不需要特权。无法判定（无 resumed 行 /
+/// resumed 行为 `null` / 多窗口歧义）→ `package:null`，绝不报错、绝不猜测。
+/// 仅回传包名，**不记录/回传**前台活动全文。
+fn foreground(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let v = parse_json(payload);
+    let activity = v
+        .as_ref()
+        .and_then(|v| v.get("activity"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let package = app_activity::parse_current_package(activity);
+    ok_data(serde_json::json!({ "package": package }))
+}
+
 /// `perf.sysfs.read`：只读白名单内的**单个** sysfs / cpuset 节点（写回校验用）。
 ///
 /// 请求 `{path: string}`。仅当 `path` 命中 `collectors::sysfs_read::SYSFS_ALLOWLIST`
@@ -337,6 +357,10 @@ pub fn dispatch(instance_id: u64, method: &str, payload: &[u8]) -> Result<Vec<u8
         "perf.parse_startup" => {
             state::require_instance(instance_id)?;
             parse_startup(payload)
+        }
+        "perf.foreground" => {
+            state::require_instance(instance_id)?;
+            foreground(payload)
         }
         other => Err(ModuleError::method_not_found(other)),
     }
@@ -519,6 +543,35 @@ mod tests {
     #[test]
     fn parse_startup_requires_instance() {
         let err = dispatch(424242, "perf.parse_startup", b"").unwrap_err();
+        assert_eq!(err.status, gstore_contract::error::StatusCode::InstanceNotFound);
+    }
+
+    #[test]
+    fn foreground_extracts_package_envelope() {
+        let activity = "  mResumedActivity: ActivityRecord{bbb u0 com.x/.MainActivity t2}\n";
+        let payload = serde_json::json!({ "activity": activity });
+        let bytes = foreground(payload.to_string().as_bytes()).unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["package"], "com.x");
+    }
+
+    #[test]
+    fn foreground_returns_null_without_resumed_line() {
+        let bytes = foreground(br#"{"activity":"nothing resumed here"}"#).unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v["data"]["package"].is_null());
+
+        let bytes = foreground(b"").unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v["data"]["package"].is_null());
+    }
+
+    #[test]
+    fn foreground_requires_instance_via_dispatch() {
+        let err = dispatch(424242, "perf.foreground", b"").unwrap_err();
         assert_eq!(err.status, gstore_contract::error::StatusCode::InstanceNotFound);
     }
 

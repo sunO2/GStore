@@ -245,6 +245,34 @@ fn parse_startup_round_trips_over_the_c_abi() {
 }
 
 #[test]
+fn foreground_round_trips_over_the_c_abi() {
+    let mut instance: u64 = 0;
+    assert_eq!(create_export(std::ptr::null(), 0, &mut instance), ABI_OK);
+
+    // 真实 `dumpsys activity activities`（Android 14）片段：应从 topResumedActivity 抽出包名。
+    let payload = br#"{"activity":"ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nDisplay #0 (activities from top to bottom):\n  * Task{f1e2d3c #4 type=standard A=10500:com.example.app}\n    * ActivityRecord{a0b1c2d u0 com.example.app/com.example.app.MainActivity t42}\n  topResumedActivity=ActivityRecord{a0b1c2d u0 com.example.app/com.example.app.MainActivity t42}\n  mFocusedApp=ActivityRecord{a0b1c2d u0 com.example.app/com.example.app.MainActivity t42}\n"}"#;
+    let (rc, bytes) = call(instance, "perf.foreground", payload);
+    assert_eq!(rc, ABI_OK);
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["package"], "com.example.app");
+
+    // 无 resumed 行 / 空 payload → package:null，绝不报错。
+    let (rc, bytes) = call(instance, "perf.foreground", br#"{"activity":"no resumed activity here"}"#);
+    assert_eq!(rc, ABI_OK);
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(v["data"]["package"].is_null());
+
+    let (rc, bytes) = call(instance, "perf.foreground", b"");
+    assert_eq!(rc, ABI_OK);
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(v["data"]["package"].is_null());
+
+    assert_eq!(destroy_export(instance), ABI_OK);
+}
+
+#[test]
 fn parse_app_dumps_deep_dive_over_the_c_abi() {
     let mut instance: u64 = 0;
     assert_eq!(create_export(std::ptr::null(), 0, &mut instance), ABI_OK);

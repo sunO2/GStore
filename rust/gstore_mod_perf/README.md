@@ -34,7 +34,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 - 采样事件：模块经宿主 `emit_event` 上报 `perf.sample`，载荷为采样快照 JSON
   （宿主负载约定：前 4 字节为事件类型长度，小端）。
 
-## 方法 schema（23 个）
+## 方法 schema（24 个）
 
 所有实例方法需有效 `instance`（`ping` 除外）。`data` 内单位显式标注（`*_kb`/`*_mhz`/`*_c`/`*_ma`/`*_bytes`/`*_us`/`*_uah`）。
 
@@ -57,6 +57,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 | `perf.processes` | `{limit?:int(1..100,默认10), sort?:"cpu"\|"rss"}` | `{total, sort, processes:[{pid, name, cmdline, state, cpu_ticks, cpu_percent, rss_kb, rss_bytes}]}` |
 | `perf.parse_app_dumps` | `{package:string(必需), pid?:int, uid?:int, cpuinfo?:string, meminfo?:string, gfxinfo?:string, ps?:string, status?:string, netstats?:string, framestats?:string, batterystats?:string, package_info?:string, smaps?:string, crash_log?:string, anr_log?:string, activity?:string}` | `{package, pid, running, cpu_percent, mem_pss_kb, mem_rss_kb, mem_java_heap_kb, mem_native_heap_kb, mem_private_dirty_kb, frame_count, janky_frames, janky_percent, p50_ms, p90_ms, p95_ms, p99_ms, missed_vsync, high_input_latency, slow_ui_thread, slow_bitmap_uploads, slow_draw, uid, threads, mem_summary{java_heap_kb,native_heap_kb,code_kb,stack_kb,graphics_kb,private_other_kb,system_kb,total_pss_kb}, processes:[{pid,ppid,rss_kb,name}], net:{uid,rx_bytes,tx_bytes}\|null, render:{frame_count,fps,jank_count,avg_total_ms,p50_total_ms,p90_total_ms,p99_total_ms,avg_ui_ms,avg_draw_ms,avg_gpu_ms}\|null, power:{mah,wake_lock_ms,mobile_radio_mah,wifi_mah,screen_mah,cpu_mah}\|null, app_info:{version_name,version_code,target_sdk,min_sdk,first_install,last_update,code_path,data_dir,is_system,enabled,requested_permissions,granted_permissions,activity_count,service_count,receiver_count,provider_count}\|null, smaps:{pss_kb,rss_kb,shared_clean_kb,shared_dirty_kb,private_clean_kb,private_dirty_kb}\|null, crashes:{crash_count,anr_count,last_crash,last_anr,recent:[{kind,time,summary}]}\|null, foreground:{is_foreground}\|null, wake_locks:[{name,ms}]}` |
 | `perf.parse_startup` | `{output:string, mode?:"cold"\|"warm"(默认"warm")}` | `{status:"ok"\|"Error", activity:string\|null, this_time_ms:int\|null, total_time_ms:int\|null, wait_time_ms:int\|null, mode:"cold"\|"warm"}` |
+| `perf.foreground` | `{activity:string}`（`dumpsys activity activities` 原文） | `{package:string\|null}`；从 resumed 行（`mResumedActivity`/`topResumedActivity`/`ResumedActivity`）的 `<pkg>/<activity>` 抽取当前前台包名；无 resumed 行/歧义 → `null`（**永不报错、永不猜测**，仅回传包名） |
 | `perf.device` | — | `{kernel_version, hardware, cpu_name, model, android_release, board_platform, core_count, loadavg, os_release}` |
 | `perf.start` | `{interval_ms?:int(默认2000, 夹取200..600000)}` | `{running, interval_ms, instanceId}` |
 | `perf.stop` | — | `{running:false, was_running}` |
@@ -78,6 +79,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 | 散热设备 | `/sys/class/thermal/cooling_device*/{type,cur_state,max_state}` | 枚举全部 `cooling_device*`；无设备 → `count:0, devices:[]` |
 | 可控面枚举 | `cpufreq/policy*`、`/dev/cpuset/*`、`thermal_zone*/{type,mode}`、`cooling_device*`、GPU `available_frequencies`/`governor`/`num_pwrlevels` | **只读**枚举可控旋钮与取值范围：每策略簇 `related_cpus`/governors/freqs/governor/min/max；cpuset `cpus`/`mems`；热区 `mode`；散热 `cur_state`；GPU 频率（路径表 + `gpu.rs` 缩放）与功耗档位。节点缺失 → `[]`/`null`，绝不写盘 |
 | 白名单单路径读取 | `sysfs_read::SYSFS_ALLOWLIST`（cpufreq `scaling_*`/`cpuinfo_*`、cpuset `cpus`/`mems`、thermal `temp`/`mode`、GPU 频率/governor/功耗档位） | **只读** `perf.sysfs.read` 的采集器：`*` 单段通配精确匹配；非白名单/穿越路径 → `invalid_arg`；节点缺失 → `exists:false,value:null`。以 App 进程 uid 读取，非 world-readable 节点须经特权 shell 回读 |
+| 前台包名抽取 | `app_activity::parse_current_package`（`dumpsys activity activities` 原文） | **只读、纯解析**：扫描含 resumed 标记（`mResumedActivity`/`topResumedActivity`/`ResumedActivity`）的行，取 `<pkg>/<activity>` 的 `<pkg>`（兼容 `u0` 前缀与 `pkg/pkg.Act` 两种形态）。无 resumed 行/`null`/多个不同包（歧义）→ `null`；仅回传包名，不保留活动全文 |
 | PSI 压力 | `/proc/pressure/{cpu,memory,io}` | 逐行 `some`/`full avg10=.. avg60=.. avg300=.. total=<us>`；`total` 微秒（内核定义）；cpu 通常只有 `some`；文件缺失 → 该资源 `some`/`full` 为 `null` |
 | 存储 | `/proc/mounts` + `libc::statvfs` | 仅真实 fs，跳过 proc/sysfs/tmpfs/devpts/cgroup/overlay 等伪 fs；按挂载点去重；`total=f_blocks·frsize/1024`、`free=f_bavail·…`、`used=(f_blocks−f_bfree)·…`、`used_percent=used/total×100` |
 | GPU | kgsl/devfreq/kernel/mali 多路径 | freq 列表 A（Hz→÷1e6）+ 列表 B（`>1e6→/1e6`，`>1000→/1000`）；busy 去 `%`；name 走 `getprop ro.hardware.gpu\|ro.board.platform\|ro.hardware.vulkan` |
@@ -143,7 +145,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 ```
 src/
 ├── lib.rs          # C ABI 导出（register/create/call/cancel/destroy/shutdown/alloc/free/on_event）
-├── methods.rs      # 方法分发表（23 个）
+├── methods.rs      # 方法分发表（24 个）
 ├── snapshot.rs     # 采集编排 + 增量基线更新
 ├── sampler.rs      # 后台采样线程 + 采样环
 ├── state.rs        # 实例状态、宿主回调注册表
