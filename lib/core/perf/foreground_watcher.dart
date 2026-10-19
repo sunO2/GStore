@@ -14,7 +14,8 @@
 ///   [maxConsecutiveFailures] 次同样降级为 disabled。
 /// * **屏幕状态门禁**：每拍先查屏幕（可注入 [ScreenOnProbe]）；熄屏 →
 ///   [ForegroundWatcherStatus.paused]，**跳过前台轮询（零 `dumpsys activity`）**；
-///   亮屏后自动恢复。
+///   亮屏后自动恢复。亮/灭**切换**经 [screenEvents] 广播一条 [ScreenStateEvent]
+///   （复用同一探测，无新通路 / 无 manifest 变更），供自动应用引擎 sleep/resume。
 /// * **单线程 executor 不饿死控制写**：Shizuku 插件为单线程串行执行；本监视器
 ///   每拍**至多**发一条特权命令，用 [_pollerInFlight] 单飞守卫避免命令堆叠，且
 ///   每条命令经 [PrivilegedShell.buildCommand] 自我限时（`timeout n sh -c`）。
@@ -104,6 +105,30 @@ class ForegroundEvent {
       'tsMs: $tsMs)';
 }
 
+/// 一次**屏幕状态变化**事件（仅在亮/灭**切换**时发出）。
+///
+/// 复用本监视器每拍已有的屏幕探测（[ScreenOnProbe]，`dumpsys power`），**不**
+/// 新建屏幕检测通路、**不**新增 manifest 权限；仅供自动应用引擎在熄屏时
+/// sleep（还原）、亮屏时 resume（见 `perf_profile_auto_engine.dart`）。
+class ScreenStateEvent {
+  const ScreenStateEvent({required this.screenOn, required this.tsMs});
+
+  /// 是否亮屏（`true` = 亮屏；`false` = 熄屏）。
+  final bool screenOn;
+
+  /// 事件时间（Unix ms，来自注入时钟）。
+  final int tsMs;
+
+  /// 结构化 JSON（证据 / 日志用）。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'screen_on': screenOn,
+        'ts_ms': tsMs,
+      };
+
+  @override
+  String toString() => 'ScreenStateEvent(screenOn: $screenOn, tsMs: $tsMs)';
+}
+
 /// Shizuku 轮询前台应用监视器。
 ///
 /// 生产：`ForegroundWatcher()`（默认经 [PrivilegedShell] + [PerfModule.instance]）。
@@ -180,6 +205,10 @@ class ForegroundWatcher {
   final StreamController<ForegroundEvent> _controller =
       StreamController<ForegroundEvent>.broadcast(sync: true);
 
+  /// 屏幕状态变化事件流控制器（与前台事件解耦；仅切换时发）。
+  final StreamController<ScreenStateEvent> _screenController =
+      StreamController<ScreenStateEvent>.broadcast(sync: true);
+
   Timer? _timer;
   bool _running = false;
   bool _pollerInFlight = false;
@@ -188,6 +217,9 @@ class ForegroundWatcher {
   String? _disabledReason;
   String? _lastPackage;
   bool _hasEmitted = false;
+
+  /// 最近一次成功探测到的屏幕状态（`null` = 尚未探测）；仅切换时发事件。
+  bool? _lastScreenOn;
   int _pollCount = 0;
   int _emitCount = 0;
   int _skippedCount = 0;
@@ -197,6 +229,11 @@ class ForegroundWatcher {
 
   /// 前台变化事件流（广播；订阅即收后续事件，不缓冲）。
   Stream<ForegroundEvent> get events => _controller.stream;
+
+  /// 屏幕状态变化事件流（广播；仅在亮/灭**切换**时发出，订阅即收后续事件）。
+  ///
+  /// 复用本监视器每拍的 [ScreenOnProbe]，**无**新增 manifest 权限 / 检测通路。
+  Stream<ScreenStateEvent> get screenEvents => _screenController.stream;
 
   /// 当前状态。
   ForegroundWatcherStatus get status => _status;
@@ -267,6 +304,7 @@ class ForegroundWatcher {
     _status = ForegroundWatcherStatus.disposed;
     _disabledReason = null;
     if (!_controller.isClosed) await _controller.close();
+    if (!_screenController.isClosed) await _screenController.close();
   }
 
   // ==================== 轮询 ====================
@@ -289,6 +327,8 @@ class ForegroundWatcher {
     try {
       final screenOn = await _probeScreenOnForBudget();
       if (_disposed || !_running) return;
+      // 亮/灭切换经 screenEvents 广播（复用本拍探测，无新通路）。
+      _maybeEmitScreen(screenOn);
       if (!screenOn) {
         _status = ForegroundWatcherStatus.paused;
         _skippedCount++;
@@ -340,6 +380,22 @@ class ForegroundWatcher {
       _disabledReason = ForegroundDisabledReason.shizukuUnavailable;
       debugPrint('[ForegroundWatcher] 连续失败达上限 → 监视器已禁用');
     }
+  }
+
+  /// 屏幕状态变化去重：仅当与上次探测不同时广播一条 [ScreenStateEvent]。
+  ///
+  /// 首个探测结果也会发（含至初始状态的迁移），使订阅方（协调器 → 自动应用
+  /// 引擎）能同步到真实屏幕态；随后持续同态不再发噪音事件。
+  void _maybeEmitScreen(bool screenOn) {
+    if (_disposed || _screenController.isClosed) return;
+    if (_lastScreenOn == screenOn) return;
+    _lastScreenOn = screenOn;
+    _screenController.add(
+      ScreenStateEvent(
+        screenOn: screenOn,
+        tsMs: _clock().millisecondsSinceEpoch,
+      ),
+    );
   }
 
   void _maybeEmit(String? package) {

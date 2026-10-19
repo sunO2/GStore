@@ -333,3 +333,11 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 测试：dashboard **+1**（点击 fast→store 两档案 mode 均更新 + 「已应用「极速」」可见；原「恒禁用占位」测试改为「已接线可用」）；page **+5**（页面级选择器可用应用到全部 / 无 writable 禁用+原因 / null 未探测禁用 / 编辑弹层无 writable 禁用 / 编辑弹层可用）。断言用 `tester.widget<DropdownButton<PerfMode>>(...).onChanged`；页面 tile 摘要含「模式 均衡」等长串，弹层内选值仍用 `find.text('性能').last`。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning = 基线，`grep -cE '^\s+error -'`=0）；3 改动含 2 测试文件单文件分析 No issues；目标两套 **22 passed**；回归 `test/page/perf/ test/page/home/ test/page/settings/perf_profiles_settings_test.dart test/core/perf/` = **806 passed**。硬编码颜色/`log(` grep 门 = none。证据 `.omo/evidence/task-29-mode-ui.txt`（`.omo/` gitignored）。
 - **范围/偏差**：生产 `PerfProfileAutoEngine` 私有于 `PerfMonitorModule`（无 provider），dashboard 不可直达 → 走 store 写入（引擎的输入路径）；未改 module/router/coordinator。设备未验证（Shizuku/root）。todo 7 的「不 import PerfMode」验收被 todo 29 **有意取代**。
+
+## Todo 28 follow-up — 生产屏幕事件接线（gap fix）（2026-10-19）
+- **Gap**：上一提交只加了引擎入口 `onScreenState`，`lib/` 无生产调用点（`grep -rn onScreenState lib/` 仅定义）。
+- **Fix（复用既有屏幕探测、零 manifest 变更）**：`foreground_watcher.dart` 新增 `ScreenStateEvent{screenOn,tsMs}` + `Stream<ScreenStateEvent> get screenEvents`；在既有 `_poll` 的屏幕探测（`_probeScreenOnForBudget`，默认 `dumpsys power`，失败 fail-open=true）后 `_maybeEmitScreen(screenOn)` —— **仅切换时**发（首拍也发以同步初始态，持续同态去重），`dispose()` 关闭控制器。**不新增权限/manifest/原生通路**（复用 `ScreenOnProbe`）。
+- **协调器**：`start()` 在 `watcher.start()` 之前订阅 `watcher.screenEvents` → `unawaited(engine.onScreenState(event.screenOn))`；`stop()` 先取消 `_screenSub` 再 dispose watcher/engine。生命周期/fail-closed/有保证还原语义不变。
+- **坑（测试）**：`_FakeWatcher` 需 override `screenEvents` 暴露自有 sync 广播控制器 + `emitForeground/emitScreen`；`stop()→watcher.dispose()` 若把屏幕控制器也 close，则 stop 后 emit 会抛 `Cannot add new events after calling close` → 假监视器 dispose **不**关闭 `_screens`（保持可 emit）以证明「stop 后无监听者、引擎不再被驱动」。协调器默认 `debounce=400ms`，测试传 `debounce: Duration.zero` 使事件在同一测试帧收敛；用 `_settle()`（多次 `Future.delayed(Duration.zero)`）冲刷 unawaited 引擎收敛。
+- **验证**：`dart analyze lib/` = **0 error**；`flutter test ...{auto_engine,foreground_watcher,coordinator}` = **61 passed**；回归 profile/mode_profiles/store = **67 passed**。证据 `.omo/evidence/task-28-auto-mode.txt`（gitignored）已更新。
+- **范围**：仍**未**改 page/引擎/store/control 文件；只动 watcher + coordinator（计划 Refs）。

@@ -305,6 +305,47 @@ void main() {
     });
   });
 
+  test('屏幕状态切换 → 发 ScreenStateEvent（仅切换时发，复用同一探测）', () {
+    fakeAsync((async) {
+      var screenOn = true;
+      final watcher = _watcher(
+        runner: _FakeRunner(),
+        gateway: _FakeGateway(<String?>['com.a']),
+        screen: () async => screenOn,
+      );
+      final screens = <ScreenStateEvent>[];
+      watcher.screenEvents.listen(screens.add);
+
+      watcher.start();
+      async.flushMicrotasks();
+      // 首拍：亮屏 → 首发一条（协调器据此同步初始态）。
+      expect(screens.map((e) => e.screenOn).toList(), <bool>[true]);
+
+      // 熄屏 → 下一拍探测到 → 发 false。
+      screenOn = false;
+      async.elapse(const Duration(seconds: 5));
+      async.flushMicrotasks();
+      expect(screens.map((e) => e.screenOn).toList(), <bool>[true, false]);
+
+      // 持续熄屏 → 去重不发噪音事件。
+      async.elapse(const Duration(seconds: 10));
+      async.flushMicrotasks();
+      expect(screens.length, 2);
+
+      // 亮屏 → 发 true。
+      screenOn = true;
+      async.elapse(const Duration(seconds: 5));
+      async.flushMicrotasks();
+      expect(
+        screens.map((e) => e.screenOn).toList(),
+        <bool>[true, false, true],
+      );
+
+      unawaited(watcher.dispose());
+      async.flushMicrotasks();
+    });
+  });
+
   test('轮询挂起时控制写不饿死：串行执行 + 顺序正确 + 不堆叠', () {
     fakeAsync((async) {
       final runner = _SerialRunner();

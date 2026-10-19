@@ -10,10 +10,11 @@
 ///   → 探测控制能力（经注入的 [PrivilegedShell]，会话内缓存）
 ///   → 构造引擎（绑定同一 [PerfControlSession]）
 ///   → 构造监视器并订阅其 events → engine.onForegroundPackage(event.package)
+///   → 订阅监视器 screenEvents → engine.onScreenState(event.screenOn)
 ///   → watcher.start()
 ///
 /// stop()
-///   → 取消 events 订阅
+///   → 取消 events / screenEvents 订阅
 ///   → watcher.dispose()（取消轮询定时器）
 ///   → engine.dispose()（取消去抖定时器）
 ///   → session.onModuleDisabled()（**有保证还原**：把会话登记的覆盖项写回原值）
@@ -82,6 +83,7 @@ class PerfProfilesCoordinator {
   ForegroundWatcher? _watcher;
   PerfProfileAutoEngine? _engine;
   StreamSubscription<ForegroundEvent>? _eventsSub;
+  StreamSubscription<ScreenStateEvent>? _screenSub;
   PerfControlCapabilities? _capabilities;
 
   /// 是否已启动（监视器存在即视作运行中）。
@@ -143,6 +145,10 @@ class PerfProfilesCoordinator {
       // 事件处理绝不阻塞监视器轮询；引擎自身串行 + 绝不抛出。
       unawaited(engine.onForegroundPackage(event.package));
     });
+    // 熄屏 → sleep / 亮屏 → resume（复用监视器既有屏幕探测，无 manifest 变更）。
+    _screenSub = watcher.screenEvents.listen((event) {
+      unawaited(engine.onScreenState(event.screenOn));
+    });
     _watcher = watcher;
     _engine = engine;
 
@@ -156,13 +162,16 @@ class PerfProfilesCoordinator {
     final watcher = _watcher;
     final engine = _engine;
     final sub = _eventsSub;
+    final screenSub = _screenSub;
     _watcher = null;
     _engine = null;
     _eventsSub = null;
+    _screenSub = null;
     _capabilities = null;
 
     try {
       if (sub != null) await sub.cancel();
+      if (screenSub != null) await screenSub.cancel();
       await watcher?.dispose();
       engine?.dispose();
     } catch (error) {

@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/perf/foreground_watcher.dart';
 import 'package:gstore/core/perf/perf_control_session.dart';
+import 'package:gstore/core/perf/perf_profile.dart';
 import 'package:gstore/core/perf/perf_profile_store.dart';
 import 'package:gstore/core/perf/perf_profiles_coordinator.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
@@ -33,6 +34,8 @@ class _FakeWatcher extends ForegroundWatcher {
 
   final StreamController<ForegroundEvent> _events =
       StreamController<ForegroundEvent>.broadcast(sync: true);
+  final StreamController<ScreenStateEvent> _screens =
+      StreamController<ScreenStateEvent>.broadcast(sync: true);
 
   bool started = false;
   bool disposed = false;
@@ -40,6 +43,18 @@ class _FakeWatcher extends ForegroundWatcher {
 
   @override
   Stream<ForegroundEvent> get events => _events.stream;
+
+  @override
+  Stream<ScreenStateEvent> get screenEvents => _screens.stream;
+
+  /// 测试驱动：喂入一条前台变化事件。
+  void emitForeground(String? package) => _events.add(
+        ForegroundEvent(package: package, previousPackage: null, tsMs: 0),
+      );
+
+  /// 测试驱动：喂入一条屏幕状态切换事件。
+  void emitScreen(bool screenOn) =>
+      _screens.add(ScreenStateEvent(screenOn: screenOn, tsMs: 0));
 
   @override
   bool get isRunning => started && !disposed;
@@ -60,6 +75,15 @@ class _FakeWatcher extends ForegroundWatcher {
     disposed = true;
     started = false;
     if (!_events.isClosed) await _events.close();
+    // `_screens` 保持打开：测试在 stop() 后仍可调用 emitScreen 以证明订阅已取消
+    // （无监听者 → 引擎不再被驱动）。
+  }
+}
+
+/// 冲刷微任务 / 事件队列，等待协调器内部 unawaited 的引擎收敛完成。
+Future<void> _settle() async {
+  for (var i = 0; i < 8; i++) {
+    await Future<void>.delayed(Duration.zero);
   }
 }
 
@@ -187,6 +211,49 @@ void main() {
       await coordinator2.start();
       expect(second.started, isTrue);
       expect(coordinator2.isRunning, isTrue);
+    });
+
+    test('屏幕事件 → 协调器驱动引擎 onScreenState（熄屏 sleep / 亮屏 resume）',
+        () async {
+      final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+        'com.a': const PerfProfile(package: 'com.a', enabled: true),
+      });
+      final coordinator = PerfProfilesCoordinator(
+        store: store,
+        session: session,
+        shell: shell,
+        tunablesLoader: () async => const TunablesReport(),
+        isGloballyEnabled: () => true,
+        watcherFactory: () => watcher,
+        // 去抖归零，使事件处理在同一测试帧内收敛（聚焦屏幕接线）。
+        debounce: Duration.zero,
+      );
+      await coordinator.start();
+      final engine = coordinator.engine!;
+      expect(engine.isScreenOn, isTrue);
+
+      // 前台 → 应用档案。
+      watcher.emitForeground('com.a');
+      await _settle();
+      expect(engine.appliedPackage, 'com.a');
+
+      // 熄屏 → 协调器经 screenEvents 驱动 engine.onScreenState(false) → sleep 还原。
+      watcher.emitScreen(false);
+      await _settle();
+      expect(engine.isScreenOn, isFalse);
+      expect(engine.appliedPackage, isNull);
+
+      // 亮屏 → 协调器驱动 engine.onScreenState(true) → resume 重应用。
+      watcher.emitScreen(true);
+      await _settle();
+      expect(engine.isScreenOn, isTrue);
+      expect(engine.appliedPackage, 'com.a');
+
+      // stop() 后屏幕事件不再驱动（订阅已取消）。
+      await coordinator.stop();
+      watcher.emitScreen(false);
+      await _settle();
+      expect(engine.isScreenOn, isTrue, reason: 'stop 后不再驱动引擎');
     });
   });
 }
