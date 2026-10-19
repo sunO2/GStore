@@ -15,8 +15,9 @@
 /// 场景模式枚举**（实际接线由 todo 29 完成）。能力经 `PerfCapabilityProbe` 判定：
 /// 无任何可写类别（cpu/gpu/cpuset/thermal/binderLevers）时禁用并显示可见原因。
 ///
-/// **阈值**：卡片色档阈值与 `.omo/evidence/task-2-scene-reference.md` §4 一致
-/// （CPU 85/65、RAM 89/80、温度 48/44/41）；颜色仅取主题令牌
+/// **阈值**：卡片色档阈值集中在 `lib/core/perf/scene_thresholds.dart`
+/// （plan todo 23；出处 `.omo/evidence/task-2-scene-reference.md` §4）；
+/// 颜色仅取主题令牌
 /// （[ColorScheme.error] / [ColorScheme.tertiary] / [ColorScheme.primary]），
 /// **无硬编码颜色 / 字号**（AGENTS.md）。
 library;
@@ -28,34 +29,19 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
+import 'package:gstore/core/perf/scene_thresholds.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/perf/logic.dart';
 import 'package:gstore/page/perf/perf_common.dart';
 import 'package:gstore/page/perf/state.dart';
 
-// ==================== 阈值常量（出处：task-2-scene-reference.md §4） ====================
-
-/// CPU 负载「很高」阈值（Scene `CpuChartView.kt:172`）。
-const double _kCpuVeryHigh = 85;
-
-/// CPU 负载「高」阈值（Scene `CpuChartView.kt:174`）。
-const double _kCpuHigh = 65;
-
-/// RAM 使用率「很高」阈值（Scene `RamChartView.kt:158`）。
-const double _kRamVeryHigh = 89;
-
-/// RAM 使用率「高」阈值（Scene `RamChartView.kt:160`）。
-const double _kRamHigh = 80;
-
-/// 电池温度「最高」阈值（Scene `BatteryView.kt:176`）。
-const double _kTempVeryHigh = 48;
-
-/// 电池温度「很高」阈值（Scene `BatteryView.kt:178`）。
-const double _kTempHigh = 44;
-
-/// 电池温度「高」阈值（Scene `BatteryView.kt:180`）。
-const double _kTempMid = 41;
+// ==================== 阈值常量 ====================
+//
+// Scene 色档 / 统计阈值已集中到 `lib/core/perf/scene_thresholds.dart`（todo 23），
+// 出处：task-2-scene-reference.md §4。此处只消费共享常量 / 档位解析，
+// **不再保留本地字面量**。注意：这些是**颜色档位**阈值，与
+// `perf_alert_settings.dart` 的**告警**阈值语义不同（task-2 §4.5）。
 
 // ==================== 注入点 ====================
 
@@ -265,12 +251,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     final usedPercent = memory?.usedPercent;
     final color = usedPercent == null
         ? null
-        : _loadColor(
-            scheme,
-            usedPercent,
-            high: _kRamHigh,
-            veryHigh: _kRamVeryHigh,
-          );
+        : _loadColor(scheme, sceneRamLoadTier(usedPercent));
     return Card(
       key: const Key('dashboard_card_ram'),
       child: Padding(
@@ -316,12 +297,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     final swapPercent = memory?.swapPercent;
     final color = swapPercent == null
         ? null
-        : _loadColor(
-            scheme,
-            swapPercent,
-            high: _kRamHigh,
-            veryHigh: _kRamVeryHigh,
-          );
+        : _loadColor(scheme, sceneRamLoadTier(swapPercent));
     return Card(
       key: const Key('dashboard_card_swap'),
       child: Padding(
@@ -369,7 +345,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     final usage = cpu?.usagePercent;
     final color = usage == null
         ? null
-        : _loadColor(scheme, usage, high: _kCpuHigh, veryHigh: _kCpuVeryHigh);
+        : _loadColor(scheme, sceneCpuLoadTier(usage));
     return Card(
       key: const Key('dashboard_card_cpu'),
       child: Padding(
@@ -411,8 +387,9 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     final scheme = theme.colorScheme;
     final gpu = state.gpu;
     final busy = gpu?.busyPercent;
-    final color = busy == null ? null : _loadColor(scheme, busy,
-        high: _kCpuHigh, veryHigh: _kCpuVeryHigh);
+    final color = busy == null
+        ? null
+        : _loadColor(scheme, sceneCpuLoadTier(busy));
     return Card(
       key: const Key('dashboard_card_gpu'),
       child: Padding(
@@ -520,8 +497,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
     final capacity = battery?.capacityPercent;
     final color = capacity == null
         ? null
-        : _loadColor(scheme, capacity,
-            high: _kRamHigh, veryHigh: _kRamVeryHigh);
+        : _loadColor(scheme, sceneRamLoadTier(capacity));
     return Card(
       key: const Key('dashboard_card_battery'),
       child: Padding(
@@ -665,24 +641,28 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
 
   // ==================== 辅助 ====================
 
-  /// 负载 / 占用色档：> veryHigh → error；> high → tertiary；否则 primary。
-  Color _loadColor(
-    ColorScheme scheme,
-    double percent, {
-    required double high,
-    required double veryHigh,
-  }) {
-    if (percent > veryHigh) return scheme.error;
-    if (percent > high) return scheme.tertiary;
-    return scheme.primary;
+  /// 负载 / 占用色档 → 主题角色：veryHigh → error；high → tertiary；否则 primary。
+  ///
+  /// 档位边界由 [sceneCpuLoadTier] / [sceneRamLoadTier] 集中给出
+  /// （`lib/core/perf/scene_thresholds.dart`），此处只做档位→主题令牌映射。
+  Color _loadColor(ColorScheme scheme, SceneLoadTier tier) {
+    return switch (tier) {
+      SceneLoadTier.veryHigh => scheme.error,
+      SceneLoadTier.high => scheme.tertiary,
+      SceneLoadTier.normal => scheme.primary,
+    };
   }
 
-  /// 温度色档：≥48 → error；>44 → error；>41 → tertiary；否则 primary。
+  /// 温度色档 → 主题角色：veryHigh / high → error；mid → tertiary；否则 primary。
+  ///
+  /// Scene 的「高」与「最高」两档均取更强的主题角色（error）；档位边界由
+  /// [sceneTempTier] 集中给出（`lib/core/perf/scene_thresholds.dart`）。
   Color _tempColor(ColorScheme scheme, double tempC) {
-    if (tempC >= _kTempVeryHigh) return scheme.error;
-    if (tempC > _kTempHigh) return scheme.error;
-    if (tempC > _kTempMid) return scheme.tertiary;
-    return scheme.primary;
+    return switch (sceneTempTier(tempC)) {
+      SceneTempTier.veryHigh || SceneTempTier.high => scheme.error,
+      SceneTempTier.mid => scheme.tertiary,
+      SceneTempTier.normal => scheme.primary,
+    };
   }
 
   String _percent(double? value) =>
