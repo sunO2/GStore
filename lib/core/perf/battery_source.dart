@@ -2,28 +2,33 @@
 ///
 /// 背景：部分设备 SELinux 拒绝读取
 /// `/sys/class/power_supply/battery/{current_now,voltage_now}`，导致 Rust
-/// `perf.battery`（开销最小的主源）电流 / 电压恒为 null。本文件在其上叠加两个
+/// `perf.battery`（开销最小的主源）电流 / 电压恒为 null。本文件在其上叠加三个
 /// **免权限**兜底源并逐字段合并：
 /// 1. [PerfModule.battery]（sysfs；`source='sysfs'`）；
-/// 2. Android `BatteryManager` 原生通道（`gstore/battery`；
+/// 2. Rust JNI → Kotlin `BatteryChannel.readJson`（`source='rust_jni'`；宿主
+///    缓存 `applicationContext` 后直接 JNI 静态调用，无平台通道往返）；
+/// 3. Android `BatteryManager` 原生通道（`gstore/battery`；
 ///    `source='battery_manager'`，见 Kotlin `BatteryChannel`）；
-/// 3. `dumpsys battery`（经既有 [PrivilegedShell] / Shizuku；
-///    `source='dumpsys'`，仅当 1+2 仍缺电流或电压时才执行）。
+/// 4. `dumpsys battery`（经既有 [PrivilegedShell] / Shizuku；
+///    `source='dumpsys'`，仅当 1+2+3 仍缺电流或电压时才执行）。
 ///
-/// 合并规则：逐字段取**第一个非 null** 值，优先级 `sysfs > battery_manager >
-/// dumpsys`；`present` = 任一源 present；状态优先采用**有整型码**的值；
-/// `sources` 取并集。
+/// 合并规则：逐字段取**第一个非 null** 值，优先级 `sysfs > rust_jni >
+/// battery_manager > dumpsys`；`present` = 任一源 present；状态优先采用**有
+/// 整型码**的值；`sources` 取并集。
 ///
 /// 全部入口**绝不抛出**：异常一律降级为 null / 跳过该源。所有解析与合并函数为
 /// **纯函数**，且 [readBatteryReading] 的读取 seam 可注入，故单测无需真机 /
 /// Shizuku / FFI。
 library;
 
+import 'dart:convert' show jsonDecode;
+
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart'
     show MethodChannel, MissingPluginException, PlatformException;
 
 import 'package:gstore/core/perf/privileged_shell.dart';
+import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
 import 'package:gstore/core/rust/perf/PerfContract.dart' show BatteryReport;
 import 'package:gstore/core/rust/perf/PerfModule.dart' show PerfModule;
 
@@ -199,7 +204,35 @@ BatteryReading batteryReadingFromSysfs(BatteryReport report) => BatteryReading(
 ///
 /// 单位：`voltageMv / 1000`、`currentUa / 1000`（BatteryManager CURRENT_NOW 为
 /// µA，可为负）、`temperatureTenthsC / 10`；`health` 整型码转标签。
-BatteryReading batteryReadingFromBatteryManagerMap(Map<Object?, Object?> map) {
+BatteryReading batteryReadingFromBatteryManagerMap(
+  Map<Object?, Object?> map,
+) =>
+    _batteryReadingFromMap(map, source: 'battery_manager');
+
+/// 把 Rust JNI `battery_read_json` 的 JSON 归一为 [BatteryReading]
+/// （`source='rust_jni'`）。字段键与 Kotlin Map 一致；JSON 非法 / 非对象 →
+/// `null`（**绝不抛出**）。
+BatteryReading? batteryReadingFromRustJniJson(String json) {
+  try {
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return _batteryReadingFromMap(
+      <Object?, Object?>{
+        for (final entry in decoded.entries)
+          entry.key.toString(): entry.value,
+      },
+      source: 'rust_jni',
+    );
+  } catch (error) {
+    debugPrint('[BatterySource] rust_jni JSON 解析失败: $error');
+    return null;
+  }
+}
+
+BatteryReading _batteryReadingFromMap(
+  Map<Object?, Object?> map, {
+  required String source,
+}) {
   final voltageMv = _asInt(map['voltageMv']);
   final currentUa = _asInt(map['currentUa']);
   final temperatureTenthsC = _asInt(map['temperatureTenthsC']);
@@ -222,17 +255,69 @@ BatteryReading batteryReadingFromBatteryManagerMap(Map<Object?, Object?> map) {
     health: healthLabelFromCode(healthCode),
     technology: technology,
     interactive: interactive,
-    sources: const <String>{'battery_manager'},
+    sources: <String>{source},
   );
 }
 
+/// Rust JNI 电池读取 seam（生产：FRB `battery_read_json` /
+/// `battery_power_interactive`）。
+typedef RustBatteryJsonReader = Future<String?> Function();
+typedef RustBatteryInteractiveReader = Future<bool?> Function();
+
+/// Rust JNI → Kotlin `BatteryChannel` 的 Dart 门面。
+///
+/// 生产默认走生成的 FRB 函数（宿主侧再经 JNI 静态调用，无 `gstore/battery`
+/// 平台通道往返）；[readJson] / [readInteractive] 可注入，单测无需 FFI。
+/// 所有入口**绝不抛出**（异常 / 未初始化 → `null`）。
+class RustJniBatteryBridge {
+  RustJniBatteryBridge({
+    RustBatteryJsonReader? readJson,
+    RustBatteryInteractiveReader? readInteractive,
+  })  : _readJson = readJson ?? _defaultReadJson,
+        _readInteractive = readInteractive ?? _defaultReadInteractive;
+
+  final RustBatteryJsonReader _readJson;
+  final RustBatteryInteractiveReader _readInteractive;
+
+  static Future<String?> _defaultReadJson() =>
+      RustLib.instance.api.crateBridgeBatteryReadJson();
+
+  static Future<bool?> _defaultReadInteractive() =>
+      RustLib.instance.api.crateBridgeBatteryPowerInteractive();
+
+  /// 读取一次并解析为 [BatteryReading]（`source='rust_jni'`）。
+  Future<BatteryReading?> read() async {
+    try {
+      final json = await _readJson();
+      if (json == null || json.isEmpty) return null;
+      return batteryReadingFromRustJniJson(json);
+    } catch (error) {
+      debugPrint('[RustJniBatteryBridge] read 失败: $error');
+      return null;
+    }
+  }
+
+  /// 仅读取屏幕交互态；不可用 / 异常 → `null`。
+  Future<bool?> readInteractive() async {
+    try {
+      return await _readInteractive();
+    } catch (error) {
+      debugPrint('[RustJniBatteryBridge] readInteractive 失败: $error');
+      return null;
+    }
+  }
+}
+
 /// `gstore/battery` 通道包装；[read] 捕获 `MissingPluginException` /
-/// `PlatformException` → `null`（绝不抛出）。
+/// `PlatformException` → `null`（绝不抛出）。[readInteractive] 先走 Rust JNI
+/// （免平台通道），不可用时才回退本通道。
 class BatteryManagerChannel {
-  BatteryManagerChannel({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel('gstore/battery');
+  BatteryManagerChannel({MethodChannel? channel, RustJniBatteryBridge? rustBridge})
+      : _channel = channel ?? const MethodChannel('gstore/battery'),
+        _rustBridge = rustBridge ?? RustJniBatteryBridge();
 
   final MethodChannel _channel;
+  final RustJniBatteryBridge _rustBridge;
 
   /// 读取一次；不可用 / 异常 → `null`。
   Future<BatteryReading?> read() async {
@@ -251,12 +336,15 @@ class BatteryManagerChannel {
     }
   }
 
-  /// 仅读取屏幕交互态（Kotlin 侧 `PowerManager.isInteractive`，免权限）；
-  /// 不可用 / 异常 / 字段缺失 → `null`。
+  /// 仅读取屏幕交互态：**先**走 Rust JNI `isInteractive`（免权限、无平台通道
+  /// 往返），不可用 / 字段缺失 → 回退 `gstore/battery` 通道的 `read`。
   ///
   /// 与 [read] 复用同一 `gstore/battery` 通道的 `read` 方法，但**不**构造完整
   /// [BatteryReading]，供前台监视器每拍做廉价屏幕探测（替代 `dumpsys power`）。
   Future<bool?> readInteractive() async {
+    final viaRust = await _rustBridge.readInteractive();
+    if (viaRust != null) return viaRust;
+
     try {
       final map = await _channel.invokeMapMethod<Object?, Object?>('read');
       if (map == null) return null;
@@ -324,15 +412,16 @@ BatteryReading parseDumpsysBattery(String output) {
   );
 }
 
-/// 逐字段合并（优先级 `sysfs > batteryManager > dumpsys`）。
+/// 逐字段合并（优先级 `sysfs > rustJni > batteryManager > dumpsys`）。
 ///
 /// `present` = 任一源 present；`status` 优先采用有整型码的值；`sources` 取并集。
 BatteryReading mergeBatteryReadings({
   BatteryReading? sysfs,
+  BatteryReading? rustJni,
   BatteryReading? batteryManager,
   BatteryReading? dumpsys,
 }) {
-  final ordered = <BatteryReading?>[sysfs, batteryManager, dumpsys];
+  final ordered = <BatteryReading?>[sysfs, rustJni, batteryManager, dumpsys];
 
   final statusCode = _first<int>(ordered.map((r) => r?.statusCode));
   final statusLabel = statusCode != null
@@ -417,10 +506,10 @@ void resetBatteryReadingCache() {
   _batteryReadingInFlight.clear();
 }
 
-/// 读取并合并电池读数：sysfs → BatteryManager → （按需）dumpsys。
+/// 读取并合并电池读数：sysfs → Rust JNI → BatteryManager → （按需）dumpsys。
 ///
 /// 热路径默认 **不** 执行 `dumpsys battery`（[includeDumpsys] 默认 `false`）：
-/// 3s 记录器 / 1s 刷新只走 sysfs + BatteryManager（平台通道，无 shell 进程）。
+/// 3s 记录器 / 1s 刷新只走 sysfs + Rust JNI + BatteryManager（无 shell 进程）。
 ///
 /// 结果按 [includeDumpsys] 分键缓存：[kBatteryReadingCheapTtl]（廉价）/
 /// [kBatteryReadingFullTtl]（完整）。[forceRefresh] 或 TTL 过期时重新采集；
@@ -430,6 +519,7 @@ Future<BatteryReading?> readBatteryReading({
   bool forceRefresh = false,
   Duration? cacheTtl,
   BatterySysfsReader? sysfsReader,
+  RustJniBatteryBridge? rustBridge,
   BatteryManagerChannel? channel,
   BatteryShellRunner? shellRunner,
 }) {
@@ -447,6 +537,7 @@ Future<BatteryReading?> readBatteryReading({
   final future = _readBatteryReadingUncached(
     includeDumpsys: includeDumpsys,
     sysfsReader: sysfsReader,
+    rustBridge: rustBridge,
     channel: channel,
     shellRunner: shellRunner,
   );
@@ -465,6 +556,7 @@ Future<BatteryReading?> readBatteryReading({
 Future<BatteryReading?> _readBatteryReadingUncached({
   required bool includeDumpsys,
   BatterySysfsReader? sysfsReader,
+  RustJniBatteryBridge? rustBridge,
   BatteryManagerChannel? channel,
   BatteryShellRunner? shellRunner,
 }) async {
@@ -476,10 +568,19 @@ Future<BatteryReading?> _readBatteryReadingUncached({
     sysfs = null;
   }
 
+  BatteryReading? rustJni;
+  try {
+    rustJni = await (rustBridge ?? RustJniBatteryBridge()).read();
+  } catch (error) {
+    debugPrint('[BatterySource] rustBridge 异常: $error');
+    rustJni = null;
+  }
+
   final batteryManager = await (channel ?? BatteryManagerChannel()).read();
 
   var merged = mergeBatteryReadings(
     sysfs: sysfs,
+    rustJni: rustJni,
     batteryManager: batteryManager,
   );
 
@@ -498,6 +599,7 @@ Future<BatteryReading?> _readBatteryReadingUncached({
       final dumpsys = parseDumpsysBattery(output);
       merged = mergeBatteryReadings(
         sysfs: sysfs,
+        rustJni: rustJni,
         batteryManager: batteryManager,
         dumpsys: dumpsys,
       );

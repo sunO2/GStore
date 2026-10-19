@@ -221,6 +221,191 @@ void main() {
     });
   });
 
+  group('RustJniBatteryBridge / rust_jni JSON', () {
+    const fullJson = '{"present":true,"level":80,"scale":100,'
+        '"voltageMv":4123,"temperatureTenthsC":329,"status":3,"health":2,'
+        '"technology":"Li-ion","currentUa":-550000,"capacityPercent":80,'
+        '"interactive":true}';
+
+    test('完整 JSON → 字段/单位归一，source=rust_jni', () {
+      final r = batteryReadingFromRustJniJson(fullJson);
+      expect(r, isNotNull);
+      expect(r!.present, isTrue);
+      expect(r.voltageV, 4.123);
+      expect(r.currentMa, -550.0);
+      expect(r.temperatureC, 32.9);
+      expect(r.statusCode, 3);
+      expect(r.statusLabel, 'Discharging');
+      expect(r.health, 'Good');
+      expect(r.technology, 'Li-ion');
+      expect(r.capacityPercent, 80.0);
+      expect(r.interactive, isTrue);
+      expect(r.sources, {'rust_jni'});
+    });
+
+    test('缺失键 / null 字段 → null；present=false', () {
+      final r = batteryReadingFromRustJniJson(
+        '{"present":false,"voltageMv":null,"status":99}',
+      );
+      expect(r, isNotNull);
+      expect(r!.present, isFalse);
+      expect(r.voltageV, isNull);
+      expect(r.currentMa, isNull);
+      expect(r.statusCode, 99);
+      expect(r.statusLabel, 'Unknown');
+      expect(r.interactive, isNull);
+    });
+
+    test('非法 JSON / 非对象 → null（绝不抛出）', () {
+      expect(batteryReadingFromRustJniJson('not-json'), isNull);
+      expect(batteryReadingFromRustJniJson('[]'), isNull);
+      expect(batteryReadingFromRustJniJson('null'), isNull);
+      expect(batteryReadingFromRustJniJson(''), isNull);
+    });
+
+    test('可注入 readJson：read() 解析为 BatteryReading', () async {
+      final bridge = RustJniBatteryBridge(readJson: () async => fullJson);
+      final r = await bridge.read();
+      expect(r, isNotNull);
+      expect(r!.currentMa, -550.0);
+      expect(r.sources, {'rust_jni'});
+    });
+
+    test('readJson 为 null / 抛异常 → read() 返回 null', () async {
+      expect(
+        await RustJniBatteryBridge(readJson: () async => null).read(),
+        isNull,
+      );
+      expect(
+        await RustJniBatteryBridge(
+          readJson: () async => throw StateError('ffi boom'),
+        ).read(),
+        isNull,
+      );
+    });
+
+    test('可注入 readInteractive 透传；异常 → null', () async {
+      expect(
+        await RustJniBatteryBridge(
+          readInteractive: () async => true,
+        ).readInteractive(),
+        isTrue,
+      );
+      expect(
+        await RustJniBatteryBridge(
+          readInteractive: () async => throw StateError('boom'),
+        ).readInteractive(),
+        isNull,
+      );
+    });
+  });
+
+  group('mergeBatteryReadings rust_jni 优先级', () {
+    test('sysfs 缺电流/电压 → rust_jni 补齐且优先于 batteryManager', () {
+      const sysfs = BatteryReading(
+        present: true,
+        capacityPercent: 61.0,
+        sources: {'sysfs'},
+      );
+      const rustJni = BatteryReading(
+        present: true,
+        voltageV: 4.1,
+        currentMa: -410.0,
+        sources: {'rust_jni'},
+      );
+      const bm = BatteryReading(
+        present: true,
+        voltageV: 4.0,
+        currentMa: -400.0,
+        sources: {'battery_manager'},
+      );
+      final merged = mergeBatteryReadings(
+        sysfs: sysfs,
+        rustJni: rustJni,
+        batteryManager: bm,
+      );
+      expect(merged.voltageV, 4.1);
+      expect(merged.currentMa, -410.0);
+      expect(merged.capacityPercent, 61.0);
+      expect(merged.sources, {'sysfs', 'rust_jni', 'battery_manager'});
+    });
+
+    test('sysfs 有值 → 压过 rust_jni', () {
+      final merged = mergeBatteryReadings(
+        sysfs: const BatteryReading(
+          present: true,
+          voltageV: 4.3,
+          currentMa: -900.0,
+          sources: {'sysfs'},
+        ),
+        rustJni: const BatteryReading(
+          present: true,
+          voltageV: 4.0,
+          currentMa: -100.0,
+          sources: {'rust_jni'},
+        ),
+      );
+      expect(merged.voltageV, 4.3);
+      expect(merged.currentMa, -900.0);
+    });
+
+    test('readBatteryReading：注入 rustBridge 补齐并优先 bm，不跑 dumpsys', () async {
+      var shellCalls = 0;
+      final r = await readBatteryReading(
+        sysfsReader: () async =>
+            const BatteryReading(present: true, capacityPercent: 61.0),
+        rustBridge: RustJniBatteryBridge(
+          readJson: () async => '{"present":true,"voltageMv":4100,'
+              '"currentUa":-410000,"interactive":true}',
+        ),
+        channel: _StubChannel(
+          const BatteryReading(
+            present: true,
+            voltageV: 4.0,
+            currentMa: -400.0,
+            interactive: false,
+          ),
+        ),
+        shellRunner: (_) async {
+          shellCalls++;
+          return _fullDumpsys;
+        },
+      );
+      expect(r, isNotNull);
+      expect(r!.voltageV, 4.1);
+      expect(r.currentMa, -410.0);
+      expect(r.capacityPercent, 61.0);
+      expect(r.interactive, isTrue);
+      expect(r.sources, contains('rust_jni'));
+      expect(shellCalls, 0);
+    });
+
+    test('BatteryManagerChannel.readInteractive 优先 Rust，再回退通道', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      const channel = MethodChannel('gstore/battery_interactive_test');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        return <String, Object?>{'interactive': false};
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      final viaRust = await BatteryManagerChannel(
+        channel: channel,
+        rustBridge: RustJniBatteryBridge(readInteractive: () async => true),
+      ).readInteractive();
+      expect(viaRust, isTrue);
+
+      final fallback = await BatteryManagerChannel(
+        channel: channel,
+        rustBridge: RustJniBatteryBridge(readInteractive: () async => null),
+      ).readInteractive();
+      expect(fallback, isFalse);
+    });
+  });
+
   group('BatteryManagerChannel 转换', () {
     test('纯转换 helper：mV→V、µA→mA、十分之一℃→℃、int 码→标签', () {
       final r = batteryReadingFromBatteryManagerMap(<String, Object?>{

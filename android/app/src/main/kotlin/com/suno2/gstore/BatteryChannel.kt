@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 
 /**
  * 免权限电池数据源（`gstore/battery` 通道）。
@@ -51,6 +52,33 @@ object BatteryChannel {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /**
+     * 免权限电池状态（JNI 直调入口）：把 [read] 的结果序列化为 JSON 字符串，
+     * 供 Rust 宿主（`libgstore_host.so`）经 JNI 静态调用，避免 Dart↔平台通道
+     * 往返。字段与 [read] 的 Map 完全一致；`null` 字段不出现（JSON 无此键）。
+     * 任何异常降级为 `{}`，绝不抛出。
+     */
+    @JvmStatic
+    fun readJson(context: Context): String = try {
+        JSONObject(read(context)).toString()
+    } catch (e: Exception) {
+        Log.w(TAG, "readJson 失败: ${e.message}")
+        "{}"
+    }
+
+    /**
+     * 屏幕是否点亮（JNI 直调入口）：`PowerManager.isInteractive`，免权限。
+     * 不可用 / 异常 → `false`。
+     */
+    @JvmStatic
+    fun isInteractive(context: Context): Boolean = try {
+        (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive
+            ?: false
+    } catch (e: Exception) {
+        Log.w(TAG, "isInteractive 失败: ${e.message}")
+        false
     }
 
     /** 读取一次电池状态；失败字段为 `null`。 */

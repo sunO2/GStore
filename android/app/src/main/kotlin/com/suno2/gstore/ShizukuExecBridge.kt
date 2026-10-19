@@ -1,5 +1,6 @@
 package com.suno2.gstore
 
+import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import java.io.BufferedReader
@@ -45,16 +46,35 @@ object ShizukuExecBridge {
     external fun nativeInit()
 
     /**
-     * 应用启动初始化（best-effort）：加载宿主 .so 并回调 Rust 侧 [nativeInit]。
-     * 只执行一次；任何失败（库缺失 / native 未注册）都静默忽略，绝不崩溃。
+     * Rust 宿主导出实现（JNI 名
+     * `Java_com_suno2_gstore_ShizukuExecBridge_nativeInitContext`）。
+     *
+     * 在 **app 线程**把 `applicationContext` 交给 Rust 侧缓存（GlobalRef），
+     * 供 Rust 运行时（任意已 attach 线程）免权限调用 [BatteryChannel] 的静态
+     * 方法；`BatteryChannel` 类引用也在此处解析（app 线程 classloader 正确），
+     * 避免后续从 Rust 线程 `find_class`。
      */
     @JvmStatic
-    fun ensureInit() {
+    external fun nativeInitContext(context: Context)
+
+    /**
+     * 应用启动初始化（best-effort）：加载宿主 .so 并回调 Rust 侧 [nativeInit]，
+     * 随后把 `applicationContext` 交给 Rust（[nativeInitContext]，供电池 JNI
+     * 数据源使用）。
+     *
+     * 只执行一次；任何失败（库缺失 / native 未注册 / context 传递失败）都静默
+     * 忽略，绝不崩溃。
+     */
+    @JvmStatic
+    fun ensureInit(context: Context) {
         if (initialized.compareAndSet(false, true)) {
             runCatching { System.loadLibrary("gstore_host") }
                 .onFailure { Log.w(TAG, "loadLibrary(gstore_host) 失败（忽略）: ${it.message}") }
             runCatching { nativeInit() }
                 .onFailure { Log.w(TAG, "nativeInit 失败（忽略）: ${it.message}") }
+            // 电池 JNI 数据源：缓存 applicationContext + BatteryChannel 类引用。
+            runCatching { nativeInitContext(context.applicationContext) }
+                .onFailure { Log.w(TAG, "nativeInitContext 失败（忽略）: ${it.message}") }
         }
     }
 
