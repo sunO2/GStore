@@ -15,6 +15,19 @@
 ///   `null` 关闭自动停止。
 /// * **可观测**：[FpsSessionRecorder] 是 [ChangeNotifier]，`start` / `stop` /
 ///   每拍采样后通知监听者，UI 据此实时刷新时长 / 当前 FPS / 样本数。
+///
+/// ## Scene-parity 环境采样（todo 15）
+///
+/// 除帧率外，每拍可再采样一组环境量并随会话落盘（见 [FpsEnvironmentSample]）：
+/// * [temperatures]：逐拍电池温度（单位 **℃**；仅过滤非有限值，保留负值）；
+/// * [avgPower]：`voltage_v × current_ma / 1000` 的逐拍均值（单位 **W**；仅当某
+///   拍同时具备有限电压与电流才计入该拍，符号保留，无样本为 `0`）；
+/// * [viewSize]：逻辑像素尺寸串（如 `'1080.0x2340.0'`；取最近一次非空值）；
+/// * [mode]：生效模式标签（**自由字符串**，最近一次非空值；缺省空串）。
+///
+/// 环境采样器 [environmentSampler] 可注入；传 `null`（默认）表示不采样，上述字段
+/// 保持安全默认（空列表 / `0` / 空串）。环境采样异常 / 返回 `null` / 含非有限值
+/// 与本拍帧率一致的**软失败**语义：跳过该部分，不中断录制。
 library;
 
 import 'dart:async';
@@ -35,6 +48,42 @@ typedef RecorderClock = DateTime Function();
 /// 会话 id 工厂（默认由 [FpsSession.startMs] 派生）。
 typedef FpsSessionIdFactory = String Function(int startMs);
 
+/// 单拍环境采样快照（温度 / 电压 / 电流 / 视图尺寸 / 模式标签）。
+///
+/// 各字段可空：`null`（或无数据的感测项）在录制器内被跳过，不污染已有样本。
+class FpsEnvironmentSample {
+  const FpsEnvironmentSample({
+    this.temperatureC,
+    this.voltageV,
+    this.currentMa,
+    this.viewSize,
+    this.mode,
+  });
+
+  /// 电池温度（℃）；`null` = 本拍无数据。
+  final double? temperatureC;
+
+  /// 电池电压（V）；`null` = 本拍无数据。
+  final double? voltageV;
+
+  /// 电池电流（mA）；`null` = 本拍无数据。
+  final double? currentMa;
+
+  /// 视图尺寸（逻辑像素，如 `'1080.0x2340.0'`）；`null` / 空串 = 无数据。
+  final String? viewSize;
+
+  /// 生效模式标签（自由字符串）；`null` / 空串 = 无数据。
+  final String? mode;
+
+  @override
+  String toString() => 'FpsEnvironmentSample(temp: $temperatureC, '
+      'voltage: $voltageV, current: $currentMa, viewSize: $viewSize, '
+      'mode: $mode)';
+}
+
+/// 环境采样器：返回本拍环境快照；无数据返回 `null`。
+typedef FpsEnvironmentSampler = Future<FpsEnvironmentSample?> Function();
+
 /// 默认会话标签。
 const String kFpsSessionDefaultLabel = '系统 FPS 会话';
 
@@ -48,12 +97,14 @@ const Duration kFpsSessionDefaultMaxDuration = Duration(minutes: 30);
 class FpsSessionRecorder extends ChangeNotifier {
   FpsSessionRecorder({
     FpsSampler? sampler,
+    FpsEnvironmentSampler? environmentSampler,
     required FpsSessionStore store,
     RecorderClock? clock,
     this.interval = kFpsSessionDefaultInterval,
     this.maxDuration = kFpsSessionDefaultMaxDuration,
     FpsSessionIdFactory? idFactory,
   })  : _sampler = sampler ?? _defaultSampler,
+        _environmentSampler = environmentSampler,
         _store = store,
         _clock = clock ?? DateTime.now,
         _idFactory = idFactory ?? _defaultIdFactory;
@@ -65,6 +116,7 @@ class FpsSessionRecorder extends ChangeNotifier {
   final Duration? maxDuration;
 
   final FpsSampler _sampler;
+  final FpsEnvironmentSampler? _environmentSampler;
   final FpsSessionStore _store;
   final RecorderClock _clock;
   final FpsSessionIdFactory _idFactory;
@@ -93,6 +145,10 @@ class FpsSessionRecorder extends ChangeNotifier {
   String? _source;
   List<double> _samples = <double>[];
   double? _currentFps;
+  List<double> _temperatures = <double>[];
+  List<double> _powerSamples = <double>[];
+  String _viewSize = '';
+  String _mode = '';
 
   /// 是否正在录制。
   bool get isRecording => _recording;
@@ -116,6 +172,25 @@ class FpsSessionRecorder extends ChangeNotifier {
   /// 当前会话样本的只读副本。
   List<double> get samples => List<double>.unmodifiable(_samples);
 
+  /// 已累积的逐拍温度样本（℃）只读副本。
+  List<double> get temperatures => List<double>.unmodifiable(_temperatures);
+
+  /// 平均功耗（W）：逐拍 `voltage_v × current_ma / 1000` 的均值；无样本为 `0`。
+  double get avgPower {
+    if (_powerSamples.isEmpty) return 0;
+    var sum = 0.0;
+    for (final power in _powerSamples) {
+      sum += power;
+    }
+    return sum / _powerSamples.length;
+  }
+
+  /// 最近一次非空视图尺寸（逻辑像素串）；无数据为 `''`。
+  String get viewSize => _viewSize;
+
+  /// 最近一次非空模式标签；无数据为 `''`。
+  String get mode => _mode;
+
   /// 当前会话标签。
   String get label => _label;
 
@@ -136,6 +211,10 @@ class FpsSessionRecorder extends ChangeNotifier {
     _source = source;
     _samples = <double>[];
     _currentFps = null;
+    _temperatures = <double>[];
+    _powerSamples = <double>[];
+    _viewSize = '';
+    _mode = '';
     _timer = Timer.periodic(interval, (_) => _onTick());
     notifyListeners();
   }
@@ -157,9 +236,17 @@ class FpsSessionRecorder extends ChangeNotifier {
       endMs: endMs,
       samples: _samples,
       source: _source,
+      avgPower: avgPower,
+      viewSize: _viewSize,
+      mode: _mode,
+      temperatures: _temperatures,
     );
     _samples = <double>[];
     _currentFps = null;
+    _temperatures = <double>[];
+    _powerSamples = <double>[];
+    _viewSize = '';
+    _mode = '';
     try {
       await _store.append(session);
     } catch (error) {
@@ -178,6 +265,10 @@ class FpsSessionRecorder extends ChangeNotifier {
     _timer = null;
     _samples = <double>[];
     _currentFps = null;
+    _temperatures = <double>[];
+    _powerSamples = <double>[];
+    _viewSize = '';
+    _mode = '';
     notifyListeners();
   }
 
@@ -200,13 +291,63 @@ class FpsSessionRecorder extends ChangeNotifier {
       debugPrint('[FpsSessionRecorder] 采样异常（跳过本拍）: $error');
       value = null;
     }
+    final environment = await _sampleEnvironment();
     if (_disposed || !_recording) return;
+    var changed = false;
     if (value != null && value.isFinite && value >= 0) {
       _samples.add(value);
       _currentFps = value;
-      notifyListeners();
+      changed = true;
     }
+    if (_recordEnvironment(environment)) changed = true;
+    if (changed) notifyListeners();
     _maybeAutoStop();
+  }
+
+  /// 采样一次环境快照；未注入采样器或异常 / 无数据时返回 `null`（跳过本拍）。
+  Future<FpsEnvironmentSample?> _sampleEnvironment() async {
+    final sampler = _environmentSampler;
+    if (sampler == null) return null;
+    try {
+      return await sampler();
+    } catch (error) {
+      debugPrint('[FpsSessionRecorder] 环境采样异常（跳过本拍）: $error');
+      return null;
+    }
+  }
+
+  /// 归并本拍环境快照（过滤非有限值 / 空串）；返回是否有任何字段更新。
+  bool _recordEnvironment(FpsEnvironmentSample? sample) {
+    if (sample == null) return false;
+    var changed = false;
+    final temperature = sample.temperatureC;
+    if (temperature != null && temperature.isFinite) {
+      _temperatures.add(temperature);
+      changed = true;
+    }
+    final voltage = sample.voltageV;
+    final current = sample.currentMa;
+    if (voltage != null &&
+        current != null &&
+        voltage.isFinite &&
+        current.isFinite) {
+      final power = voltage * current / 1000;
+      if (power.isFinite) {
+        _powerSamples.add(power);
+        changed = true;
+      }
+    }
+    final viewSize = sample.viewSize;
+    if (viewSize != null && viewSize.isNotEmpty && viewSize != _viewSize) {
+      _viewSize = viewSize;
+      changed = true;
+    }
+    final mode = sample.mode;
+    if (mode != null && mode.isNotEmpty && mode != _mode) {
+      _mode = mode;
+      changed = true;
+    }
+    return changed;
   }
 
   void _maybeAutoStop() {

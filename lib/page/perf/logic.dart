@@ -14,6 +14,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -165,10 +166,14 @@ final fpsSessionStoreProvider = Provider<FpsSessionStore>(
   (ref) => const SharedPrefsFpsSessionStore(),
 );
 
-/// FPS 会话录制器（生产接线系统帧率采样；随 ProviderScope 释放取消定时器）。
+/// FPS 会话录制器（生产接线系统帧率 + 环境采样；随 ProviderScope 释放取消定时器）。
 ///
-/// sampler 复用 [perfSystemFpsServiceProvider]（**不新建数据通路**）：每拍取
-/// `SystemFpsSample.fps`；失败 / 无数据返回 `null`（录制器跳过该拍）。
+/// * `sampler` 复用 [perfSystemFpsServiceProvider]（**不新建数据通路**）：每拍取
+///   `SystemFpsSample.fps`；失败 / 无数据返回 `null`（录制器跳过该拍）。
+/// * `environmentSampler`（todo 15）复用 [perfModuleProvider] 的
+///   `battery()` / `thermal()` 取温度 / 电压 / 电流；`viewSize` 取主视图逻辑像素
+///   （[MediaQuery.size] 等价，见 `_logicalViewSize`）；`mode` 待生效模式运行时
+///   接入前为空串（缺省安全值）。模块不可用 / 任一采样失败均软失败（跳过该拍）。
 final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
   final recorder = FpsSessionRecorder(
     store: ref.watch(fpsSessionStoreProvider),
@@ -181,10 +186,69 @@ final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
         return null;
       }
     },
+    environmentSampler: () async {
+      double? temperatureC;
+      double? voltageV;
+      double? currentMa;
+      try {
+        final battery = await ref.read(perfModuleProvider).battery();
+        if (battery.present) {
+          temperatureC = battery.temperatureC;
+          voltageV = battery.voltageV;
+          currentMa = battery.currentMa;
+        }
+      } catch (error) {
+        debugPrint('[PerfMonitor] FPS 会话电池采样失败（跳过）: $error');
+      }
+      // 电池无温度时回退到热区最高温（更接近「整机温度」语义）。
+      if (temperatureC == null) {
+        try {
+          temperatureC =
+              (await ref.read(perfModuleProvider).thermal()).maxTempC;
+        } catch (error) {
+          debugPrint('[PerfMonitor] FPS 会话温度采样失败（跳过）: $error');
+        }
+      }
+      return FpsEnvironmentSample(
+        temperatureC: temperatureC,
+        voltageV: voltageV,
+        currentMa: currentMa,
+        viewSize: _logicalViewSize(),
+        // 生效模式标签（自由字符串）：模式运行时接入前保持空串（缺省安全值）。
+        mode: '',
+      );
+    },
   );
   ref.onDispose(recorder.dispose);
   return recorder;
 });
+
+/// 主视图逻辑像素尺寸串（`MediaQuery.size` 等价，如 `'1080.0x2340.0'`）。
+///
+/// 录制器为纯 Dart 无法读取 `MediaQuery`，故在接线层经
+/// [WidgetsBinding.instance].platformDispatcher 主视图按
+/// `物理尺寸 / devicePixelRatio` 换算（逻辑像素即 `MediaQuery.size` 口径）。
+/// 无视图 / 非法比例 / 非法尺寸时返回 `null`（录制器降级为空串），绝不抛出。
+String? _logicalViewSize() {
+  try {
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    if (views.isEmpty) return null;
+    final view = views.first;
+    final ratio = view.devicePixelRatio;
+    if (!ratio.isFinite || ratio <= 0) return null;
+    final size = view.physicalSize / ratio;
+    if (!size.width.isFinite ||
+        !size.height.isFinite ||
+        size.width <= 0 ||
+        size.height <= 0) {
+      return null;
+    }
+    return '${size.width}x${size.height}';
+  } catch (error) {
+    debugPrint('[PerfMonitor] 读取视图尺寸失败（跳过）: $error');
+    return null;
+  }
+}
 
 /// 自动导出设置的加载 / 保存控制器。
 class PerfAutoExportSettingsNotifier

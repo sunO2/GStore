@@ -250,4 +250,180 @@ void main() {
       expect(calls, 1);
     });
   });
+
+  test('记录环境采样：温度序列 / avgPower 均值 / viewSize / mode', () {
+    fakeAsync((async) {
+      final clock = _Clock();
+      final store = InMemoryFpsSessionStore();
+      final sequence = <FpsEnvironmentSample>[
+        const FpsEnvironmentSample(
+          temperatureC: 40,
+          voltageV: 4.0,
+          currentMa: 1000,
+          viewSize: '1080.0x2340.0',
+          mode: '均衡',
+        ),
+        const FpsEnvironmentSample(
+          temperatureC: 42,
+          voltageV: 4.2,
+          currentMa: 500,
+        ),
+        const FpsEnvironmentSample(
+          temperatureC: 44,
+          voltageV: 3.8,
+          currentMa: 2000,
+        ),
+      ];
+      var index = 0;
+      final recorder = FpsSessionRecorder(
+        store: store,
+        clock: clock.now,
+        sampler: () async => 60,
+        environmentSampler: () async =>
+            index < sequence.length ? sequence[index++] : null,
+        maxDuration: null,
+      );
+
+      recorder.start();
+      for (var i = 0; i < sequence.length; i++) {
+        clock.advance(1000);
+        async.elapse(const Duration(seconds: 1));
+        async.flushMicrotasks();
+      }
+
+      expect(recorder.temperatures, <double>[40, 42, 44]);
+      // 逐拍功率：4.0 / 2.1 / 7.6 W → 均值。
+      expect(recorder.avgPower, closeTo((4.0 + 2.1 + 7.6) / 3, 1e-9));
+      expect(recorder.viewSize, '1080.0x2340.0');
+      expect(recorder.mode, '均衡');
+
+      FpsSession? saved;
+      recorder.stop().then((value) => saved = value);
+      async.flushMicrotasks();
+
+      expect(saved, isNotNull);
+      expect(saved!.temperatures, <double>[40, 42, 44]);
+      expect(saved!.avgPower, closeTo((4.0 + 2.1 + 7.6) / 3, 1e-9));
+      expect(saved!.viewSize, '1080.0x2340.0');
+      expect(saved!.mode, '均衡');
+      expect(saved!.sampleCount, 3);
+
+      recorder.dispose();
+    });
+  });
+
+  test('跳过非法环境样本（NaN / Infinity / 空串），保留负温度', () {
+    fakeAsync((async) {
+      final clock = _Clock();
+      final sequence = <FpsEnvironmentSample>[
+        const FpsEnvironmentSample(
+          temperatureC: double.nan,
+          voltageV: 4.0,
+          currentMa: double.nan,
+          viewSize: '',
+          mode: '',
+        ),
+        const FpsEnvironmentSample(
+          temperatureC: double.infinity,
+          voltageV: double.nan,
+          currentMa: 100,
+        ),
+        const FpsEnvironmentSample(
+          temperatureC: -5,
+          voltageV: 4.0,
+          currentMa: 100,
+        ),
+      ];
+      var index = 0;
+      final recorder = FpsSessionRecorder(
+        store: InMemoryFpsSessionStore(),
+        clock: clock.now,
+        sampler: () async => 60,
+        environmentSampler: () async =>
+            index < sequence.length ? sequence[index++] : null,
+        maxDuration: null,
+      );
+
+      recorder.start();
+      for (var i = 0; i < sequence.length; i++) {
+        clock.advance(1000);
+        async.elapse(const Duration(seconds: 1));
+        async.flushMicrotasks();
+      }
+
+      // 仅第 3 拍温度有限（负值保留）；仅第 3 拍电压 + 电流同时有限。
+      expect(recorder.temperatures, <double>[-5]);
+      expect(recorder.avgPower, closeTo(0.4, 1e-9));
+      expect(recorder.viewSize, '');
+      expect(recorder.mode, '');
+
+      recorder.dispose();
+    });
+  });
+
+  test('环境采样异常被跳过，不中断录制（帧率无效时仍采环境）', () {
+    fakeAsync((async) {
+      final clock = _Clock();
+      var envCalls = 0;
+      final recorder = FpsSessionRecorder(
+        store: InMemoryFpsSessionStore(),
+        clock: clock.now,
+        sampler: () async => null,
+        environmentSampler: () async {
+          envCalls++;
+          if (envCalls == 1) throw StateError('boom');
+          return const FpsEnvironmentSample(temperatureC: 41);
+        },
+        maxDuration: null,
+      );
+
+      recorder.start();
+      clock.advance(1000);
+      async.elapse(const Duration(seconds: 1));
+      async.flushMicrotasks();
+      expect(recorder.temperatures, isEmpty);
+
+      clock.advance(1000);
+      async.elapse(const Duration(seconds: 1));
+      async.flushMicrotasks();
+      expect(recorder.temperatures, <double>[41]);
+      expect(recorder.sampleCount, 0);
+      expect(recorder.isRecording, isTrue);
+
+      recorder.dispose();
+    });
+  });
+
+  test('未注入环境采样器：环境字段保持安全默认', () {
+    fakeAsync((async) {
+      final clock = _Clock();
+      final store = InMemoryFpsSessionStore();
+      final recorder = FpsSessionRecorder(
+        store: store,
+        clock: clock.now,
+        sampler: () async => 60,
+        maxDuration: null,
+      );
+
+      recorder.start();
+      clock.advance(1000);
+      async.elapse(const Duration(seconds: 1));
+      async.flushMicrotasks();
+
+      expect(recorder.temperatures, isEmpty);
+      expect(recorder.avgPower, 0);
+      expect(recorder.viewSize, '');
+      expect(recorder.mode, '');
+
+      FpsSession? saved;
+      recorder.stop().then((value) => saved = value);
+      async.flushMicrotasks();
+      expect(saved!.temperatures, isEmpty);
+      expect(saved!.avgPower, 0);
+      expect(saved!.viewSize, '');
+      expect(saved!.mode, '');
+
+      recorder.dispose();
+    });
+  });
 }

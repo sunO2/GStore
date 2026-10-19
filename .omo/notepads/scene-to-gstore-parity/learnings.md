@@ -212,3 +212,25 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - `avgPower` 两序列**长度不等取较短者**逐位配对；任一维非有限 → 该对跳过。仅 `1000`/`0` 为数值字面量。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning，= 基线）；`flutter test` 新测 `fps_analysis_test.dart` = **17 passed**，加 fps_session/scene_thresholds 回归共 **37 passed**。证据 `.omo/evidence/task-16-analysis.txt`。
 - 并发：**只新增文件**（+ append-only 证据/notepad），提交用 `flock /tmp/opencode/gstore.git.lock` + **pathspec 只 stage 本 todo 文件**，不扫他人 staged 改动。
+
+## Todo 20 — 耗电统计 UI（battery stats page, 2026-10-19）
+- 新增 `lib/page/perf/battery_stats_page.dart`（`BatteryStatsPage`，StatefulWidget）+ `test/core/router/battery_stats_route_test.dart`(2) + `test/page/perf/battery_stats_page_test.dart`(4)。路由：`AppRoute.batteryStats="/GStore/batteryStats"`（routers.dart，紧跟 perfProfiles）+ GoRoute（app_router.dart）+ `page/page.dart` export。**未碰他人文件**（并发中他人正改 main.dart(todo19)/fps_session_recorder.dart/logic.dart）。
+- **复用 todo-18 store**（构造函数注入 `BatteryHistoryStore?`，生产默认 `SharedPrefsBatteryHistoryStore`；测试注 `InMemoryBatteryHistoryStore` 避 `shared_preferences` 通道）。**无第二 store/引擎**。
+- **按应用** = 逐字复用 `aggregateAppPower`（`battery_history.dart`，Scene `power8` SQL 口径）。**按时间** = 页内纯函数 `_summarizeSessions`：时长=`max(time)-min(time)`；温度排除 Scene 默认 -1（`temperature<0`）；**估算 mAh = 对有效功耗样本梯形积分 ∫ current(mA) dt(h)**（派生展示量，非 Scene 表字段；功率单位仍 unverified）。
+- 组件：`AppSegmentedButton<_StatsMode>`（按时间/按应用）+ `perfMetric`/`perfSectionHeader`（perf_common）；空状态 `battery_stats_empty` + 刷新动作；清空走 `AppDialogs.showConfirmSheet(isDangerous:true)`；loading `AppLoading`。颜色/字号全走 Theme 令牌。
+- **测试坑**：初始 seed 里两个会话电流区间都取 100→200，导致两卡都渲染 `150 mAh`，`find.text('150 mAh')` 命中 2 个 → 把旧会话改成 100→300（200 mAh）使断言唯一。泵帧用循环 `pump(30ms)`（AppLoading 无限动画，勿 pumpAndSettle）。
+- 验证：`dart analyze lib/` = **0 error**（724 存量 info/warning；唯一新增式 info 为 app_router.dart:111 既有 prefer_const_constructors）；`flutter test test/core/router/ test/page/perf/` = **97 passed**（含新 6）。证据 `.omo/evidence/task-20-battery-stats.txt`（`.omo/` gitignored，不提交，循惯例）。
+- 并发坑（同 todo 4/11/14）：LSP 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧 error，且收尾时 `main.dart` 报 `_startBatteryHistoryRecorder` undefined（另一 worker todo 19 进行中）——**均非本 todo**，提交用 `flock` + pathspec 只 stage 本 todo 6 个文件。
+
+## Todo 15 — FpsSessionRecorder 采样 temp/power/size/mode（2026-10-19）
+- `lib/core/perf/fps_session_recorder.dart`：新增可注入 **环境采样 seam**（帧率 `sampler` 保持不动）：
+  - `class FpsEnvironmentSample`（可空字段 temperatureC/voltageV/currentMa/viewSize/mode）+ `typedef FpsEnvironmentSampler`；ctor 增 `environmentSampler`（默认 `null` = 不采样 → 安全默认）。
+  - 新 getter `temperatures`/`avgPower`/`viewSize`/`mode`；`stop()` 把四者经 `FpsSession.fromRecording(avgPower/viewSize/mode/temperatures:)` 落盘（todo 14 定好的签名，未改模型）。start/stop/cancel 均重置。**1s 间隔 / 30min 自动停 / 幂等 / 软失败全保留**。
+  - **单位（已记录）**：temperatures=**℃**（仅滤非有限，**保留负值**）；avgPower=**W**=`voltage_v×current_ma/1000` 逐拍均值（**仅当电压+电流同时有限**才计该拍，符号保留，无样本 0）；viewSize=**逻辑像素**串 `'1080.0x2340.0'`（取最近非空）；mode=自由字符串（最近非空，缺省空串）。
+  - 语义：**每拍独立采环境**（帧率 null/非法仍采）；env sampler 抛异常 → 跳过该拍环境不中断；返回 null/含 NaN/Inf → 跳过相应项。**无 `PerfMode` 引用**。
+- `lib/page/perf/logic.dart`：`fpsSessionRecorderProvider` 注入 `environmentSampler` —— `perfModuleProvider.battery()`（present 时取 temperatureC/voltageV/currentMa，失败软降级）、温度 null 时回退 `thermal().maxTempC`；`viewSize` 经新私有 `_logicalViewSize()`；`mode: ''`。新增 `import 'package:flutter/widgets.dart' show WidgetsBinding;`。
+  - **viewSize 取法（计划要求「记录选择」）**：录制器纯 Dart 读不到 `MediaQuery` → 接线层用 `WidgetsBinding.instance.platformDispatcher.views.first` 的 `physicalSize / devicePixelRatio`（= 逻辑像素，`MediaQuery.size` 的规范构成）；无视图/非法值 → null → 降级空串，绝不抛。
+  - **mode 取法**：GStore 尚无「当前生效 profile 标签」运行时（每应用 profile 由前台驱动、4 档运行时在 todo 24/29）→ 缺失即空串；seam 收自由串，todo 29 可零改 recorder 接入。
+- 测试 `test/core/perf/fps_session_recorder_test.dart`：**+4**（共 11 passed）——① 记录温度序列/avgPower 均值/viewSize/mode 并落盘；② 跳过 NaN/Inf/空串、保留负温度、仅电压+电流同时有限才计功率；③ env 抛异常跳过且帧率无效时仍采环境；④ 未注入 env sampler → 默认值。
+- 验证：`dart analyze lib/` = **0 error**（724 存量 warning/info，+1 系并发他人改动）；两改动文件单文件分析 **No issues**；recorder 测试 **11 passed**；回归 `perf_fps_session_test` + `fps_session_model_test` = **14 passed**。证据 `.omo/evidence/task-15-recorder.txt`（.omo/evidence 被 .gitignore 忽略，未提交；learnings.md 已跟踪，随本 todo 提交）。
+- 并发：仅动本 todo 的 3 个文件；提交用 `flock` + **pathspec**（`git add -- <3 files>` + `git commit -- <files>`）避免扫入他人 staged（`lib/main.dart`/`battery_history_recorder*` 等）。LSP 仍报 `lib/core/rust/generated/*` 陈旧错误 → CLI `dart analyze` = 0 error，忽略。

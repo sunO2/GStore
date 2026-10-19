@@ -21,6 +21,7 @@ import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/perf/battery_history_recorder.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/service/proxy_connect_controller.dart';
@@ -161,6 +162,26 @@ Future<void> _openProxyPageFromTileRequest() async {
   });
 }
 
+/// 启动电池/功耗历史采样器（Scene `power8.records` 等价，todo 19）。
+///
+/// 单例 [batteryHistoryRecorder] 在 App 生命周期内按 Scene 节拍（1s 初始延迟 +
+/// 3s 周期）采样；门控（亮屏、非充电/满电、数值完整）与静默语义见
+/// `battery_history_recorder.dart`。**manifest 决策**：本记录器在 Flutter 进程内
+/// 运行、不新增任何前台服务 / 权限 / 组件，故 **无需 AndroidManifest 变更**
+/// （电池经既有 Rust `PerfModule`；屏幕 / 前台经既有 Shizuku 通道）。启动失败仅
+/// 记录日志，绝不崩溃 App。
+void _startBatteryHistoryRecorder() {
+  try {
+    batteryHistoryRecorder.start();
+    appLog.info('电池历史采样器已启动（session=${batteryHistoryRecorder.sessionId}）');
+  } catch (e, st) {
+    appLog.error('电池历史采样器启动失败（已忽略，不影响启动）', data: {
+      'error': e.toString(),
+      'stack': st.toString(),
+    });
+  }
+}
+
 /// llm 大体积 arm64 模块的安装确认处理（[ModuleInstallPolicy.confirm]）。
 ///
 /// 经统一底部弹层 [AppDialogs.showConfirmSheet] 呈现（GStore 设计规范：
@@ -268,6 +289,12 @@ main() async {
   //（_initModuleManager 预置禁用）需要按持久化开关读配置。
   await ConfigInitializer.initialize();
   await registerService();
+
+  // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：App 启动即起表，
+  // 1s 初始延迟 + 3s 周期，仅亮屏且非充电/满电时落库（详见 recorder 文档）。
+  // best-effort：权限 / Shizuku 不可用 / 平台通道缺失一律降级为静默 no-op，
+  // 绝不阻塞或崩溃启动。
+  _startBatteryHistoryRecorder();
 
   // 系统"管理空间"入口（ManageSpaceActivity）：Android 系统设置 →
   // 应用 → GStore → 存储 → 管理空间。中转 Activity 会复用 MainActivity
