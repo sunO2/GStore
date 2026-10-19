@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/perf/perf_overlay_controller.dart';
 import 'package:gstore/core/perf/perf_target_store.dart';
 import 'package:gstore/core/perf/third_party_perf_service.dart';
-import 'package:gstore/page/settings/settings_page.dart';
+import 'package:gstore/page/perf/perf_overlay_tile.dart';
 
 /// 已安装应用来源假实现：直接返回注入列表，避免真实 `installed_apps` 通道
 /// 在 widget 测试无宿主时永久挂起。

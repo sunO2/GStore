@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
 /// pm 命令成功判定：输出以 "Success" 开头（pm install/uninstall/clear/disable 等）
@@ -48,6 +49,13 @@ class InstallManager implements IInstallService {
 
   ShizukuApi _shizukuApi = ShizukuApi();
 
+  /// 执行特权 shell 命令的底层 runner（默认走 Rust 统一门面 [rustShizukuRunner]）。
+  ///
+  /// 与旧 `_shizukuApi.runCommand` 的可替身性对应：测试可经 [commandRunnerForTest]
+  /// 注入假件，脱离 Rust / 真机。
+  static Future<String?> Function(String command) _commandRunner =
+      rustShizukuRunner;
+
   /// Shizuku 是否已运行（Binder 连接）
   bool _binderRunning = false;
 
@@ -63,6 +71,13 @@ class InstallManager implements IInstallService {
   /// 测试用：替换 ShizukuApi 实例
   @visibleForTesting
   set shizukuApiForTest(ShizukuApi api) => _shizukuApi = api;
+
+  /// 测试用：替换底层命令 runner（默认 [rustShizukuRunner]）
+  @visibleForTesting
+  static set commandRunnerForTest(
+    Future<String?> Function(String command) runner,
+  ) =>
+      _commandRunner = runner;
 
   /// 测试用：直接注入 Shizuku 状态（跳过真实检测）
   @visibleForTesting
@@ -85,6 +100,7 @@ class InstallManager implements IInstallService {
   @visibleForTesting
   static void resetForTest() {
     _instance = null;
+    _commandRunner = rustShizukuRunner;
   }
 
   /// 当前是否视为 Android 平台
@@ -197,7 +213,7 @@ class InstallManager implements IInstallService {
       // 显示加载框，避免 Shizuku 暂存+安装期间界面无反馈（finally 必 dismiss）
       AppDialogs.showLoading(message: '正在通过 Shizuku 安装...');
       try {
-        final result = await _shizukuApi.runCommand(_stageAndInstallCommand(filePath));
+        final result = await _commandRunner(_stageAndInstallCommand(filePath));
         if (isPmSuccess(result)) {
           appLog.info('InstallManager: Shizuku 静默安装成功');
           return (true, InstallMethod.shizuku);
@@ -293,7 +309,7 @@ class InstallManager implements IInstallService {
       }
     }
     try {
-      final result = await _shizukuApi.runCommand(command);
+      final result = await _commandRunner(command);
       final ok = checkPmSuccess ? isPmSuccess(result) : _isAmSuccess(result);
       if (ok) {
         appLog.info('InstallManager: 命令执行成功', data: {

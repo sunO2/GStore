@@ -5,12 +5,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:go_router/go_router.dart';
 
 import 'package:gstore/compent/line_chart.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
-import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/perf/hardware_page.dart';
 import 'package:gstore/page/perf/logic.dart';
@@ -226,66 +224,66 @@ void main() {
     );
     expect(sw.onChanged, isNull);
 
-    // 概览页底部「更多功能」导航卡：4 个入口 Key 均在（滚到卡处以触发懒构建）。
+    // 顶部五段 tab 恒存在（原概览底部「更多功能」导航卡已并入 tab）。
+    expect(find.byKey(const Key('perf-tab-switch')), findsOneWidget);
+    for (final key in const <String>[
+      'perf_tab_overview',
+      'perf_tab_hardware',
+      'perf_tab_control',
+      'perf_tab_reports',
+      'perf_tab_third_party',
+    ]) {
+      expect(find.byKey(Key(key)), findsOneWidget, reason: '$key 应存在');
+    }
+
+    // 概览底部「悬浮窗与性能模式」卡：迁入的两个 tile（滚到卡处以触发懒构建）。
+    final listScrollable = find
+        .descendant(
+          of: find.byType(ListView),
+          matching: find.byType(Scrollable),
+        )
+        .first;
     await tester.scrollUntilVisible(
-      find.byKey(const Key('perf_nav_perfHardware')),
+      find.byKey(const Key('perf_overlay_switch')),
       400,
-      scrollable: find.byType(Scrollable).first,
+      scrollable: listScrollable,
     );
-    expect(find.byKey(const Key('perf_nav_perfHardware')), findsOneWidget);
-    expect(find.byKey(const Key('perf_nav_perfControl')), findsOneWidget);
-    expect(find.byKey(const Key('perf_nav_perfReports')), findsOneWidget);
-    expect(find.byKey(const Key('perf_nav_perfThirdParty')), findsOneWidget);
+    expect(find.byKey(const Key('perf_overlay_switch')), findsOneWidget);
+    expect(find.byKey(const Key('perf_profiles_switch')), findsOneWidget);
 
     // 无裸异常泄漏。
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('概览·导航卡：点击「硬件详情」push 到 AppRoute.perfHardware',
+  testWidgets('概览·顶部 tab：切到「硬件」渲染硬件内容、切回「概览」恢复（同一 provider）',
       (tester) async {
     _useTallViewport(tester);
     final gateway = _FakeGateway(data: const {}, unavailable: true);
     final monitor = _publishedMonitor();
-    final router = GoRouter(
-      initialLocation: '/',
-      routes: [
-        GoRoute(
-          path: '/',
-          builder: (context, state) => const PerfMonitorPage(),
-        ),
-        GoRoute(
-          path: AppRoute.perfHardware,
-          builder: (context, state) =>
-              const Scaffold(body: Text('HARDWARE_DEST')),
-        ),
-      ],
-    );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          perfModuleProvider.overrideWithValue(PerfModule(gateway: gateway)),
-          perfFrameMonitorProvider.overrideWithValue(monitor),
-          perfAvailabilityStreamProvider.overrideWithValue(
-            Stream<PerfAvailability>.value(PerfAvailability.failed),
-          ),
-        ],
-        child: MaterialApp.router(routerConfig: router),
-      ),
-    );
+    await tester.pumpWidget(_harness(
+      home: const PerfMonitorPage(),
+      module: PerfModule(gateway: gateway),
+      monitor: monitor,
+      availability: Stream<PerfAvailability>.value(PerfAvailability.failed),
+    ));
     await _settleAsync(tester);
 
-    final navFinder = find.byKey(const Key('perf_nav_perfHardware'));
-    await tester.scrollUntilVisible(
-      navFinder,
-      400,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(navFinder);
-    await _settleAsync(tester);
+    // 默认「概览」：渲染 / FPS 区渲染，硬件降级卡缺席。
+    expect(find.text('渲染 / FPS'), findsOneWidget);
+    expect(find.text('原生性能模块未就绪'), findsNothing);
 
-    // 导航确实到达 stub 目的页（证明 onTap -> context.push(AppRoute.perfHardware)）。
-    expect(find.text('HARDWARE_DEST'), findsOneWidget);
+    // 切到「硬件」→ 硬件降级卡出现（模块不可用），概览内容让位。
+    await tester.tap(find.byKey(const Key('perf_tab_hardware')));
+    await _settleAsync(tester);
+    expect(find.text('原生性能模块未就绪'), findsOneWidget);
+    expect(find.text('渲染 / FPS'), findsNothing);
+
+    // 切回「概览」→ 概览内容恢复（同一 perfMonitorProvider，切 tab 不重建状态）。
+    await tester.tap(find.byKey(const Key('perf_tab_overview')));
+    await _settleAsync(tester);
+    expect(find.text('渲染 / FPS'), findsOneWidget);
+
     expect(tester.takeException(), isNull);
   });
 

@@ -77,7 +77,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -683920669;
+  int get rustContentHash => 448209173;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -174,6 +174,10 @@ abstract class RustLibApi extends BaseApi {
       {required TaskBridge that, required String taskId});
 
   Future<void> crateBridgeInstallHostPanicHook();
+
+  Future<bool> crateBridgeShizukuAvailable();
+
+  Future<String?> crateBridgeShizukuExec({required String command});
 
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_EventBridge;
@@ -1033,6 +1037,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [],
       );
 
+  @override
+  Future<bool> crateBridgeShizukuAvailable() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 30, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_bool,
+        decodeErrorData: null,
+      ),
+      constMeta: kCrateBridgeShizukuAvailableConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeShizukuAvailableConstMeta =>
+      const TaskConstMeta(
+        debugName: "shizuku_available",
+        argNames: [],
+      );
+
+  @override
+  Future<String?> crateBridgeShizukuExec({required String command}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(command, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 31, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_opt_String,
+        decodeErrorData: null,
+      ),
+      constMeta: kCrateBridgeShizukuExecConstMeta,
+      argValues: [command],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeShizukuExecConstMeta => const TaskConstMeta(
+        debugName: "shizuku_exec",
+        argNames: ["command"],
+      );
+
   RustArcIncrementStrongCountFnType
       get rust_arc_increment_strong_count_EventBridge => wire
           .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge;
@@ -1349,6 +1401,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       persistent: dco_decode_bool(arr[3]),
       refcount: dco_decode_u_64(arr[4]),
     );
+  }
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
   }
 
   @protected
@@ -1703,6 +1761,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         version: var_version,
         persistent: var_persistent,
         refcount: var_refcount);
+  }
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -2078,6 +2147,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -2185,8 +2264,13 @@ class HostInspectorImpl extends RustOpaque implements HostInspector {
         that: this,
       );
 
-  /// 清空日志/事件桥的订阅 sink。引擎在同进程内被销毁重建时，宿主仍持有指向
-  /// 上一个 Dart isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+  /// 清空日志/事件/任务桥的订阅 sink。引擎在同进程内被销毁重建、或 Flutter
+  /// engine/Dart isolate 重启（Activity 重建）时，宿主仍持有指向上一个
+  /// isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+  ///
+  /// 只丢弃订阅端点：Rust 引擎、已加载模块与 TUN 隧道**不受影响**（隧道由
+  /// `nativeSetTunFd` 持有，模块事件/日志继续入有界环形缓冲，新 isolate
+  /// 重新订阅时补发）。任务（[`crate::task_bridge`]）继续运行，仅其 sink 被丢弃。
   Future<void> resetBridges() =>
       RustLib.instance.api.crateBridgeHostInspectorResetBridges(
         that: this,

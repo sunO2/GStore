@@ -11,10 +11,12 @@ import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/perf/control_cpu.dart';
 import 'package:gstore/core/perf/control_cpuset.dart';
 import 'package:gstore/core/perf/control_gpu.dart';
+import 'package:gstore/core/perf/control_refresh_rate.dart';
 import 'package:gstore/core/perf/control_thermal.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
+import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/perf/control_page.dart';
@@ -212,12 +214,22 @@ Widget _harness({
       perfControlCapabilitiesLoaderProvider
           .overrideWithValue(({bool refresh = false}) async => caps),
       perfControlActionsFactoryProvider.overrideWithValue((t, c) => actions),
+      // 「屏幕刷新率」组：注入确定性假 shell（避免默认 Rust 门面在测试环境挂起 /
+      // 遗留 pending timer）。仅 sentinel 输出 → 可读、min/peak 默认、档位退化。
+      perfRefreshRateControllerProvider.overrideWithValue(
+        RefreshRateController(
+          shell: PrivilegedShell(
+            runner: (command) async => 'GSTORE_RESULT ok=1',
+          ),
+        ),
+      ),
     ],
     child: MaterialApp(
       // 挂载全局弹层 / Snackbar 通道（[AppDialogs] 统一走全局 key）。
       navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-      home: const PerfControlPage(),
+      // PerfControlPage 已降级为纯内容部件：测试用 Scaffold 提供 Snackbar 宿主。
+      home: const Scaffold(body: PerfControlPage()),
     ),
   );
 }

@@ -1,7 +1,8 @@
 /// 第三方应用性能服务（Shizuku + Rust `perf.parse_app_dumps`）。
 ///
 /// 数据通路（架构固定）：
-/// 1. [CommandRunner] 执行 shell 命令（默认经 [ShizukuApi] 以 shell/uid 2000 运行）；
+/// 1. [CommandRunner] 执行 shell 命令（默认经 [rustShizukuRunner]，Rust 门面 → JNI
+///    → Kotlin `ShizukuExecBridge` → `sh`/uid 2000）；
 /// 2. 采集命令：`pidof` / `dumpsys cpuinfo` / `dumpsys meminfo <pkg>` /
 ///    `dumpsys gfxinfo <pkg>`（基础四件）+ `cmd package list packages -U`（uid）/
 ///    `ps -A`（进程）/ `cat /proc/<pid>/status`（线程，仅 pid 已知）/
@@ -33,10 +34,11 @@ import 'package:shizuku_api/shizuku_api.dart';
 
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
+import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 
 /// 执行一条 shell 命令，返回 stdout+stderr 合并文本；未执行 / 失败返回 `null`。
 ///
-/// 生产实现经 [ShizukuApi.runCommand]（`sh -c`）；测试注入罐头输出即可脱离设备。
+/// 生产实现经 [rustShizukuRunner]（Rust 门面 → `sh -c`）；测试注入罐头输出即可脱离设备。
 typedef CommandRunner = Future<String?> Function(String command);
 
 /// Shizuku 可用性（供 UI 区分「未运行」与「未授权」）。
@@ -85,7 +87,8 @@ class ThirdPartySample {
 
 /// 第三方应用性能服务。
 ///
-/// 生产入口：`ThirdPartyPerfService()`（默认经 [ShizukuApi] + [PerfModule.instance]）。
+/// 生产入口：`ThirdPartyPerfService()`（默认经 [rustShizukuRunner] + [PerfModule.instance]）。
+/// 权限 UI（ping / check / request）默认经 [ShizukuApi]；测试均可注入。
 /// 测试：注入 [CommandRunner] / [PerfModule] / [ShizukuApi]。
 class ThirdPartyPerfService {
   ThirdPartyPerfService({
@@ -93,7 +96,7 @@ class ThirdPartyPerfService {
     PerfModule? module,
     ShizukuApi? shizukuApi,
     DateTime Function()? clock,
-  })  : _runner = runner ?? _defaultRunner,
+  })  : _runner = runner ?? rustShizukuRunner,
         _module = module ?? PerfModule.instance,
         _shizuku = shizukuApi ?? _sharedShizukuApi,
         _clock = clock ?? DateTime.now;
@@ -102,6 +105,9 @@ class ThirdPartyPerfService {
 
   final CommandRunner _runner;
   final PerfModule _module;
+
+  /// 仅用于权限 UI（`pingBinder` / `checkPermission` / `requestPermission`）；
+  /// 命令执行已统一走 Rust 门面（[rustShizukuRunner]）。
   final ShizukuApi _shizuku;
 
   /// 采样时间源（可在测试注入，保证 FPS 差值换算可复现）。
@@ -114,16 +120,6 @@ class ThirdPartyPerfService {
 
   /// Shizuku 是否可用（运行 + 已授权）。
   bool get shizukuAvailable => _status == ShizukuStatus.available;
-
-  /// 默认命令执行器：经 [ShizukuApi.runCommand]（失败 / 异常一律返回 `null`）。
-  static Future<String?> _defaultRunner(String command) async {
-    try {
-      return await _sharedShizukuApi.runCommand(command);
-    } catch (error) {
-      debugPrint('[ThirdPartyPerf] 命令执行失败（$command）: $error');
-      return null;
-    }
-  }
 
   // ==================== Shizuku ====================
 

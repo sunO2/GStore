@@ -45,16 +45,17 @@ Future<void> _settleAsync(WidgetTester tester) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('PerfThirdPartyPage：渲染 AppBar 标题 + ThirdPartyAppSection（不触达 Shizuku）',
+  testWidgets('PerfThirdPartyPage：渲染 ThirdPartyAppSection（纯内容部件，不触达 Shizuku）',
       (tester) async {
     await tester.pumpWidget(
-      MaterialApp(home: PerfThirdPartyPage(service: _FakeService())),
+      MaterialApp(
+        home: Scaffold(body: PerfThirdPartyPage(service: _FakeService())),
+      ),
     );
     await _settleAsync(tester);
 
-    // AppBar 标题「第三方应用」渲染（与 section 内标题同名，故限定 AppBar）。
-    expect(find.widgetWithText(AppBar, '第三方应用'), findsOneWidget);
-    // 真实 ThirdPartyAppSection 已挂载。
+    // 纯内容部件不含 AppBar；真实 ThirdPartyAppSection 已挂载。
+    expect(find.byType(AppBar), findsNothing);
     expect(find.byType(ThirdPartyAppSection), findsOneWidget);
     // binder 不可用 → 展示「需要 Shizuku」降级状态，绝不崩溃。
     expect(find.text('需要 Shizuku'), findsOneWidget);
@@ -63,7 +64,9 @@ void main() {
 
   testWidgets('PerfThirdPartyPage：空应用列表下仍渲染选择入口', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(home: PerfThirdPartyPage(service: _FakeService())),
+      MaterialApp(
+        home: Scaffold(body: PerfThirdPartyPage(service: _FakeService())),
+      ),
     );
     await _settleAsync(tester);
 

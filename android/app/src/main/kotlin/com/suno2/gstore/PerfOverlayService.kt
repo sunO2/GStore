@@ -20,10 +20,12 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.system.Os
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.TextView
 import rikka.shizuku.Shizuku
@@ -54,11 +56,14 @@ import kotlin.math.roundToInt
  * 属性；进入前台仍需常驻通知。
  *
  * ## 采集口径
- * - CPU%：`/proc/stat` 首行 `cpu` 的 jiffies 差值；busy = total - (idle + iowait)。
- *   首次采样只建立基线（返回 null，显示 `--`），避免把开机至今的均值当成瞬时值。
+ * - CPU%：`/proc/stat` 首行 `cpu` 的 jiffies 差值；busy = total - idle（**仅 idle 列，不含 iowait**，
+ *   对齐 Rust `gstore_mod_perf`）。首次采样只建立基线（返回 null，显示 `--`）。
  * - 内存%：`/proc/meminfo` 的 (MemTotal - MemAvailable) / MemTotal。
- * - 电池温度：优先 `/sys/class/power_supply/{battery,bms}/temperature`（十分之一
- *   摄氏度；异常大值按毫摄氏度处理），回退 `BatteryManager.EXTRA_TEMPERATURE`。
+ * - 电池温度：优先 `/sys/class/power_supply/{battery,bms}/temp`，回退 `temperature`（十分之一
+ *   摄氏度，**恒 ÷10**），再回退 `BatteryManager.EXTRA_TEMPERATURE`。
+ * - 网络：`/proc/net/dev` 全接口（含 `lo`）累计字节差值 → KB/s。
+ * - 扩展 reader（per-core 频率/governor、GPU 频率忙率、电池电压/电流/功率/健康、热区 Top-N、
+ *   进程数/最高 CPU 进程、存储、系统帧率）全部**只读**，任一失败返回 null 优雅降级。
  */
 class PerfOverlayService : Service() {
 
@@ -126,9 +131,66 @@ class PerfOverlayService : Service() {
         /** `dumpsys activity activities` 的 `<pkg>/<activity>` 令牌（取包名分组）。 */
         private val RESUMED_ACTIVITY_RE = Regex("""([A-Za-z][A-Za-z0-9_.]*)/[^\s}]+""")
 
-        /** 视图首次添加的位置缺省值（无持久化记录时使用）。 */
-        private const val DEFAULT_X = 24
-        private const val DEFAULT_Y = 160
+        /** `dumpsys SurfaceFlinger --timestats -dump` 的层名 / 平均帧率 / 累计帧数行。 */
+        private val SYSTEM_FPS_LAYER_RE = Regex("""layerName\s*=\s*(.+)""")
+        private val SYSTEM_FPS_AVG_RE = Regex("""averageFPS\s*=\s*([0-9]+(?:\.[0-9]+)?)""")
+        private val SYSTEM_FPS_FRAMES_RE = Regex("""totalFrames\s*=\s*(\d+)""")
+
+        /** 系统帧率选层黑名单：层名含其一即为系统层，剔除（对齐 WS1 启发式）。 */
+        private val SYSTEM_FPS_BLACKLIST = listOf(
+            "com.android.systemui", "StatusBar", "NavigationBar",
+            "Wallpaper", "InputMethod", "Background for",
+        )
+
+        /**
+         * GPU 频率探测路径（回退顺序，对齐 Rust `gpu.rs::FREQ_PATHS`）。
+         * 缩放启发式：`v>1e6 → /1e6`；`v>1000 → /1000`；否则原值（kHz/MHz 通用）。
+         */
+        private val GPU_FREQ_PATHS = listOf(
+            "/sys/class/kgsl/kgsl-3d0/gpuclk",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq",
+            "/sys/kernel/gpu/gpu_clock",
+            "/sys/class/devfreq/gpufreq/cur_freq",
+            "/sys/class/devfreq/5000000.gpu/cur_freq",
+            "/sys/class/mali/misc/gpu_clock",
+            "/sys/kernel/debug/mali/clock",
+        )
+
+        /** GPU 忙率探测路径（回退顺序，去尾部 `%` 取首 token，clamp 0..100）。 */
+        private val GPU_BUSY_PATHS = listOf(
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+            "/sys/class/kgsl/kgsl-3d0/utilization",
+            "/sys/kernel/gpu/gpu_busy",
+        )
+
+        /** 存储汇报的真实文件系统白名单（对齐 Rust `storage.rs::is_real_fs`；伪 fs 一律跳过）。 */
+        private val REAL_FS_TYPES = setOf(
+            "ext2", "ext3", "ext4", "f2fs", "xfs", "btrfs", "jfs", "nilfs2", "reiserfs",
+            "ufs", "minix", "vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk",
+            "squashfs", "erofs", "iso9660", "udf", "hfsplus",
+        )
+
+        /** 内核节拍频率（`sysconf(_SC_CLK_TCK)`，Android 恒为 100）。 */
+        private const val CLK_TCK = 100L
+
+        /** 系统帧率（SurfaceFlinger timestats）刷新节流；dumpsys 较慢，独立于 1s 系统指标。 */
+        private const val SYSTEM_FPS_REFRESH_INTERVAL_MS = 1000L
+
+        /** expanded 模式展示的热区 Top-N 条数。 */
+        private const val THERMAL_TOP_N = 3
+
+        /**
+         * 视图首次添加的缺省位置（**dp**，使用时乘 `displayMetrics.density` 得 px，
+         * 保证各屏幕密度下物理尺寸一致；配合可用区 clamp 落在状态栏之下）。
+         */
+        private const val DEFAULT_X_DP = 16f
+        private const val DEFAULT_Y_DP = 64f
+
+        /**
+         * 恢复坐标的「最小可见」兜底尺寸（dp）。视图为 `WRAP_CONTENT`，布局前尺寸未知，
+         * 先用该值做一次即时 clamp，避免非法坐标把窗口闪到屏外。
+         */
+        private const val MIN_VISIBLE_DP = 48f
 
         /** 服务是否正在运行（视图已添加）。同进程，`MainActivity` 直接读取。 */
         @Volatile
@@ -277,6 +339,23 @@ class PerfOverlayService : Service() {
     /** 前台应用一次采样的结果（后台线程产出，主线程渲染）。 */
     private data class ForegroundSnapshot(val packageName: String?)
 
+    /**
+     * 电池一次采样的结果（对齐 Rust `battery.rs`：电流仅 `|raw|>10000` ÷1000，
+     * 电压 `|v|>1e6→/1e6`、`|v|>1000→/1000`，温度恒 ÷10）。缺省字段为 null。
+     */
+    private data class BatteryInfo(
+        val voltageV: Double?,
+        val currentMa: Double?,
+        val powerW: Double?,
+        val temperatureC: Double?,
+        val capacityPercent: Double?,
+        val chargeFullUah: Long?,
+        val chargeFullDesignUah: Long?,
+        val cycleCount: Long?,
+        val status: String?,
+        val health: String?,
+    )
+
     private val handler = Handler(Looper.getMainLooper())
 
     /** 当前模式（compact / expanded / target / live），启动时从 SharedPreferences 恢复。 */
@@ -316,6 +395,18 @@ class PerfOverlayService : Service() {
     /** 前台读取节流与在途标记（独立于目标读取）。 */
     private var lastForegroundMs = 0L
     private var foregroundPending = false
+
+    /** 进程 CPU 增量基线：pid→(utime+stime) ticks 与采样时间戳；两次刷新取差，绝不 sleep。 */
+    private var lastProcBaseline: MutableMap<Int, Long> = HashMap()
+    private var lastProcBaselineMs = 0L
+
+    /** 系统帧率（SurfaceFlinger timestats）缓存：后台线程产出，主线程渲染。 */
+    private var systemFps: Double? = null
+    private var systemFpsLayer: String? = null
+    private var systemFpsFrames: Int? = null
+    private var lastSystemFpsMs = 0L
+    private var systemFpsPending = false
+    private var systemFpsEnabled = false
 
     /** 当前生效档案名及其推送时间戳（由 Dart 推送；null = 未应用）。 */
     private var profileName: String? = null
@@ -442,11 +533,23 @@ class PerfOverlayService : Service() {
             legacyOverlayType()
         }
 
+        val density = resources.displayMetrics.density
+        val defaultX = (DEFAULT_X_DP * density).roundToInt()
+        val defaultY = (DEFAULT_Y_DP * density).roundToInt()
+        val minVisible = (MIN_VISIBLE_DP * density).roundToInt()
+
+        val bounds = computeUsableBounds()
         val restored = runCatching {
             getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         }.getOrNull()
-        val startX = restored?.getInt(KEY_POS_X, DEFAULT_X) ?: DEFAULT_X
-        val startY = restored?.getInt(KEY_POS_Y, DEFAULT_Y) ?: DEFAULT_Y
+        val rawX = restored?.getInt(KEY_POS_X, defaultX) ?: defaultX
+        val rawY = restored?.getInt(KEY_POS_Y, defaultY) ?: defaultY
+
+        // 越界/非法（负值、超出屏幕、落入状态栏/刘海）一律回退默认位置，再按最小可见尺寸即时 clamp。
+        val x0 = if (rawX < bounds.left || rawX > bounds.right) defaultX else rawX
+        val y0 = if (rawY < bounds.top || rawY > bounds.bottom) defaultY else rawY
+        val startX = x0.coerceIn(bounds.left, (bounds.right - minVisible).coerceAtLeast(bounds.left))
+        val startY = y0.coerceIn(bounds.top, (bounds.bottom - minVisible).coerceAtLeast(bounds.top))
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -467,10 +570,82 @@ class PerfOverlayService : Service() {
         overlayView = view
         layoutParams = params
         updateOverlayText()
+
+        // 视图为 WRAP_CONTENT，真实尺寸布局后才确定：用实测宽高再做一次兜底 clamp 并持久化。
+        view.post {
+            if (overlayView !== view) return@post
+            val current = layoutParams ?: return@post
+            val clamped = clampToUsableBounds(current, view.width, view.height) ?: return@post
+            if (clamped.first != current.x || clamped.second != current.y) {
+                current.x = clamped.first
+                current.y = clamped.second
+                runCatching { windowManager?.updateViewLayout(view, current) }
+                    .onFailure { Log.w(TAG, "悬浮窗位置兜底修正失败（忽略）: ${it.message}") }
+                savePosition(clamped.first, clamped.second)
+            }
+        }
     }
 
     @Suppress("DEPRECATION")
     private fun legacyOverlayType(): Int = WindowManager.LayoutParams.TYPE_PHONE
+
+    /** 屏幕可用区域（物理像素坐标，已剔除系统栏 / 显示刘海）。 */
+    private data class UsableBounds(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+    /**
+     * 计算屏幕可用矩形（物理像素坐标）。
+     * - API 30+：优先 `WindowManager.currentWindowMetrics`（`bounds` + `windowInsets`）；
+     * - 回退（<30，或 insets 不可得如非 Activity context）：用 `displayMetrics` 全屏尺寸
+     *   减去系统资源里的状态栏 / 导航栏高度估算。
+     * 本窗口带 `FLAG_LAYOUT_NO_LIMITS`，坐标原点为物理左上，故显式加 inset 主动避开状态栏/刘海。
+     */
+    private fun computeUsableBounds(): UsableBounds {
+        val dm = resources.displayMetrics
+        val wm = windowManager ?: (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+            runCatching {
+                val m = wm.currentWindowMetrics
+                val b = m.bounds
+                val ins = m.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+                )
+                if (ins.left + ins.top + ins.right + ins.bottom > 0) {
+                    return UsableBounds(
+                        b.left + ins.left,
+                        b.top + ins.top,
+                        b.right - ins.right,
+                        b.bottom - ins.bottom,
+                    )
+                }
+            }.onFailure { Log.w(TAG, "读取 WindowMetrics/Insets 失败，回退资源估算: ${it.message}") }
+        }
+        val top = dimenPx("status_bar_height")
+        val bottom = (dm.heightPixels - dimenPx("navigation_bar_height")).coerceAtLeast(top + 1)
+        return if (bottom > top) UsableBounds(0, top, dm.widthPixels, bottom)
+        else UsableBounds(0, 0, dm.widthPixels, dm.heightPixels)
+    }
+
+    /** 读取 android 系统 dimension 资源（如 `status_bar_height`）；缺失/失败返回 0。 */
+    private fun dimenPx(name: String): Int = runCatching {
+        resources.getIdentifier(name, "dimen", "android")
+            .takeIf { it > 0 }
+            ?.let { resources.getDimensionPixelSize(it) }
+            ?: 0
+    }.getOrDefault(0)
+
+    /** 把窗口坐标 clamp 回可用区（保证视图完整可见）；视图尺寸未知或区域非法返回 null。 */
+    private fun clampToUsableBounds(
+        params: WindowManager.LayoutParams,
+        viewWidth: Int,
+        viewHeight: Int,
+    ): Pair<Int, Int>? {
+        if (viewWidth <= 0 || viewHeight <= 0) return null
+        val b = computeUsableBounds()
+        if (b.right <= b.left || b.bottom <= b.top) return null
+        val x = params.x.coerceIn(b.left, (b.right - viewWidth).coerceAtLeast(b.left))
+        val y = params.y.coerceIn(b.top, (b.bottom - viewHeight).coerceAtLeast(b.top))
+        return x to y
+    }
 
     /**
      * 悬浮窗手势：
@@ -485,6 +660,10 @@ class PerfOverlayService : Service() {
         private var touchY = 0f
         private var dragging = false
         private var longPressFired = false
+        private var minX = 0
+        private var minY = 0
+        private var maxX = 0
+        private var maxY = 0
         private val moveThresholdPx = 10f * resources.displayMetrics.density
 
         private val longPressRunnable = Runnable {
@@ -506,6 +685,11 @@ class PerfOverlayService : Service() {
                     touchY = event.rawY
                     dragging = false
                     longPressFired = false
+                    val b = computeUsableBounds()
+                    minX = b.left
+                    minY = b.top
+                    maxX = (b.right - v.width).coerceAtLeast(b.left)
+                    maxY = (b.bottom - v.height).coerceAtLeast(b.top)
                     handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
                     return true
                 }
@@ -517,9 +701,8 @@ class PerfOverlayService : Service() {
                         handler.removeCallbacks(longPressRunnable)
                     }
                     if (dragging) {
-                        val metrics = resources.displayMetrics
-                        params.x = (startX + dx).toInt().coerceIn(0, metrics.widthPixels)
-                        params.y = (startY + dy).toInt().coerceIn(0, metrics.heightPixels)
+                        params.x = (startX + dx).toInt().coerceIn(minX, maxX)
+                        params.y = (startY + dy).toInt().coerceIn(minY, maxY)
                         runCatching { windowManager?.updateViewLayout(v, params) }
                     }
                     return true
@@ -573,11 +756,16 @@ class PerfOverlayService : Service() {
     private fun updateOverlayText() {
         maybeRefreshTargetMetrics()
         maybeRefreshForegroundMetrics()
+        maybeRefreshSystemFps()
         renderOverlayText()
     }
 
     private fun renderOverlayText() {
         val view = overlayView ?: return
+        if (mode == MODE_EXPANDED) {
+            view.text = expandedText()
+            return
+        }
         val cpu = readCpuPercent()
         val mem = readMemoryPercent()
         val batTemp = readBatteryTempC()
@@ -588,27 +776,90 @@ class PerfOverlayService : Service() {
         view.text = when (mode) {
             MODE_TARGET -> targetFocusedText()
             MODE_LIVE -> liveFocusedText()
-            MODE_EXPANDED -> {
-                val net = readNetRateKbs()
-                val psi = readPsiSomeAvg10()
-                val thermal = readMaxThermalC()
-                val netText = net?.let {
-                    "↓${fmt1(it.first)} ↑${fmt1(it.second)} KB/s"
-                } ?: "--"
-                val psiText = psi?.let { "${fmt1(it)}%" } ?: "--"
-                val thermalText = thermal?.let { "${fmt1(it)}°C" } ?: "--"
-                buildString {
-                    append("CPU $cpuText   MEM $memText   BAT ")
-                    append(batTemp?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--")
-                    append('\n')
-                    append("NET $netText")
-                    append('\n')
-                    append("PSI $psiText   THM $thermalText")
-                    targetLine()?.let { append('\n').append(it) }
-                }
-            }
             else -> "CPU $cpuText  MEM $memText  $batText"
         }
+    }
+
+    /**
+     * 展开模式富 HUD：多段多行（CPU/GPU/BAT/MEM/NET/THM/PROC/STO/FPS + 目标行）。
+     * 所有采集只读；缺失段以 `--` 或整体省略优雅降级；目标行沿用 [targetLine]。
+     */
+    private fun expandedText(): String {
+        val cpu = readCpuPercent()
+        val mem = readMemoryPercent()
+        val bat = readBattery()
+        val batTemp = bat?.temperatureC ?: readBatteryTempC()
+        val coreCount = readCoreCount()
+        val freqs = readPerCoreCpuFreqs()
+        val governor = readGovernor()
+        val gpu = readGpu()
+        val zones = readThermalZones(THERMAL_TOP_N)
+        val proc = readProcessStats()
+        val storage = readStorage()
+
+        return buildString {
+            append("CPU ")
+            append(cpu?.let { "${it.roundToInt()}%" } ?: "--")
+            if (coreCount > 0) {
+                append(" · ${coreCount}核")
+                freqBand(freqs)?.let { append(" $it") }
+            }
+            if (!governor.isNullOrEmpty()) append(" · governor $governor")
+
+            if (gpu != null) {
+                append('\n').append("GPU ")
+                append(gpu.first?.let { "${it.roundToInt()}MHz" } ?: "--")
+                append(" · ")
+                append(gpu.second?.let { "${it.roundToInt()}%" } ?: "--")
+            }
+
+            val batParts = ArrayList<String>(5)
+            bat?.voltageV?.let { batParts.add(String.format(Locale.US, "%.2fV", it)) }
+            bat?.currentMa?.let { batParts.add("${it.roundToInt()}mA") }
+            bat?.powerW?.let { batParts.add(String.format(Locale.US, "%.1fW", it)) }
+            batTemp?.let { batParts.add("${it.roundToInt()}°C") }
+            bat?.capacityPercent?.let { batParts.add("健康 ${it.roundToInt()}%") }
+            if (batParts.isNotEmpty()) append('\n').append("BAT ").append(batParts.joinToString(" · "))
+
+            append('\n').append("MEM ")
+            append(mem?.let { "${it.roundToInt()}%" } ?: "--")
+
+            val net = readNetRateKbs()
+            append('\n').append("NET ")
+            append(net?.let { "↓${fmt1(it.first)} ↑${fmt1(it.second)} KB/s" } ?: "--")
+
+            if (!zones.isNullOrEmpty()) {
+                append('\n').append("THM ").append(zones.joinToString(" · "))
+            }
+
+            append('\n').append("PROC ${proc.first} 个")
+            proc.second?.let { append(" · 最高 $it") }
+
+            if (!storage.isNullOrEmpty()) {
+                append('\n').append("STO ").append(storage.joinToString(" · "))
+            }
+
+            systemFps?.let {
+                append('\n').append("FPS 屏幕 ${fmt1(it)}")
+                systemFpsLayer?.let { layer -> append(" (${shortLayer(layer)})") }
+            }
+
+            targetLine()?.let { append('\n').append(it) }
+        }
+    }
+
+    /** 每核频率区间 `[0.6-2.8GHz]`；无频率数据返回 null。 */
+    private fun freqBand(freqs: List<Double>?): String? {
+        if (freqs.isNullOrEmpty()) return null
+        val min = freqs.minOrNull() ?: return null
+        val max = freqs.maxOrNull() ?: return null
+        return String.format(Locale.US, "[%.1f-%.1fGHz]", min / 1000.0, max / 1000.0)
+    }
+
+    /** 系统帧率层短名：去掉尾部 `#序号`，过长截断。 */
+    private fun shortLayer(layer: String): String {
+        val clean = layer.substringBefore('#').trim()
+        return if (clean.length <= 32) clean else clean.take(31) + "…"
     }
 
     /** 展开模式的第三方目标行；目标未设置 / 指标缺失时返回 null（优雅省略）。 */
@@ -758,6 +1009,71 @@ class PerfOverlayService : Service() {
                 renderOverlayText()
             }
         }
+    }
+
+    /**
+     * 系统帧率刷新节流 + 调度（仅 `expanded` 模式）：每 [SYSTEM_FPS_REFRESH_INTERVAL_MS]
+     * 一次、单飞在途，读取投递到 [shizukuThread]（dumpsys 较慢，绝不阻塞主线程），
+     * 结果经主线程回写并重渲染。Shizuku 不可用时不读取。
+     */
+    private fun maybeRefreshSystemFps() {
+        if (mode != MODE_EXPANDED) return
+        val now = System.currentTimeMillis()
+        if (systemFpsPending || now - lastSystemFpsMs < SYSTEM_FPS_REFRESH_INTERVAL_MS) return
+        if (!shizukuUsable()) return
+        val bgHandler = ensureShizukuHandler() ?: return
+        systemFpsPending = true
+        lastSystemFpsMs = now
+        bgHandler.post {
+            val result = runCatching { readSystemFps() }.getOrNull()
+            handler.post {
+                systemFpsPending = false
+                systemFps = result?.first
+                systemFpsLayer = result?.second
+                systemFpsFrames = result?.third
+                if (overlayView != null) renderOverlayText()
+            }
+        }
+    }
+
+    /**
+     * 经 Shizuku 读取系统交付帧率（`dumpsys SurfaceFlinger --timestats`）。
+     * 首次调用先 best-effort `-enable`；按 `layerName` 分段解析，选层启发式与 WS1 一致：
+     * 剔黑名单 → 优先含 `SurfaceView`/`BLAST` → 并列取 `totalFrames` 最大。
+     * 返回 (averageFPS, layer, totalFrames)；无层 / 失败 → null。绝不抛。
+     */
+    private fun readSystemFps(): Triple<Double?, String?, Int?>? {
+        if (!shizukuUsable()) return null
+        if (!systemFpsEnabled) {
+            execShizuku("dumpsys SurfaceFlinger --timestats -enable")
+            systemFpsEnabled = true
+        }
+        val output = execShizuku(
+            "dumpsys SurfaceFlinger --timestats -dump -clear -maxlayers 32"
+        ) ?: return null
+        val matches = SYSTEM_FPS_LAYER_RE.findAll(output).toList()
+        if (matches.isEmpty()) return null
+
+        data class Layer(val name: String, val fps: Double?, val frames: Int?)
+        val layers = ArrayList<Layer>(matches.size)
+        for ((idx, m) in matches.withIndex()) {
+            val start = m.range.first
+            val end = if (idx + 1 < matches.size) matches[idx + 1].range.first else output.length
+            val segment = output.substring(start, end)
+            val name = m.groupValues[1].trim()
+            if (name.isEmpty()) continue
+            val fps = SYSTEM_FPS_AVG_RE.find(segment)?.groupValues?.get(1)?.toDoubleOrNull()
+            val frames = SYSTEM_FPS_FRAMES_RE.find(segment)?.groupValues?.get(1)?.toIntOrNull()
+            layers.add(Layer(name, fps, frames))
+        }
+        if (layers.isEmpty()) return null
+
+        val filtered = layers.filter { l -> SYSTEM_FPS_BLACKLIST.none { l.name.contains(it) } }
+        val candidates = filtered.ifEmpty { layers }
+        val preferred = candidates.filter { it.name.contains("SurfaceView") || it.name.contains("BLAST") }
+        val pool = preferred.ifEmpty { candidates }
+        val best = pool.maxByOrNull { it.frames ?: 0 } ?: return null
+        return Triple(best.fps, best.name, best.frames)
     }
 
     /** 经 Shizuku 读取当前前台包名（后台线程调用）；不可用 / 无法判定返回 null（不抛）。 */
@@ -920,8 +1236,9 @@ class PerfOverlayService : Service() {
     private fun fmt1(value: Double): String = String.format(Locale.US, "%.1f", value)
 
     /**
-     * `/proc/net/dev` 累计 rx/tx 字节（跳过 `lo` 回环）→ 与上次采样的差值换算 KB/s。
-     * 首次采样只建立基线（返回 null，显示 `--`）。接口消失导致计数回退时按 0 处理。
+     * `/proc/net/dev` 累计 rx/tx 字节 → 与上次采样的差值换算 KB/s。
+     * 对齐 Rust `network.rs`：**包含全部接口（不跳过 `lo`）**，内部速率为 bytes/s，展示时 ÷1024
+     * 转 KB/s。首次采样只建立基线（返回 null，显示 `--`）；计数回退用 `coerceAtLeast(0)` 防回绕。
      */
     private fun readNetRateKbs(): Pair<Double, Double>? {
         val lines = runCatching { File("/proc/net/dev").readLines() }.getOrNull() ?: return null
@@ -931,7 +1248,6 @@ class PerfOverlayService : Service() {
         for (line in lines) {
             val colon = line.indexOf(':')
             if (colon < 0) continue
-            if (line.substring(0, colon).trim() == "lo") continue
             val cols = line.substring(colon + 1).trim().split(Regex("\\s+"))
             if (cols.size < 16) continue
             val rxBytes = cols[0].toLongOrNull() ?: continue
@@ -990,7 +1306,11 @@ class PerfOverlayService : Service() {
         return max
     }
 
-    /** `/proc/stat` 首行差值 → CPU 占用百分比；首次采样仅建基线返回 null。 */
+    /**
+     * `/proc/stat` 首行差值 → CPU 占用百分比；首次采样仅建基线返回 null。
+     * 对齐 Rust `cpu.rs`：`total = Σfields[1..]`，`idle = fields[4]`（**仅 idle 列，不含 iowait**），
+     * `usage% = 100 - Δidle*100/Δtotal`。由调用方保存基线取增量，绝不 sleep。
+     */
     private fun readCpuPercent(): Double? {
         val line = runCatching {
             File("/proc/stat").readLines().firstOrNull { it.startsWith("cpu ") }
@@ -1004,7 +1324,7 @@ class PerfOverlayService : Service() {
         for (i in 1 until parts.size) {
             val value = parts[i].toLongOrNull() ?: continue
             total += value
-            if (i == 4 || i == 5) idle += value // idle + iowait
+            if (i == 4) idle += value // 仅 idle（对齐 Rust fields[4]；不计 iowait）
         }
         if (lastCpuTotal == 0L) {
             lastCpuTotal = total
@@ -1049,17 +1369,21 @@ class PerfOverlayService : Service() {
         return digits.toString().toLongOrNull() ?: -1L
     }
 
-    /** 电池温度（℃）：sysfs 优先，回退 BatteryManager；均不可用返回 null。 */
+    /**
+     * 电池温度（℃）：sysfs 优先，回退 BatteryManager；均不可用返回 null。
+     * 对齐 Rust `battery.rs`：属性顺序 `temp` → `temperature`，**恒 ÷10**（十分之一摄氏度）。
+     */
     private fun readBatteryTempC(): Double? {
         val paths = listOf(
+            "/sys/class/power_supply/battery/temp",
+            "/sys/class/power_supply/bms/temp",
             "/sys/class/power_supply/battery/temperature",
             "/sys/class/power_supply/bms/temperature",
         )
         for (path in paths) {
             val raw = runCatching { File(path).readText().trim().toDouble() }.getOrNull()
                 ?: continue
-            // sysfs 通常为十分之一摄氏度（305 = 30.5℃）；异常大值按毫摄氏度处理。
-            return if (abs(raw) > 1000.0) raw / 1000.0 else raw / 10.0
+            return raw / 10.0
         }
         val intent = runCatching {
             registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -1067,6 +1391,308 @@ class PerfOverlayService : Service() {
         val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
         if (tenths == Int.MIN_VALUE) return null
         return tenths / 10.0
+    }
+
+    // ---------------------------------------------------------------------
+    // 扩展只读采集（对齐 Rust gstore_mod_perf；任一失败返回 null，绝不抛）
+    // ---------------------------------------------------------------------
+
+    /** 读取 sysfs/proc 文本并 trim；空 / 不存在返回 null。 */
+    private fun readSysTrim(path: String): String? =
+        runCatching { File(path).readText().trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    /** 首 token 解析为 Double；无数字返回 null。 */
+    private fun firstTokenDouble(text: String): Double? =
+        text.trim().split(Regex("\\s+")).firstOrNull()?.toDoubleOrNull()
+
+    /** 首 token 解析为 Long；无数字返回 null。 */
+    private fun firstTokenLong(text: String): Long? =
+        text.trim().split(Regex("\\s+")).firstOrNull()?.toLongOrNull()
+
+    /** `/proc/stat` 中 `cpuN` 行数（物理/逻辑核数）；读取失败返回 0。 */
+    private fun readCoreCount(): Int {
+        val lines = runCatching { File("/proc/stat").readLines() }.getOrNull() ?: return 0
+        var count = 0
+        for (line in lines) {
+            if (line.length > 3 && line.startsWith("cpu") && line[3].isDigit()) count++
+        }
+        return count
+    }
+
+    /** `/proc/cpuinfo` 的 `cpu MHz` 列表（x86 常见；ARM 通常为空）。 */
+    private fun readCpuinfoMhzList(): List<Double> {
+        val lines = runCatching { File("/proc/cpuinfo").readLines() }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Double>()
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("cpu MHz")) continue
+            val value = trimmed.substringAfter(':', "").trim().toDoubleOrNull() ?: continue
+            out.add(value)
+        }
+        return out
+    }
+
+    /**
+     * 每核当前频率（MHz）：`scaling_cur_freq`（kHz）→ `cpuinfo_cur_freq` → `/proc/cpuinfo` `cpu MHz`。
+     * 无任何可读频率返回 null（对齐 Rust `cpu.rs::core_freq_mhz`）。
+     */
+    private fun readPerCoreCpuFreqs(): List<Double>? {
+        val coreCount = readCoreCount()
+        if (coreCount <= 0) return null
+        val cpuinfoMhz = readCpuinfoMhzList()
+        val out = ArrayList<Double>(coreCount)
+        for (i in 0 until coreCount) {
+            val base = "/sys/devices/system/cpu/cpu$i/cpufreq"
+            val khz = readSysTrim("$base/scaling_cur_freq")?.toLongOrNull()
+                ?: readSysTrim("$base/cpuinfo_cur_freq")?.toLongOrNull()
+            if (khz != null) {
+                out.add(khz / 1000.0)
+            } else {
+                cpuinfoMhz.getOrNull(i)?.let { out.add(it) }
+            }
+        }
+        return out.ifEmpty { null }
+    }
+
+    /** cpu0 当前调度器（`scaling_governor`）；缺失返回 null。 */
+    private fun readGovernor(): String? =
+        readSysTrim("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+
+    /**
+     * GPU（频率 MHz, 忙率 %）。频率按 [GPU_FREQ_PATHS] 回退并启发式缩放；
+     * 忙率按 [GPU_BUSY_PATHS] 回退（去尾部 `%`、clamp 0..100）。两者皆无 → null。
+     */
+    private fun readGpu(): Pair<Double?, Double?>? {
+        var freq: Double? = null
+        for (path in GPU_FREQ_PATHS) {
+            val raw = readSysTrim(path) ?: continue
+            val v = firstTokenDouble(raw) ?: continue
+            freq = when {
+                v > 1_000_000.0 -> v / 1_000_000.0
+                v > 1000.0 -> v / 1000.0
+                else -> v
+            }
+            break
+        }
+        var busy: Double? = null
+        for (path in GPU_BUSY_PATHS) {
+            val raw = readSysTrim(path) ?: continue
+            val token = raw.split(Regex("\\s+")).firstOrNull()?.removeSuffix("%") ?: continue
+            val percent = token.toDoubleOrNull() ?: continue
+            busy = percent.coerceIn(0.0, 100.0)
+            break
+        }
+        if (freq == null && busy == null) return null
+        return freq to busy
+    }
+
+    /**
+     * 电池基准目录：优先 `/sys/class/power_supply/battery`，否则排序后首个电源子目录。
+     * 无电源目录返回 null（对齐 Rust `battery.rs::pick_base`）。
+     */
+    private fun batteryBasePath(): String? {
+        val preferred = File("/sys/class/power_supply/battery")
+        if (preferred.isDirectory) return preferred.absolutePath
+        val dirs = runCatching {
+            File("/sys/class/power_supply").listFiles { f -> f.isDirectory }
+        }.getOrNull() ?: return null
+        return dirs.map { it.absolutePath }.sorted().firstOrNull()
+    }
+
+    /**
+     * 电池扩展读数（对齐 Rust `battery.rs`）：电压 `|v|>1e6→/1e6`、`|v|>1000→/1000`；
+     * 电流 `current_now`→`batt_current`→`batt_current_now`→`current_avg`，仅 `|raw|>10000` ÷1000；
+     * 功率 W = V × mA / 1000；温度 `temp`→`temperature` 恒 ÷10；健康含容量% / 满充 / 循环 / 状态。
+     * 无电池返回 null。
+     */
+    private fun readBattery(): BatteryInfo? {
+        val base = batteryBasePath() ?: return null
+
+        fun attr(vararg names: String): String? {
+            for (name in names) readSysTrim("$base/$name")?.let { return it }
+            return null
+        }
+
+        val voltageRaw = attr("voltage_now")?.let { firstTokenDouble(it) }
+        val voltageV = voltageRaw?.let {
+            val a = abs(it)
+            when {
+                a > 1_000_000.0 -> it / 1_000_000.0
+                a > 1000.0 -> it / 1000.0
+                else -> it
+            }
+        }
+        val currentRaw = attr("current_now", "batt_current", "batt_current_now", "current_avg")
+            ?.let { firstTokenDouble(it) }
+        val currentMa = currentRaw?.let { if (abs(it) > 10_000.0) it / 1000.0 else it }
+        val tempRaw = attr("temp", "temperature")?.let { firstTokenDouble(it) }
+        val temperatureC = tempRaw?.let { it / 10.0 }
+        val powerW = if (voltageV != null && currentMa != null) {
+            voltageV * currentMa / 1000.0
+        } else {
+            null
+        }
+
+        val info = BatteryInfo(
+            voltageV = voltageV,
+            currentMa = currentMa,
+            powerW = powerW,
+            temperatureC = temperatureC,
+            capacityPercent = attr("capacity")?.let { firstTokenDouble(it) }?.coerceIn(0.0, 100.0),
+            chargeFullUah = attr("charge_full", "charge_full_design")?.let { firstTokenLong(it) },
+            chargeFullDesignUah = attr("charge_full_design")?.let { firstTokenLong(it) },
+            cycleCount = attr("cycle_count")?.let { firstTokenLong(it) },
+            status = attr("status"),
+            health = attr("health"),
+        )
+        val allNull = info.voltageV == null && info.currentMa == null &&
+            info.powerW == null && info.temperatureC == null &&
+            info.capacityPercent == null && info.chargeFullUah == null &&
+            info.chargeFullDesignUah == null && info.cycleCount == null &&
+            info.status == null && info.health == null
+        return if (allNull) null else info
+    }
+
+    /**
+     * 各热区温度 Top-N（默认 3）：枚举 thermal_zoneN 的 temp 与 hwmonN 的 tempM_input，
+     * `|raw|>1000 → ÷1000`，按温度降序取前 N，每项 `名称 45.3°C`。无热区返回 null。
+     */
+    private fun readThermalZones(topN: Int = THERMAL_TOP_N): List<String>? {
+        val entries = ArrayList<Pair<String, Double>>()
+
+        val thermalRoot = File("/sys/class/thermal")
+        runCatching {
+            thermalRoot.listFiles { f -> f.name.startsWith("thermal_zone") }
+        }.getOrNull()?.forEach { zone ->
+            val raw = readSysTrim("${zone.absolutePath}/temp")?.let { firstTokenDouble(it) }
+                ?: return@forEach
+            val celsius = if (abs(raw) > 1000.0) raw / 1000.0 else raw
+            val label = readSysTrim("${zone.absolutePath}/type") ?: zone.name
+            entries.add(label to celsius)
+        }
+
+        val hwmonRoot = File("/sys/class/hwmon")
+        runCatching {
+            hwmonRoot.listFiles { f -> f.isDirectory && f.name.startsWith("hwmon") }
+        }.getOrNull()?.forEach { hw ->
+            val hwName = readSysTrim("${hw.absolutePath}/name")
+            runCatching {
+                hw.listFiles { f -> f.name.startsWith("temp") && f.name.endsWith("_input") }
+            }.getOrNull()?.forEach { input ->
+                val raw = readSysTrim(input.absolutePath)?.let { firstTokenDouble(it) }
+                    ?: return@forEach
+                val celsius = if (abs(raw) > 1000.0) raw / 1000.0 else raw
+                val label = hwName ?: "${hw.name}/${input.name}"
+                entries.add(label to celsius)
+            }
+        }
+
+        if (entries.isEmpty()) return null
+        return entries.sortedByDescending { it.second }.take(topN)
+            .map { "${it.first} ${fmt1(it.second)}°C" }
+    }
+
+    /**
+     * (进程总数, CPU 最高进程行)。进程数 = `/proc` 下数字目录数；CPU% 由各 pid
+     * `/proc/<pid>/stat` 的 utime+stime（split 后 [11]+[12]）与上次基线取 Δticks/Δs/CLK_TCK。
+     * 首轮无基线 → 只返回计数 + null（绝不 sleep）。对齐 Rust `processes.rs`。
+     */
+    private fun readProcessStats(): Pair<Int, String?> {
+        val dirs = runCatching {
+            File("/proc").listFiles { f -> f.isDirectory && f.name.all { it.isDigit() } }
+        }.getOrNull() ?: return 0 to null
+
+        val now = System.currentTimeMillis()
+        val hasBaseline = lastProcBaselineMs != 0L && lastProcBaseline.isNotEmpty()
+        val dtSec = if (hasBaseline) (now - lastProcBaselineMs).coerceAtLeast(1L) / 1000.0 else 0.0
+        val newBaseline = HashMap<Int, Long>(dirs.size)
+
+        var topName: String? = null
+        var topPercent = -1.0
+        for (dir in dirs) {
+            val pid = dir.name.toIntOrNull() ?: continue
+            val stat = runCatching { File(dir, "stat").readText() }.getOrNull() ?: continue
+            val open = stat.indexOf('(')
+            val close = stat.lastIndexOf(')')
+            if (open < 0 || close <= open) continue
+            val comm = stat.substring(open + 1, close)
+            val fields = stat.substring(close + 1).trim().split(Regex("\\s+"))
+            val utime = fields.getOrNull(11)?.toLongOrNull() ?: continue
+            val stime = fields.getOrNull(12)?.toLongOrNull() ?: continue
+            val ticks = utime + stime
+            newBaseline[pid] = ticks
+            if (!hasBaseline || dtSec <= 0.0) continue
+            val prev = lastProcBaseline[pid] ?: continue
+            val delta = (ticks - prev).coerceAtLeast(0L)
+            val percent = delta.toDouble() / CLK_TCK / dtSec * 100.0
+            if (percent > topPercent) {
+                topPercent = percent
+                topName = comm
+            }
+        }
+
+        lastProcBaseline = newBaseline
+        lastProcBaselineMs = now
+        val topLine = topName?.let { "$it ${fmt1(topPercent)}%" }
+        return dirs.size to topLine
+    }
+
+    /**
+     * 存储占用：`/proc/mounts` 真实 fs（[REAL_FS_TYPES]）中只报 `/` 与 `/data`（存在时），
+     * `android.system.Os.statvfs` 取块数（`frsize=f_frsize>0?:f_bsize`，`used=f_blocks-f_bfree`），
+     * 行如 `/data 62% (128.5G/208.3G)`。对齐 Rust `storage.rs`。无匹配返回 null。
+     */
+    private fun readStorage(): List<String>? {
+        val lines = runCatching { File("/proc/mounts").readLines() }.getOrNull() ?: return null
+        val wanted = LinkedHashSet<String>()
+        for (line in lines) {
+            val cols = line.trim().split(Regex("\\s+"))
+            if (cols.size < 3) continue
+            if (cols[2] !in REAL_FS_TYPES) continue
+            val mount = unescapeMount(cols[1])
+            if (mount == "/" || mount == "/data") wanted.add(mount)
+        }
+        if (wanted.isEmpty()) return null
+
+        val out = ArrayList<String>(wanted.size)
+        for (mount in wanted) {
+            val vfs = runCatching { Os.statvfs(mount) }.getOrNull() ?: continue
+            val frsize = if (vfs.f_frsize > 0L) vfs.f_frsize else vfs.f_bsize
+            if (frsize <= 0L) continue
+            val totalKb = vfs.f_blocks * frsize / 1024L
+            if (totalKb <= 0L) continue
+            val usedKb = (vfs.f_blocks - vfs.f_bfree) * frsize / 1024L
+            val usedPct = (usedKb * 100.0 / totalKb).coerceIn(0.0, 100.0)
+            out.add("$mount ${usedPct.roundToInt()}% (${humanKb(usedKb)}/${humanKb(totalKb)})")
+        }
+        return out.ifEmpty { null }
+    }
+
+    /** `/proc/mounts` 八进制转义反转义（`\040` 空格等）；非转义原样保留。 */
+    private fun unescapeMount(s: String): String {
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 3 < s.length) {
+                val oct = s.substring(i + 1, i + 4)
+                if (oct.all { it in '0'..'7' }) {
+                    out.append(oct.toInt(8).toChar())
+                    i += 4
+                    continue
+                }
+            }
+            out.append(c)
+            i++
+        }
+        return out.toString()
+    }
+
+    /** KiB → 人类可读（`128.5G` / `512M` / `800K`）。 */
+    private fun humanKb(kb: Long): String = when {
+        kb >= 1024L * 1024L -> String.format(Locale.US, "%.1fG", kb / 1024.0 / 1024.0)
+        kb >= 1024L -> "${kb / 1024}M"
+        else -> "${kb}K"
     }
 
     private fun stopOverlay() {
@@ -1079,6 +1705,14 @@ class PerfOverlayService : Service() {
         shizukuThread?.quitSafely()
         shizukuThread = null
         targetPending = false
+        foregroundPending = false
+        systemFpsPending = false
+        lastProcBaseline.clear()
+        lastProcBaselineMs = 0L
+        systemFps = null
+        systemFpsLayer = null
+        systemFpsFrames = null
+        lastSystemFpsMs = 0L
         layoutParams?.let { savePosition(it.x, it.y) }
         val view = overlayView
         overlayView = null

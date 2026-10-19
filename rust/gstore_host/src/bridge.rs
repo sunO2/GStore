@@ -29,6 +29,18 @@ pub fn install_host_panic_hook() {
     });
 }
 
+/// 统一特权 shell 执行（Rust facade）：经 JNI 调 Kotlin `ShizukuExecBridge.exec`。
+/// 无 Shizuku/未初始化 → `null`；返回值用 `Option<String>` 以避免 FRB 对
+/// `Result` 错误类型的约束。
+pub fn shizuku_exec(command: String) -> Option<String> {
+    crate::shizuku_bridge::exec(&command)
+}
+
+/// Shizuku 是否可用（`pingBinder() && checkSelfPermission()==GRANTED`）。
+pub fn shizuku_available() -> bool {
+    crate::shizuku_bridge::is_available()
+}
+
 /// 日志消息数据类（架构文档 6.8；普通数据类，跨模块 re-export 可被 FRB 跟随）
 pub use crate::log_bridge::LogMessage;
 

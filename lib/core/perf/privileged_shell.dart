@@ -5,20 +5,20 @@
 /// （调优 Todo）用本层提供的 builder 发起；本层自身不触碰 `/sys`。
 ///
 /// ## 为什么需要这一层（先读，否则会误用）
-/// * [ShizukuApi.runCommand] 底层是 `Shizuku.newProcess(["sh","-c",cmd])`
-///   （`ShizukuShell.kt:26`）：**stdout 与 stderr 被合并**成一个字符串，
-///   **没有任何退出码返回**（`ShizukuShell.kt:32-49`，只 `waitFor()` 后返回文本）。
+/// * 默认执行器 [rustShizukuRunner] 底层是 Rust 统一门面（JNI → Kotlin
+///   `ShizukuExecBridge.exec` → `Shizuku.newProcess(["sh","-c",cmd])`，复刻
+///   `ShizukuShell.kt` 语义）：**stdout 与 stderr 被合并**成一个字符串，
+///   **没有任何退出码返回**（只 `waitFor()` 后返回文本）。
 ///   因此本库**无法**得知命令的真实退出码；[PrivilegedResult.exitHint] 只是
 ///   shell 内部 `$?` 的**提示值**，不是进程退出码 —— 不要把它当成硬性退出码。
 /// * 底层是**阻塞式** `waitFor()`，Dart 侧 `.timeout()` **无法取消**已启动的原生进程。
 ///   所以「Dart 侧超时」**不等于**「写入被中止」：命令可能仍在原生侧继续跑，
 ///   或已经写入但输出未回传。**超时后必须重新读取节点状态来对账（reconcile），
 ///   不能据此判定写入失败或成功。**
-/// * 插件用**单线程 executor**（`ShizukuApiPlugin.kt:22,41`）串行执行命令 ——
-///   一条卡死的命令会**阻塞其后所有排队命令**。因此**每一条**特权命令都必须在
-///   **shell 内部自我限时**：前缀 `timeout <n> sh -c '…'`（toybox `timeout`），
-///   保证原生进程一定会退出、executor 一定会释放。Dart 侧超时只用于「不再等待」，
-///   绝不能依靠它来解开 executor。
+/// * 底层是**阻塞式** `waitFor()`：一条卡死的命令会**阻塞后续命令**。因此**每一条**
+///   特权命令都必须在 **shell 内部自我限时**：前缀 `timeout <n> sh -c '…'`
+///   （toybox `timeout`），保证原生进程一定会退出。Dart 侧超时只用于「不再等待」，
+///   绝不能依靠它来终止已启动的原生进程。
 ///
 /// ## 成功判定（哨兵）
 /// 命令体 **必须**以 `&&`/`||` 链上哨兵，使哨兵**只在成功时**打印 `ok=1`：
@@ -30,19 +30,20 @@
 /// （先例：`android/.../CaInstaller.kt:151,175,381`）。
 ///
 /// ## 可测试性
-/// [CommandRunner] 可注入（默认经 [ShizukuApi]）；测试注入罐头输出即可，
-/// **不需要** Shizuku / 真机 / 原生插件。全部执行入口**绝不抛出**，一律返回
+/// [CommandRunner] 可注入（默认经 [rustShizukuRunner]）；测试注入罐头输出即可，
+/// **不需要** Shizuku / 真机 / Rust。全部执行入口**绝不抛出**，一律返回
 /// 结构化失败。
 library;
 
 import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:shizuku_api/shizuku_api.dart';
+
+import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 
 /// 执行一条 shell 命令，返回 stdout+stderr 合并文本；未执行 / 失败返回 `null`。
 ///
-/// 生产实现经 [ShizukuApi.runCommand]（`sh -c`）；测试注入罐头输出即可脱离设备。
+/// 生产实现经 [rustShizukuRunner]（Rust 门面 → `sh -c`）；测试注入罐头输出即可脱离设备。
 typedef CommandRunner = Future<String?> Function(String command);
 
 /// 哨兵标记：每条特权命令尾部必须回显一次，供 [PrivilegedResult] 判定成败。
@@ -287,7 +288,7 @@ class PrivilegedInputValidator {
 
 /// Shizuku 特权 shell 传输层。
 ///
-/// 生产：`PrivilegedShell()`（默认经 [ShizukuApi]）。
+/// 生产：`PrivilegedShell()`（默认经 [rustShizukuRunner]）。
 /// 测试：注入 [CommandRunner]，无需 Shizuku / 真机 / 原生插件。
 class PrivilegedShell {
   PrivilegedShell({
@@ -295,12 +296,10 @@ class PrivilegedShell {
     Duration timeout = const Duration(seconds: 6),
     int inShellTimeoutSeconds = 5,
     PrivilegedInputValidator? validator,
-  })  : _runner = runner ?? _defaultRunner,
+  })  : _runner = runner ?? rustShizukuRunner,
         _timeout = timeout,
         _inShellTimeoutSeconds = inShellTimeoutSeconds,
         validator = validator ?? PrivilegedInputValidator();
-
-  static final ShizukuApi _sharedShizukuApi = ShizukuApi();
 
   final CommandRunner _runner;
   final Duration _timeout;
@@ -308,16 +307,6 @@ class PrivilegedShell {
 
   /// 共享入参校验器（调用方可传入自定义白名单的实例以实现复用 / 收紧）。
   final PrivilegedInputValidator validator;
-
-  /// 默认命令执行器：经 [ShizukuApi.runCommand]（异常一律返回 `null`）。
-  static Future<String?> _defaultRunner(String command) async {
-    try {
-      return await _sharedShizukuApi.runCommand(command);
-    } catch (error) {
-      debugPrint('[PrivilegedShell] 命令执行失败（$command）: $error');
-      return null;
-    }
-  }
 
   // ==================== 命令拼装（纯函数，可单测） ====================
 

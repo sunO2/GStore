@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
-import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/perf/miui_thermal.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 
@@ -10,12 +11,15 @@ import 'logic.dart';
 import 'perf_common.dart';
 import 'state.dart';
 
-/// 性能「硬件详情」页（Riverpod）。
+/// 性能「硬件详情」内容部件（Riverpod）。
 ///
-/// 独立路由页面，承载原 `PerfMonitorPage` 模块区的全部设备卡片：CPU（含频率驻留）、
+/// 承载并入 [PerfMonitorPage]「硬件」tab 的全部设备卡片：CPU（含频率驻留）、
 /// 内存、PSI 压力、电池、电池健康、温度、散热设备、GPU、网络（含网卡错误）、存储、进程。
 /// 模块未安装时降级为友好的「安装 / 重试」卡片，绝不崩溃；卡片实现逐字沿用原页面，
 /// 行为 / Key / 文案不变。
+///
+/// **纯内容部件**：不含 Scaffold / AppBar，返回可滚动内容供 [PerfMonitorPage]
+/// 的 tab body 直接复用（刷新入口在页面统一 AppBar）。
 ///
 /// 全部颜色 / 文字走 [Theme] 令牌，间距 / 圆角走设计令牌（AGENTS.md）。
 class PerfHardwarePage extends ConsumerWidget {
@@ -26,20 +30,7 @@ class PerfHardwarePage extends ConsumerWidget {
     final state = ref.watch(perfMonitorProvider);
     final notifier = ref.read(perfMonitorProvider.notifier);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('硬件详情'),
-        actions: [
-          IconButton(
-            key: const Key('perf_hardware_refresh'),
-            icon: const Icon(TablerIcons.refresh, size: AppTypography.iconMD),
-            tooltip: '刷新',
-            onPressed: notifier.refresh,
-          ),
-        ],
-      ),
-      body: ListView(children: _buildModuleArea(context, notifier, state)),
-    );
+    return ListView(children: _buildModuleArea(context, notifier, state));
   }
 
   // ==================== 模块区域 ====================
@@ -49,33 +40,34 @@ class PerfHardwarePage extends ConsumerWidget {
     PerfMonitorNotifier notifier,
     PerfPageState state,
   ) {
+    final widgets = <Widget>[];
     if (state.modulePreparing) {
-      return [_buildPreparingCard(context, state)];
+      widgets.add(_buildPreparingCard(context, state));
+    } else if (!state.moduleReady) {
+      widgets.add(_buildUnavailableCard(context, notifier, state));
+    } else {
+      if (state.error != null) widgets.add(_buildErrorCard(context, state.error!));
+      if (state.loading && state.cpu == null) {
+        widgets.add(_buildLoadingCard(context));
+      } else {
+        widgets
+          ..add(_buildCpuCard(context, state))
+          ..add(_buildCpuFreqResidencyCard(context, state))
+          ..add(_buildMemoryCard(context, state))
+          ..add(_buildPressureCard(context, state))
+          ..add(_buildBatteryCard(context, state))
+          ..add(_buildBatteryHealthCard(context, state))
+          ..add(_buildThermalCard(context, state))
+          ..add(_buildCoolingCard(context, state))
+          ..add(_buildGpuCard(context, state))
+          ..add(_buildNetworkCard(context, state))
+          ..add(_buildNetworkErrorCard(context, state))
+          ..add(_buildStorageCard(context, state))
+          ..add(_buildProcessCard(context, notifier, state));
+      }
     }
-    if (!state.moduleReady) {
-      return [_buildUnavailableCard(context, notifier, state)];
-    }
-    final widgets = <Widget>[
-      if (state.error != null) _buildErrorCard(context, state.error!),
-    ];
-    if (state.loading && state.cpu == null) {
-      widgets.add(_buildLoadingCard(context));
-      return widgets;
-    }
-    widgets
-      ..add(_buildCpuCard(context, state))
-      ..add(_buildCpuFreqResidencyCard(context, state))
-      ..add(_buildMemoryCard(context, state))
-      ..add(_buildPressureCard(context, state))
-      ..add(_buildBatteryCard(context, state))
-      ..add(_buildBatteryHealthCard(context, state))
-      ..add(_buildThermalCard(context, state))
-      ..add(_buildCoolingCard(context, state))
-      ..add(_buildGpuCard(context, state))
-      ..add(_buildNetworkCard(context, state))
-      ..add(_buildNetworkErrorCard(context, state))
-      ..add(_buildStorageCard(context, state))
-      ..add(_buildProcessCard(context, notifier, state));
+    // MIUI 温控卡独立于原生性能模块（只依赖 Shizuku），恒渲染。
+    widgets.add(const MiuiThermalCard());
     return widgets;
   }
 
@@ -956,5 +948,358 @@ class PerfHardwarePage extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+/// 「MIUI 温控」独立卡片（只依赖 Shizuku，不依赖原生性能模块）。
+///
+/// * 检测：显示「MIUI <版本>」或「非 MIUI（本卡不可用）」；Shizuku 不可达 →
+///   禁用 + 原因。
+/// * 温控配置列表（[Key] `miui_thermal_configs`）：路径 / 大小 + 备份按钮
+///   （[Key] `miui_thermal_backup_<index>`）。
+/// * 本应用备份列表（[Key] `miui_thermal_backups`）：时间 / 文件名 / 目标路径 +
+///   恢复按钮（[Key] `miui_thermal_restore_<index>`）；恢复经
+///   [AppDialogs.showConfirmSheet] 危险色二次确认后执行，显式成功 / 失败提示。
+/// * 刷新按钮（[Key] `miui_thermal_refresh`）；加载 / 空态齐全。
+///
+/// 服务经 [miuiThermalServiceProvider] 注入，测试可覆盖为假服务。
+class MiuiThermalCard extends ConsumerStatefulWidget {
+  const MiuiThermalCard({super.key});
+
+  @override
+  ConsumerState<MiuiThermalCard> createState() => _MiuiThermalCardState();
+}
+
+class _MiuiThermalCardState extends ConsumerState<MiuiThermalCard> {
+  MiuiDetection? _detection;
+  ThermalDiagnostic? _diagnostic;
+  List<MiuiThermalBackup> _backups = const <MiuiThermalBackup>[];
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
+
+  MiuiThermalService get _service => ref.read(miuiThermalServiceProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final detection = await _service.detect();
+      if (!mounted) return;
+      if (!detection.isMiui || !detection.reachable) {
+        setState(() {
+          _detection = detection;
+          _diagnostic = null;
+          _backups = const <MiuiThermalBackup>[];
+          _loading = false;
+        });
+        return;
+      }
+      final diagnostic = await _service.diagnose();
+      final backups = await _service.listBackups();
+      if (!mounted) return;
+      setState(() {
+        _detection = detection;
+        _diagnostic = diagnostic;
+        _backups = backups;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _onBackup(ThermalConfigEntry entry) async {
+    setState(() => _busy = true);
+    final result = await _service.backup(entry.path);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (result.ok) {
+      AppDialogs.showSuccess('已备份 ${entry.path}');
+      await _refresh();
+    } else {
+      AppDialogs.showError('备份失败：${result.detail}');
+    }
+  }
+
+  Future<void> _onRestore(MiuiThermalBackup backup) async {
+    final confirmed = await AppDialogs.showConfirmSheet(
+      title: '恢复温控配置？',
+      message: '将用备份覆盖：\n${backup.sourcePath}\n\n'
+          '此操作会改写系统温控配置文件，可能影响散热 / 性能，且不会自动撤销。',
+      confirmText: '恢复',
+      isDangerous: true,
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    final result = await _service.restore(backup, confirmed: true);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (result.ok) {
+      AppDialogs.showSuccess('已恢复到 ${backup.sourcePath}');
+    } else {
+      AppDialogs.showError('恢复失败：${result.detail}');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      key: const Key('miui_thermal_card'),
+      margin: AppSpacing.allLG,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            perfSectionHeader(
+              context,
+              TablerIcons.temperature,
+              'MIUI 温控',
+              trailing: IconButton(
+                key: const Key('miui_thermal_refresh'),
+                onPressed: _loading || _busy ? null : _refresh,
+                icon: const Icon(
+                  TablerIcons.refresh,
+                  size: AppTypography.iconMD,
+                ),
+                tooltip: '刷新',
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            ..._buildBody(context, theme),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildBody(BuildContext context, ThemeData theme) {
+    final scheme = theme.colorScheme;
+    if (_error != null) {
+      return [
+        Text(
+          '读取失败：$_error',
+          style: theme.textTheme.bodyMedium?.copyWith(color: scheme.error),
+        ),
+      ];
+    }
+    if (_loading) {
+      return [
+        Row(
+          children: [
+            const AppLoading(size: AppLoadingSize.small),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Text('正在检测 MIUI / 温控配置…',
+                  style: theme.textTheme.bodyMedium),
+            ),
+          ],
+        ),
+      ];
+    }
+    final detection = _detection;
+    if (detection == null) {
+      return [Text('不可用', style: theme.textTheme.bodyMedium)];
+    }
+    if (!detection.reachable) {
+      return [
+        Text(
+          'Shizuku 不可用，无法读取温控配置（本卡需要 Shizuku 特权）',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ];
+    }
+    if (!detection.isMiui) {
+      return [
+        Row(
+          children: [
+            Icon(
+              TablerIcons.info_circle,
+              size: AppTypography.iconMD,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Text(
+                '非 MIUI（本卡不可用）',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ];
+    }
+
+    final diagnostic = _diagnostic ?? const ThermalDiagnostic();
+    return [
+      perfKv(context, '系统', detection.display),
+      const SizedBox(height: AppSpacing.md),
+      Text('温控配置', style: theme.textTheme.titleSmall),
+      const SizedBox(height: AppSpacing.xs),
+      if (diagnostic.configs.isEmpty)
+        Text(
+          '未发现已知温控配置（路径可能因机型 / 版本而异）',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        )
+      else
+        Column(
+          key: const Key('miui_thermal_configs'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < diagnostic.configs.length; i++)
+              _buildConfigRow(context, theme, i, diagnostic.configs[i]),
+          ],
+        ),
+      const SizedBox(height: AppSpacing.md),
+      Text('本应用备份', style: theme.textTheme.titleSmall),
+      const SizedBox(height: AppSpacing.xs),
+      if (_backups.isEmpty)
+        Text(
+          '暂无本应用备份',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        )
+      else
+        Column(
+          key: const Key('miui_thermal_backups'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < _backups.length; i++)
+              _buildBackupRow(context, theme, i, _backups[i]),
+          ],
+        ),
+      if (_busy) ...[
+        const SizedBox(height: AppSpacing.sm),
+        Row(
+          children: [
+            const AppLoading(size: AppLoadingSize.small),
+            const SizedBox(width: AppSpacing.md),
+            Text('处理中…', style: theme.textTheme.bodySmall),
+          ],
+        ),
+      ],
+    ];
+  }
+
+  Widget _buildConfigRow(
+    BuildContext context,
+    ThemeData theme,
+    int index,
+    ThermalConfigEntry entry,
+  ) {
+    final scheme = theme.colorScheme;
+    final size = entry.sizeBytes == null ? '大小未知' : '${entry.sizeBytes} B';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.path,
+                  style: theme.textTheme.bodyMedium,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  size,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          TextButton(
+            key: Key('miui_thermal_backup_$index'),
+            onPressed: _busy ? null : () => _onBackup(entry),
+            child: const Text('备份'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBackupRow(
+    BuildContext context,
+    ThemeData theme,
+    int index,
+    MiuiThermalBackup backup,
+  ) {
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _formatTime(backup.createdAtMs),
+                  style: theme.textTheme.bodyMedium,
+                ),
+                Text(
+                  backup.fileName,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  '目标：${backup.sourcePath}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          TextButton(
+            key: Key('miui_thermal_restore_$index'),
+            onPressed: _busy ? null : () => _onRestore(backup),
+            style: TextButton.styleFrom(foregroundColor: scheme.error),
+            child: const Text('恢复'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 简易本地时间串（避免引入 intl 依赖）。
+  static String _formatTime(int epochMs) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(epochMs);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}';
   }
 }

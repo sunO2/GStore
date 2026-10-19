@@ -4,6 +4,8 @@ mod bridge;
 mod manager;
 mod dl_adapter;
 mod jni_bridge;
+// 统一特权 shell 门面：Rust → JNI → Kotlin `ShizukuExecBridge` → Shizuku。
+mod shizuku_bridge;
 // T12 宿主 UID/包名解析 API。`resolve_uids` 的宿主侧消费者是 T13（内部事件消费），
 // 在接线前以库 API 暴露可避免暂存期 dead_code 告警。
 pub use jni_bridge::{resolve_uids, UidAnswer, UidQueryHost};

@@ -1,32 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
-import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/perf/perf_report_store.dart';
 import 'package:gstore/compent/line_chart.dart';
 
+import 'control_page.dart';
+import 'hardware_page.dart';
 import 'logic.dart';
 import 'perf_common.dart';
+import 'perf_overlay_tile.dart';
+import 'perf_profiles_tile.dart';
+import 'reports_page.dart';
 import 'state.dart';
+import 'third_party_page.dart';
+
+/// 性能监控页顶部分区（并入原 1 概览 + 4 条 push 子路由）。
+enum PerfTab {
+  /// 概览：渲染 / FPS、指标趋势、采样开关、基线对比、悬浮窗与性能模式。
+  overview,
+
+  /// 硬件：CPU / 内存 / 电池 / 温度 / GPU / 网络 / 进程等设备卡片。
+  hardware,
+
+  /// 控制 / 调优：CPU 逐簇、GPU、cpuset、热控。
+  control,
+
+  /// 报告：导出 + 自动导出配置 + 最近报告。
+  reports,
+
+  /// 第三方应用：Shizuku 逐应用指标。
+  thirdParty,
+}
 
 /// 性能监控页（Riverpod）。
+///
+/// 单 Scaffold + 顶部 [AppTabBar] 五段（概览 / 硬件 / 控制 / 报告 / 第三方），
+/// 按选中 tab 渲染对应内容部件；五个 tab 由**同一个** [perfMonitorProvider]
+/// 驱动，切换 tab 不重建监控状态。
 ///
 /// 「渲染 / FPS」区纯 Dart、恒可用；原生模块区（CPU / 内存 / 电池 / 温度 / GPU /
 /// 网络 / 进程）在模块未安装时降级为友好的「安装 / 重试」卡片，绝不崩溃。
 ///
 /// 全部颜色 / 文字走 [Theme] 令牌，间距 / 圆角走设计令牌（AGENTS.md）。
-class PerfMonitorPage extends ConsumerWidget {
+class PerfMonitorPage extends ConsumerStatefulWidget {
   const PerfMonitorPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PerfMonitorPage> createState() => _PerfMonitorPageState();
+}
+
+class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
+  PerfTab _tab = PerfTab.overview;
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(perfMonitorProvider);
     final notifier = ref.read(perfMonitorProvider.notifier);
     // keep-alive: provider drives auto-export start/stop (概览页切换「采样 / 实时」
-    // 时仍驱动服务，即使「性能报告」页未挂载)。
+    // 时仍驱动服务，即使「报告」tab 内容未构建)。
     ref.watch(perfAutoExportServiceProvider);
 
     return Scaffold(
@@ -41,21 +75,78 @@ class PerfMonitorPage extends ConsumerWidget {
           ),
         ],
       ),
-      body: ListView(
+      body: Column(
         children: [
-          _buildFrameSection(context, notifier, state),
-          const SizedBox(height: AppSpacing.md),
-          _buildTrendSection(context, state),
-          const SizedBox(height: AppSpacing.md),
-          _buildSamplingCard(context, notifier, state),
-          const SizedBox(height: AppSpacing.md),
-          const _BaselineCard(),
-          const SizedBox(height: AppSpacing.md),
-          const _NavSectionCard(),
-          const SizedBox(height: AppSpacing.xxl),
+          // 顶部五段切换（复用设计系统 [AppTabBar]/[AppSegment]，自带 controller）。
+          Padding(
+            padding: AppSpacing.allLG,
+            child: AppTabBar<PerfTab>(
+              key: const Key('perf-tab-switch'),
+              value: _tab,
+              segments: const <AppSegment<PerfTab>>[
+                AppSegment<PerfTab>(
+                  value: PerfTab.overview,
+                  label: '概览',
+                  key: Key('perf_tab_overview'),
+                ),
+                AppSegment<PerfTab>(
+                  value: PerfTab.hardware,
+                  label: '硬件',
+                  key: Key('perf_tab_hardware'),
+                ),
+                AppSegment<PerfTab>(
+                  value: PerfTab.control,
+                  label: '控制',
+                  key: Key('perf_tab_control'),
+                ),
+                AppSegment<PerfTab>(
+                  value: PerfTab.reports,
+                  label: '报告',
+                  key: Key('perf_tab_reports'),
+                ),
+                AppSegment<PerfTab>(
+                  value: PerfTab.thirdParty,
+                  label: '第三方',
+                  key: Key('perf_tab_third_party'),
+                ),
+              ],
+              onChanged: (tab) => setState(() => _tab = tab),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(child: _buildTabBody(state, notifier)),
         ],
       ),
     );
+  }
+
+  /// 按选中 tab 渲染对应内容（每个内容部件均为可滚动视图）。
+  Widget _buildTabBody(PerfPageState state, PerfMonitorNotifier notifier) {
+    switch (_tab) {
+      case PerfTab.overview:
+        return ListView(
+          children: [
+            _buildFrameSection(context, notifier, state),
+            const SizedBox(height: AppSpacing.md),
+            _buildTrendSection(context, state),
+            const SizedBox(height: AppSpacing.md),
+            _buildSamplingCard(context, notifier, state),
+            const SizedBox(height: AppSpacing.md),
+            const _BaselineCard(),
+            const SizedBox(height: AppSpacing.md),
+            const _OverlayProfilesCard(),
+            const SizedBox(height: AppSpacing.xxl),
+          ],
+        );
+      case PerfTab.hardware:
+        return const PerfHardwarePage();
+      case PerfTab.control:
+        return const PerfControlPage();
+      case PerfTab.reports:
+        return const PerfReportsPage();
+      case PerfTab.thirdParty:
+        return const PerfThirdPartyPage();
+    }
   }
 
   // ==================== 渲染 / FPS ====================
@@ -100,24 +191,33 @@ class PerfMonitorPage extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.md),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  stats.fps.toStringAsFixed(1),
-                  style: theme.textTheme.displaySmall?.copyWith(
-                    color: scheme.primary,
-                    fontWeight: AppTypography.weightBold,
-                  ),
+                _fpsColumn(
+                  context,
+                  key: const Key('perf_fps_app'),
+                  label: '本应用',
+                  value: stats.fps.toStringAsFixed(1),
+                  sub: 'Flutter 渲染率',
                 ),
-                const SizedBox(width: AppSpacing.xs),
-                Padding(
-                  padding: AppSpacing.onlyBottomSM,
-                  child: Text(
-                    'FPS',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
+                _fpsColumn(
+                  context,
+                  key: const Key('perf_fps_screen'),
+                  label: '屏幕',
+                  value: state.screenFps?.toStringAsFixed(1) ?? '—',
+                  sub: state.screenFps == null
+                      ? '需 Shizuku / 无数据'
+                      : (_shortLayerName(state.screenFpsLayer) ??
+                          'SurfaceFlinger'),
+                ),
+                _fpsColumn(
+                  context,
+                  key: const Key('perf_fps_third_party'),
+                  label: '第三方',
+                  value: state.thirdPartyFps?.toStringAsFixed(1) ?? '—',
+                  sub: state.thirdPartyFpsLabel ??
+                      (state.thirdPartyFps == null ? '未选择目标' : '目标应用'),
+                  isLast: true,
                 ),
               ],
             ),
@@ -200,6 +300,84 @@ class PerfMonitorPage extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// 单个 FPS 口径列（标签 + 大数值 +「FPS」单位 + 副标）。
+  ///
+  /// 颜色 / 文字走主题令牌（AGENTS.md）；三列等宽，末列不加右边距。
+  Widget _fpsColumn(
+    BuildContext context, {
+    required Key key,
+    required String label,
+    required String value,
+    required String sub,
+    bool isLast = false,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Expanded(
+      child: Padding(
+        key: key,
+        padding: EdgeInsets.only(right: isLast ? 0 : AppSpacing.sm),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Flexible(
+                  child: Text(
+                    value,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      color: scheme.primary,
+                      fontWeight: AppTypography.weightBold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Padding(
+                  padding: AppSpacing.onlyBottomXS,
+                  child: Text(
+                    'FPS',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              sub,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// `layerName` 短名：取末段（`/` 之后）、去掉 `#N` 序号，过长则截断。
+  static String? _shortLayerName(String? layer) {
+    if (layer == null || layer.isEmpty) return null;
+    final slash = layer.lastIndexOf('/');
+    var short = slash >= 0 ? layer.substring(slash + 1) : layer;
+    short = short.replaceAll(RegExp(r'#\d+'), '');
+    if (short.length > 28) short = '${short.substring(0, 25)}…';
+    return short;
   }
 
   Widget _worstFrameRow(BuildContext context, int rank, FrameSample frame) {
@@ -509,74 +687,31 @@ class PerfMonitorPage extends ConsumerWidget {
 }
 
 
-// ==================== 更多功能导航卡 ====================
+// ==================== 悬浮窗与性能模式卡 ====================
 
-/// 概览页底的「更多功能」导航卡：4 个入口分别跳转到拆出的硬件 / 控制 /
-/// 报告 / 第三方应用页。
-class _NavSectionCard extends StatelessWidget {
-  const _NavSectionCard();
+/// 概览 tab 底的「悬浮窗与性能模式」卡：内嵌从设置「模块」区块迁入的
+/// [PerfOverlayTile]（悬浮窗监控）与 [PerfProfilesTile]（按应用性能模式 + 档案入口）。
+class _OverlayProfilesCard extends StatelessWidget {
+  const _OverlayProfilesCard();
 
   @override
   Widget build(BuildContext context) {
     return Card(
       margin: AppSpacing.allLG,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
             padding: AppSpacing.allLG,
-            child: perfSectionHeader(context, TablerIcons.apps, '更多功能'),
+            child: perfSectionHeader(
+              context,
+              TablerIcons.device_desktop,
+              '悬浮窗与性能模式',
+            ),
           ),
           const Divider(height: 1),
-          ListTile(
-            key: const Key('perf_nav_perfHardware'),
-            leading: const Icon(TablerIcons.cpu, size: AppTypography.iconMD),
-            title: const Text('硬件详情'),
-            trailing: const Icon(
-              TablerIcons.chevron_right,
-              size: AppTypography.iconSM,
-            ),
-            onTap: () => context.push(AppRoute.perfHardware),
-          ),
+          const PerfOverlayTile(),
           const Divider(height: 1),
-          ListTile(
-            key: const Key('perf_nav_perfControl'),
-            leading: const Icon(
-              TablerIcons.adjustments,
-              size: AppTypography.iconMD,
-            ),
-            title: const Text('控制 / 调优'),
-            trailing: const Icon(
-              TablerIcons.chevron_right,
-              size: AppTypography.iconSM,
-            ),
-            onTap: () => context.push(AppRoute.perfControl),
-          ),
-          const Divider(height: 1),
-          ListTile(
-            key: const Key('perf_nav_perfReports'),
-            leading: const Icon(
-              TablerIcons.file_description,
-              size: AppTypography.iconMD,
-            ),
-            title: const Text('性能报告'),
-            trailing: const Icon(
-              TablerIcons.chevron_right,
-              size: AppTypography.iconSM,
-            ),
-            onTap: () => context.push(AppRoute.perfReports),
-          ),
-          const Divider(height: 1),
-          ListTile(
-            key: const Key('perf_nav_perfThirdParty'),
-            leading: const Icon(TablerIcons.apps, size: AppTypography.iconMD),
-            title: const Text('第三方应用'),
-            trailing: const Icon(
-              TablerIcons.chevron_right,
-              size: AppTypography.iconSM,
-            ),
-            onTap: () => context.push(AppRoute.perfThirdParty),
-          ),
+          const PerfProfilesTile(),
         ],
       ),
     );

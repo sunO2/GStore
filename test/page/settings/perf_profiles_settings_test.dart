@@ -11,7 +11,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/routers.dart';
-import 'package:gstore/page/settings/settings_page.dart';
+import 'package:gstore/page/perf/perf_profiles_tile.dart';
 
 /// 至少一个类别可用（CPU）的能力图。
 const PerfControlCapabilities _availableCaps = PerfControlCapabilities(

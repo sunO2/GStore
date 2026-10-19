@@ -95,6 +95,10 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 应用启动即初始化 Shizuku 特权执行薄壳：加载 libgstore_host + 回调 Rust
+        // 侧 nativeInit（缓存 JavaVM 与本类 GlobalRef），供 Rust 经 JNI 执行 shell。
+        // best-effort：失败静默绝不崩溃，不依赖 VPN/Flutter 引擎启动时序。
+        ShizukuExecBridge.ensureInit()
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
             Log.i(TAG, "onCreate: 收到管理空间入口请求")

@@ -14,17 +14,21 @@
 ///
 /// ## 统计口径
 /// * 滚动窗口：默认保留最近 [FrameStatsAccumulator.window] 帧（默认 120），
-///   `avg` / `p50` / `p90` / `p99` / `fps` / 窗口 jank 均只由窗口内帧计算。
+///   `avg` / `p50` / `p90` / `p99` / 窗口 jank 均只由窗口内帧计算。
 /// * 百分位采用**最近秩（nearest-rank）**法：升序排序后
 ///   `index = ceil(p/100 * N) - 1`（越界钳制到 `[0, N-1]`），结果确定、可复现。
-/// * **交付 FPS（delivered FPS）**：由窗口内各帧的 **vsync 时间戳**
-///   （[FrameSample.vsyncTimestampUs]，即 Flutter `FrameTiming.timestampInMicroseconds`）
-///   换算：`fps = (n - 1) × 1e6 / (lastTimestampUs - firstTimestampUs)`（n = 窗口帧数）。
+/// * **交付 FPS（delivered FPS）—— 时间窗口口径**：`fps` / `frameIntervalMs` 只由
+///   **末样本往前 [FrameStatsAccumulator.fpsWindow] 之内**（默认 2s）的样本换算，
+///   而非整个 120 帧窗口。这样「静止时长时间不刷新」不会因跨越分钟级的旧样本被
+///   拉低/平均掉，反映的是**最近 2s 的实际交付帧率**。取这些近期样本后：
+///   `fps = (n' - 1) × 1e6 / (lastTimestampUs - firstTimestampUs)`（n' = 近期样本数）。
 ///   这是「实际交付的帧率」，与每帧耗时无关——一帧即便只花 8ms，只要每 16.67ms 才
-///   交付一次，就应记为 ≈60fps，而不是 `1e6/8000` ≈125fps。窗口内帧数 < 2 或时间跨度
-///   ≤ 0（例如时间戳全相同）时 `fps = 0`。`frameIntervalMs` 为窗口内**平均帧间隔**
-///   = `(lastTimestampUs - firstTimestampUs) / (n - 1) / 1000`（同条件下为 0）。
-///   **注意**：`total` 帧耗时只用于均值/百分位/jank，**绝不**用来换算 FPS。
+///   交付一次，就应记为 ≈60fps，而不是 `1e6/8000` ≈125fps。近期样本数 < 2 或时间跨度
+///   ≤ 0（例如时间戳全相同）时 `fps = 0`。`frameIntervalMs` 为近期样本的**平均帧间隔**
+///   = `(lastTimestampUs - firstTimestampUs) / (n' - 1) / 1000`（同条件下为 0）。
+///   [FrameStatsAccumulator.fpsWindow] 传 `null` 时退回「整窗（120 帧）口径」。
+///   **注意**：`total` 帧耗时只用于均值/百分位/jank，**绝不**用来换算 FPS；
+///   百分位 / jank / worstFrames 仍用**完整 120 帧窗口**。
 /// * jank 定义：`total 帧时间 > jankThresholdFactor × budget`，默认系数 2、
 ///   周期 `budgetMs = 16.666`（≈60Hz），故默认阈值为 33.332ms。判定用**严格大于**。
 library;
@@ -164,16 +168,19 @@ class FrameStats {
   /// jank 判定阈值（毫秒）= `jankThresholdFactor × budgetMs`。默认 33.332。
   final double jankThresholdMs;
 
-  /// **交付** FPS（delivered FPS），由窗口内各帧的 vsync **时间戳**换算：
-  /// `(n - 1) × 1e6 / (lastTimestampUs - firstTimestampUs)`。
+  /// **交付** FPS（delivered FPS），由**末样本往前 [FrameStatsAccumulator.fpsWindow]
+  /// 内**（默认 2s）各帧的 vsync **时间戳**换算：
+  /// `(n' - 1) × 1e6 / (lastTimestampUs - firstTimestampUs)`（n' = 近期样本数）。
   ///
-  /// 反映「实际交付的帧率」，**不是**由帧耗时换算的理论吞吐。窗口内帧数 < 2 或
+  /// 反映「最近 2s 内实际交付的帧率」，**不是**由帧耗时换算的理论吞吐，也**不是**
+  /// 整窗（120 帧）的长期平均（避免静止时被跨分钟的旧样本拉低）。近期样本数 < 2 或
   /// 时间跨度 ≤ 0 时为 0。注意 `total` 帧耗时只用于均值/百分位/jank。
   final double fps;
 
-  /// 窗口内**平均帧间隔**（毫秒）= `(lastTimestampUs - firstTimestampUs) / (n-1) / 1000`。
+  /// 近期（[FrameStatsAccumulator.fpsWindow] 内）**平均帧间隔**（毫秒）
+  /// = `(lastTimestampUs - firstTimestampUs) / (n' - 1) / 1000`。
   ///
-  /// 与 `1000 / fps` 互为倒数；窗口内帧数 < 2 或跨度 ≤ 0 时为 0。
+  /// 与 `1000 / fps` 互为倒数；近期样本数 < 2 或跨度 ≤ 0 时为 0。
   final double frameIntervalMs;
 
   final double avgBuildMs;
@@ -240,6 +247,7 @@ class FrameStatsAccumulator {
     double budgetMs = 16.666,
     double jankThresholdFactor = 2.0,
     int worstFramesLimit = 5,
+    Duration? fpsWindow = const Duration(seconds: 2),
   })  : assert(window > 0, 'window 必须 > 0'),
         assert(budgetMs > 0, 'budgetMs 必须 > 0'),
         assert(jankThresholdFactor > 0, 'jankThresholdFactor 必须 > 0'),
@@ -247,12 +255,16 @@ class FrameStatsAccumulator {
         _window = window,
         _budgetMs = budgetMs,
         _jankThresholdFactor = jankThresholdFactor,
-        _worstFramesLimit = worstFramesLimit;
+        _worstFramesLimit = worstFramesLimit,
+        _fpsWindow = fpsWindow;
 
   final int _window;
   final double _budgetMs;
   final double _jankThresholdFactor;
   final int _worstFramesLimit;
+
+  /// 交付 FPS 的时间窗口。`null` 表示不做时间过滤（退回整窗 120 帧口径）。
+  final Duration? _fpsWindow;
 
   /// 滚动窗口（最近 [_window] 帧）。
   final List<FrameSample> _samples = <FrameSample>[];
@@ -262,6 +274,9 @@ class FrameStatsAccumulator {
 
   /// 滚动窗口大小 N。
   int get window => _window;
+
+  /// 交付 FPS 的计算时间窗口（默认 2s；`null` = 整窗口径）。
+  Duration? get fpsWindow => _fpsWindow;
 
   /// 单帧预算（显示周期），毫秒。
   double get budgetMs => _budgetMs;
@@ -337,13 +352,16 @@ class FrameStatsAccumulator {
 
     final avgTotalUs = _sum(totals) / n;
 
-    // 交付 FPS：来自窗口内 vsync 时间戳的跨度，与帧耗时无关。
-    final firstTs = _samples.first.vsyncTimestampUs;
+    // 交付 FPS：只取「末样本往前 fpsWindow 内」的近期样本（时间窗口径），
+    // 与帧耗时无关；百分位/jank 仍用完整 120 帧窗口（上文 builds/.../totals）。
     final lastTs = _samples.last.vsyncTimestampUs;
+    final recent = _recentSamples(lastTs);
+    final nr = recent.length;
+    final firstTs = nr == 0 ? lastTs : recent.first.vsyncTimestampUs;
     final spanUs = lastTs - firstTs;
-    final hasSpan = n >= 2 && spanUs > 0;
-    final fps = hasSpan ? (n - 1) * 1000000.0 / spanUs : 0.0;
-    final frameIntervalMs = hasSpan ? spanUs / (n - 1) / 1000.0 : 0.0;
+    final hasSpan = nr >= 2 && spanUs > 0;
+    final fps = hasSpan ? (nr - 1) * 1000000.0 / spanUs : 0.0;
+    final frameIntervalMs = hasSpan ? spanUs / (nr - 1) / 1000.0 : 0.0;
 
     final thresholdUs = _jankThresholdUs;
     var windowJank = 0;
@@ -379,6 +397,19 @@ class FrameStatsAccumulator {
       windowJankRatio: n == 0 ? 0 : windowJank / n,
       worstFrames: _worstFrames(),
     );
+  }
+
+  /// 交付 FPS 的近期样本：末样本往前 [_fpsWindow] 内的样本（保持插入顺序）。
+  ///
+  /// `_fpsWindow == null` 时返回全部窗口样本（整窗口径）。末样本自身恒满足
+  /// `lastTs - lastTs = 0 <= window`，故结果非空。
+  List<FrameSample> _recentSamples(int lastTs) {
+    final window = _fpsWindow;
+    if (window == null) return _samples;
+    final windowUs = window.inMicroseconds;
+    return _samples
+        .where((s) => lastTs - s.vsyncTimestampUs <= windowUs)
+        .toList(growable: false);
   }
 
   /// 清空全部滚动样本与计数器（窗口/预算配置保留）。

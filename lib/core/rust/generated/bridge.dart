@@ -19,6 +19,16 @@ import 'task_bridge.dart';
 Future<void> installHostPanicHook() =>
     RustLib.instance.api.crateBridgeInstallHostPanicHook();
 
+/// 统一特权 shell 执行（Rust facade）：经 JNI 调 Kotlin `ShizukuExecBridge.exec`。
+/// 无 Shizuku/未初始化 → `null`；返回值用 `Option<String>` 以避免 FRB 对
+/// `Result` 错误类型的约束。
+Future<String?> shizukuExec({required String command}) =>
+    RustLib.instance.api.crateBridgeShizukuExec(command: command);
+
+/// Shizuku 是否可用（`pingBinder() && checkSelfPermission()==GRANTED`）。
+Future<bool> shizukuAvailable() =>
+    RustLib.instance.api.crateBridgeShizukuAvailable();
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
 abstract class EventBridge implements RustOpaqueInterface {
   /// 应用侧事件下行：广播给所有已加载模块（模块经 ABI `on_event` 订阅）。
@@ -42,8 +52,13 @@ abstract class HostInspector implements RustOpaqueInterface {
   static Future<HostInspector> newInstance() =>
       RustLib.instance.api.crateBridgeHostInspectorNew();
 
-  /// 清空日志/事件桥的订阅 sink。引擎在同进程内被销毁重建时，宿主仍持有指向
-  /// 上一个 Dart isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+  /// 清空日志/事件/任务桥的订阅 sink。引擎在同进程内被销毁重建、或 Flutter
+  /// engine/Dart isolate 重启（Activity 重建）时，宿主仍持有指向上一个
+  /// isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+  ///
+  /// 只丢弃订阅端点：Rust 引擎、已加载模块与 TUN 隧道**不受影响**（隧道由
+  /// `nativeSetTunFd` 持有，模块事件/日志继续入有界环形缓冲，新 isolate
+  /// 重新订阅时补发）。任务（[`crate::task_bridge`]）继续运行，仅其 sink 被丢弃。
   Future<void> resetBridges();
 }
 

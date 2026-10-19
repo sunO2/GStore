@@ -17,6 +17,8 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/perf/fps_session_recorder.dart';
+import 'package:gstore/core/perf/fps_session_store.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/perf_auto_export_service.dart';
 import 'package:gstore/core/perf/perf_auto_export_settings.dart';
@@ -24,6 +26,8 @@ import 'package:gstore/core/perf/perf_history_store.dart';
 import 'package:gstore/core/perf/perf_report.dart';
 import 'package:gstore/core/perf/perf_report_store.dart';
 import 'package:gstore/core/perf/perf_target_store.dart';
+import 'package:gstore/core/perf/system_fps_service.dart' hide CommandRunner;
+import 'package:gstore/core/perf/third_party_perf_service.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 
@@ -54,6 +58,19 @@ final perfReportStoreProvider =
 /// 最近第三方目标存储（测试覆盖为内存实现）。
 final perfTargetStoreProvider =
     Provider<PerfTargetStore>((ref) => const SharedPrefsPerfTargetStore());
+
+/// 系统帧率服务（生产 `SystemFpsService()`；测试注入罐头 [CommandRunner]）。
+///
+/// 屏幕交付帧率经 SurfaceFlinger `--timestats` 采样，故需要 Shizuku（shell
+/// uid 2000）；无 Shizuku 时服务降级为 `null`（UI 显「需 Shizuku / 无数据」）。
+final perfSystemFpsServiceProvider =
+    Provider<SystemFpsService>((ref) => SystemFpsService());
+
+/// 第三方应用性能服务（生产 `ThirdPartyPerfService()`；测试注入假服务）。
+///
+/// FPS 卡「第三方」口径**复用**本服务（`watch`），不新建数据通路。
+final perfThirdPartyServiceProvider =
+    Provider<ThirdPartyPerfService>((ref) => ThirdPartyPerfService());
 
 /// 自动导出设置持久化（测试覆盖为内存实现）。
 final perfAutoExportSettingsStoreProvider =
@@ -143,6 +160,32 @@ final perfAutoExportServiceProvider = Provider<PerfAutoExportService>((ref) {
   return service;
 });
 
+/// FPS 会话录制持久化（生产 `SharedPreferences`；测试覆盖为内存实现）。
+final fpsSessionStoreProvider = Provider<FpsSessionStore>(
+  (ref) => const SharedPrefsFpsSessionStore(),
+);
+
+/// FPS 会话录制器（生产接线系统帧率采样；随 ProviderScope 释放取消定时器）。
+///
+/// sampler 复用 [perfSystemFpsServiceProvider]（**不新建数据通路**）：每拍取
+/// `SystemFpsSample.fps`；失败 / 无数据返回 `null`（录制器跳过该拍）。
+final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
+  final recorder = FpsSessionRecorder(
+    store: ref.watch(fpsSessionStoreProvider),
+    sampler: () async {
+      try {
+        final sample = await ref.read(perfSystemFpsServiceProvider).sample();
+        return sample?.fps;
+      } catch (error) {
+        debugPrint('[PerfMonitor] FPS 会话采样失败（跳过）: $error');
+        return null;
+      }
+    },
+  );
+  ref.onDispose(recorder.dispose);
+  return recorder;
+});
+
 /// 自动导出设置的加载 / 保存控制器。
 class PerfAutoExportSettingsNotifier
     extends Notifier<PerfAutoExportSettings> {
@@ -197,8 +240,23 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   /// 实时刷新定时器（1s；仅 [PerfPageState.live] 或采样开启时运行）。
   Timer? _ticker;
 
+  /// 系统帧率轮询定时器（1s；仅 `frameMonitorRunning || live` 时运行）。
+  Timer? _systemFpsTimer;
+
+  /// 第三方目标帧率订阅（复用 `ThirdPartyPerfService.watch`）。
+  StreamSubscription<ThirdPartySample>? _thirdPartySub;
+
+  /// 当前正在订阅的第三方目标包名（避免同一目标重复订阅）。
+  String? _watchingPackage;
+
   /// build 时捕获的帧监控引用（dispose 阶段 `ref` 已失效，不可再 read）。
   FrameMonitor? _monitorRef;
+
+  /// build 时捕获的系统帧率服务（dispose 阶段 `ref` 已失效，不可再 read）。
+  SystemFpsService? _systemFpsServiceRef;
+
+  /// build 时捕获的第三方服务（dispose 阶段 `ref` 已失效）。
+  ThirdPartyPerfService? _thirdPartyServiceRef;
 
   /// build 时捕获的历史存储（dispose 阶段 `ref` 已失效）。
   PerfHistoryStore? _historyStore;
@@ -213,6 +271,10 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
 
   PerfModule get _module => ref.read(perfModuleProvider);
   FrameMonitor get _monitor => _monitorRef ?? ref.read(perfFrameMonitorProvider);
+  SystemFpsService get _systemFps =>
+      _systemFpsServiceRef ?? ref.read(perfSystemFpsServiceProvider);
+  ThirdPartyPerfService get _thirdParty =>
+      _thirdPartyServiceRef ?? ref.read(perfThirdPartyServiceProvider);
 
   @override
   PerfPageState build() {
@@ -221,6 +283,9 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     // 帧统计：监听节流发布的 ValueListenable。
     final monitor = _monitor;
     _monitorRef = monitor;
+    // 捕获服务引用（dispose 阶段 ref 已失效，不可再 read）。
+    _systemFpsServiceRef = ref.read(perfSystemFpsServiceProvider);
+    _thirdPartyServiceRef = ref.read(perfThirdPartyServiceProvider);
     void onFrames() {
       if (_disposed) return;
       final stats = monitor.latestStats;
@@ -249,6 +314,9 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     _historyStore = ref.read(perfHistoryStoreProvider);
     Future<void>.microtask(_restoreHistories);
 
+    // 若帧监控已在运行（单例），首帧后启动系统帧率 / 第三方口径轮询。
+    Future<void>.microtask(_syncAuxFps);
+
     final initialStats = monitor.latestStats;
     return PerfPageState(
       loading: true,
@@ -265,6 +333,12 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   void _dispose() {
     _disposed = true;
     _stopTicker();
+    _stopSystemFps();
+    _thirdPartySub?.cancel();
+    _thirdPartySub = null;
+    _watchingPackage = null;
+    // best-effort 关闭系统帧率采集（失败静默）。
+    unawaited(_systemFpsServiceRef?.disable() ?? Future<void>.value());
     final monitor = _monitorRef;
     if (_frameListener != null && monitor != null) {
       monitor.valueListenable.removeListener(_frameListener!);
@@ -483,12 +557,129 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       frameMonitorRunning: monitor.isRunning,
       frameStats: monitor.latestStats,
     );
+    _syncAuxFps();
   }
 
   /// 清空帧累计统计。
   void resetFrameStats() {
     _monitor.reset();
     state = state.copyWith(frameStats: _monitor.latestStats);
+  }
+
+  // ==================== 系统帧率 / 第三方口径 ====================
+
+  /// 依据当前运行态同步「系统帧率」与「第三方」两条辅助口径。
+  ///
+  /// * 系统帧率轮询仅在 `frameMonitorRunning || live` 时运行（独立 1s Timer）；
+  /// * 第三方订阅仅在 `frameMonitorRunning` 且有持久目标时建立。
+  void _syncAuxFps() {
+    _syncSystemFps();
+    unawaited(_syncThirdPartyFps());
+  }
+
+  /// 仅在 `frameMonitorRunning || live` 时保持系统帧率 Timer 运行。
+  void _syncSystemFps() {
+    if (_disposed) return;
+    final shouldRun = state.frameMonitorRunning || state.live;
+    if (shouldRun) {
+      _startSystemFps();
+    } else {
+      _stopSystemFps();
+    }
+  }
+
+  void _startSystemFps() {
+    if (_disposed || _systemFpsTimer != null) return;
+    // 幂等开启 SurfaceFlinger TimeStats（best-effort）。
+    unawaited(_systemFps.enable());
+    _systemFpsTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _sampleSystemFps());
+    // 立即采一次，避免首秒空白。
+    unawaited(_sampleSystemFps());
+  }
+
+  void _stopSystemFps() {
+    _systemFpsTimer?.cancel();
+    _systemFpsTimer = null;
+  }
+
+  /// 采样一次系统帧率并写入 `screenFps` / `screenFpsLayer` / `screenFpsHistory`。
+  ///
+  /// 采样失败 / 无数据时**保留旧值**（不置 `null`），避免趋势图闪烁。
+  Future<void> _sampleSystemFps() async {
+    if (_disposed) return;
+    final sample = await _systemFps.sample();
+    if (_disposed) return;
+    final fps = sample?.fps;
+    if (fps == null) return;
+    state = state.copyWith(
+      screenFps: fps,
+      screenFpsLayer: sample?.layer,
+      screenFpsHistory: _pushHistory(state.screenFpsHistory, fps),
+    );
+  }
+
+  /// 依据「帧监控运行 + 持久目标」建立 / 取消第三方 FPS 订阅。
+  ///
+  /// 复用 [ThirdPartyPerfService.watch]（**不新建数据通路**）：订阅即采一次，之后
+  /// 每 1s 采一次；把 `metrics.fps` 写入 `thirdPartyFps`，目标展示名写入
+  /// `thirdPartyFpsLabel`。无目标 / 停止时取消订阅并清空两者。
+  Future<void> _syncThirdPartyFps() async {
+    if (_disposed) return;
+    if (!state.frameMonitorRunning) {
+      await _cancelThirdPartyFps();
+      return;
+    }
+    final PerfPinnedTarget? target;
+    try {
+      target = await ref.read(perfTargetStoreProvider).load();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 读取第三方目标失败（忽略）: $error');
+      await _cancelThirdPartyFps();
+      return;
+    }
+    if (_disposed) return;
+    if (target == null || target.package.isEmpty) {
+      await _cancelThirdPartyFps();
+      return;
+    }
+    // 已订阅同一目标：仅确保 label 最新。
+    if (_watchingPackage == target.package && _thirdPartySub != null) {
+      if (state.thirdPartyFpsLabel != target.label) {
+        state = state.copyWith(thirdPartyFpsLabel: target.label);
+      }
+      return;
+    }
+    await _cancelThirdPartyFps();
+    if (_disposed) return;
+    _watchingPackage = target.package;
+    final label = target.label;
+    try {
+      _thirdPartySub = _thirdParty
+          .watch(target.package, interval: const Duration(seconds: 1))
+          .listen((sample) {
+        if (_disposed) return;
+        state = state.copyWith(
+          thirdPartyFps: sample.metrics.fps,
+          thirdPartyFpsLabel: label,
+        );
+      });
+    } catch (error) {
+      debugPrint('[PerfMonitor] 订阅第三方帧率失败（忽略）: $error');
+      _watchingPackage = null;
+      return;
+    }
+    state = state.copyWith(thirdPartyFpsLabel: label);
+  }
+
+  Future<void> _cancelThirdPartyFps() async {
+    await _thirdPartySub?.cancel();
+    _thirdPartySub = null;
+    _watchingPackage = null;
+    if (_disposed) return;
+    if (state.thirdPartyFps != null || state.thirdPartyFpsLabel != null) {
+      state = state.copyWith(clearThirdPartyFps: true);
+    }
   }
 
   // ==================== 后台采样控制 ====================
@@ -550,6 +741,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     if (on == state.live) return;
     state = state.copyWith(live: on);
     _syncTicker();
+    _syncAuxFps();
   }
 
   /// 仅在 [PerfPageState.live] 或采样开启时保持定时器运行。

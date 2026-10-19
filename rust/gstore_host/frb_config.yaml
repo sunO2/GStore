@@ -1,0 +1,7 @@
+# flutter_rust_bridge codegen 配置（setup_rust.sh 期望存在；2.11.1）。
+# 运行方式：cd rust/gstore_host && flutter_rust_bridge_codegen generate --config-file frb_config.yaml
+# 与 pubspec.yaml 的 flutter_rust_bridge 段等价（此处路径相对于 rust/gstore_host）。
+rust_input: crate::bridge
+rust_root: .
+dart_output: ../../lib/core/rust/generated
+rust_output: src/frb_generated.rs

@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/perf/fps_session.dart';
+import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/perf_auto_export_settings.dart';
 import 'package:gstore/core/perf/perf_export_service.dart';
 import 'package:gstore/core/perf/perf_report.dart';
@@ -13,11 +15,14 @@ import 'logic.dart';
 import 'perf_common.dart';
 import 'state.dart';
 
-/// 性能报告页（Riverpod）。
+/// 性能报告内容部件（Riverpod）。
 ///
-/// 导出当前报告的入口（AppBar 右上角 `perf_export`）、自动导出配置卡与最近报告
-/// 列表。自动导出服务的 start/stop 由 [perfAutoExportServiceProvider] 统一驱动
-/// （见 `logic.dart`），本页只负责配置与展示，不再依赖自身挂载来启停服务。
+/// 并入 [PerfMonitorPage]「报告」tab：导出当前报告的入口（顶部「导出」按钮，
+/// Key 仍为 `perf_export`）、自动导出配置卡与最近报告列表。自动导出服务的
+/// start/stop 由 [perfAutoExportServiceProvider] 统一驱动（见 `logic.dart`），
+/// 本部件只负责配置与展示，不再依赖自身挂载来启停服务。
+///
+/// **纯内容部件**：不含 Scaffold / AppBar，返回可滚动内容供页面 tab body 直接复用。
 ///
 /// 全部颜色 / 文字走 [Theme] 令牌，间距 / 圆角走设计令牌（AGENTS.md）。
 class PerfReportsPage extends ConsumerWidget {
@@ -25,26 +30,50 @@ class PerfReportsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('性能报告'),
-        actions: [
-          IconButton(
-            key: const Key('perf_export'),
-            icon: const Icon(TablerIcons.download, size: AppTypography.iconMD),
-            tooltip: '导出报告',
-            onPressed: () =>
-                _exportPerfReport(context, ref, ref.read(perfMonitorProvider)),
+    final state = ref.watch(perfMonitorProvider);
+    return ListView(
+      children: [
+        _buildExportCard(context, ref, state),
+        const SizedBox(height: AppSpacing.md),
+        const _AutoExportCard(),
+        const SizedBox(height: AppSpacing.md),
+        const _FpsSessionCard(),
+        const SizedBox(height: AppSpacing.md),
+        const _RecentReportsCard(),
+        const SizedBox(height: AppSpacing.xxl),
+      ],
+    );
+  }
+
+  /// 导出当前报告卡：原 AppBar 的 `perf_export` 动作迁入 tab 内容顶部。
+  Widget _buildExportCard(
+    BuildContext context,
+    WidgetRef ref,
+    PerfPageState state,
+  ) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Card(
+      margin: AppSpacing.allLG,
+      child: ListTile(
+        leading: Icon(
+          TablerIcons.download,
+          size: AppTypography.iconMD,
+          color: scheme.primary,
+        ),
+        title: const Text('导出当前报告'),
+        subtitle: Text(
+          'JSON / CSV · 保存后可分享或复制',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
           ),
-        ],
-      ),
-      body: ListView(
-        children: const [
-          _AutoExportCard(),
-          SizedBox(height: AppSpacing.md),
-          _RecentReportsCard(),
-          SizedBox(height: AppSpacing.xxl),
-        ],
+        ),
+        trailing: FilledButton.tonalIcon(
+          key: const Key('perf_export'),
+          onPressed: () => _exportPerfReport(context, ref, state),
+          icon: const Icon(TablerIcons.download, size: AppTypography.iconSM),
+          label: const Text('导出'),
+        ),
       ),
     );
   }
@@ -488,6 +517,285 @@ class _AutoExportIntSheetState extends State<_AutoExportIntSheet> {
           child: const Text('保存'),
         ),
       ],
+    );
+  }
+}
+
+// ==================== FPS 会话录制 ====================
+
+/// FPS 会话录制卡：开始/停止、实时时长/当前 FPS/样本数、最近会话列表
+/// （统计 + 删除 + 导出 CSV）。
+///
+/// 录制器经 [fpsSessionRecorderProvider] 注入（测试覆盖为假 sampler + 内存
+/// store）；列表经 [fpsSessionStoreProvider] 读取。录制器为 [ChangeNotifier]，
+/// 其 `stop`（含超时自动停止）落盘后通知本卡刷新列表。
+class _FpsSessionCard extends ConsumerStatefulWidget {
+  const _FpsSessionCard();
+
+  @override
+  ConsumerState<_FpsSessionCard> createState() => _FpsSessionCardState();
+}
+
+class _FpsSessionCardState extends ConsumerState<_FpsSessionCard> {
+  List<FpsSession> _sessions = const <FpsSession>[];
+  bool _loading = true;
+  late final FpsSessionRecorder _recorder;
+  bool _wasRecording = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _recorder = ref.read(fpsSessionRecorderProvider);
+    _wasRecording = _recorder.isRecording;
+    _recorder.addListener(_onRecorderChanged);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _recorder.removeListener(_onRecorderChanged);
+    super.dispose();
+  }
+
+  /// 录制器状态变化：实时刷新；若由「录制中」变为「已停止」（手动或超时自动）
+  /// 则重新读取会话列表。
+  void _onRecorderChanged() {
+    if (!mounted) return;
+    final nowRecording = _recorder.isRecording;
+    final stopped = _wasRecording && !nowRecording;
+    _wasRecording = nowRecording;
+    setState(() {});
+    if (stopped) _load();
+  }
+
+  Future<void> _load() async {
+    List<FpsSession> sessions;
+    try {
+      sessions = await ref.read(fpsSessionStoreProvider).load();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 读取 FPS 会话失败: $error');
+      sessions = const <FpsSession>[];
+    }
+    if (!mounted) return;
+    setState(() {
+      _sessions = sessions;
+      _loading = false;
+    });
+  }
+
+  Future<void> _toggle() async {
+    final recorder = _recorder;
+    if (recorder.isRecording) {
+      final session = await recorder.stop();
+      if (!mounted) return;
+      if (session != null) {
+        AppDialogs.showSuccess('已保存 FPS 会话（${session.sampleCount} 样本）');
+      }
+      await _load();
+    } else {
+      recorder.start();
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _delete(FpsSession session) async {
+    final ok = await AppDialogs.showConfirmSheet(
+      title: '删除会话？',
+      message: '将删除「${session.label}」，此操作无法撤销。',
+      confirmText: '删除',
+      isDangerous: true,
+    );
+    if (ok != true || !mounted) return;
+    final deleted = await ref.read(fpsSessionStoreProvider).delete(session.id);
+    if (!mounted) return;
+    if (deleted) {
+      AppDialogs.showInfo('已删除会话');
+    } else {
+      AppDialogs.showError('删除会话失败');
+    }
+    await _load();
+  }
+
+  Future<void> _export(FpsSession session) async {
+    final content = buildFpsSessionCsv(session);
+    final shared = await PerfExportService.instance.shareText(
+      content,
+      subject: 'FPS 会话 ${session.label}',
+      title: '分享 FPS 会话',
+    );
+    if (!mounted) return;
+    if (shared) {
+      AppDialogs.showSuccess('已打开分享面板');
+      return;
+    }
+    // 分享不可用（无宿主 / 未覆盖）：退化为复制 CSV 到剪贴板。
+    try {
+      await Clipboard.setData(ClipboardData(text: content));
+      if (mounted) AppDialogs.showInfo('已复制会话 CSV 到剪贴板');
+    } catch (error) {
+      debugPrint('[PerfMonitor] 导出 FPS 会话失败: $error');
+      if (mounted) AppDialogs.showError('导出失败，请稍后重试');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final recorder = _recorder;
+    final recording = recorder.isRecording;
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            perfSectionHeader(context, TablerIcons.activity, 'FPS 会话录制'),
+            const SizedBox(height: AppSpacing.md),
+            _livePanel(context, recorder, recording),
+            const SizedBox(height: AppSpacing.md),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.tonalIcon(
+                key: const Key('perf_fps_record_toggle'),
+                onPressed: _toggle,
+                icon: Icon(
+                  recording ? TablerIcons.player_stop : TablerIcons.player_record,
+                  size: AppTypography.iconSM,
+                ),
+                label: Text(recording ? '停止录制' : '开始录制'),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _sessionsPanel(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 实时状态面板（时长 / 当前 FPS / 样本数）。
+  Widget _livePanel(
+    BuildContext context,
+    FpsSessionRecorder recorder,
+    bool recording,
+  ) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final elapsedMs = recorder.elapsed.inMilliseconds;
+    final fps = recorder.currentFps;
+    return Container(
+      key: const Key('perf_fps_record_live'),
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: recording
+          ? Wrap(
+              spacing: AppSpacing.lg,
+              runSpacing: AppSpacing.sm,
+              children: [
+                perfMetric(
+                  context,
+                  '时长',
+                  '${(elapsedMs / 1000).toStringAsFixed(1)} 秒',
+                ),
+                perfMetric(
+                  context,
+                  '当前 FPS',
+                  fps == null ? '—' : fps.toStringAsFixed(1),
+                ),
+                perfMetric(context, '样本数', '${recorder.sampleCount}'),
+              ],
+            )
+          : Text(
+              '未录制。点击「开始录制」按 1 秒/次采样系统帧率。',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+    );
+  }
+
+  /// 最近会话列表面板。
+  Widget _sessionsPanel(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Column(
+      key: const Key('perf_fps_sessions'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '最近会话',
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: AppTypography.weightSemiBold,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        if (_loading)
+          const Row(
+            children: [
+              AppLoading(size: AppLoadingSize.small),
+              SizedBox(width: AppSpacing.md),
+              Expanded(child: Text('读取中…')),
+            ],
+          )
+        else if (_sessions.isEmpty)
+          Text(
+            '暂无会话（点击「开始录制」并停止后在此查看）',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          )
+        else
+          for (final session in _sessions) _sessionTile(context, session),
+      ],
+    );
+  }
+
+  Widget _sessionTile(BuildContext context, FpsSession session) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final label = session.label.isEmpty ? 'FPS 会话' : session.label;
+    return ListTile(
+      key: Key('perf_fps_session_${session.id}'),
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        TablerIcons.chart_line,
+        size: AppTypography.iconMD,
+        color: scheme.primary,
+      ),
+      title: Text(label, style: theme.textTheme.bodyMedium),
+      subtitle: Text(
+        '${formatFpsSessionDuration(session.durationMs)} · '
+        'avg ${session.avg.toStringAsFixed(1)} · '
+        'min ${session.min.toStringAsFixed(1)} · '
+        'max ${session.max.toStringAsFixed(1)} · '
+        '${session.sampleCount} 样本',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            key: Key('perf_fps_session_export_${session.id}'),
+            tooltip: '导出 CSV',
+            icon: const Icon(TablerIcons.download),
+            onPressed: () => _export(session),
+          ),
+          IconButton(
+            key: Key('perf_fps_session_delete_${session.id}'),
+            tooltip: '删除',
+            icon: const Icon(TablerIcons.trash),
+            onPressed: () => _delete(session),
+          ),
+        ],
+      ),
     );
   }
 }

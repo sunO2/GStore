@@ -68,6 +68,11 @@ class PerfPageState {
     this.batteryCurrentHistory = const <double>[],
     this.networkRxHistory = const <double>[],
     this.networkTxHistory = const <double>[],
+    this.screenFps,
+    this.screenFpsHistory = const <double>[],
+    this.screenFpsLayer,
+    this.thirdPartyFps,
+    this.thirdPartyFpsLabel,
   });
 
   /// 是否正在读取模块数据（首次 / 手动刷新 / 切换排序）。
@@ -141,6 +146,23 @@ class PerfPageState {
   /// 网络发送速率（B/s）滚动历史。
   final List<double> networkTxHistory;
 
+  /// 屏幕交付帧率（来自系统 SurfaceFlinger `--timestats` 的 `averageFPS`）；
+  /// 无 Shizuku / 无数据时为 `null`。
+  final double? screenFps;
+
+  /// 屏幕交付帧率滚动历史（默认空；仅在有有效采样时追加）。
+  final List<double> screenFpsHistory;
+
+  /// 屏幕帧率选中层名（`layerName` 短名由 UI 裁剪）；无数据时为 `null`。
+  final String? screenFpsLayer;
+
+  /// 第三方目标应用的交付帧率（来自既有 `ThirdPartyPerfService`）；
+  /// 无目标 / 未采集时为 `null`。
+  final double? thirdPartyFps;
+
+  /// 第三方目标展示名（缺省回退包名）；无目标时为 `null`。
+  final String? thirdPartyFpsLabel;
+
   /// 模块实例是否可用（[PerfAvailability.ready]）。
   bool get moduleReady => availability == PerfAvailability.ready;
 
@@ -182,6 +204,13 @@ class PerfPageState {
     List<double>? batteryCurrentHistory,
     List<double>? networkRxHistory,
     List<double>? networkTxHistory,
+    double? screenFps,
+    bool clearScreenFps = false,
+    List<double>? screenFpsHistory,
+    String? screenFpsLayer,
+    double? thirdPartyFps,
+    String? thirdPartyFpsLabel,
+    bool clearThirdPartyFps = false,
   }) {
     return PerfPageState(
       loading: loading ?? this.loading,
@@ -212,6 +241,15 @@ class PerfPageState {
       batteryCurrentHistory: batteryCurrentHistory ?? this.batteryCurrentHistory,
       networkRxHistory: networkRxHistory ?? this.networkRxHistory,
       networkTxHistory: networkTxHistory ?? this.networkTxHistory,
+      screenFps: clearScreenFps ? null : (screenFps ?? this.screenFps),
+      screenFpsHistory: screenFpsHistory ?? this.screenFpsHistory,
+      screenFpsLayer:
+          clearScreenFps ? null : (screenFpsLayer ?? this.screenFpsLayer),
+      thirdPartyFps:
+          clearThirdPartyFps ? null : (thirdPartyFps ?? this.thirdPartyFps),
+      thirdPartyFpsLabel: clearThirdPartyFps
+          ? null
+          : (thirdPartyFpsLabel ?? this.thirdPartyFpsLabel),
     );
   }
 }

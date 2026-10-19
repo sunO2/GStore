@@ -70,6 +70,9 @@ void main() {
       fakeApi = _FakeShizukuApi();
       final manager = InstallManager.instance;
       manager.shizukuApiForTest = fakeApi;
+      // 命令执行已迁移到 Rust 门面：测试注入假 runner（复用假件的 runCommand），
+      // 使 runResult / commands 断言继续成立且不触达 Rust / 真机。
+      InstallManager.commandRunnerForTest = fakeApi.runCommand;
       manager.setShizukuStateForTest(binder: true, permission: true);
       manager.setIsAndroidForTest(true);
       tempApk = File(

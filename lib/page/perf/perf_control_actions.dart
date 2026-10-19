@@ -3,10 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/perf/control_cpu.dart';
 import 'package:gstore/core/perf/control_cpuset.dart';
 import 'package:gstore/core/perf/control_gpu.dart';
+import 'package:gstore/core/perf/control_refresh_rate.dart';
 import 'package:gstore/core/perf/control_thermal.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/perf/perf_control_session.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
+import 'package:gstore/core/perf/refresh_auto_engine.dart';
+import 'package:gstore/core/perf/refresh_auto_store.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 
 // ==================== 控制 / 调优（Wave 6 · todo 28）====================
@@ -168,3 +171,45 @@ final perfControlCapabilitiesLoaderProvider =
 final perfControlTunablesLoaderProvider = Provider<PerfTunablesLoader>(
   (ref) => ref.watch(perfTunablesLoaderProvider),
 );
+
+// ==================== 屏幕刷新率（WS-B · scene8-port-fps-refresh）====================
+//
+// 「屏幕刷新率」组独立于 CPU/GPU/cpuset/thermal 的 [PerfControlActions]：它经
+// [PrivilegedShell] 走 `settings get/put system min_refresh_rate|peak_refresh_rate`，
+// 不依赖 `perf.tunables` / 能力图。Provider 就近定义，使控制组可被完整 widget
+// 测试覆盖（覆盖为罐头 [RefreshRateController] / 假 shell）。
+
+/// 屏幕刷新率控制器（生产经 Shizuku；测试覆盖为罐头 controller / 假 shell）。
+final perfRefreshRateControllerProvider = Provider<RefreshRateController>(
+  (ref) => RefreshRateController(shell: PrivilegedShell()),
+);
+
+// ==================== 每应用自动刷新率（WS-D · scene8-followups）====================
+//
+// 「按前台自动切换」的配置存储 + 引擎。存储经 SharedPreferences（生产）/ 内存
+// （测试）；引擎生命周期由控制组拥有（enabled → 启动，禁用 / dispose → 停止）。
+// Provider 就近定义，使控制组可被完整 widget 测试覆盖（覆盖为假 store / 假 driver）。
+
+/// 自动刷新率配置存储（生产 SharedPreferences；测试覆盖为内存实现）。
+final perfRefreshAutoStoreProvider = Provider<RefreshAutoStore>(
+  (ref) => const SharedPrefsRefreshAutoStore(),
+);
+
+/// 自动刷新率引擎工厂（生产构造真实 [RefreshAutoEngine]；测试覆盖为假 driver）。
+///
+/// 采用**工厂**而非单例：控制组自持引擎实例并在其 dispose 时释放，避免共享实例
+/// 被某一 tab 生命周期误释放；测试也可注入不启动定时器的假 driver。
+typedef RefreshAutoDriverFactory = RefreshAutoDriver Function({
+  required RefreshRateController controller,
+  required RefreshAutoStore store,
+});
+
+/// 生产引擎工厂（默认经 [rustShizukuRunner] 探测前台）。
+final perfRefreshAutoDriverFactoryProvider =
+    Provider<RefreshAutoDriverFactory>((ref) {
+  return ({
+    required RefreshRateController controller,
+    required RefreshAutoStore store,
+  }) =>
+      RefreshAutoEngine(controller: controller, store: store);
+});
