@@ -83,9 +83,16 @@ class FpsSession {
     required this.min,
     required this.max,
     this.source,
+    this.avgPower = 0,
+    this.viewSize = '',
+    this.mode = '',
+    this.temperatures = const <double>[],
   });
 
   /// 由起止时间 + 样本构造（统计量自动计算）。
+  ///
+  /// Scene-parity 字段 [avgPower] / [viewSize] / [mode] / [temperatures]
+  /// 由调用方注入（见 `fps_session_recorder.dart`），缺省安全降级。
   factory FpsSession.fromRecording({
     required String id,
     String? package,
@@ -94,6 +101,10 @@ class FpsSession {
     required int endMs,
     required Iterable<double> samples,
     String? source,
+    double avgPower = 0,
+    String viewSize = '',
+    String mode = '',
+    Iterable<double> temperatures = const <double>[],
   }) {
     final list = <double>[];
     for (final value in samples) {
@@ -112,11 +123,21 @@ class FpsSession {
       min: stats.min,
       max: stats.max,
       source: source,
+      avgPower: avgPower.isFinite ? avgPower : 0,
+      viewSize: viewSize,
+      mode: mode,
+      temperatures: List<double>.unmodifiable(_finiteValues(temperatures)),
     );
   }
 
   /// 唯一标识（默认 `<startMs>` 派生，见 `fps_session_recorder.dart`）。
   final String id;
+
+  /// Scene 的 `sessionId` **是 [id] 的别名**（同一标识，不是新字段）。
+  ///
+  /// Scene `PerfWatchStore` 的 `session` 表主键即会话标识；GStore 沿用既有
+  /// [id]，对外暴露 [sessionId] 以对齐 Scene 命名。JSON 仍只写 `id`。
+  String get sessionId => id;
 
   /// 目标包名（本会话固定为系统屏幕口径时通常为 `null`）。
   final String? package;
@@ -148,6 +169,25 @@ class FpsSession {
   /// 数据源（如 `'latency'` / `'timestats'`）；未知为 `null`。
   final String? source;
 
+  /// 平均功耗（**GStore 等价定义**：`voltage_v × current_ma / 1000` 的均值，W；
+  /// 无数据为 `0`）。Scene 侧物理单位 `unverified`（见 task-33 证据）。
+  final double avgPower;
+
+  /// 视图尺寸字符串（Scene `session.surface_view_size` 等价；
+  /// **GStore 定义**：`MediaQuery.size` 逻辑像素，如 `'1080.0x2340.0'`；
+  /// 未知为空串）。
+  final String viewSize;
+
+  /// 生效模式标签（**自由字符串**，如 `'均衡'`；**不依赖 `PerfMode` 枚举**，
+  /// 未知为空串）。Scene 对应 `mode` / `power_mode`。
+  final String mode;
+
+  /// 逐拍电池温度样本（**GStore-only，非 Scene 字段**；单位 ℃）。
+  ///
+  /// Scene 仅在 `fps_history` 中记录单一 `temperature`；GStore 额外保留逐拍
+  /// 温度序列以便计算高温占比（≥46℃）。允许负值（寒冷环境），仅过滤非有限值。
+  final List<double> temperatures;
+
   /// 样本条数（= [samples] 长度）。
   int get frameCount => samples.length;
 
@@ -170,14 +210,21 @@ class FpsSession {
         'min': min,
         'max': max,
         'source': source,
+        'avg_power': avgPower,
+        'view_size': viewSize,
+        'mode': mode,
+        'temperatures': temperatures,
       };
 
   /// 宽容反序列化：缺失 / 非法字段降级；统计量缺失时由样本重算。
+  ///
+  /// **向后兼容**：旧 JSON（无 `avg_power` / `view_size` / `mode` /
+  /// `temperatures`）解码为安全默认（`0` / `''` / `''` / 空列表），绝不抛出。
   factory FpsSession.fromJson(Map<String, dynamic> json) {
     final samples = _doubleList(json['samples']);
     final stats = FpsStats.fromSamples(samples);
     return FpsSession(
-      id: _string(json['id']) ?? '',
+      id: _string(json['id']) ?? _string(json['session_id']) ?? '',
       package: _string(json['package']),
       label: _string(json['label']) ?? '',
       startMs: _int(json['start_ms']) ?? 0,
@@ -188,6 +235,12 @@ class FpsSession {
       min: _finiteDouble(json['min']) ?? stats.min,
       max: _finiteDouble(json['max']) ?? stats.max,
       source: _string(json['source']),
+      avgPower: _finiteDouble(json['avg_power']) ?? 0,
+      viewSize: _string(json['view_size']) ?? '',
+      mode: _string(json['mode']) ?? '',
+      temperatures: List<double>.unmodifiable(
+        _finiteValues(json['temperatures']),
+      ),
     );
   }
 
@@ -204,7 +257,11 @@ class FpsSession {
       other.avg == avg &&
       other.min == min &&
       other.max == max &&
-      other.source == source;
+      other.source == source &&
+      other.avgPower == avgPower &&
+      other.viewSize == viewSize &&
+      other.mode == mode &&
+      other.temperatures.length == temperatures.length;
 
   @override
   int get hashCode => Object.hash(
@@ -219,6 +276,10 @@ class FpsSession {
         min,
         max,
         source,
+        avgPower,
+        viewSize,
+        mode,
+        temperatures.length,
       );
 
   @override
@@ -295,6 +356,17 @@ double? _double(Object? value) {
   if (value is num) return value.toDouble();
   if (value is String) return double.tryParse(value.trim());
   return null;
+}
+
+/// 过滤掉非有限值（`NaN` / `±Infinity`），保留其余（含负温度）。
+List<double> _finiteValues(Object? value) {
+  if (value is! Iterable) return <double>[];
+  final out = <double>[];
+  for (final item in value) {
+    final parsed = _double(item);
+    if (parsed != null && parsed.isFinite) out.add(parsed);
+  }
+  return out;
 }
 
 List<double> _doubleList(Object? value) {

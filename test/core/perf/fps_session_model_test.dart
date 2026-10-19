@@ -74,6 +74,91 @@ void main() {
     expect(back.durationMs, 1990);
   });
 
+  test('toJson / fromJson：scene-parity 新字段往返 + sessionId 别名', () {
+    final session = FpsSession.fromRecording(
+      id: 'id9',
+      package: 'com.x',
+      label: '会话',
+      startMs: 10,
+      endMs: 2000,
+      samples: const <double>[50, 55],
+      source: 'latency',
+      avgPower: 1.234,
+      viewSize: '1080.0x2340.0',
+      mode: '均衡',
+      temperatures: const <double>[41.5, 43.0, 46.2],
+    );
+    // sessionId 是 id 的别名（不是新字段）。
+    expect(session.sessionId, 'id9');
+    final json = session.toJson();
+    expect(json['avg_power'], 1.234);
+    expect(json['view_size'], '1080.0x2340.0');
+    expect(json['mode'], '均衡');
+    expect(json['temperatures'], <double>[41.5, 43.0, 46.2]);
+    // 别名不写 JSON（仍只写 id）。
+    expect(json.containsKey('session_id'), isFalse);
+
+    final back = FpsSession.fromJson(json);
+    expect(back.id, 'id9');
+    expect(back.sessionId, 'id9');
+    expect(back.avgPower, 1.234);
+    expect(back.viewSize, '1080.0x2340.0');
+    expect(back.mode, '均衡');
+    expect(back.temperatures, <double>[41.5, 43.0, 46.2]);
+    expect(back, session);
+  });
+
+  test('fromJson：旧 JSON（无新字段）→ 安全默认，不抛出', () {
+    // 模拟 todo 14 之前落盘的 JSON（无 avg_power/view_size/mode/temperatures）。
+    final legacy = <String, dynamic>{
+      'id': 'old1',
+      'package': null,
+      'label': '旧会话',
+      'start_ms': 0,
+      'end_ms': 1000,
+      'samples': <dynamic>[60, 60],
+      'fps': 60,
+      'avg': 60,
+      'min': 60,
+      'max': 60,
+      'source': null,
+    };
+    final session = FpsSession.fromJson(legacy);
+    expect(session.id, 'old1');
+    expect(session.sessionId, 'old1');
+    expect(session.avgPower, 0);
+    expect(session.viewSize, '');
+    expect(session.mode, '');
+    expect(session.temperatures, isEmpty);
+  });
+
+  test('fromJson：新字段非法/畸形 → 降级为非有限被过滤，不抛出', () {
+    final session = FpsSession.fromJson(<String, dynamic>{
+      'samples': <dynamic>[],
+      'avg_power': 'not-a-number',
+      'view_size': null,
+      'mode': 42,
+      'temperatures': <dynamic>['41.5', double.nan, double.infinity, 'bad', -3],
+      // 无 `id` 时接受 Scene 命名的 `session_id` 别名输入。
+      'session_id': 'scene-alias',
+    });
+    expect(session.id, 'scene-alias');
+    expect(session.sessionId, 'scene-alias');
+    expect(session.avgPower, 0);
+    expect(session.viewSize, '');
+    expect(session.mode, '42');
+    expect(session.temperatures, <double>[41.5, -3]);
+  });
+
+  test('fromJson：`id` 存在时优先于 `session_id` 别名', () {
+    final session = FpsSession.fromJson(<String, dynamic>{
+      'id': 'primary',
+      'session_id': 'scene-alias',
+    });
+    expect(session.id, 'primary');
+    expect(session.sessionId, 'primary');
+  });
+
   test('fromJson：缺失 / 非法字段降级并由样本重算统计', () {
     final session = FpsSession.fromJson(<String, dynamic>{
       'id': 123,
