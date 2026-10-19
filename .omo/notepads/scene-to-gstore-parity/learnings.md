@@ -222,6 +222,17 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 验证：`dart analyze lib/` = **0 error**（724 存量 info/warning；唯一新增式 info 为 app_router.dart:111 既有 prefer_const_constructors）；`flutter test test/core/router/ test/page/perf/` = **97 passed**（含新 6）。证据 `.omo/evidence/task-20-battery-stats.txt`（`.omo/` gitignored，不提交，循惯例）。
 - 并发坑（同 todo 4/11/14）：LSP 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧 error，且收尾时 `main.dart` 报 `_startBatteryHistoryRecorder` undefined（另一 worker todo 19 进行中）——**均非本 todo**，提交用 `flock` + pathspec 只 stage 本 todo 6 个文件。
 
+## Todo 19 — 电池历史写入器 + 生命周期接线（EXPLICIT manifest 决策，2026-10-19）
+- 新增 `lib/core/perf/battery_history_recorder.dart`（`BatteryHistoryRecorder` ChangeNotifier + `BatteryHistorySample` + `batteryStatusFromLabel` + 门控/构造纯函数 + App 级单例 `batteryHistoryRecorder`）；改 `lib/main.dart`（import + `main()` 内 `_startBatteryHistoryRecorder()` 启动，try/catch 静默）；新增 `test/core/perf/battery_history_recorder_test.dart`(16)。
+- **门控逐字取自反编译 `com.omarea.data.customer.PowerStat`**（`/tmp/opencode/scene8/rea_t33_out.txt`，注意此前只在 task-33 提了 `f0.k` 插入路径，写入器的**节拍/屏幕/状态**门控要单独反编译 PowerStat 才能拿到）：`e(1000L,3000L)`（初始 1s+周期 3s）；`if (GlobalStatus.p.h()) return;` 即 **status==2(CHARGING)||5(FULL) 不采样**；`zC=this.h.c()` 屏幕亮才起表、熄屏停表；`|current|>10000`（非充电）功率尖峰轮换会话。查询侧仍是 task-33 的 `screen_on=1 and status in (3,4)`。
+- **sysfs 字符串→Android 状态码**：`batteryStatusFromLabel`（Charging→2/Discharging→3/Not charging→4/Full→5/其它→1）。`BatteryReport.status` 是 sysfs 字符串（`battery.rs`），故不能直比 int。
+- **安全偏差（已入证据）**：GStore 对不完整/非有限数值**跳过该拍**（不落 Scene 的 `-1` 哨兵，避免污染聚合）；`voltage<=0` 丢弃；熄屏改为**跳过**而非停表（screen 事件未接线）；`mode` 默认空串（profile 标签映射属 todo 24/25，不猜）。
+- **EXPLICIT manifest 决策 = NO manifest change required（diff 空）**：记录器是进程内 Dart Timer，**不新增 Service** → 无 `foregroundServiceType` / 无 `FOREGROUND_SERVICE*`；电池经既有 Rust `PerfModule`（不需权限，且 `BATTERY_STATS` 是签名权限本就不可申请）；屏幕/前台经既有 **Shizuku** 通道（Shizuku 授权在 App 外部，**零 manifest 权限**）。跨进程后台采样需前台服务 → **明确 out of scope**（残余限制已记）。
+- 默认采样器复用 `ForegroundWatcher.parseScreenOn`（`show` 导入，不复制解析逻辑）；屏幕探测 **fail-open**（不确定→视亮屏，同 ForegroundWatcher），Shizuku 不可用→`result.ok==false`→静默降级。
+- 会话 id 默认 = 启动墙钟 ms（每次 App 运行唯一；Scene 用 SQLite `f0.l()` 自增），可经构造/`start(session:)` 覆盖；容量裁剪仍归 todo-18 store。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning = 基线）；`flutter test test/core/perf/battery_history_recorder_test.dart` = **16 passed**。证据 `.omo/evidence/task-19-battery-recorder.txt`（`.omo/` gitignored，不提交）。
+- 并发：提交用 `flock /tmp/opencode/gstore.git.lock` + pathspec 只 stage `battery_history_recorder.dart`/`main.dart`/测试；**不动 manifest**（决策即不改）。注意并发 worker（todo 20）当时已在改 routers/app_router/page.dart + battery_stats_page，且其 notepad 提到「收尾时 main.dart 报 `_startBatteryHistoryRecorder` undefined」——那正是本 todo 半成品状态，现已定义。
+
 ## Todo 15 — FpsSessionRecorder 采样 temp/power/size/mode（2026-10-19）
 - `lib/core/perf/fps_session_recorder.dart`：新增可注入 **环境采样 seam**（帧率 `sampler` 保持不动）：
   - `class FpsEnvironmentSample`（可空字段 temperatureC/voltageV/currentMa/viewSize/mode）+ `typedef FpsEnvironmentSampler`；ctor 增 `environmentSampler`（默认 `null` = 不采样 → 安全默认）。
