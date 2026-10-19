@@ -218,3 +218,77 @@ Exclusion list source: .omo/evidence/task-1-parity-baseline.txt lines 9485-9561 
 Raw artifacts: /tmp/opencode/final_analyze.txt, /tmp/opencode/final_test_json.txt,
                /tmp/opencode/final_test_json2.txt
 ========================================================================
+
+
+========================================================================
+FINAL-WAVE F2 - RE-VERIFICATION (fresh run #3)   [append-only addendum]
+========================================================================
+Generated : 2026-10-19T17:00+08:00
+Repo HEAD : 26a107b4d5de3f776eed2a43147d6de9501b8479
+            (26a107b docs(parity): record final-wave F1-F2)
+Toolchain : Flutter 3.44.8 stable / Dart 3.12.2
+Command   : flutter test test/ --reporter json
+Exit code : 1  (some tests failed = environmental only, see below)
+
+[J1] Fresh full-tree run - failure set vs todo-1 exclusion list
+  JSON parse (parse_test_json.py): done.success=False, total_testDone=4888,
+  UNIQUE_FAILURES=77.
+  Compared against .omo/evidence/task-1-parity-baseline.txt lines 9485-9561
+  (the 77-item F2 exclusion list), normalizing the repo-root prefix:
+      fresh-not-in-baseline (NON-EXCLUSION) : 0
+      baseline-not-in-fresh (MISSING)      : 0
+  => EXACT SET MATCH: 77/77 failures are on the exclusion list.
+  Failing set by file (identical to baseline distribution):
+        11 test/aggregator_tags_test.dart
+        10 test/channel_detail_parts_test.dart
+         8 test/aggregator_metadata_test.dart
+         7 test/backup_service_compressed_test.dart
+         7 test/backup_js_channel_test.dart
+         7 test/added_app_tags_test.dart
+         5 test/snapshot_store_test.dart
+         4 test/backup_service_v21_test.dart
+         4 test/aggregator_rename_test.dart
+         4 test/aggregator_pagination_test.dart
+         2 package:flutter_test/src/widget_tester.dart
+         2 test/channel_registry_test.dart
+         2 test/backup_service_onlog_test.dart
+         2 test/added_apps_constraint_test.dart
+         1 test/download/download_manager_live_progress_test.dart
+         1 test/aggregator_parallel_test.dart
+  All are the known `libsqlite3.so` / SqfliteFfiException environmental class.
+
+[J2] Flake isolation from the parity plan
+  `git log --oneline -5 -- test/module_manage_actions_test.dart`:
+      3a0e406 test: wait on real conditions instead of fixed delays in two flaky cases
+      bdd617c feat(module): add byte-level progress, a task banner, and QR prewarm
+      aa2b502 feat(module-loader): require packaged artifact for builtin modules
+      e4a20a0 feat(module-manage): add download/update/rollback actions
+  Commit 3a0e406 is an ancestor of the parity baseline commit a3ab648 and is
+  OUTSIDE the parity window.
+  `git log --oneline a3ab648..HEAD -- test/module_manage_actions_test.dart`
+  -> (empty). The file is untouched by all 35 parity commits (a3ab648..HEAD).
+  => The flaky clear-downloads test is NOT part of this plan's blast radius.
+
+[J3] Isolated run
+  `flutter test test/module_manage_actions_test.dart`
+  -> "All tests passed!"  12/12, exit 0.
+  The clear-downloads test ("slim 门控：无内置不提供回退 清除已下载经危险确认弹层
+  → 确认后删除下载目录并刷新") PASSED in this isolation.
+
+[J4] Flake recurrence
+  In this fresh full-tree run #3 the `module_manage_actions_test.dart`
+  clear-downloads assertion did NOT fail (0 occurrences in the 77). It remains a
+  pre-existing, load-induced, non-parity flake (documented in this file under
+  "EXTRA FAILURE ANALYSIS (run #1 only)"). No source change made by this task.
+
+VERDICT
+  F2 : PASS  (strict, per the stated criterion: the fresh run's 77 failures are
+              ALL on the todo-1 exclusion list - 0 non-exclusion failures).
+       The documented load flake did not reproduce; it is recorded as a
+       pre-existing/load-induced, non-parity test, on the documented evidence.
+       No product/test source was modified by this re-verification.
+
+Raw artifacts : /tmp/opencode/f2_final_test_json.txt (json reporter, fresh run #3),
+                /tmp/opencode/f2_failures_norm.txt (parsed normalized failures),
+                /tmp/opencode/f2_final_test_stderr.txt, /tmp/opencode/f2_done.marker
+========================================================================
