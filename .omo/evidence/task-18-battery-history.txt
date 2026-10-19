@@ -1,0 +1,115 @@
+# Task 18 — BatteryHistoryStore (Scene `battery-history` equivalent, todo 18)
+
+- Date: 2026-10-19
+- Plan: `.omo/plans/scene-to-gstore-parity.md` todo 18
+- Schema authority: `.omo/evidence/task-33-scene-data-schema.md` (todo 33)
+- Deliverables:
+  - NEW `lib/core/perf/battery_history.dart` (record model + aggregation pure fns)
+  - NEW `lib/core/perf/battery_history_store.dart` (persistence + query/aggregation)
+  - NEW `test/core/perf/battery_history_store_test.dart` (12 tests)
+
+## Scope / concurrency
+
+Only the 3 new files above were touched. No edits to `fps_session*.dart`,
+`charge_history*.dart`, `perf_mode*`, routers, pages, or any other todo's files.
+Committed with `flock` + explicit pathspec (never `git add -A`).
+
+## Scene parity — schema adopted VERBATIM (task-33)
+
+Real Scene store (alias `battery-history` does **not** exist in the APK):
+`com.omarea.store.f0` → DB `power8` / table `records`. DDL verbatim
+(`t33_src/store_f0.txt:314`):
+
+```sql
+create table records(
+  time text primary key, session int, temperature REAL default(-1),
+  status int default(-1), mode text, current int default(-1), voltage int,
+  package text, screen_on INTEGER, capacity INTEGER)
+```
+
+`BatteryHistoryRecord` field names + order + JSON keys match this table verbatim:
+`time, session, temperature, status, mode, current, voltage, package, screen_on, capacity`.
+
+Fractional types faithful to task-33: `temperature` REAL; `voltage` declared `int`
+in DDL but Scene inserts `Double.valueOf(...)` so SQLite stores REAL → modelled as
+`double` carrying the **raw operand** (no unit conversion).
+
+## Persistence mechanism — GStore convention, documented deviation from Scene SQLite
+
+Scene uses SQLite (`power8`). GStore has **no SQLite dependency**; all existing
+perf stores (`fps_session_store.dart`, `refresh_auto_store.dart`,
+`perf_profile_store.dart`, …) persist via **`shared_preferences` single-key JSON**.
+This store follows the GStore convention (key `battery_history_records`) while the
+**field schema and aggregation formulas follow Scene verbatim**. The mechanism
+choice is documented in the store's library doc-comment.
+
+Tolerant decode: `null` / empty / non-JSON / non-array → empty list; a corrupt
+element inside the array is skipped; missing/invalid fields degrade to Scene
+defaults (`temperature`/`status`/`current` = `-1`, others `0`/`''`). Never throws.
+
+## Aggregation — verbatim Scene SQL (no guessed formula)
+
+Per-app grouping (`aggregateAppPower`, task-33 `t33_src/store_f0.txt:44`):
+
+```sql
+select avg(current) AS current, avg(current * voltage) AS power,
+       avg(temperature) as avg, min(temperature) as min, max(temperature) as max,
+       package, mode, count(current)
+from records
+where session = ? and status in (?, ?) and screen_on = 1 and package != ''
+group by package, mode ... order by current
+```
+
+- filter: `session == ?`, `screen_on == 1`, `status in (3,4)`
+  (`3 = DISCHARGING`, `4 = NOT_CHARGING` — task-33), `package != ''`;
+- `power = avg(current * voltage)` → `BatteryAppPowerStat.power`;
+- ordering `order by current` (ascending) reproduced with deterministic tiebreak.
+
+Session power (`aggregateSessionPower`, task-33 `:66`):
+
+```sql
+select avg(current * voltage) AS power
+from records where session = ? and status in (?, ?) and screen_on = 1
+```
+
+Sample count (`countSessionSamples`) = `count(current) ... screen_on=1 and status in (?,?)`
+(task-33 `:116,144,171`).
+
+**Power unit `unverified`**: `power8` uses raw `avg(current * voltage)` with **no**
+`/1000` (contrast `fps_history` `battery_io * voltage / 1000`). The unit is documented
+`unverified` in both `battery_history.dart` and `BatteryAppPowerStat`, per task-33;
+no physical unit is hard-coded.
+
+## Capacity trim — Scene pruning rule
+
+Scene `f0.l()` (`t33_src/store_f0.txt:264-293`) prunes to **≤ 99 sessions**.
+`kBatteryHistorySessionCapacity = 99`; `normalizeBatteryHistory` keeps the **newest
+99 sessions** (session freshness = max record `time`, tiebreak session id) and their
+full record set; older sessions are dropped entirely. Records stored `time`-ascending.
+
+## Verification
+
+- `dart analyze lib/core/perf/battery_history.dart lib/core/perf/battery_history_store.dart`
+  → **No issues found!**
+- `dart analyze lib/` → **0 errors** (`error -` count = 0; 723 info/warning = baseline).
+  (LSP daemon reported stale errors in `lib/core/rust/generated/*` /
+  `core/shell/rust_shizuku_runner.dart` — known stale, `dart analyze` CLI = 0 errors.)
+- `flutter test test/core/perf/battery_history_store_test.dart` → **12 passed**
+  - round-trip (per-field rebuild, Scene keys); tolerant field defaults;
+  - InMemory + SharedPrefs round-trip; session capacity trim;
+  - corrupt JSON / empty / non-array → empty; corrupt array element skipped;
+  - aggregation: per-app filter (`screen_on`/`status`/`package`/session), power =
+    `avg(current*voltage)`, avg/min/max temperature, count, order by current;
+    session power + effective-sample count; store query delegates.
+
+## Commit
+
+`flock /tmp/opencode/gstore.git.lock -c 'git add -- lib/core/perf/battery_history.dart
+lib/core/perf/battery_history_store.dart test/core/perf/battery_history_store_test.dart
+.omo/evidence/task-18-battery-history.txt && git commit -m "feat(battery-history): add scene-parity store"'`
+
+## Downstream
+
+Blocks todos 19 (recorder + lifecycle) and 20 (stats UI). Todo 19 will produce
+`BatteryHistoryRecord`s and call `store.appendAll(...)`; todo 20 reads via
+`appPowerForSession` / `sessionPower` / `recordsForSession`.
