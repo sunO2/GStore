@@ -341,3 +341,10 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - **坑（测试）**：`_FakeWatcher` 需 override `screenEvents` 暴露自有 sync 广播控制器 + `emitForeground/emitScreen`；`stop()→watcher.dispose()` 若把屏幕控制器也 close，则 stop 后 emit 会抛 `Cannot add new events after calling close` → 假监视器 dispose **不**关闭 `_screens`（保持可 emit）以证明「stop 后无监听者、引擎不再被驱动」。协调器默认 `debounce=400ms`，测试传 `debounce: Duration.zero` 使事件在同一测试帧收敛；用 `_settle()`（多次 `Future.delayed(Duration.zero)`）冲刷 unawaited 引擎收敛。
 - **验证**：`dart analyze lib/` = **0 error**；`flutter test ...{auto_engine,foreground_watcher,coordinator}` = **61 passed**；回归 profile/mode_profiles/store = **67 passed**。证据 `.omo/evidence/task-28-auto-mode.txt`（gitignored）已更新。
 - **范围**：仍**未**改 page/引擎/store/control 文件；只动 watcher + coordinator（计划 Refs）。
+
+## Final F3 — release APK 构建（final verification wave）(2026-10-19)
+- **命令**：`flutter build apk --release --target-platform android-arm64`，在 repo 根运行。
+- **结果**：**PASS**。exit 0；产物 `build/app/outputs/flutter-apk/app-release.apk` = **148653274 bytes (~148.7 MB)**，mtime 16:35:36，sha1 `4fee33f85f095027d3a320e8446f53485929d2ca`。
+- **坑（环境性，非源码）**：前两次尝试失败，均源于 `:integration_test` release 依赖解析的间歇性 **JVM-TLS 握手终止**——attempt 2 的签名（`Could not resolve androidx.test:runner:1.2+` / `Remote host terminated the handshake`）与 todo-1 baseline 记录**完全一致**；attempt 1 表现为下游的 `GeneratedPluginRegistrant.java:79 程序包 dev.flutter.plugins.integration_test 不存在`（同一根因：integration_test 类未进 app 编译 classpath）。同窗口 `curl` 同一 Maven Central URL 秒回（HTTP 404）→ 网络本身可达，纯属 Gradle/JVM 侧偶发。第 3 次尝试成功（36.8s）。
+- **教训**：此环境的 `:integration_test` 依赖解析会间歇性 TLS 失败；需按 todo-1 的「重试」惯例多试，不要误判为源码回归。**未**改任何产品/测试源码、未 bump 版本、未加依赖、未 push。
+- 证据：`.omo/evidence/final-f3.txt`（`.omo/` gitignored；`git add -f` 提交）。

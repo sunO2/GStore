@@ -1,0 +1,100 @@
+================================================================
+F3 — RELEASE BUILD (final verification wave, scene-to-gstore-parity)
+================================================================
+Plan item : F3. 构建：`flutter build apk --release --target-platform android-arm64` exit 0，产物存在。
+Repo root : /home/hezhihu89/develop/flutter/project/GStore
+Flutter   : /home/hezhihu89/develop/flutter/flutter/bin/flutter
+Date      : 2026-10-19 (+0800)
+Command   : flutter build apk --release --target-platform android-arm64
+
+----------------------------------------------------------------
+[RESULT] VERDICT: PASS
+----------------------------------------------------------------
+exit code : 0
+artifact  : build/app/outputs/flutter-apk/app-release.apk
+size      : 148653274 bytes (~148.7 MB)
+mtime     : 2026-10-19 16:35:36.235530799 +0800
+sha1      : 4fee33f85f095027d3a320e8446f53485929d2ca
+
+----------------------------------------------------------------
+[ATTEMPTS]
+----------------------------------------------------------------
+Attempt 1 (rc=1) — FAILED (environmental), 1m36s
+  Gradle task ':app:compileReleaseJavaWithJavac' failed:
+    GeneratedPluginRegistrant.java:79: 程序包 dev.flutter.plugins.integration_test 不存在
+  Root cause: :integration_test release compile classpath could not be resolved
+  (the integration_test plugin Java classes were absent from the app compile
+  classpath as a downstream effect of the unresolved integration_test deps).
+
+Attempt 2 (rc=1) — FAILED (environmental, same as todo-1 baseline), 31s
+  Execution failed for task ':integration_test:extractReleaseAnnotations'.
+  Could not resolve androidx.test:runner:1.2+ for ':integration_test:releaseCompileClasspath'.
+    > Unable to load Maven meta-data from
+      https://repo.maven.apache.org/maven2/androidx/test/runner/maven-metadata.xml
+        > The server may not support the client's requested TLS protocol versions:
+          (TLSv1.2, TLSv1.3). ... > Remote host terminated the handshake
+  (Identical transient Gradle TLS/network signature recorded in the todo-1
+   baseline evidence .omo/evidence/task-1-parity-baseline.txt.)
+
+Attempt 3 (rc=0) — SUCCESS, 36.8s
+  Flutter reported: "Built build/app/outputs/flutter-apk/app-release.apk (148.7MB)"
+
+Note: The failures are ENVIRONMENTAL (intermittent JVM-TLS handshake termination
+to Maven Central), not source-related. A plain `curl` to the same Maven Central
+metadata URL succeeded (HTTP 404, <1.5s) during the same window, and the exact
+same transient signature is already recorded in the todo-1 baseline. Retry (per
+the task's retry-on-transient rule) resolved it.
+
+----------------------------------------------------------------
+[RAW BUILD TAIL — successful run (attempt 3), full stdout]
+----------------------------------------------------------------
+Running Gradle task 'assembleRelease'...                        
+INFO: Precompiled binaries are disabled
+INFO: Building rhttp for aarch64-linux-android
+Running Gradle task 'assembleRelease'...                           36.8s
+✓ Built build/app/outputs/flutter-apk/app-release.apk (148.7MB)
+
+---- exit code (attempt 3): 0 ----
+
+----------------------------------------------------------------
+[ATTEMPT 1 TAIL — rc=1]
+----------------------------------------------------------------
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights.
+
+BUILD FAILED in 1m 36s
+Running Gradle task 'assembleRelease'...                           97.1s
+Gradle task assembleRelease failed with exit code 1
+
+----------------------------------------------------------------
+[ATTEMPT 2 TAIL — rc=1]
+----------------------------------------------------------------
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 31s
+Running Gradle task 'assembleRelease'...                           31.4s
+[!] Gradle threw an error while downloading artifacts from the network.
+Gradle task assembleRelease failed with exit code 1
+
+----------------------------------------------------------------
+[ARTIFACT VERIFICATION]
+----------------------------------------------------------------
+$ ls -la --time-style=full-iso build/app/outputs/flutter-apk/app-release.apk
+-rw-rw-r-- 1 hezhihu89 hezhihu89 148653274 2026-10-19 16:35:36.235530799 +0800 \
+    build/app/outputs/flutter-apk/app-release.apk
+
+$ stat -c %s build/app/outputs/flutter-apk/app-release.apk
+148653274
+
+$ cat build/app/outputs/flutter-apk/app-release.apk.sha1
+4fee33f85f095027d3a320e8446f53485929d2ca
+
+Raw attempt logs:
+  /tmp/opencode/f3/build-attempt1.log
+  /tmp/opencode/f3/build-attempt2.log
+  /tmp/opencode/f3/build.log   (successful attempt 3)
+================================================================
