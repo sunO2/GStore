@@ -11,6 +11,8 @@
 /// * **有界语义**：[frameCount] 即样本条数，与 [samples] 长度恒等。
 library;
 
+import 'package:gstore/core/perf/fps_analysis.dart';
+
 /// 一次 FPS 会话的汇总统计（`0` 样本时为全 `0`）。
 ///
 /// 纯函数：对样本先过滤非有限 / 负值，再计算；`null` / 越界样本被忽略。
@@ -292,8 +294,11 @@ class FpsSession {
 
 /// 把一次会话渲染为可分享的 CSV 文本（元信息块 + 样本块）。
 ///
-/// 结构：先 `key,value` 元信息行（含汇总统计），空行分隔，再 `index,fps`
-/// 逐样本行。纯函数，同一输入恒产出同一文本。
+/// 结构：先 `key,value` 元信息行（含汇总统计 + Scene-parity 派生列
+/// `mode` / `view_size` / `avg_power` / `fluency_ratio` / `high_temp_ratio`），
+/// 空行分隔，再 `index,fps` 逐样本行。**旧列全部保留**（仅追加新列，向后兼容）。
+/// 比率列复用 `fps_analysis.dart` 的纯函数（阈值取自 `scene_thresholds.dart`）。
+/// 纯函数，同一输入恒产出同一文本。
 String buildFpsSessionCsv(FpsSession session) {
   final buffer = StringBuffer();
   void meta(String key, String value) =>
@@ -312,6 +317,12 @@ String buildFpsSessionCsv(FpsSession session) {
   meta('avg', _number(session.avg));
   meta('min', _number(session.min));
   meta('max', _number(session.max));
+  // Scene-parity 字段（task 17）：旧列保持不变，仅在下方追加新列。
+  meta('mode', session.mode);
+  meta('view_size', session.viewSize);
+  meta('avg_power', _number(session.avgPower));
+  meta('fluency_ratio', _number(fpsFluencyRatio(session.samples)));
+  meta('high_temp_ratio', _number(highTempRatio(session.temperatures)));
   buffer.writeln();
   buffer.writeln('${_csvField('index')},${_csvField('fps')}');
   for (var i = 0; i < session.samples.length; i++) {

@@ -222,4 +222,81 @@ void main() {
     expect(find.textContaining('暂无会话'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('FPS 会话卡：列表与详情显示 Scene-parity 指标', (tester) async {
+    _useTallViewport(tester);
+    final store = InMemoryFpsSessionStore(
+      seed: <FpsSession>[
+        FpsSession.fromRecording(
+          id: 'sp1',
+          label: '场景会话',
+          startMs: 1000,
+          endMs: 3000,
+          samples: const <double>[60, 60, 30],
+          avgPower: 1.25,
+          viewSize: '1080.0x2340.0',
+          mode: '均衡',
+          temperatures: const <double>[46, 41.5],
+        ),
+      ],
+    );
+    final recorder = FpsSessionRecorder(
+      store: store,
+      sampler: () async => null,
+      maxDuration: null,
+    );
+    addTearDown(recorder.dispose);
+
+    await tester.pumpWidget(_harness(store: store, recorder: recorder));
+    await _settleAsync(tester);
+
+    // 列表：流畅度 2/3→67%、高温 1/2→50%、功耗 / 模式 / 视图。
+    expect(find.textContaining('流畅度 67%'), findsOneWidget);
+    expect(find.textContaining('高温占比 50%'), findsOneWidget);
+    expect(find.textContaining('功耗 1.25 W'), findsOneWidget);
+    expect(find.textContaining('模式 均衡'), findsOneWidget);
+    expect(find.textContaining('视图 1080.0x2340.0'), findsOneWidget);
+
+    // 点开详情：全部 Scene-parity 指标逐项展示。
+    await tester.tap(find.byKey(const Key('perf_fps_session_sp1')));
+    await _settleAsync(tester);
+    expect(find.text('平均功耗'), findsOneWidget);
+    expect(find.text('1.25 W'), findsOneWidget);
+    expect(find.text('流畅度'), findsOneWidget);
+    expect(find.text('67%'), findsOneWidget);
+    expect(find.text('高温占比'), findsOneWidget);
+    expect(find.text('50%'), findsOneWidget);
+    expect(find.text('均衡'), findsOneWidget);
+    expect(find.text('1080.0x2340.0'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('FPS 会话卡：无数据会话指标降级为 —', (tester) async {
+    _useTallViewport(tester);
+    final store = InMemoryFpsSessionStore(
+      seed: <FpsSession>[
+        FpsSession.fromRecording(
+          id: 'empty1',
+          label: '空数据',
+          startMs: 0,
+          endMs: 0,
+          samples: const <double>[],
+        ),
+      ],
+    );
+    final recorder = FpsSessionRecorder(
+      store: store,
+      sampler: () async => null,
+      maxDuration: null,
+    );
+    addTearDown(recorder.dispose);
+
+    await tester.pumpWidget(_harness(store: store, recorder: recorder));
+    await _settleAsync(tester);
+
+    // 无样本 → 列表比率与模式/视图均为降级展示，不抛异常。
+    expect(find.textContaining('流畅度 —'), findsOneWidget);
+    expect(find.textContaining('高温占比 —'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

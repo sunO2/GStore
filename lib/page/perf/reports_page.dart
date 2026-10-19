@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/perf/fps_analysis.dart';
 import 'package:gstore/core/perf/fps_session.dart';
 import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/perf_auto_export_settings.dart';
@@ -758,6 +759,31 @@ class _FpsSessionCardState extends ConsumerState<_FpsSessionCard> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final label = session.label.isEmpty ? 'FPS 会话' : session.label;
+    // Scene-parity 指标（复用 fps_analysis 纯函数；阈值取自 scene_thresholds）。
+    final fluency = fpsFluencyRatio(session.samples);
+    final hot = highTempRatio(session.temperatures);
+    final metaParts = <String>[
+      if (session.mode.isNotEmpty) '模式 ${session.mode}',
+      if (session.viewSize.isNotEmpty) '视图 ${session.viewSize}',
+    ];
+    final subtitle = StringBuffer()
+      ..write('${formatFpsSessionDuration(session.durationMs)} · ')
+      ..write('avg ${session.avg.toStringAsFixed(1)} · ')
+      ..write('min ${session.min.toStringAsFixed(1)} · ')
+      ..write('max ${session.max.toStringAsFixed(1)} · ')
+      ..write('${session.sampleCount} 样本')
+      ..write('\n流畅度 ')
+      ..write(
+        _sceneRatioPercent(fluency, hasSamples: session.samples.isNotEmpty),
+      )
+      ..write(' · 高温占比 ')
+      ..write(
+        _sceneRatioPercent(hot, hasSamples: session.temperatures.isNotEmpty),
+      )
+      ..write(' · 功耗 ${_scenePowerText(session.avgPower)}');
+    if (metaParts.isNotEmpty) {
+      subtitle.write('\n${metaParts.join(' · ')}');
+    }
     return ListTile(
       key: Key('perf_fps_session_${session.id}'),
       contentPadding: EdgeInsets.zero,
@@ -768,17 +794,14 @@ class _FpsSessionCardState extends ConsumerState<_FpsSessionCard> {
       ),
       title: Text(label, style: theme.textTheme.bodyMedium),
       subtitle: Text(
-        '${formatFpsSessionDuration(session.durationMs)} · '
-        'avg ${session.avg.toStringAsFixed(1)} · '
-        'min ${session.min.toStringAsFixed(1)} · '
-        'max ${session.max.toStringAsFixed(1)} · '
-        '${session.sampleCount} 样本',
-        maxLines: 2,
+        subtitle.toString(),
+        maxLines: metaParts.isEmpty ? 2 : 3,
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall?.copyWith(
           color: scheme.onSurfaceVariant,
         ),
       ),
+      onTap: () => _showSessionDetail(session),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -795,6 +818,75 @@ class _FpsSessionCardState extends ConsumerState<_FpsSessionCard> {
             onPressed: () => _delete(session),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 会话详情弹层：完整展示 Scene-parity 指标 + 既有统计。
+  Future<void> _showSessionDetail(FpsSession session) {
+    final label = session.label.isEmpty ? 'FPS 会话' : session.label;
+    final fluency = fpsFluencyRatio(session.samples);
+    final hot = highTempRatio(session.temperatures);
+    return AppSheet.showCustom<void>(
+      context: context,
+      builder: (sheetContext) => AppSheetScaffold(
+        title: label,
+        subtitle: 'FPS 会话详情',
+        icon: const Icon(TablerIcons.chart_line),
+        content: Material(
+          type: MaterialType.transparency,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              perfKv(
+                sheetContext,
+                '模式',
+                session.mode.isEmpty ? '未记录' : session.mode,
+              ),
+              perfKv(
+                sheetContext,
+                '视图尺寸',
+                session.viewSize.isEmpty ? '未记录' : session.viewSize,
+              ),
+              perfKv(
+                sheetContext,
+                '平均功耗',
+                _scenePowerText(session.avgPower),
+              ),
+              perfKv(
+                sheetContext,
+                '流畅度',
+                _sceneRatioPercent(
+                  fluency,
+                  hasSamples: session.samples.isNotEmpty,
+                ),
+              ),
+              perfKv(
+                sheetContext,
+                '高温占比',
+                _sceneRatioPercent(
+                  hot,
+                  hasSamples: session.temperatures.isNotEmpty,
+                ),
+              ),
+              const Divider(height: AppSpacing.lg),
+              perfKv(
+                sheetContext,
+                '时长',
+                formatFpsSessionDuration(session.durationMs),
+              ),
+              perfKv(
+                sheetContext,
+                '平均帧率',
+                session.avg.toStringAsFixed(1),
+              ),
+              perfKv(sheetContext, '最低帧率', session.min.toStringAsFixed(1)),
+              perfKv(sheetContext, '最高帧率', session.max.toStringAsFixed(1)),
+              perfKv(sheetContext, '样本数', '${session.sampleCount}'),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1122,3 +1214,10 @@ String _formatReportTime(DateTime time) {
   return '${time.year}-${two(time.month)}-${two(time.day)} '
       '${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
 }
+
+/// 比率（`[0, 1]`）→ 百分比串（`0.667` → `67%`）；无有效样本时为 `—`。
+String _sceneRatioPercent(double ratio, {required bool hasSamples}) =>
+    hasSamples ? '${(ratio * 100).round()}%' : '—';
+
+/// 平均功耗（W）→ 保留两位小数的展示串（如 `1.25 W`）。
+String _scenePowerText(double watts) => '${watts.toStringAsFixed(2)} W';

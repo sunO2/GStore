@@ -197,6 +197,52 @@ void main() {
     expect(csv, contains('1,30.0'));
   });
 
+  test('buildFpsSessionCsv：Scene-parity 列对齐（旧列仍保留）', () {
+    final session = FpsSession.fromRecording(
+      id: 'id2',
+      label: '会话',
+      startMs: 0,
+      endMs: 2000,
+      samples: const <double>[60, 30],
+      mode: '均衡',
+      viewSize: '1080.0x2340.0',
+      avgPower: 1.25,
+      temperatures: const <double>[46, 41.5],
+    );
+    final csv = buildFpsSessionCsv(session);
+    // 旧列不变。
+    expect(csv, contains('id,id2'));
+    expect(csv, contains('sample_count,2'));
+    expect(csv, contains('avg,45.0'));
+    expect(csv, contains('min,30.0'));
+    expect(csv, contains('max,60.0'));
+    expect(csv, contains('index,fps'));
+    // 新列：raw 字段 + 复用 fps_analysis 的派生比率。
+    expect(csv, contains('mode,均衡'));
+    expect(csv, contains('view_size,1080.0x2340.0'));
+    expect(csv, contains('avg_power,1.25'));
+    // [60, 30] → 1/2 流畅；[46, 41.5] → 1/2 高温。
+    expect(csv, contains('fluency_ratio,0.5'));
+    expect(csv, contains('high_temp_ratio,0.5'));
+  });
+
+  test('buildFpsSessionCsv：空会话仍产出有效表头，比率归零', () {
+    final session = FpsSession.fromRecording(
+      id: 'e2',
+      label: '空会话',
+      startMs: 0,
+      endMs: 0,
+      samples: const <double>[],
+    );
+    final csv = buildFpsSessionCsv(session);
+    expect(csv, contains('key,value'));
+    expect(csv, contains('sample_count,0'));
+    expect(csv, contains('fluency_ratio,0.0'));
+    expect(csv, contains('high_temp_ratio,0.0'));
+    expect(csv, contains('avg_power,0.0'));
+    expect(csv, contains('index,fps'));
+  });
+
   test('formatFpsSessionDuration：秒 / 分秒 / 负值', () {
     expect(formatFpsSessionDuration(0), '0秒');
     expect(formatFpsSessionDuration(45000), '45秒');
