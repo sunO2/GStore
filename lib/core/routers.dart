@@ -15,6 +15,8 @@ class AppRoute {
   static String proxyCaptureCa = "/GStore/proxy/captureCa";
   static String requestDebug = "/GStore/requestDebug";
   static String appSnapshotList = "/GStore/appSnapshotList";
+  static String appList = "/GStore/appList";
+  static String discovery = "/GStore/discovery";
   static String itTools = "/GStore/itTools";
   static String settings = "/GStore/settings";
   static String themeSettings = "/GStore/themeSettings";

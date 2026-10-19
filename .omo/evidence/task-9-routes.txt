@@ -1,0 +1,24 @@
+=== task 9 — appList/discovery routes + barrel exports ===
+date: 2026-10-19T14:07:01+08:00
+branch: main
+
+=== git diff --stat (scoped) ===
+ lib/core/router/app_router.dart | 8 ++++++++
+ lib/core/routers.dart           | 2 ++
+ lib/page/page.dart              | 2 ++
+ 3 files changed, 12 insertions(+)
+
+=== dart analyze lib/ : error count ===
+0
+(0 errors expected)
+
+=== dart analyze lib/ : tail ===
+
+727 issues found.
+
+=== flutter test test/core/router/parity_routes_test.dart ===
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/core/router/parity_routes_test.dart
+00:00 +0: appList / discovery 经真实 appRouter 解析到 builder
+00:00 +1: 未注册路径解析为 null（未知路由失败）
+00:00 +2: 路由 path 无重复注册
+00:00 +3: All tests passed!
