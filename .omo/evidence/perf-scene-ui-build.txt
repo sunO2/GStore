@@ -1,0 +1,27 @@
+# Perf Scene-UI — Android Release Build Verification
+
+Date:    2026-10-19
+Repo:    /home/hezhihu89/develop/flutter/project/GStore
+HEAD:    bdb5195 (feat(perf): scene-style overview (hero + rings + FPS stats))
+Flutter: 3.44.8 / Dart 3.12.2
+
+Command:
+  flutter build apk --release --target-platform android-arm64
+
+Result: PASS (exit 0)
+
+Artifact: build/app/outputs/flutter-apk/app-release.apk
+Size:     148718346 bytes (148.7 MB)
+SHA-256:  393e11dadf6c422bd0613dbff24b8b237d62fa4c3ac1a29cf96e1ded0f8653b7
+
+Notes:
+- Attempt 1 failed: GeneratedPluginRegistrant.java javac error ("package
+  dev.flutter.plugins.integration_test does not exist") caused by a
+  network-starved :integration_test classpath.
+- Attempt 2 failed: transient Gradle TLS/network error — "Remote host
+  terminated the handshake" fetching androidx.test:runner from
+  repo.maven.apache.org (the known transient).
+- Retry after network recovery succeeded (exit 0).
+- Verification only: no product/test source modified, no version bump, no
+  dependency changes. Only lib/page/perf/** + tests changed since the
+  baseline release build; home shell untouched.
