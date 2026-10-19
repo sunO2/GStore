@@ -1,0 +1,72 @@
+===== task-6-feature-hub — FeatureHubPage (5-group scene-style grid) =====
+date: 2026-10-19T14:32:03+08:00
+branch: main
+HEAD:   669f9f8c369e1f0951e37ae444641c73fcb8498e
+
+===== 1. dart analyze lib/ (error count must be 0) =====
+727 issues found.
+error lines: 0
+
+===== 2. dart analyze <new files> =====
+Analyzing view.dart, feature_hub_page_test.dart...
+No issues found!
+
+===== 3. flutter test test/page/home/feature_hub_page_test.dart =====
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/page/home/feature_hub_page_test.dart
+00:00 +0: FeatureHubPage 5 组网格 ① 渲染 5 个组标题
+00:00 +1: FeatureHubPage 5 组网格 ② 关键条目存在（含 appList / discovery / agent）
+00:00 +2: FeatureHubPage 5 组网格 ③ 点按条目 push 到既有 AppRoute
+00:00 +3: FeatureHubPage 5 组网格 ④ 全部条目路由均为已注册路由（无死链）
+00:00 +4: FeatureHubPage 5 组网格 ⑤ AI 助手项随 agent_tools 模块上下线显隐
+00:01 +5: All tests passed!
+
+===== 4. 5 group titles in page (task-2 §2 mapping) =====
+94:    title: '场景模式',
+121:    title: '设备性能',
+145:    title: '充电耗电',
+167:    title: '进阶功能',
+200:    title: '辅助',
+
+===== 5. §2.1 reassignments present =====
+132:        id: 'perf_profile',
+156:        id: 'battery_stats',
+
+===== 6. agent_tools gating (mirrors mine/view.dart) =====
+20:/// **门禁**：AI 助手为网格项，随 `agent_tools` 模块上下线显隐
+21:/// （镜像 `lib/page/home/tab/mine/view.dart` 的 `_agentModuleOnline` 模式）。
+45:    this.requiresAgentModule = false,
+60:  /// 是否受 `agent_tools` 模块门禁（下线时隐藏）。
+61:  final bool requiresAgentModule;
+203:      // AI 助手：随 agent_tools 模块上下线显隐（门禁）。
+209:        requiresAgentModule: true,
+242:  /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手显隐）。
+243:  bool _agentModuleOnline = false;
+245:  /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）。
+254:    // 监听 agent_tools 模块上下线：下线隐藏 AI 助手网格项，上线恢复
+255:    // （镜像 lib/page/home/tab/mine/view.dart 的 _agentModuleOnline 模式）。
+256:    _agentModuleOnline = ModuleManager.instance.isModuleEnabled('agent_tools');
+257:    _agentSub = ModuleManager.instance.watchModule('agent_tools').listen((_) {
+260:        _agentModuleOnline =
+261:            ModuleManager.instance.isModuleEnabled('agent_tools');
+272:  /// 门禁过滤：隐藏受 `agent_tools` 门禁且当前下线的条目。
+275:        .where((e) => !e.requiresAgentModule || _agentModuleOnline)
+
+===== 7. NEW files (this todo) =====
+?? lib/page/home/tab/feature_hub/
+?? test/page/home/feature_hub_page_test.dart
+
+===== 8. item routes (all must be existing AppRoute.*) =====
+101:        route: AppRoute.perfProfiles,
+107:        route: AppRoute.appList,
+113:        route: AppRoute.discovery,
+128:        route: AppRoute.perfMonitor,
+135:        route: AppRoute.perfProfiles,
+152:        route: AppRoute.perfMonitor,
+159:        route: AppRoute.perfMonitor,
+174:        route: AppRoute.backup,
+180:        route: AppRoute.moduleManage,
+186:        route: AppRoute.itTools,
+192:        route: AppRoute.installedApps,
+208:        route: AppRoute.agent,
+215:        route: AppRoute.settings,
+221:        route: AppRoute.logViewer,
