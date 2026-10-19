@@ -21,8 +21,11 @@
 /// （镜像 `lib/page/home/tab/mine/view.dart` 的 `_agentModuleOnline` 模式）。
 ///
 /// **路由**：每一项都 `context.push` 到 `lib/core/routers.dart` 中**既有**的
-/// `AppRoute`——本 todo 不做全量入口枚举（归 todo 10），仅做可靠的首轮映射；
-/// 无死链、不新增路由。
+/// `AppRoute`——todo 10 在此完成**全量入口枚举**，覆盖 GStore 全部面向用户的
+/// 功能目的地（各自恰好落入 5 组之一）；浏览流/参数化路由与嵌套配置子页除外
+/// （清单与理由见 `.omo/evidence/task-10-entry-map.txt`）。无死链、不新增路由。
+/// 枚举测试 `test/core/router/feature_hub_entries_test.dart` 遍历 `kHubGroups`
+/// 逐项断言 `route` 已注册于真实 `appRouter`（未知路由失败，无静默跳过）。
 ///
 /// **设计令牌**：颜色/字体一律取自 `Theme.of(context)`（AGENTS.md），
 /// 无硬编码颜色/字号；间距/圆角取 `AppSpacing`/`AppRadius` 令牌。
@@ -84,6 +87,17 @@ class HubGroup {
 }
 
 /// 5 组功能定义（7→5 映射，出处 task-2 §2/§2.1）。
+///
+/// **全量入口枚举（todo 10）**：GStore 每个面向用户的功能目的地都恰好落入
+/// 下列 5 组之一，每组条目 `route` 均为 `lib/core/routers.dart` 既有常量且已在
+/// `app_router.dart` 注册（无死链，由 `feature_hub_entries_test.dart` 枚举断言）。
+///
+/// 不入网格（有意）：
+/// - Scene Xposed功能整组丢弃（无 GStore 等价物，见 task-2 §2）；
+/// - Scene 交流反馈整组移出网格 → 「设置」tab（非功能组，见 task-2 §2/§10）；
+/// - 核心浏览流/参数化路由（`appDetail`/`search`/`categoryPage`/`webView`/`auth`）
+///   与嵌套配置子页（`webdavConfig` 属 backup、`proxyCapture*` 属 proxy、
+///   `agentSettings`/`localLlm` 属 agent）——均由网格中已列目的地进入。
 ///
 /// 非 `const`：`AppRoute.*` 为可变 `static String`（`lib/core/routers.dart`），
 /// 无法用于常量上下文。
@@ -161,7 +175,7 @@ final List<HubGroup> kHubGroups = <HubGroup>[
     ],
   ),
 
-  // ---- 4. 进阶功能（Scene 组 4；GStore 等价入口）----
+  // ---- 4. 进阶功能（Scene 组 4；GStore 等价：应用管理 / 备份 / 源 / 缓存 / 库）----
   HubGroup(
     id: 'advanced',
     title: '进阶功能',
@@ -191,10 +205,35 @@ final List<HubGroup> kHubGroups = <HubGroup>[
         icon: TablerIcons.brand_android,
         route: AppRoute.installedApps,
       ),
+      // Scene 组 4「应用管理 / 附加功能」等价：快照 / 源 / 缓存 / 数据库。
+      HubEntry(
+        id: 'app_snapshot',
+        label: '应用快照',
+        icon: TablerIcons.history,
+        route: AppRoute.appSnapshotList,
+      ),
+      HubEntry(
+        id: 'fdroid_repo',
+        label: '软件源管理',
+        icon: TablerIcons.source_code,
+        route: AppRoute.fdroidRepo,
+      ),
+      HubEntry(
+        id: 'cache_manage',
+        label: '缓存管理',
+        icon: TablerIcons.clear_all,
+        route: AppRoute.cacheManage,
+      ),
+      HubEntry(
+        id: 'database_manage',
+        label: '数据库管理',
+        icon: TablerIcons.database,
+        route: AppRoute.databaseManage,
+      ),
     ],
   ),
 
-  // ---- 5. 辅助（Scene 组 6；GStore 以自身辅助/工具入口承载）----
+  // ---- 5. 辅助（Scene 组 6；GStore 以自身辅助/工具/调试入口承载）----
   HubGroup(
     id: 'auxiliary',
     title: '辅助',
@@ -215,10 +254,40 @@ final List<HubGroup> kHubGroups = <HubGroup>[
         route: AppRoute.settings,
       ),
       HubEntry(
+        id: 'theme_settings',
+        label: '主题外观',
+        icon: TablerIcons.palette,
+        route: AppRoute.themeSettings,
+      ),
+      HubEntry(
         id: 'log_viewer',
         label: '查看日志',
         icon: TablerIcons.file_text,
         route: AppRoute.logViewer,
+      ),
+      HubEntry(
+        id: 'proxy',
+        label: '网络调试',
+        icon: TablerIcons.shield,
+        route: AppRoute.proxy,
+      ),
+      HubEntry(
+        id: 'request_debug',
+        label: '请求调试',
+        icon: TablerIcons.api,
+        route: AppRoute.requestDebug,
+      ),
+      HubEntry(
+        id: 'qr_tool',
+        label: '二维码工具',
+        icon: TablerIcons.qrcode,
+        route: AppRoute.qrTool,
+      ),
+      HubEntry(
+        id: 'licenses',
+        label: '开源协议',
+        icon: TablerIcons.license,
+        route: AppRoute.licenses,
       ),
     ],
   ),
