@@ -138,3 +138,14 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 验证：`dart analyze lib/` = **0 error**（723 issues 全为存量；view.dart 单文件 No issues）；`flutter test test/core/router/ test/page/home/` = **37 passed**（新测试 6 + todo6 widget 5 + 既有全绿，无回归）。证据 `.omo/evidence/task-10-entry-map.txt`。
 - 坑：`feature_hub_page_test.dart`（todo 6）的 `buildRouter()` 只为 app_list/discovery/agent/perfProfiles 装了占位路由，新条目**未在 widget 测试里被点按**故无需补；真正的死链门禁是纯路由层测试 ③，别再往 widget 测试塞全量占位。
 - 并发：其他 worker 正在改 `discovery/view.dart`(todo 12)/`state.dart`(todo 32) → analyze 期会看到其瞬时错误；提交用 `flock` + pathspec 只 stage 本 todo 的 2 个文件。
+
+## Todo 12 — DiscoveryPage 改为可 push 页面（2026-10-19）
+- 路由 `AppRoute.discovery` + GoRoute 由 todo 9 已加；feature_hub 已有 discovery 网格项（可达）。本 todo 是**把页面从「首页 tab 嵌入」语义收尾为「独立路由页」** + 补 widget 测试。
+- `lib/page/home/tab/discovery/view.dart` 唯一产品改动：
+  - 删除 `AutomaticKeepAliveClientMixin`（`wantKeepAlive=>true` + `super.build`）——该页 provider 是 `autoDispose`，pop 即销毁，作为路由页保活无意义（**注意**：todo 11 的 applist 保留了自己的 mixin；applist provider 语义不同，勿盲目对齐）。
+  - 网格底部内边距 `80 + padding.bottom` → `AppSpacing.lg + padding.bottom`：80px 是旧首页 `extendBody`+悬浮导航胶囊的避让遗留，路由页无胶囊。（`home/view.dart:164` 仍是 `extendBody:true` + 悬浮胶囊，但 discovery 不再嵌在其内。）
+  - 加类文档说明「自包含可 push 页 / 唯一 Scaffold / AppBar 自动返回」。
+- 新增 `test/page/home/discovery/discovery_route_test.dart`（4 用例，全绿）：① 真实 `appRouter` 注册 discovery 且 builder 非空；②③ push 后页面构建（预置应用可见）+ 页面自身**恰好一个 Scaffold** + `BackButton` + 标题「发现」；④ 点 BackButton pop 回上一页；⑤ `router.go(/GStore/__does_not_exist__)` → 自带 `errorBuilder` 兜底，不构建 DiscoveryPage。用 `_SeededDiscoveryNotifier` 覆盖 `discoveryProvider` 避免真实渠道加载。
+- **Gotcha（并发编译失败）**：首次跑测试时另一 worker 正在改 `lib/page/settings/settings_page.dart`（`_buildLogDebugSection` 暂缺）→ 整仓编译失败波及我的测试文件。**这是并发瞬态**，等该文件 `dart analyze` 恢复后重跑即过；不要据此改自己的代码。
+- **Gotcha（Scaffold 计数）**：`find.byType(Scaffold)` 默认跳过 offstage 的上一路由，故 push 后 `findsOneWidget` 成立（与 applist_push_test 一致）；同时用 `find.descendant(of: DiscoveryPage, matching: Scaffold)` 显式断言「页面自身唯一 Scaffold」更稳。
+- 验证：`dart analyze lib/` = **0 error**（723 issues，全 info/warning）；`flutter test test/page/home/discovery/discovery_route_test.dart` = **4 passed**；回归 `other_pages_border_theme_test.dart + parity_routes_test.dart` = **9 passed**。证据 `.omo/evidence/task-12-discovery.txt`（`.omo/` gitignored，未提交，循项目惯例）。

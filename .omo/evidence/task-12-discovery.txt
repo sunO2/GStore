@@ -1,0 +1,64 @@
+# task-12-discovery.txt — scene-to-gstore-parity todo 12
+# DiscoveryPage 改为可 push 页面
+
+日期: 2026-10-19
+仓库: /home/hezhihu89/develop/flutter/project/GStore
+分支: main（未 push）
+
+## 目标
+- `lib/page/home/tab/discovery/view.dart` 经 `AppRoute.discovery`（todo 9 已加路由）
+  可 push 打开；返回/navigation 正常；页面恰好一个 `Scaffold`。
+- widget test 断言路由解析 + 页面构建；未知/缺失路由失败。
+- `dart analyze lib/` = 0 error；测试通过；仅主题令牌。
+
+## 改动文件
+1. `lib/page/home/tab/discovery/view.dart`
+   - 移除仅对「首页 tab 嵌入」有意义的 `AutomaticKeepAliveClientMixin`
+     （`wantKeepAlive => true` + `super.build(context)`）；本页 provider 为
+     `autoDispose`，pop 即销毁，保活无意义。
+   - 网格底部内边距由 `80 + padding.bottom`（旧「避让首页悬浮导航胶囊」遗留）
+     改为 `AppSpacing.lg + padding.bottom`——本页现为独立路由页，无悬浮胶囊。
+   - 新增类文档说明「自包含可 push 路由页、页面自带唯一 Scaffold、AppBar 依赖
+     `automaticallyImplyLeading` 提供返回按钮」。
+   - 结构未变：仍**恰好一个 `Scaffold`**；发现逻辑/布局/令牌全部保留。
+2. `test/page/home/discovery/discovery_route_test.dart`（新增）
+   - ① 真实 `appRouter` 注册 `AppRoute.discovery` 且 builder 非空（路由可达）。
+   - ②③ 测试 GoRouter push 进入 `DiscoveryPage`：页面构建（预置应用可见）、
+     页面自身恰好一个 Scaffold、`BackButton` 存在、AppBar 标题「发现」。
+   - ④ 点 `BackButton` pop 回上一页。
+   - ⑤ `router.go('/GStore/__does_not_exist__')` → errorBuilder 兜底，
+     不构建 `DiscoveryPage`（未知/缺失路由失败）。
+   - 使用 `_SeededDiscoveryNotifier` 覆盖 `discoveryProvider`，避免真实渠道加载。
+
+## 验证命令与结果（原始输出摘要）
+
+### 1) dart analyze lib/
+$ /home/hezhihu89/develop/flutter/flutter/bin/dart analyze lib/ | tail -1
+723 issues found.
+$ ... | grep -c "error -"
+0
+→ **0 error**（723 条均为既有 info/warning；基线 todo-1 为 727，其他并发 worker
+  改动导致计数波动；本 todo 未引入任何 error）。
+
+### 2) 新增 widget test
+$ /home/hezhihu89/develop/flutter/flutter/bin/flutter test test/page/home/discovery/discovery_route_test.dart
+00:01 +4: All tests passed!
+→ 4/4 passed（① + ②③ + ④ + ⑤）。
+
+### 3) 回归（本改动直接相关）
+$ /home/hezhihu89/develop/flutter/flutter/bin/flutter test \
+    test/other_pages_border_theme_test.dart test/core/router/parity_routes_test.dart
+00:01 +9: All tests passed!
+→ 9/9 passed（含其他页面主题边框套件中 pump 真实 `DiscoveryPage` 的 group ①）。
+
+## 并发说明
+- 首次运行 widget test 时，另一并发 worker 正在编辑
+  `lib/page/settings/settings_page.dart`（`_buildLogDebugSection` 暂缺），
+  导致整仓编译失败（非本 todo 文件问题）。等待该 worker 完成（`dart analyze
+  lib/page/settings/settings_page.dart` 恢复正常）后重跑，全部通过。
+- 提交用 `flock` + pathspec，只 stage 本 todo 的两个文件，绝不 `git add -A`。
+
+## 结论
+- [x] view.dart 经 `AppRoute.discovery` 可 push；pop 返回正常；恰好一个 Scaffold
+- [x] widget test 覆盖「路由解析 + 页面构建」与「未知/缺失路由失败」
+- [x] `dart analyze lib/` 0 error；测试通过；仅主题令牌（无新增硬编码）
