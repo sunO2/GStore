@@ -1,17 +1,13 @@
 /// 首页 tab 状态（Riverpod 不可变 state）。
 class HomeState {
-  /// 当前原始 tab 下标（0-3：首页/发现/AI 助手/我的）。
+  /// 当前 tab 下标（0-2：功能/首页/设置）。
   final int index;
 
-  /// 进入 AI 助手页（index 2）前的来源 tab（AI 页返回按钮/系统返回的目标）。
-  final int sourceIndex;
+  const HomeState({this.index = 0});
 
-  const HomeState({this.index = 0, this.sourceIndex = 0});
-
-  HomeState copyWith({int? index, int? sourceIndex}) {
+  HomeState copyWith({int? index}) {
     return HomeState(
       index: index ?? this.index,
-      sourceIndex: sourceIndex ?? this.sourceIndex,
     );
   }
 }
@@ -21,7 +17,7 @@ class HomeState {
 /// **纯增量**：本类型只描述后续 todo 5 引入的三 tab 外壳的下标语义，
 /// 与既有四 tab raw 下标（首页/发现/AI 助手/我的）**并行存在**。
 /// 本 commit 不接入任何 `PageView`/`jumpToPage` 逻辑，因此不改变
-/// [HomeState.index]/[HomeState.sourceIndex] 的既有可观察行为。
+/// [HomeState.index] 的既有可观察行为。
 enum HomeTab3 {
   /// 功能（Scene 功能网格）。
   features(tabIndex: 0, label: '功能'),

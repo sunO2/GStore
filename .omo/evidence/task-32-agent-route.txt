@@ -1,0 +1,54 @@
+# Task 32 — AgentPage route-only + AI-tab scaffolding removal
+
+Plan: .omo/plans/scene-to-gstore-parity.md (todo 32, final step of Wave 1)
+Date: 2026-10-19
+
+## Changes
+- lib/page/agent/view.dart
+  - removed `isTabEmbedded` ctor param/field + `AutomaticKeepAliveClientMixin`
+    (tab-embedding scaffolding; route-only page needs neither)
+  - `initState`/`dispose` now unconditionally call
+    `HomeTabVisibility.instance.setAgentRoute(true/false)` — KEPT route behavior
+  - removed home tab/`sourceIndex` back-navigation logic: `_buildBackButton`,
+    `showBack`, `homeProvider` reads in `_buildFloatingInputWrapper` /
+    `_inputBarClearance`
+  - removed now-unused `import '.../page/home/logic.dart'`
+- lib/page/home/state.dart: removed `sourceIndex` field (+ ctor/copyWith refs),
+  updated doc comment
+- lib/page/home/logic.dart: removed both `setHomeAgentTab(...)` calls
+  (build() + jumpToPage()) and the now-unused `core.dart` import; simplified
+  `jumpToPage` to a single `copyWith(index:)`
+- KEPT unchanged: lib/core/navigation/home_tab_visibility.dart
+  (`HomeTabVisibility` + `setAgentRoute`/`agentActive`),
+  lib/core/agent/agent_service.dart (uses `HomeTabVisibility.instance.agentActive`)
+- NEW test/page/agent/agent_route_test.dart (2 tests)
+
+## Gate evidence
+
+### grep gates (all 0 matches)
+$ grep -rn "sourceIndex\|isTabEmbedded" lib/page/agent/view.dart lib/page/home/view.dart lib/page/home/state.dart lib/page/home/logic.dart
+  -> 0 matches (grep exit 1)
+$ grep -n "setHomeAgentTab" lib/page/home/logic.dart
+  -> 0 matches (grep exit 1)
+$ grep -n "page/home/logic.dart" lib/page/agent/view.dart
+  -> 0 matches (grep exit 1)
+$ grep -rn "setHomeAgentTab" lib/
+  -> only lib/core/navigation/home_tab_visibility.dart:24 (class definition; KEPT)
+
+### dart analyze lib/
+$ /home/hezhihu89/develop/flutter/flutter/bin/dart analyze lib/
+  -> 723 issues found (info/warning only), 0 errors
+$ dart analyze lib/ | grep -E "error -" | wc -l
+  -> 0
+
+### tests
+$ flutter test test/page/agent/agent_route_test.dart
+  -> 2 passed (① push→agentActive=true / pop→false, no sourceIndex back button;
+     ② module disabled → guarded, no crash)
+$ flutter test test/agent_module_disable_test.dart test/agent_entry_hide_test.dart test/page/home/home_tabs_test.dart
+  -> 11 passed (AgentPage consumers unaffected)
+
+## Concurrency
+- Touched ONLY: lib/page/agent/view.dart, lib/page/home/state.dart,
+  lib/page/home/logic.dart, test/page/agent/agent_route_test.dart, evidence.
+- Committed under flock with explicit pathspec (no `git add -A`).
