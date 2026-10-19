@@ -53,6 +53,12 @@ pub fn battery_power_interactive() -> Option<bool> {
     crate::battery_bridge::is_interactive()
 }
 
+/// 批量设备状态 JSON（Rust → JNI → Kotlin `DeviceStateChannel.readJson`）。
+/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
+pub fn device_state_read_json() -> Option<String> {
+    crate::device_state_bridge::read_json()
+}
+
 /// 日志消息数据类（架构文档 6.8；普通数据类，跨模块 re-export 可被 FRB 跟随）
 pub use crate::log_bridge::LogMessage;
 

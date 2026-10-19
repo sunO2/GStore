@@ -5,6 +5,7 @@ import 'package:gstore/core/perf/control_cpuset.dart';
 import 'package:gstore/core/perf/control_gpu.dart';
 import 'package:gstore/core/perf/control_refresh_rate.dart';
 import 'package:gstore/core/perf/control_thermal.dart';
+import 'package:gstore/core/perf/device_state.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/perf/perf_control_session.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
@@ -180,9 +181,16 @@ final perfControlTunablesLoaderProvider = Provider<PerfTunablesLoader>(
 // 测试覆盖（覆盖为罐头 [RefreshRateController] / 假 shell）。
 
 /// 屏幕刷新率控制器（生产经 Shizuku；测试覆盖为罐头 controller / 假 shell）。
-final perfRefreshRateControllerProvider = Provider<RefreshRateController>(
-  (ref) => RefreshRateController(shell: PrivilegedShell()),
-);
+final perfRefreshRateControllerProvider = Provider<RefreshRateController>((ref) {
+  final bridge = RustJniDeviceStateBridge();
+  return RefreshRateController(
+    shell: PrivilegedShell(),
+    levelsProvider: () async {
+      final reading = await bridge.read();
+      return reading?.refreshLevels ?? const <int>[];
+    },
+  );
+});
 
 // ==================== 每应用自动刷新率（WS-D · scene8-followups）====================
 //

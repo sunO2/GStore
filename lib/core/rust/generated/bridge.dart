@@ -39,6 +39,11 @@ Future<String?> batteryReadJson() =>
 Future<bool?> batteryPowerInteractive() =>
     RustLib.instance.api.crateBridgeBatteryPowerInteractive();
 
+/// 批量设备状态 JSON（Rust → JNI → Kotlin `DeviceStateChannel.readJson`）。
+/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
+Future<String?> deviceStateReadJson() =>
+    RustLib.instance.api.crateBridgeDeviceStateReadJson();
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
 abstract class EventBridge implements RustOpaqueInterface {
   /// 应用侧事件下行：广播给所有已加载模块（模块经 ABI `on_event` 订阅）。

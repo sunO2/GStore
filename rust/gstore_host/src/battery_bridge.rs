@@ -32,6 +32,17 @@ const READ_JSON_SIG: &str = "(Landroid/content/Context;)Ljava/lang/String;";
 const IS_INTERACTIVE_METHOD: &str = "isInteractive";
 const IS_INTERACTIVE_SIG: &str = "(Landroid/content/Context;)Z";
 
+/// 已缓存的 `JavaVM`（未初始化 → `None`）。供其它 JNI 桥（如
+/// `device_state_bridge`）复用，避免重复 attach 逻辑与全局态。
+pub(crate) fn jvm() -> Option<&'static JavaVM> {
+    VM.get()
+}
+
+/// 已缓存的 `applicationContext` 全局引用（未初始化 → `None`）。
+pub(crate) fn context() -> Option<&'static GlobalRef> {
+    APP_CONTEXT.get()
+}
+
 /// 把 JNI 导出体包进 `catch_unwind`：panic 绝不越过 `extern "system"` 边界。
 fn guard_jni<F: FnOnce()>(export: &str, body: F) {
     if catch_unwind(AssertUnwindSafe(body)).is_err() {
@@ -114,6 +125,8 @@ pub(crate) fn init_context(env: &mut JNIEnv, context: &JObject) {
             }
         }
     }
+
+    crate::device_state_bridge::init_class(env);
 }
 
 /// 读取电池 JSON（Kotlin `BatteryChannel.readJson`）。

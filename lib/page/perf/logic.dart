@@ -19,6 +19,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/perf/battery_source.dart';
+import 'package:gstore/core/perf/device_state.dart';
 import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/fps_session_store.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
@@ -338,6 +339,11 @@ class PerfAutoExportSettingsNotifier
   }
 }
 
+/// 批量设备状态桥（生产 Rust JNI；测试可覆盖为罐头读取）。
+final perfDeviceStateBridgeProvider = Provider<RustJniDeviceStateBridge>(
+  (ref) => RustJniDeviceStateBridge(),
+);
+
 /// 性能监控页 Provider。
 final perfMonitorProvider =
     NotifierProvider<PerfMonitorNotifier, PerfPageState>(
@@ -393,6 +399,9 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   /// build 时捕获的历史存储（dispose 阶段 `ref` 已失效）。
   PerfHistoryStore? _historyStore;
 
+  /// build 时捕获的批量设备状态桥（best-effort；失败不影响刷新）。
+  RustJniDeviceStateBridge? _deviceStateBridge;
+
   /// 上次落盘时间（Unix ms），节流历史写入。
   int _lastHistorySaveMs = 0;
 
@@ -444,6 +453,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
 
     // 跨会话历史：异步恢复磁盘上的滚动序列（失败静默降级）。
     _historyStore = ref.read(perfHistoryStoreProvider);
+    _deviceStateBridge = ref.read(perfDeviceStateBridgeProvider);
     Future<void>.microtask(_restoreHistories);
 
     // 若帧监控已在运行（单例），首帧后启动系统帧率 / 第三方口径轮询。
@@ -581,6 +591,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         _softFetch(module.cooling),
         _softFetch(module.batteryHealth),
         _softFetch(module.storage),
+        _readDeviceState(),
       ]);
       if (_disposed) return;
       state = state.copyWith(
@@ -596,6 +607,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         cooling: results[8] as PerfCoolingReport?,
         batteryHealth: results[9] as PerfBatteryHealthReport?,
         storage: results[10] as PerfStorageReport?,
+        deviceState: results[11] as DeviceStateReading?,
       );
       _appendModuleHistories();
     } on PerfModuleUnavailableException catch (error) {
@@ -616,6 +628,17 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       }
     } finally {
       _refreshing = false;
+    }
+  }
+
+  /// 读取批量设备状态（Rust JNI）：**best-effort**，任何失败 → `null`，
+  /// 绝不拖垮并行的模块报告批次。
+  Future<DeviceStateReading?> _readDeviceState() async {
+    try {
+      return await _deviceStateBridge?.read();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 设备状态读取失败（降级）: $error');
+      return null;
     }
   }
 

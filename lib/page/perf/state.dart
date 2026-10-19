@@ -1,6 +1,7 @@
 /// 性能监控页模型与 UI 状态（Riverpod 不可变 state）。
 library;
 
+import 'package:gstore/core/perf/device_state.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
@@ -73,6 +74,7 @@ class PerfPageState {
     this.screenFpsLayer,
     this.thirdPartyFps,
     this.thirdPartyFpsLabel,
+    this.deviceState,
   });
 
   /// 是否正在读取模块数据（首次 / 手动刷新 / 切换排序）。
@@ -163,6 +165,9 @@ class PerfPageState {
   /// 第三方目标展示名（缺省回退包名）；无目标时为 `null`。
   final String? thirdPartyFpsLabel;
 
+  /// 批量设备状态快照（Rust JNI `DeviceStateChannel`）；不可用时为 `null`。
+  final DeviceStateReading? deviceState;
+
   /// 模块实例是否可用（[PerfAvailability.ready]）。
   bool get moduleReady => availability == PerfAvailability.ready;
 
@@ -211,6 +216,7 @@ class PerfPageState {
     double? thirdPartyFps,
     String? thirdPartyFpsLabel,
     bool clearThirdPartyFps = false,
+    DeviceStateReading? deviceState,
   }) {
     return PerfPageState(
       loading: loading ?? this.loading,
@@ -250,6 +256,7 @@ class PerfPageState {
       thirdPartyFpsLabel: clearThirdPartyFps
           ? null
           : (thirdPartyFpsLabel ?? this.thirdPartyFpsLabel),
+      deviceState: deviceState ?? this.deviceState,
     );
   }
 }

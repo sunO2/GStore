@@ -24,6 +24,7 @@
 /// **无需 Shizuku / 真机 / 原生插件**。
 library;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/perf/privileged_shell.dart';
 
 /// [RefreshRateResult.status] 的稳定取值（供日志 / 报告 / 测试断言）。
@@ -113,9 +114,17 @@ class RefreshRateResult {
 /// 生产：`RefreshRateController(shell: PrivilegedShell())`。
 /// 测试：注入带假 [CommandRunner] 的 [PrivilegedShell]，**无需 Shizuku / 真机**。
 class RefreshRateController {
-  RefreshRateController({required PrivilegedShell shell}) : _shell = shell;
+  RefreshRateController({
+    required PrivilegedShell shell,
+    Future<List<int>> Function()? levelsProvider,
+  })  : _shell = shell,
+        _levelsProvider = levelsProvider;
 
   final PrivilegedShell _shell;
+
+  /// 可选档位来源（生产：Rust JNI `DeviceStateChannel` 的支持显示模式）；
+  /// 返回空 / 抛异常时回退 `dumpsys display` 解析。
+  final Future<List<int>> Function()? _levelsProvider;
 
   /// `min_refresh_rate` settings 键。
   static const String minKey = 'min_refresh_rate';
@@ -163,8 +172,22 @@ class RefreshRateController {
     );
   }
 
-  /// 解析可用档位：`dumpsys display`（best-effort）；失败退化 [fallbackLevels]。
+  /// 解析可用档位：优先注入的 [levelsProvider]（Rust JNI 显示模式）；为空 /
+  /// 失败时回退 `dumpsys display`（best-effort），仍失败退化 [fallbackLevels]。
   Future<List<int>> _readLevels() async {
+    final provider = _levelsProvider;
+    if (provider != null) {
+      try {
+        final levels = (await provider())
+            .where((hz) => hz >= minHz && hz <= maxHz)
+            .toSet()
+            .toList()
+          ..sort();
+        if (levels.isNotEmpty) return levels;
+      } catch (error) {
+        debugPrint('[RefreshRateController] levelsProvider 失败（回退 dumpsys）: $error');
+      }
+    }
     final result = await _shell.run(_shell.buildCommand('dumpsys display'));
     if (!result.ok) return fallbackLevels;
     final parsed = parseRefreshLevels(result.output);
