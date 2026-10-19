@@ -211,8 +211,15 @@ void main() {
     // 页面骨架恒存在。
     expect(find.text('性能监控'), findsOneWidget);
     expect(find.text('渲染 / FPS'), findsOneWidget);
-    // FPS 纯 Dart，模块不可用也应展示数值。
-    expect(find.text('60.0'), findsOneWidget);
+    // FPS 纯 Dart，模块不可用也应展示数值（限定到「本应用」列：MAX/MIN/AVG
+    // 统计格亦为 60.0）。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('perf_fps_app')),
+        matching: find.text('60.0'),
+      ),
+      findsOneWidget,
+    );
 
     // 图表区（趋势卡）恒渲染：FPS sparkline 不受模块可用性影响。
     expect(find.text('指标趋势'), findsOneWidget);
@@ -306,8 +313,14 @@ void main() {
     expect(find.byType(LineChart), findsWidgets);
     expect(find.text('等待数据'), findsNothing);
 
-    // FPS。
-    expect(find.text('60.0'), findsOneWidget);
+    // FPS（限定到「本应用」列：MAX/MIN/AVG 统计格亦为 60.0）。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('perf_fps_app')),
+        matching: find.text('60.0'),
+      ),
+      findsOneWidget,
+    );
 
     // CPU 聚合占用（趋势卡 CPU tile 文本）。
     expect(find.text('37.5%'), findsOneWidget);

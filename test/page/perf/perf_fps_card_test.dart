@@ -130,8 +130,22 @@ void main() {
     // 屏幕缺失 → 需 Shizuku / 无数据；第三方缺失 → 未选择目标。
     expect(find.text('需 Shizuku / 无数据'), findsOneWidget);
     expect(find.text('未选择目标'), findsOneWidget);
-    // 两个缺失值均以「—」占位。
-    expect(find.text('—'), findsNWidgets(2));
+    // 两个缺失值均以「—」占位（限定到各自列，避免与 hero / 设备头 / FPS 统计
+    // 的「—」占位混淆）。
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('perf_fps_screen')),
+        matching: find.text('—'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('perf_fps_third_party')),
+        matching: find.text('—'),
+      ),
+      findsOneWidget,
+    );
     // 本应用仍有数值。
     expect(find.text('60.0'), findsOneWidget);
 

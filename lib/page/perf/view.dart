@@ -1,9 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/perf/fps_analysis.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
+import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/perf/perf_report_store.dart';
 import 'package:gstore/compent/line_chart.dart';
 
@@ -11,9 +15,12 @@ import 'control_page.dart';
 import 'hardware_page.dart';
 import 'logic.dart';
 import 'perf_common.dart';
+import 'perf_device_info.dart';
 import 'perf_overlay_tile.dart';
 import 'perf_profiles_tile.dart';
 import 'reports_page.dart';
+import 'scene_dashboard_hero.dart';
+import 'scene_perf_style.dart';
 import 'state.dart';
 import 'third_party_page.dart';
 
@@ -126,6 +133,16 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
       case PerfTab.overview:
         return ListView(
           children: [
+            // Scene 概览 hero 置顶（数据复用同一 [perfMonitorProvider]，切 tab
+            // / 刷新均实时驱动；能力探测仅在模块就绪时 best-effort 触发）。
+            Padding(
+              padding: const EdgeInsets.only(top: AppSpacing.sm),
+              child: SceneDashboardHero(
+                state: state,
+                capabilityLoader:
+                    state.moduleReady ? _loadControlCapabilities : null,
+              ),
+            ),
             _buildFrameSection(context, notifier, state),
             const SizedBox(height: AppSpacing.md),
             _buildTrendSection(context, state),
@@ -149,6 +166,19 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
     }
   }
 
+  /// 能力探测 seam（供 [SceneDashboardHero] 的 `capabilityLoader`）：
+  /// 经**注入的** [perfModuleProvider] 取 `perf.tunables` 再探测；任一失败
+  /// → `null`（未知不阻断四档按钮），绝不让页面崩溃。
+  Future<PerfControlCapabilities?> _loadControlCapabilities() async {
+    try {
+      final tunables = await ref.read(perfModuleProvider).tunables();
+      return await ref.read(perfCapabilityProbeProvider).probe(tunables);
+    } catch (error) {
+      debugPrint('[PerfMonitor] 能力探测失败（视为未知）- $error');
+      return null;
+    }
+  }
+
   // ==================== 渲染 / FPS ====================
 
   Widget _buildFrameSection(
@@ -160,15 +190,18 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
     final scheme = theme.colorScheme;
     final stats = state.effectiveFrameStats;
     final running = state.frameMonitorRunning;
+    final PerfDeviceInfo? device = ref.watch(perfDeviceInfoProvider).valueOrNull;
 
     return Card(
-      margin: AppSpacing.allLG,
+      key: const Key('perf_frame_card'),
       child: Padding(
-        padding: AppSpacing.allLG,
+        padding: ScenePerfStyle.cardPadding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            perfSectionHeader(
+            _buildDeviceHeader(context, device),
+            const SizedBox(height: AppSpacing.md),
+            ScenePerfStyle.sectionHeader(
               context,
               TablerIcons.activity,
               '渲染 / FPS',
@@ -221,7 +254,9 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
                 ),
               ],
             ),
-            const SizedBox(height: AppSpacing.sm),
+            const SizedBox(height: AppSpacing.md),
+            _buildFpsStats(context, state),
+            const SizedBox(height: AppSpacing.md),
             LineChart(
               values: state.fpsHistory,
               color: scheme.primary,
@@ -301,6 +336,228 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
       ),
     );
   }
+
+  /// Scene 风格**设备信息头部**（机型 / 平台 / 系统；缺失一律「—」）。
+  ///
+  /// 数据来自 [perfDeviceInfoProvider]（原生 `perf.device` 优先，`device_info_plus`
+  /// 兜底）；无数据时三格均显「—」，恒渲染（不因缺数据而隐藏）。
+  Widget _buildDeviceHeader(BuildContext context, PerfDeviceInfo? device) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      key: const Key('perf_device_header'),
+      padding: ScenePerfStyle.compactPadding,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: ScenePerfStyle.cardBorderRadius,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _deviceCell(
+            context,
+            key: const Key('perf_device_model'),
+            label: '机型',
+            value: device?.model,
+          ),
+          _deviceCell(
+            context,
+            key: const Key('perf_device_platform'),
+            label: '平台',
+            value: device?.platform,
+          ),
+          _deviceCell(
+            context,
+            key: const Key('perf_device_os'),
+            label: '系统',
+            value: device?.os,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 单个设备信息格（小标签 + 值；无值 →「—」）。
+  Widget _deviceCell(
+    BuildContext context, {
+    required Key key,
+    required String label,
+    required String? value,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Expanded(
+      child: Padding(
+        key: key,
+        padding: AppSpacing.onlyHorizontalXS,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              (value == null || value.isEmpty) ? '—' : value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: AppTypography.weightMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Scene 风格 **MAX / MIN / AVG** 三口径 + **≥45fps 占比** / **≥46℃ 占比**。
+  ///
+  /// 样本口径复用 [PerfPageState.fpsHistory]（FPS）与
+  /// [PerfPageState.thermalMaxHistory]（温度），比率复用
+  /// `fps_analysis.dart` 的 [fpsFluencyRatio] / [highTempRatio]（与报告页同源）。
+  /// **无样本时一律「—」**（不臆造 0 值）。
+  Widget _buildFpsStats(BuildContext context, PerfPageState state) {
+    final samples = state.fpsHistory;
+    final hasFps = samples.isNotEmpty;
+    final double? fpsMax = hasFps ? samples.reduce(math.max) : null;
+    final double? fpsMin = hasFps ? samples.reduce(math.min) : null;
+    final double? fpsAvg = hasFps ? _mean(samples) : null;
+    final double? fluency = hasFps ? fpsFluencyRatio(samples) * 100 : null;
+
+    final tempSamples = state.thermalMaxHistory;
+    final hasTemp = tempSamples.isNotEmpty;
+    final double? highTemp = hasTemp ? highTempRatio(tempSamples) * 100 : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _fpsStatCell(
+              context,
+              key: const Key('perf_fps_max'),
+              label: 'MAX',
+              value: _statNum(fpsMax),
+              unit: 'FPS',
+            ),
+            _fpsStatCell(
+              context,
+              key: const Key('perf_fps_min'),
+              label: 'MIN',
+              value: _statNum(fpsMin),
+              unit: 'FPS',
+            ),
+            _fpsStatCell(
+              context,
+              key: const Key('perf_fps_avg'),
+              label: 'AVG',
+              value: _statNum(fpsAvg),
+              unit: 'FPS',
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _fpsStatCell(
+              context,
+              key: const Key('perf_fps_fluency'),
+              label: '≥45fps 占比',
+              value: _statPercent(fluency),
+              unit: '流畅',
+              accent: ScenePerfStyle.accent,
+            ),
+            _fpsStatCell(
+              context,
+              key: const Key('perf_fps_hightemp'),
+              label: '≥46℃ 占比',
+              value: _statPercent(highTemp),
+              unit: '高温',
+              accent:
+                  ScenePerfStyle.temperatureColor(Theme.of(context).colorScheme, 46),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 单个统计格（标签 + 大值 + 单位；`key` 供测试定位）。
+  Widget _fpsStatCell(
+    BuildContext context, {
+    required Key key,
+    required String label,
+    required String value,
+    required String unit,
+    Color? accent,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final valueColor = value == '—'
+        ? scheme.onSurfaceVariant
+        : (accent ?? scheme.primary);
+    return Expanded(
+      child: Padding(
+        key: key,
+        padding: AppSpacing.onlyHorizontalXS,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Flexible(
+                  child: Text(
+                    value,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: valueColor,
+                      fontWeight: AppTypography.weightSemiBold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Padding(
+                  padding: AppSpacing.onlyBottomXS,
+                  child: Text(
+                    unit,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 样本均值（空列表不应调用；语义由调用方保证）。
+  static double _mean(List<double> values) =>
+      values.reduce((a, b) => a + b) / values.length;
+
+  /// FPS 数值格式化（1 位小数；`null` →「—」）。
+  static String _statNum(double? value) =>
+      value == null ? '—' : value.toStringAsFixed(1);
+
+  /// 百分比格式化（1 位小数 + `%`；`null` →「—」）。
+  static String _statPercent(double? value) =>
+      value == null ? '—' : '${value.toStringAsFixed(1)}%';
 
   /// 单个 FPS 口径列（标签 + 大数值 +「FPS」单位 + 副标）。
   ///
@@ -427,7 +684,6 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
             ? '采样中 · 已收 ${state.sampleCount} 条'
             : '关闭（默认）';
     return Card(
-      margin: AppSpacing.allLG,
       child: Column(
         children: [
           SwitchListTile(
@@ -466,13 +722,12 @@ class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return Card(
-      margin: AppSpacing.allLG,
       child: Padding(
-        padding: AppSpacing.allLG,
+        padding: ScenePerfStyle.cardPadding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            perfSectionHeader(context, TablerIcons.chart_line, '指标趋势'),
+            ScenePerfStyle.sectionHeader(context, TablerIcons.chart_line, '指标趋势'),
             const SizedBox(height: AppSpacing.md),
             LayoutBuilder(
               builder: (context, constraints) {
@@ -697,12 +952,11 @@ class _OverlayProfilesCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      margin: AppSpacing.allLG,
       child: Column(
         children: [
           Padding(
-            padding: AppSpacing.allLG,
-            child: perfSectionHeader(
+            padding: ScenePerfStyle.cardPadding,
+            child: ScenePerfStyle.sectionHeader(
               context,
               TablerIcons.device_desktop,
               '悬浮窗与性能模式',
@@ -799,29 +1053,15 @@ class _BaselineCardState extends ConsumerState<_BaselineCard> {
             ? '未设置基线（点击「设为基线」保存当前指标）'
             : '已设置基线${_baselineTimeText(baseline)}';
     return Card(
-      margin: AppSpacing.allLG,
       child: Padding(
-        padding: AppSpacing.allLG,
+        padding: ScenePerfStyle.cardPadding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  TablerIcons.ruler_measure,
-                  size: AppTypography.iconMD,
-                  color: scheme.primary,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    '基线对比',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: AppTypography.weightSemiBold,
-                    ),
-                  ),
-                ),
-              ],
+            ScenePerfStyle.sectionHeader(
+              context,
+              TablerIcons.ruler_measure,
+              '基线对比',
             ),
             const SizedBox(height: AppSpacing.md),
             Text(
