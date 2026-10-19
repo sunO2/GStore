@@ -410,3 +410,10 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 并发/过期防护：`_diagnosticsRun` 自增令牌，收起卡片后才完成的 future 不会回填；loader 抛异常也兜底为错误行（生产实现本身绝不抛出）。
 - 测试新增 4 例（共 10 passed / `test/page/perf/` 136 passed）：loader 仅点击触发一次 + 三源 + raw 末 20 行 + 收起重置；error 与 loader 抛异常；loading（Completer + 禁用态不重复读取）；raw tail 纯函数。**坑**：同一 `pumpWidget` 重建同类型卡片会复用 State（`_expanded` 残留），第二次场景需 `key: UniqueKey()` 强制新 State。
 - 验证：`dart analyze lib/` = **0 error**（727 info/warning）；`flutter build apk --release --target-platform android-arm64` 首轮 TLS 瞬时失败，**重试一次 rc=0**（148.7MB）。设备未验证（无 adb）。
+
+## Task A (perf-jank) — 前台探测去 `dumpsys power` + 降低采样率（2026-10-19）
+- **屏幕探测换代（foreground_watcher）**：默认 `ScreenOnProbe` 改为「通道优先」——先调新增的 `BatteryManagerChannel.readInteractive()`（复用 `gstore/battery` 的 `read`，只取 `interactive` 字段，免权限、无 shell 进程）；仅当返回 `null`（非 Android / 通道未注册 / 字段缺失）才回退既有 `dumpsys power` 解析。热路径每拍因此只剩 `dumpsys activity activities`。新增构造参数 `batteryChannel`（测试注入假通道），`screenOnProbe` 注入 seam 与既有测试保持原样。
+- **采样率**（`page/perf/logic.dart`）：实时 ticker / 系统帧率 / 第三方 `watch` 全部 1s → 2s。**注意**：`test/page/perf/perf_monitor_page_test.dart` 的「实时刷新静默轮询」pump 由 1s 改为 2s（否则定时器不触发，测试变成空跑）。
+- **静默拍电池节流**：`refresh(silent: true)` 不再每拍 `_readMergedBattery`；新增 `_batteryForRefresh(module, silent:)` + `_cachedBattery`/`_cachedBatteryAt`（TTL 4s ≈ 2 拍）。非静默（首屏 / 手动 / availability ready）**总是**重取，首载语义不变；`readBatteryReading` 自身 2s 缓存仍在其下兜底。缓存只在合并成功后更新，失败路径不污染。
+- **测试坑**：`test()`（非 `testWidgets`）+ `fakeAsync` 下给**独立** MethodChannel 名注册 mock handler 可正常驱动 `readInteractive`；不要覆盖全局 `test/flutter_test_config.dart` 的 `gstore/battery` handler（回退路径测试正依赖它返回 null）。
+- 验证：`dart analyze lib/` = **0 error**（727 issues，与基线同量）；`flutter test test/core/perf/ test/page/perf/` = **856 passed**；`flutter build apk --release --target-platform android-arm64` = **rc=0**（148.7MB，一次过）。设备未验证（无 adb）。

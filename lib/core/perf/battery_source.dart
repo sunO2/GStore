@@ -250,6 +250,27 @@ class BatteryManagerChannel {
       return null;
     }
   }
+
+  /// 仅读取屏幕交互态（Kotlin 侧 `PowerManager.isInteractive`，免权限）；
+  /// 不可用 / 异常 / 字段缺失 → `null`。
+  ///
+  /// 与 [read] 复用同一 `gstore/battery` 通道的 `read` 方法，但**不**构造完整
+  /// [BatteryReading]，供前台监视器每拍做廉价屏幕探测（替代 `dumpsys power`）。
+  Future<bool?> readInteractive() async {
+    try {
+      final map = await _channel.invokeMapMethod<Object?, Object?>('read');
+      if (map == null) return null;
+      return _asBool(map['interactive']);
+    } on MissingPluginException {
+      return null;
+    } on PlatformException catch (error) {
+      debugPrint('[BatteryManagerChannel] readInteractive 异常: ${error.message}');
+      return null;
+    } catch (error) {
+      debugPrint('[BatteryManagerChannel] readInteractive 失败: $error');
+      return null;
+    }
+  }
 }
 
 /// 解析 `dumpsys battery` 输出（纯函数，宽容）。

@@ -362,11 +362,18 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   StreamSubscription<PerfSample>? _sampleSub;
   void Function()? _frameListener;
 
-  /// 实时刷新定时器（1s；仅 [PerfPageState.live] 或采样开启时运行）。
+  /// 实时刷新定时器（2s；仅 [PerfPageState.live] 或采样开启时运行）。
   Timer? _ticker;
 
-  /// 系统帧率轮询定时器（1s；仅 `frameMonitorRunning || live` 时运行）。
+  /// 系统帧率轮询定时器（2s；仅 `frameMonitorRunning || live` 时运行）。
   Timer? _systemFpsTimer;
+
+  /// 静默拍复用的最近一次电池合并结果（避免每拍都走 sysfs + 平台通道）。
+  BatteryReport? _cachedBattery;
+  DateTime? _cachedBatteryAt;
+
+  /// 静默拍电池缓存 TTL（2 个实时拍，约 4s）：过期才重新合并。
+  static const Duration _silentBatteryTtl = Duration(seconds: 4);
 
   /// 第三方目标帧率订阅（复用 `ThirdPartyPerfService.watch`）。
   StreamSubscription<ThirdPartySample>? _thirdPartySub;
@@ -546,8 +553,8 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
 
   /// 并行刷新全部模块报告。模块未就绪时直接返回（仅结束 loading）。
   ///
-  /// [silent] 为真时不切换 loading 态、不覆盖错误卡片（用于 1s 实时轮询，
-  /// 避免每秒闪烁加载动画）。
+  /// [silent] 为真时不切换 loading 态、不覆盖错误卡片（用于 2s 实时轮询，
+  /// 避免每次轮询闪烁加载动画）。
   Future<void> refresh({bool silent = false}) async {
     if (_disposed) return;
     if (!state.moduleReady) {
@@ -565,7 +572,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       final results = await Future.wait<Object?>([
         module.cpu(),
         module.memory(),
-        _readMergedBattery(module),
+        _batteryForRefresh(module, silent: silent),
         module.thermal(),
         module.gpu(),
         module.network(),
@@ -610,6 +617,31 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     } finally {
       _refreshing = false;
     }
+  }
+
+  /// 取本拍电池报告：非静默拍（首屏 / 手动刷新）总是重新合并；静默拍在
+  /// [_silentBatteryTtl] 内直接复用最近一次结果，避免每拍都走 sysfs +
+  /// `gstore/battery` 平台通道（[readBatteryReading] 自身 2s TTL 之外的额外节流）。
+  ///
+  /// 缓存仅在合并**成功**后更新，故首次加载语义不变（首拍必取真值）。
+  Future<BatteryReport> _batteryForRefresh(
+    PerfModule module, {
+    required bool silent,
+  }) {
+    if (silent) {
+      final cached = _cachedBattery;
+      final at = _cachedBatteryAt;
+      if (cached != null &&
+          at != null &&
+          DateTime.now().difference(at) < _silentBatteryTtl) {
+        return Future<BatteryReport>.value(cached);
+      }
+    }
+    return _readMergedBattery(module).then((report) {
+      _cachedBattery = report;
+      _cachedBatteryAt = DateTime.now();
+      return report;
+    });
   }
 
   /// 软获取深度报告：任何失败（方法缺失 / 无对应 sysfs / 旧模块）都返回 `null`，
@@ -695,7 +727,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
 
   /// 依据当前运行态同步「系统帧率」与「第三方」两条辅助口径。
   ///
-  /// * 系统帧率轮询仅在 `frameMonitorRunning || live` 时运行（独立 1s Timer）；
+  /// * 系统帧率轮询仅在 `frameMonitorRunning || live` 时运行（独立 2s Timer）；
   /// * 第三方订阅仅在 `frameMonitorRunning` 且有持久目标时建立。
   void _syncAuxFps() {
     _syncSystemFps();
@@ -718,7 +750,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     // 幂等开启 SurfaceFlinger TimeStats（best-effort）。
     unawaited(_systemFps.enable());
     _systemFpsTimer =
-        Timer.periodic(const Duration(seconds: 1), (_) => _sampleSystemFps());
+        Timer.periodic(const Duration(seconds: 2), (_) => _sampleSystemFps());
     // 立即采一次，避免首秒空白。
     unawaited(_sampleSystemFps());
   }
@@ -747,7 +779,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   /// 依据「帧监控运行 + 持久目标」建立 / 取消第三方 FPS 订阅。
   ///
   /// 复用 [ThirdPartyPerfService.watch]（**不新建数据通路**）：订阅即采一次，之后
-  /// 每 1s 采一次；把 `metrics.fps` 写入 `thirdPartyFps`，目标展示名写入
+  /// 每 2s 采一次；把 `metrics.fps` 写入 `thirdPartyFps`，目标展示名写入
   /// `thirdPartyFpsLabel`。无目标 / 停止时取消订阅并清空两者。
   Future<void> _syncThirdPartyFps() async {
     if (_disposed) return;
@@ -781,7 +813,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     final label = target.label;
     try {
       _thirdPartySub = _thirdParty
-          .watch(target.package, interval: const Duration(seconds: 1))
+          .watch(target.package, interval: const Duration(seconds: 2))
           .listen((sample) {
         if (_disposed) return;
         state = state.copyWith(
@@ -860,7 +892,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
 
   // ==================== 实时刷新（趋势历史） ====================
 
-  /// 开关实时刷新（`Timer.periodic` 1s 轮询模块并累积各指标历史）。
+  /// 开关实时刷新（`Timer.periodic` 2s 轮询模块并累积各指标历史）。
   void setLive(bool on) {
     if (_disposed) return;
     if (on == state.live) return;
@@ -880,7 +912,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   }
 
   void _startTicker() {
-    _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+    _ticker ??= Timer.periodic(const Duration(seconds: 2), (_) => _tick());
   }
 
   void _stopTicker() {

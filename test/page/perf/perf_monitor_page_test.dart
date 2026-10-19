@@ -371,8 +371,8 @@ void main() {
     );
     expect(sw.value, true);
 
-    // 推进 1s 触发一次静默轮询（不应抛异常 / 不闪烁 loading）。
-    await tester.pump(const Duration(seconds: 1));
+    // 推进 2s 触发一次静默轮询（不应抛异常 / 不闪烁 loading）。
+    await tester.pump(const Duration(seconds: 2));
     await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);
 

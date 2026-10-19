@@ -36,6 +36,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:shizuku_api/shizuku_api.dart';
 
+import 'package:gstore/core/perf/battery_source.dart'
+    show BatteryManagerChannel;
 import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 
@@ -107,8 +109,9 @@ class ForegroundEvent {
 
 /// 一次**屏幕状态变化**事件（仅在亮/灭**切换**时发出）。
 ///
-/// 复用本监视器每拍已有的屏幕探测（[ScreenOnProbe]，`dumpsys power`），**不**
-/// 新建屏幕检测通路、**不**新增 manifest 权限；仅供自动应用引擎在熄屏时
+/// 复用本监视器每拍已有的屏幕探测（[ScreenOnProbe]；默认先走免权限
+/// `gstore/battery` 通道，仅不可用时回退 `dumpsys power`），**不**新建屏幕检测
+/// 通路、**不**新增 manifest 权限；仅供自动应用引擎在熄屏时
 /// sleep（还原）、亮屏时 resume（见 `perf_profile_auto_engine.dart`）。
 class ScreenStateEvent {
   const ScreenStateEvent({required this.screenOn, required this.tsMs});
@@ -141,6 +144,7 @@ class ForegroundWatcher {
     PerfModule? module,
     PrivilegedShell? shell,
     ScreenOnProbe? screenOnProbe,
+    BatteryManagerChannel? batteryChannel,
     ShizukuAvailabilityProbe? shizukuProbe,
     Clock? clock,
     Duration interval = defaultInterval,
@@ -157,7 +161,11 @@ class ForegroundWatcher {
         _shizukuProbe = shizukuProbe ?? _defaultShizukuProbe,
         interval = clampInterval(interval, telemetryInterval),
         telemetryInterval = clampInterval(telemetryInterval, telemetryInterval) {
-    _screenOnProbe = screenOnProbe ?? _shellScreenOnProbe(_shell);
+    _screenOnProbe = screenOnProbe ??
+        _defaultScreenOnProbe(
+          shell: _shell,
+          channel: batteryChannel ?? BatteryManagerChannel(),
+        );
   }
 
   /// 默认轮询间隔（5s）。
@@ -432,7 +440,26 @@ class ForegroundWatcher {
     }
   }
 
-  /// 默认屏幕探测：经 [PrivilegedShell] 执行 `dumpsys power` 并解析。
+  /// 默认屏幕探测：**先**走免权限 `gstore/battery` 通道的
+  /// `PowerManager.isInteractive`（廉价，无 shell 进程）；仅当通道不可用
+  /// （非 Android / 未注册 / 无 `interactive` 字段 → `null`）时，才回退到
+  /// `dumpsys power`。
+  ///
+  /// 这样每拍热路径不再起 `dumpsys power` 进程；`dumpsys activity activities`
+  /// 前台探测保持不变。
+  static ScreenOnProbe _defaultScreenOnProbe({
+    required PrivilegedShell shell,
+    required BatteryManagerChannel channel,
+  }) {
+    final shellProbe = _shellScreenOnProbe(shell);
+    return () async {
+      final interactive = await channel.readInteractive();
+      if (interactive != null) return interactive;
+      return shellProbe();
+    };
+  }
+
+  /// 回退屏幕探测：经 [PrivilegedShell] 执行 `dumpsys power` 并解析。
   static ScreenOnProbe _shellScreenOnProbe(PrivilegedShell shell) => () async {
         final result = await shell.run(shell.buildCommand('dumpsys power'));
         if (!result.ok) return true; // 无法判定 → 假定亮屏（fail-open）

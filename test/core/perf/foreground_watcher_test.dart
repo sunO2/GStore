@@ -5,8 +5,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/foreground_watcher.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
@@ -487,7 +489,92 @@ void main() {
     });
   });
 
-  test('默认屏幕探测：dumpsys power 报 Asleep → 暂停（零前台轮询）', () {
+  test('默认屏幕探测：优先 BatteryManager 通道（零 dumpsys power）', () {
+    fakeAsync((async) {
+      const channel = MethodChannel('test/gstore_battery_interactive');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        channel,
+        (call) async => <String, Object?>{'interactive': false},
+      );
+
+      final runner = _FakeRunner();
+      final watcher = ForegroundWatcher(
+        module: PerfModule(gateway: _FakeGateway(<String?>['com.a'])),
+        shell: PrivilegedShell(
+          runner: runner.run,
+          timeout: const Duration(seconds: 60),
+        ),
+        batteryChannel: BatteryManagerChannel(channel: channel),
+        shizukuProbe: () async => true,
+        interval: const Duration(seconds: 5),
+      );
+
+      watcher.start();
+      async.flushMicrotasks();
+
+      // 通道给出 interactive=false → 暂停，且**不**执行 dumpsys power。
+      expect(
+        runner.commands.any((c) => c.contains('dumpsys power')),
+        isFalse,
+        reason: '默认探测不得再起 dumpsys power 进程',
+      );
+      expect(runner.dumpsysCalls, 0);
+      expect(watcher.status, ForegroundWatcherStatus.paused);
+
+      async.elapse(const Duration(seconds: 10));
+      async.flushMicrotasks();
+      expect(
+        runner.commands.any((c) => c.contains('dumpsys power')),
+        isFalse,
+        reason: '后续拍同样只走通道',
+      );
+      unawaited(watcher.dispose());
+      async.flushMicrotasks();
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+  });
+
+  test('默认屏幕探测：通道可用且亮屏 → 继续 dumpsys activity（零 dumpsys power）',
+      () {
+    fakeAsync((async) {
+      const channel = MethodChannel('test/gstore_battery_interactive_on');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        channel,
+        (call) async => <String, Object?>{'interactive': true},
+      );
+
+      final runner = _FakeRunner();
+      final watcher = ForegroundWatcher(
+        module: PerfModule(gateway: _FakeGateway(<String?>['com.a'])),
+        shell: PrivilegedShell(
+          runner: runner.run,
+          timeout: const Duration(seconds: 60),
+        ),
+        batteryChannel: BatteryManagerChannel(channel: channel),
+        shizukuProbe: () async => true,
+        interval: const Duration(seconds: 5),
+      );
+
+      watcher.start();
+      async.flushMicrotasks();
+
+      expect(runner.dumpsysCalls, greaterThan(0));
+      expect(
+        runner.commands.any((c) => c.contains('dumpsys power')),
+        isFalse,
+      );
+      expect(watcher.status, ForegroundWatcherStatus.running);
+      unawaited(watcher.dispose());
+      async.flushMicrotasks();
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+  });
+
+  test('默认屏幕探测回退：通道不可用（null）→ dumpsys power 报 Asleep → 暂停', () {
     fakeAsync((async) {
       final runner = _FakeRunner()..powerOutput = 'mWakefulness=Asleep';
       final watcher = ForegroundWatcher(
