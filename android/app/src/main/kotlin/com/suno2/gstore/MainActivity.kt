@@ -131,6 +131,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // 免权限电池数据源兜底（SELinux 拒绝 sysfs current_now/voltage_now 时）。
+        BatteryChannel.register(flutterEngine, applicationContext)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "openUninstall" -> {
