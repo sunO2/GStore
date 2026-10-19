@@ -1,0 +1,59 @@
+=== task-5-home-shell evidence (todo 5: HomePage 3-tab shell) ===
+date: 2026-10-19T06:44:35Z
+git HEAD: 67af9b5 feat(home): add scene-style feature hub grid
+
+### 1. dart analyze lib/ (must be 0 errors)
+exit=2
+error count   = 0
+warning count = 88
+info count    = 635
+total line    : 723 issues found.
+
+### 2. dart analyze lib/page/home/view.dart (0 errors; 2 pre-existing warnings)
+warning - view.dart:125:44 - The member 'state' can only be used within 'package:riverpod/src/notifier.dart' or a test. - invalid_use_of_visible_for_testing_member
+warning - view.dart:125:44 - The member 'state' can only be used within instance members of subclasses of 'NotifierBase'. - invalid_use_of_protected_member
+
+### 3. grep sourceIndex in lib/page/home/view.dart (expect 0)
+grep exit=1
+
+### 4. grep _agentModuleEnabled/_agentSub in lib/page/home/view.dart (expect 0)
+grep exit=1
+
+### 5. sourceIndex FIELD retained in state.dart/logic.dart (todo 32 removes)
+lib/page/home/state.dart:7:  final int sourceIndex;
+lib/page/home/state.dart:9:  const HomeState({this.index = 0, this.sourceIndex = 0});
+lib/page/home/state.dart:11:  HomeState copyWith({int? index, int? sourceIndex}) {
+lib/page/home/state.dart:14:      sourceIndex: sourceIndex ?? this.sourceIndex,
+lib/page/home/state.dart:24:/// [HomeState.index]/[HomeState.sourceIndex] 的既有可观察行为。
+lib/page/home/logic.dart:25:  /// 切换 tab（sourceIndex 记录 + PageView 瞬移 + 状态更新）。
+lib/page/home/logic.dart:28:  /// sourceIndex（AI 页"返回"按钮/系统返回键的目标）。
+lib/page/home/logic.dart:31:      state = state.copyWith(sourceIndex: state.index, index: index);
+
+### 6. flutter test (3 files)
+[navbar-measure] tab 1 center=200.0 expected=200.0 delta=0.0
+[navbar-measure] tab 2 center=322.0 expected=322.0 delta=0.0
+00:01 +4: /home/hezhihu89/develop/flutter/project/GStore/test/agent_entry_hide_test.dart: 我的页 quick action（agent_tools 上下线） ④ 下线 → AI 助手入口隐藏；上线恢复 → 重新可见
+WebDavConfigManager: 未找到配置
+00:01 +5: /home/hezhihu89/develop/flutter/project/GStore/test/agent_entry_hide_test.dart: 我的页 quick action（agent_tools 上下线） ④ 下线 → AI 助手入口隐藏；上线恢复 → 重新可见
+00:01 +6: /home/hezhihu89/develop/flutter/project/GStore/test/agent_entry_hide_test.dart: 我的页 quick action（agent_tools 上下线） ④ 下线 → AI 助手入口隐藏；上线恢复 → 重新可见
+00:01 +7: /home/hezhihu89/develop/flutter/project/GStore/test/page/home/home_tabs_test.dart: HomePage 三 tab 外壳（功能 / 首页 / 设置） ③ 切换：首页 → 设置 → 功能，页面与 selectedIndex 同步
+00:01 +7: /home/hezhihu89/develop/flutter/project/GStore/test/agent_entry_hide_test.dart: 我的页 quick action（agent_tools 上下线） ④b 下线后 AI ListTile 与其下方 Divider 一并隐藏（视觉无残留分割线）
+14:44:44 🟢 [INFO] BackupLogic: 开始初始化
+14:44:44 🟢 [INFO] BackupLogic: 备份模块未启用，跳过初始化
+WebDavConfigManager: 未找到配置
+00:01 +7: /home/hezhihu89/develop/flutter/project/GStore/test/page/home/home_tabs_test.dart: HomePage 三 tab 外壳（功能 / 首页 / 设置） ③ 切换：首页 → 设置 → 功能，页面与 selectedIndex 同步
+[Dashboard] 控制能力探测失败（fail-closed）: PerfModuleException(PERF_MODULE_UNINSTALLED): 性能监控模块未安装
+00:01 +8: /home/hezhihu89/develop/flutter/project/GStore/test/page/home/home_tabs_test.dart: HomePage 三 tab 外壳（功能 / 首页 / 设置） ③ 切换：首页 → 设置 → 功能，页面与 selectedIndex 同步
+14:44:44 🟢 [INFO] BackupLogic: 开始初始化
+14:44:44 🟢 [INFO] BackupLogic: 备份模块未启用，跳过初始化
+WebDavConfigManager: 未找到配置
+[RustShizuku] 执行失败: Invalid argument(s): Failed to load dynamic library 'libgstore_host.so': libgstore_host.so: cannot open shared object file: No such file or directory
+00:02 +9: /home/hezhihu89/develop/flutter/project/GStore/test/page/home/home_tabs_test.dart: HomePage 三 tab 外壳（功能 / 首页 / 设置） ④ 标签与 HomeTab3 模型 / 页面常量一致
+00:02 +10: All tests passed!
+
+### 7. git status --porcelain (own files only; dist/ untracked excluded)
+ M lib/page/home/view.dart
+ M test/agent_entry_hide_test.dart
+ M test/navigation_bar_theme_test.dart
+?? dist/
+?? test/page/home/home_tabs_test.dart
