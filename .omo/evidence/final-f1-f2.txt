@@ -1,0 +1,220 @@
+========================================================================
+FINAL-WAVE  F1 (dart analyze lib/)  +  F2 (flutter test test/)
+plan: scene-to-gstore-parity.md  |  generated: 2026-10-19 16:47:26
+========================================================================
+
+Repo: /home/hezhihu89/develop/flutter/project/GStore
+HEAD: b950278 docs(parity): add parity specification
+git status --porcelain: '?? dist/' only (no tracked product/test source modified; read-only on code)
+Toolchain: /home/hezhihu89/develop/flutter/flutter/bin/{dart,flutter}
+
+------------------------------------------------------------------------
+F1  dart analyze lib/
+------------------------------------------------------------------------
+Command : dart analyze lib/   (rc=2, same rc class as todo-1 baseline)
+Raw summary line:           723 issues found.
+Current counts : errors=0  warnings=88  infos=635
+todo-1 baseline: errors=0  warnings=92  infos=635  (727 issues found.)
+Delta          : -4 warnings, 0 infos, +0 errors  (perf/parity refactor removed 4 stale warnings)
+VERDICT F1     : PASS  (0 ERRORS as required)
+
+------------------------------------------------------------------------
+F2  flutter test test/
+------------------------------------------------------------------------
+Command : flutter test test/ --reporter json   (rc=1 both runs)
+NOTE: json 'done' event shows success=false because the pre-existing libsqlite3
+      environmental failures still fail (expected exclusion set).
+
+RUN #1 (canonical): done.success=false  passed=4354  failed=78  skipped=0
+RUN #2 (rerun)    : done.success=false  passed=4355  failed=77  skipped=0
+todo-1 exclusion set size = 77
+
+RUN #1 failure set vs todo-1 exclusion list:
+  [*** NOT-ON-EXCLUSION-LIST ***] package:flutter_test/src/widget_tester.dart :: slim 门控：无内置不提供回退 清除已下载经危险确认弹层 → 确认后删除下载目录并刷新
+  [ON-EXCLUSION-LIST] package:flutter_test/src/widget_tester.dart :: webdav 模块上线展示卡片，再下线隐藏
+  [ON-EXCLUSION-LIST] package:flutter_test/src/widget_tester.dart :: webdav 模块下线：卡片不展示上传/下载
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） clearChannel / clearAll 清理
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） insertTag + getTags 往返：写入 2 个标签可完整读出（含 addTime）
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） insertTags 批量写入
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） removeTagsOfApp：清理应用全部标签，其他应用不受影响
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） removeTag：仅移除指定标签，其余保留
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） 复合主键冲突 replace：同 (channelId, appId, tag) 重复插入不产生重复行
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: v4 → v5 迁移（_migration4to5） 迁移建表与全新库 onCreate 等价：4 列 + 复合主键，迁移后可正常读写
+  [ON-EXCLUSION-LIST] test/added_apps_constraint_test.dart :: migration3to4（v3 → v4 迁移路径） 先插重复行再迁移：去重保留 MAX(id)，唯一索引生效后重复插入抛异常
+  [ON-EXCLUSION-LIST] test/added_apps_constraint_test.dart :: 全新库（AppAddedDatabase.create v4 onCreate） 重复插入同 (channelId, appId) 触发唯一约束
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 addApp 失败不阻断首页添加
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 canonicalAppId 返回原样（未收录）：appId 保持占位 owner/repo
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 canonicalAppId 返回真实包名：聚合 appId 用包名，且统一调用渠道 addApp
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道自报包名后重复添加：幂等（replace）
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: LocalDb 渠道添加 appId 保持包名（LocalDb appId 本就是包名）
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: LocalDb 渠道添加 普通应用：保持原 ID
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: 已添加状态与移除 isAppAdded / removeApp 基于引用字段工作
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: 批量添加 混合收录/未收录：各自按渠道自报 appId
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 32 条应用：第一页只取 [0,10)，渠道查询恰好命中该切片，total=32
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: offset 越界 / limit<=0：返回空页 + 总数（不发起渠道查询）
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 最后一页尾切片（26..32）：只取剩余 6 条，渠道查询恰好命中
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 第二页从 offset=10 续取，两页拼接 = 完整 32 条且无重复
+  [ON-EXCLUSION-LIST] test/aggregator_parallel_test.dart :: 16 条 addedApp：分片并行取详情，顺序保持、异常兜底、计数一致
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 常规改名：保留 id/addTime/sortOrder/isEnabled，标签迁移到新 appId
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 幂等：oldAppId == newAppId 时 no-op
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 幂等：源记录不存在时 no-op，不产生任何变更
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 目标 appId 已存在（异常残留）：删源行、保留目标行、标签并入目标
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S1: 英文分类 ID 归一化为中文 description（渠道 PROXY + 用户标签 代理 → 仅 代理）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: localdb 渠道 getAllCategories 失败时原样合并（无归一化、不崩溃）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: localdb 渠道未注册时原样合并（无归一化、不崩溃）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: 映射表外自定义标签保留原文（PROXY→代理，效率工具 原样保留）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S3: 渠道 PROXY + 标签 [代理, 系统] → [代理, 系统]（归一化去重、系统保留）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: removeApp 联动清理：移除应用后其标签一并删除
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: setTags 后 getAggregatedApps：分类 = 渠道分类 ∪ 用户标签（去重）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: setTags 整体替换语义：新标签集合覆盖旧集合
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 发现页标签保存：canonical appId 作 key 才能匹配聚合库（raw appId 作 key 丢失）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 无用户标签应用：分类保持渠道原值
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 用户标签与渠道分类重叠：合并去重不重复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: WebDAV 配置进备份（B 轨：WebDavConfigManager 直写存储并入 appConfig）
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导入：channels/ 条目写回渠道包目录 + env 恢复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导入：老备份（无 channels/ 条目）不崩且数据正常恢复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：channels/*.zip 以 tar 条目打包（无 base64，含原始 zip 字节）
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：已注册 JsChannel 的 env 进 extras['js_envs']
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：空渠道包目录 → 无 channels/ 条目，导出正常
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 通过 JS 渠道添加的应用（聚合 + 渠道库）进备份
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup includeAppConfig=true 时归档含 app_config.json
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup onLog 旁路输出各阶段
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup 返回 tar.gz 字节（gzip magic），包含 apps.json
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes includeAppConfig 往返：导入恢复代理配置
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes restoreAppConfig=false 时不恢复 app_config.json 配置
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes 导出 → 导入字节往返恢复应用数据
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes 非 tar.gz 字节抛异常
+  [ON-EXCLUSION-LIST] test/backup_service_onlog_test.dart :: uploadToWebDav onLog 不传 onLog：行为不变（旁路空安全）
+  [ON-EXCLUSION-LIST] test/backup_service_onlog_test.dart :: uploadToWebDav onLog 导出阶段日志 + 网络失败 error 日志，异常语义不变
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: exportData v2.1 导出标签 + 代理配置，metadata.version = v2_1
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: exportData v2.1 无标签/无代理时 tags 为 null、appConfig 无 proxy_url
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: importData v2.1 v2.0 数据导入（无 tags / proxy_url）不崩
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: importData v2.1 恢复标签（幂等追加）与代理配置
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：_githubApi 未注入 → 空列表（success）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：releases API 失败 → 空列表（success，不阻塞）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：releases 解析为下载列表（失败 → 空列表）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：GitHub API base64 解码（优先于 DB）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：GitHub API 失败 → DB 兜底（des）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：_githubApi 未注入 → DB 兜底（des）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：_githubApi 未注入 → success(null)
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：apiList → Map（失败 → null 仍 success）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：apiList 失败 → success(null)
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：info.json 200 → 并入 metadata（versionName/versionCode/metadata）
+  [ON-EXCLUSION-LIST] test/channel_registry_test.dart :: ChannelIntegration.initialize 幂等 重复调用：渠道只注册一次、不重复绑定、不抛
+  [ON-EXCLUSION-LIST] test/channel_registry_test.dart :: ChannelModule 按类型绑定 onRegister 绑定 → get<ChannelManager>() 返回实例；onUnregister 解绑 → null
+  [ON-EXCLUSION-LIST] test/download/download_manager_live_progress_test.dart :: 筛选=全部时 watch 推送更大 received：state 必须更新且通知监听者
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 删除单条与按应用清空
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 备注与载荷版本随记录保存
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 按应用隔离，且按时间倒序返回
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 插入后能按应用读回，且载荷完整往返
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 载荷以 gzip 落库，且历史明文行仍可读（向后兼容）
+
+RUN #2 failure set vs todo-1 exclusion list:
+  [ON-EXCLUSION-LIST] package:flutter_test/src/widget_tester.dart :: webdav 模块上线展示卡片，再下线隐藏
+  [ON-EXCLUSION-LIST] package:flutter_test/src/widget_tester.dart :: webdav 模块下线：卡片不展示上传/下载
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） clearChannel / clearAll 清理
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） insertTag + getTags 往返：写入 2 个标签可完整读出（含 addTime）
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） insertTags 批量写入
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） removeTagsOfApp：清理应用全部标签，其他应用不受影响
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） removeTag：仅移除指定标签，其余保留
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: AppTagDao（v5 全新库） 复合主键冲突 replace：同 (channelId, appId, tag) 重复插入不产生重复行
+  [ON-EXCLUSION-LIST] test/added_app_tags_test.dart :: v4 → v5 迁移（_migration4to5） 迁移建表与全新库 onCreate 等价：4 列 + 复合主键，迁移后可正常读写
+  [ON-EXCLUSION-LIST] test/added_apps_constraint_test.dart :: migration3to4（v3 → v4 迁移路径） 先插重复行再迁移：去重保留 MAX(id)，唯一索引生效后重复插入抛异常
+  [ON-EXCLUSION-LIST] test/added_apps_constraint_test.dart :: 全新库（AppAddedDatabase.create v4 onCreate） 重复插入同 (channelId, appId) 触发唯一约束
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 addApp 失败不阻断首页添加
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 canonicalAppId 返回原样（未收录）：appId 保持占位 owner/repo
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道 canonicalAppId 返回真实包名：聚合 appId 用包名，且统一调用渠道 addApp
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: GitHub 渠道添加（appId 由渠道自报） 渠道自报包名后重复添加：幂等（replace）
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: LocalDb 渠道添加 appId 保持包名（LocalDb appId 本就是包名）
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: LocalDb 渠道添加 普通应用：保持原 ID
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: 已添加状态与移除 isAppAdded / removeApp 基于引用字段工作
+  [ON-EXCLUSION-LIST] test/aggregator_metadata_test.dart :: 批量添加 混合收录/未收录：各自按渠道自报 appId
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 32 条应用：第一页只取 [0,10)，渠道查询恰好命中该切片，total=32
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: offset 越界 / limit<=0：返回空页 + 总数（不发起渠道查询）
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 最后一页尾切片（26..32）：只取剩余 6 条，渠道查询恰好命中
+  [ON-EXCLUSION-LIST] test/aggregator_pagination_test.dart :: 第二页从 offset=10 续取，两页拼接 = 完整 32 条且无重复
+  [ON-EXCLUSION-LIST] test/aggregator_parallel_test.dart :: 16 条 addedApp：分片并行取详情，顺序保持、异常兜底、计数一致
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 常规改名：保留 id/addTime/sortOrder/isEnabled，标签迁移到新 appId
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 幂等：oldAppId == newAppId 时 no-op
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 幂等：源记录不存在时 no-op，不产生任何变更
+  [ON-EXCLUSION-LIST] test/aggregator_rename_test.dart :: renameApp 目标 appId 已存在（异常残留）：删源行、保留目标行、标签并入目标
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S1: 英文分类 ID 归一化为中文 description（渠道 PROXY + 用户标签 代理 → 仅 代理）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: localdb 渠道 getAllCategories 失败时原样合并（无归一化、不崩溃）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: localdb 渠道未注册时原样合并（无归一化、不崩溃）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S2: 映射表外自定义标签保留原文（PROXY→代理，效率工具 原样保留）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: S3: 渠道 PROXY + 标签 [代理, 系统] → [代理, 系统]（归一化去重、系统保留）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: removeApp 联动清理：移除应用后其标签一并删除
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: setTags 后 getAggregatedApps：分类 = 渠道分类 ∪ 用户标签（去重）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: setTags 整体替换语义：新标签集合覆盖旧集合
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 发现页标签保存：canonical appId 作 key 才能匹配聚合库（raw appId 作 key 丢失）
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 无用户标签应用：分类保持渠道原值
+  [ON-EXCLUSION-LIST] test/aggregator_tags_test.dart :: 用户标签与渠道分类重叠：合并去重不重复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: WebDAV 配置进备份（B 轨：WebDavConfigManager 直写存储并入 appConfig）
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导入：channels/ 条目写回渠道包目录 + env 恢复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导入：老备份（无 channels/ 条目）不崩且数据正常恢复
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：channels/*.zip 以 tar 条目打包（无 base64，含原始 zip 字节）
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：已注册 JsChannel 的 env 进 extras['js_envs']
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 导出：空渠道包目录 → 无 channels/ 条目，导出正常
+  [ON-EXCLUSION-LIST] test/backup_js_channel_test.dart :: 通过 JS 渠道添加的应用（聚合 + 渠道库）进备份
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup includeAppConfig=true 时归档含 app_config.json
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup onLog 旁路输出各阶段
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: exportCompressedBackup 返回 tar.gz 字节（gzip magic），包含 apps.json
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes includeAppConfig 往返：导入恢复代理配置
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes restoreAppConfig=false 时不恢复 app_config.json 配置
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes 导出 → 导入字节往返恢复应用数据
+  [ON-EXCLUSION-LIST] test/backup_service_compressed_test.dart :: importBackupBytes 非 tar.gz 字节抛异常
+  [ON-EXCLUSION-LIST] test/backup_service_onlog_test.dart :: uploadToWebDav onLog 不传 onLog：行为不变（旁路空安全）
+  [ON-EXCLUSION-LIST] test/backup_service_onlog_test.dart :: uploadToWebDav onLog 导出阶段日志 + 网络失败 error 日志，异常语义不变
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: exportData v2.1 导出标签 + 代理配置，metadata.version = v2_1
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: exportData v2.1 无标签/无代理时 tags 为 null、appConfig 无 proxy_url
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: importData v2.1 v2.0 数据导入（无 tags / proxy_url）不崩
+  [ON-EXCLUSION-LIST] test/backup_service_v21_test.dart :: importData v2.1 恢复标签（幂等追加）与代理配置
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：_githubApi 未注入 → 空列表（success）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：releases API 失败 → 空列表（success，不阻塞）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchDownloads：releases 解析为下载列表（失败 → 空列表）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：GitHub API base64 解码（优先于 DB）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：GitHub API 失败 → DB 兜底（des）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchReadme：_githubApi 未注入 → DB 兜底（des）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：_githubApi 未注入 → success(null)
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：apiList → Map（失败 → null 仍 success）
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：apiList 失败 → success(null)
+  [ON-EXCLUSION-LIST] test/channel_detail_parts_test.dart :: LocalDbChannel（分块加载） fetchStatistics：info.json 200 → 并入 metadata（versionName/versionCode/metadata）
+  [ON-EXCLUSION-LIST] test/channel_registry_test.dart :: ChannelIntegration.initialize 幂等 重复调用：渠道只注册一次、不重复绑定、不抛
+  [ON-EXCLUSION-LIST] test/channel_registry_test.dart :: ChannelModule 按类型绑定 onRegister 绑定 → get<ChannelManager>() 返回实例；onUnregister 解绑 → null
+  [ON-EXCLUSION-LIST] test/download/download_manager_live_progress_test.dart :: 筛选=全部时 watch 推送更大 received：state 必须更新且通知监听者
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 删除单条与按应用清空
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 备注与载荷版本随记录保存
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 按应用隔离，且按时间倒序返回
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 插入后能按应用读回，且载荷完整往返
+  [ON-EXCLUSION-LIST] test/snapshot_store_test.dart :: 载荷以 gzip 落库，且历史明文行仍可读（向后兼容）
+  -> run #2 non-exclusion failures: 0
+
+EXTRA FAILURE ANALYSIS (run #1 only):
+  test/module_manage_actions_test.dart :: slim 门控... 清除已下载经危险确认弹层 ...
+  Assertion @ test/module_manage_actions_test.dart:513 ->
+    Expected: false / Actual: <true> / reason: 确认后必须真正清除下载目录
+  Characterization:
+    - NOT environmental libsqlite3 class; it is a bounded real-IO timing assertion.
+    - Baseline (/tmp/opencode/task1_test_json.txt) => this test result = SUCCESS.
+    - In ISOLATION (flutter test test/module_manage_actions_test.dart) => All tests passed (12/12).
+    - RUN #2 full tree => this test PASSES; 77 failures == exclusion set exactly.
+    - The test source itself documents it as load-flaky (see comment: '并发负载下 200ms
+      未必够删除落盘（全量 flutter test 时曾偶发失败）').
+    => Load-induced FLKE unrelated to scene->gstore parity; not a parity regression.
+
+------------------------------------------------------------------------
+VERDICTS
+------------------------------------------------------------------------
+F1 : PASS  (dart analyze lib/ -> 0 errors; 88 warnings / 635 infos)
+F2 : FAIL (strict, per the stated criterion: run #1 produced 1 failure NOT on the
+          todo-1 exclusion list).
+     Qualification: the single extra failure is a pre-existing load-flaky real-IO test,
+     passes in isolation, passed at baseline, and run #2 was fully green modulo the
+     exclusion set (77/77). No parity-attributable failure was observed.
+     Owner disposition options: (a) accept run #2 as green-except-environmental, or
+     (b) add this flaky test to the exclusion list, or (c) rerun until green.
+
+Exclusion list source: .omo/evidence/task-1-parity-baseline.txt lines 9485-9561 (77 items).
+Raw artifacts: /tmp/opencode/final_analyze.txt, /tmp/opencode/final_test_json.txt,
+               /tmp/opencode/final_test_json2.txt
+========================================================================
