@@ -348,3 +348,13 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - **坑（环境性，非源码）**：前两次尝试失败，均源于 `:integration_test` release 依赖解析的间歇性 **JVM-TLS 握手终止**——attempt 2 的签名（`Could not resolve androidx.test:runner:1.2+` / `Remote host terminated the handshake`）与 todo-1 baseline 记录**完全一致**；attempt 1 表现为下游的 `GeneratedPluginRegistrant.java:79 程序包 dev.flutter.plugins.integration_test 不存在`（同一根因：integration_test 类未进 app 编译 classpath）。同窗口 `curl` 同一 Maven Central URL 秒回（HTTP 404）→ 网络本身可达，纯属 Gradle/JVM 侧偶发。第 3 次尝试成功（36.8s）。
 - **教训**：此环境的 `:integration_test` 依赖解析会间歇性 TLS 失败；需按 todo-1 的「重试」惯例多试，不要误判为源码回归。**未**改任何产品/测试源码、未 bump 版本、未加依赖、未 push。
 - 证据：`.omo/evidence/final-f3.txt`（`.omo/` gitignored；`git add -f` 提交）。
+
+## Batch 2 (partial) — Scene 风格 ring gauge + dashboard hero 组件（未接线）(2026-10-19)
+- **只新建 `lib/page/perf/` 本地文件，不接线页面（view.dart 归后续批次）**：`scene_perf_style.dart`（令牌 + 色档→主题色映射）、`scene_ring_gauge.dart`（`SceneRingGauge` + `SceneRingPainter`）、`scene_dashboard_hero.dart`（`SceneDashboardHero`）。**未改** `lib/page/home/**` / `settings` / router / `lib/core/theme/**` / 全局 `ThemeData`；`lib/core/perf/scene_thresholds.dart` 只 import。
+- **唯一硬编码色**收敛在 `ScenePerfStyle.accent = Color(0xFFBC8DE4)`（Scene `colors.xml:21 colorAccent`；Material 无对应语义角色）。其余全走 `Theme.of(context).colorScheme`（`error`/`tertiary`/`onSurfaceVariant`/`surfaceContainerHighest`/`secondaryContainer`）。色档映射：负载 normal→accent、high→tertiary、veryHigh→error；温度 normal→accent、mid→tertiary、high/veryHigh→error（= Scene `CpuChartView.kt:177 else accentColor` 语义）。
+- **环复刻 Scene 招牌整圆环**：`SceneRingPainter` 从 -90°（正上方）顺时针扫 `fraction` 整圈（`drawArc(rect, -pi/2, 2π·f)`，StrokeCap.round），**非** `GaugeChart` 的 210°/240° 开口弧。`value`+`max` 成对（百分比 `max:100`，0..1 比率 `max:1`）；NaN/±Inf/max≤0 一律钳制为 0，绝不抛。
+- **四档按钮接线复用既有路径**：`applyPerfModeToAllProfiles(store, mode)`（`perf_profiles_tile.dart`）+ `commonPerfModeOf(loadAll)` 高亮；store 默认 `ConfigPerfProfileStore`（测试注入 `InMemoryPerfProfileStore`）。能力门禁镜像 `PerfProfilesTile` 语义——**仅显式「无任一可写类别」禁用 + 可见原因；`null`（未探测）不阻断**。返回 `0`=无档案（提示未持久化）、`null`=失败（错误文案），有回调 seam `onModeApplied(mode,count)`。
+- **可注入 seam**：`state`（`PerfPageState?`，null→全占位）、`store`、`capabilities`/`capabilityLoader`、`onModeApplied`——widget 测试零真机 / Shizuku / FFI（默认 store 触达 `ConfigStore` 未初始化时 loadAll 内部 try/catch 已兜底，日志可见但不崩）。
+- **坑（测试断言）**：`sceneCpuLoadTier` 语义是**严格大于**——85 不越 veryHigh(85) 但 >65 → `high`(tertiary)，不是 accent。写边界断言时按真实比较语义（`>` vs `>=`），别按直觉。
+- 验证：`dart analyze lib/` = **0 error**，且 3 新文件无 warning/info；2 测试文件 `dart analyze` = No issues found；`flutter test` 两文件 = **18 passed**（ring 9：渲染/量纲/钳制/传递色 + 阈值映射 group；hero 9：null 降级/全量/环色/能力可用·禁用/应用成功·无档案·失败）。硬编码色 grep 门 = 仅 1 处 accent；`log(` = none。设备未验证。
+- 提交：`flock` + 显式 pathspec（只 5 个新文件）；新文件先 `git add` 后方可 pathspec 提交。
