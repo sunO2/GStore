@@ -20,6 +20,10 @@ import 'package:gstore/page/backup/state.dart';
 class MinePage extends ConsumerStatefulWidget {
   const MinePage({super.key});
 
+  /// 「设置」tab 标签（Scene 三 tab 外壳的功能标签；
+  /// 首页导航栏与页面 AppBar 共用同一文案来源）。
+  static const String tabLabel = '设置';
+
   @override
   ConsumerState<MinePage> createState() => _MinePageState();
 }
@@ -302,7 +306,7 @@ class _MinePageState extends ConsumerState<MinePage>
     final user = ref.watch(userInfoProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('我的'),
+        title: const Text(MinePage.tabLabel),
       ),
       body: SingleChildScrollView(
         // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
