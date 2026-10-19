@@ -152,6 +152,176 @@ void main() {
     test('empty 常量语义', () {
       expect(PerfProfile.empty.isEmpty, isTrue);
       expect(PerfProfile.empty.package, '');
+      expect(PerfProfile.empty.mode, PerfMode.balance);
+    });
+  });
+
+  group('PerfMode', () {
+    test('四档线格式名 + 中文标签', () {
+      expect(PerfMode.powersave.wireName, 'powersave');
+      expect(PerfMode.balance.wireName, 'balance');
+      expect(PerfMode.performance.wireName, 'performance');
+      expect(PerfMode.fast.wireName, 'fast');
+      expect(PerfMode.powersave.label, '省电');
+      expect(PerfMode.balance.label, '均衡');
+      expect(PerfMode.performance.label, '性能');
+      expect(PerfMode.fast.label, '极速');
+      expect(PerfMode.defaultMode, PerfMode.balance);
+    });
+
+    test('fromWire：线格式名 / 大小写 / 中文标签 / 序号', () {
+      expect(PerfMode.fromWire('performance'), PerfMode.performance);
+      expect(PerfMode.fromWire(' FAST '), PerfMode.fast);
+      expect(PerfMode.fromWire('极速'), PerfMode.fast);
+      expect(PerfMode.fromWire('省电'), PerfMode.powersave);
+      expect(PerfMode.fromWire(2), PerfMode.performance);
+      expect(PerfMode.fromWire(0), PerfMode.powersave);
+    });
+
+    test('fromWire：未知 / 缺失 / 越界 → 默认 balance（不抛）', () {
+      expect(PerfMode.fromWire(null), PerfMode.balance);
+      expect(PerfMode.fromWire(''), PerfMode.balance);
+      expect(PerfMode.fromWire('bogus'), PerfMode.balance);
+      expect(PerfMode.fromWire(42), PerfMode.balance);
+      expect(PerfMode.fromWire(-1), PerfMode.balance);
+      expect(PerfMode.fromWire(<int>[1]), PerfMode.balance);
+    });
+  });
+
+  group('PerfModePreset', () {
+    test('forMode 映射到既有旋钮形状（无新增旋钮）', () {
+      expect(PerfModePreset.forMode(PerfMode.balance).isEmpty, isTrue);
+      expect(
+        PerfModePreset.forMode(PerfMode.powersave).cpuset,
+        'background',
+      );
+      expect(
+        PerfModePreset.forMode(PerfMode.powersave).thermalEnabled,
+        isTrue,
+      );
+      expect(
+        PerfModePreset.forMode(PerfMode.performance).cpuset,
+        'foreground',
+      );
+      expect(PerfModePreset.forMode(PerfMode.fast).cpuset, 'top-app');
+      // 预设不携带身份 / 启用 / mode 字段（只描述旋钮）。
+      expect(PerfModePreset.empty.isEmpty, isTrue);
+    });
+
+    test('完整预设 toJson/fromJson 往返且相等', () {
+      const preset = PerfModePreset(
+        cpuClusters: <String, PerfCpuClusterProfile>{
+          'policy0': PerfCpuClusterProfile(
+            governor: 'performance',
+            minFreqMhz: 1000,
+            maxFreqMhz: 2400,
+          ),
+        },
+        gpuLevel: 1,
+        cpuset: 'top-app',
+        thermalEnabled: false,
+      );
+      final json = preset.toJson();
+      expect((json['cpu_clusters'] as Map).length, 1);
+      expect(json['gpu_level'], 1);
+      expect(json['cpuset'], 'top-app');
+      expect(json['thermal_enabled'], isFalse);
+      expect(PerfModePreset.fromJson(json), preset);
+    });
+
+    test('类型全错 → 安全默认（不抛）', () {
+      final decoded = PerfModePreset.fromJson(<String, dynamic>{
+        'cpu_clusters': 'not-a-map',
+        'gpu_level': 'high',
+        'cpuset': <int>[1],
+        'thermal_enabled': 'maybe',
+      });
+      expect(decoded.isEmpty, isTrue);
+    });
+
+    test('部分损坏的簇被跳过，其余保留', () {
+      final decoded = PerfModePreset.fromJson(<String, dynamic>{
+        'cpu_clusters': <String, dynamic>{
+          'policy0': <String, dynamic>{'governor': 'schedutil'},
+          'bad': 'not-a-map',
+        },
+      });
+      expect(decoded.cpuClusters.keys, <String>['policy0']);
+    });
+
+    test('相等与 hashCode', () {
+      const a = PerfModePreset(cpuset: 'top-app', gpuLevel: 2);
+      const b = PerfModePreset(cpuset: 'top-app', gpuLevel: 2);
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a == const PerfModePreset(cpuset: 'top-app'), isFalse);
+    });
+  });
+
+  group('PerfProfile.mode', () {
+    test('默认 mode = balance，且 JSON 写出 mode', () {
+      const profile = PerfProfile(package: 'com.a');
+      expect(profile.mode, PerfMode.balance);
+      expect(profile.toJson()['mode'], 'balance');
+    });
+
+    test('mode 往返（fast）', () {
+      const profile = PerfProfile(
+        package: 'com.a',
+        enabled: true,
+        mode: PerfMode.fast,
+      );
+      final json = profile.toJson();
+      expect(json['mode'], 'fast');
+      expect(PerfProfile.fromJson(json), profile);
+      expect(PerfProfile.fromJson(json).mode, PerfMode.fast);
+    });
+
+    test('旧档案缺 mode → 默认 balance（不抛，向后兼容）', () {
+      final decoded = PerfProfile.fromJson(<String, dynamic>{
+        'package': 'com.legacy',
+        'enabled': true,
+        'cpuset': 'top-app',
+      });
+      expect(decoded.mode, PerfMode.balance);
+      expect(decoded.cpuset, 'top-app');
+      expect(decoded.enabled, isTrue);
+    });
+
+    test('非法 mode 值 → 默认 balance（不抛）', () {
+      final decoded = PerfProfile.fromJson(<String, dynamic>{
+        'package': 'com.a',
+        'mode': 'turbo-ultra',
+      });
+      expect(decoded.mode, PerfMode.balance);
+    });
+
+    test('仅 mode 变化 → 视为已变更（!=，hashCode 变化）', () {
+      const balance = PerfProfile(
+        package: 'com.a',
+        enabled: true,
+        cpuset: 'top-app',
+      );
+      const fast = PerfProfile(
+        package: 'com.a',
+        enabled: true,
+        cpuset: 'top-app',
+        mode: PerfMode.fast,
+      );
+      expect(balance == fast, isFalse);
+      expect(balance.hashCode == fast.hashCode, isFalse);
+    });
+
+    test('copyWith 覆盖 mode', () {
+      const base = PerfProfile(package: 'com.a');
+      expect(base.copyWith(mode: PerfMode.performance).mode,
+          PerfMode.performance);
+      expect(base.copyWith().mode, PerfMode.balance);
+    });
+
+    test('mode-only 档案非空（mode 参与 isEmpty 判定）', () {
+      const modeOnly = PerfProfile(package: 'com.a', mode: PerfMode.fast);
+      expect(modeOnly.isEmpty, isFalse);
     });
   });
 }

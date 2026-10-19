@@ -589,6 +589,25 @@ void main() {
       expect(h.session.pendingCount, 3);
     });
 
+    test('仅 mode 变化 → 不被视为 unchanged（重新应用）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+
+      final first = await h.engine.onForegroundPackage('com.a');
+      expect(first.outcome, PerfAutoApplyOutcome.applied);
+      expect(h.engine.appliedProfile!.mode, PerfMode.balance);
+
+      // 旋钮完全一致，仅把 mode 改成 fast → 依赖 PerfProfile.mode 的相等性。
+      await h.store.save(_profileA().copyWith(mode: PerfMode.fast));
+      final second = await h.engine.refresh();
+
+      expect(second.outcome, PerfAutoApplyOutcome.applied);
+      expect(second.reason, PerfAutoApplyReason.applied);
+      expect(h.engine.appliedProfile!.mode, PerfMode.fast);
+    });
+
     test('并发重复进入 → 串行且不重复应用', () async {
       final h = _Harness(
         profiles: <String, PerfProfile>{'com.a': _profileA()},

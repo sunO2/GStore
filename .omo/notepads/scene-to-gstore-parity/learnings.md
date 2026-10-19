@@ -274,3 +274,10 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - **注意（scope）**：MUST NOT 触碰 pages/routers → 本 todo **未接线 UI**（`hardware_page.dart` 的 `MiuiThermalCard` 未动）；门禁以 `actionCapabilities()` 暴露，UI 消费留待后续 todo。并发：与 todo 24（perf_profile）并行，仅动 3 新/改文件 + 测试 + learnings；提交用 `flock` + **pathspec**（`git commit -- <files>`，含 `git add -f` 处理被忽略的 `.omo` learnings）。
 
 
+
+## Todo 24 — PerfMode 枚举 + PerfModePreset + PerfProfile.mode（2026-10-19）
+- `lib/core/perf/perf_profile.dart`（**本 todo 拥有该文件**）：新增 `enum PerfMode{powersave,balance,performance,fast}`（`wireName` 稳定小写 / `label` 省电/均衡/性能/极速 / `defaultMode=balance` / 宽容 `fromWire(Object?)`：wireName 大小写不敏感 + 中文标签 + 枚举序号；未知/缺失/越界 → balance，**绝不抛**）。
+- 新增 `class PerfModePreset` **只**映射到既有旋钮形状（`cpuClusters`/`gpuLevel`/`cpuset`/`thermalEnabled`，**零新增旋钮**）：`isEmpty`/`empty`/`toJson`/`fromJson`(宽容)/`==`/`hashCode`/`toString` + `forMode(mode)` **设备无关安全回退**（省电→cpuset background+thermalEnabled true；均衡→空；性能→foreground；极速→top-app）。**按 SoC 细化的目标值表归 todo 27**（`perf_mode_profiles.dart`）。
+- `PerfProfile`：新增 `mode`（默认 balance，**非 null**，无法区分「未设」与 balance → 默认即 balance 语义）；`isEmpty` 增 `mode==balance`（唯一 mode 项 → 非空）；`copyWith` 加 `mode`；`toJson` **始终**写 `'mode': wireName`；`fromJson` 经 `fromWire`（旧档案缺 mode → balance，**向后兼容**）；`==`/`hashCode` 含 mode → **仅 mode 变化即被引擎 `current==target`（:472）识别为 changed**。
+- 测试：`perf_profile_test.dart` 新增 PerfMode 3 + PerfModePreset 5 + PerfProfile.mode 7 组；`perf_profile_auto_engine_test.dart` +1（仅 mode 变化 → refresh 返回 `applied` 而非 `unchanged`）。验证：`dart analyze lib/` = **0 error**（728 存量 = 基线）；`flutter test` 目标 4 文件 **68 passed** + 页面回归 **17 passed**。
+- 坑：LSP 报 `core/rust/generated/*` 与 `rust_shizuku_runner.dart` 陈旧错误（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略即可。并发：与 todo 30（miui_thermal/root_status）并行且**文件不相交**；提交用 `flock /tmp/opencode/gstore.git.lock` + **显式 pathspec**（只提交 perf_profile.dart + 2 测试，**不**动 todo 30 的改动）。证据 `.omo/evidence/task-24-perf-mode-model.txt`（`.omo/` gitignored）。
