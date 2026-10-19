@@ -101,6 +101,7 @@ class BatteryReading {
     this.health,
     this.technology,
     this.basePath,
+    this.interactive,
     this.sources = const <String>{},
   });
 
@@ -134,6 +135,9 @@ class BatteryReading {
   /// sysfs 基路径（仅 sysfs 源提供）。
   final String? basePath;
 
+  /// 屏幕是否点亮（仅 BatteryManager 源提供；`null` = 未知）。
+  final bool? interactive;
+
   /// 贡献过本读数的源（`sysfs` / `battery_manager` / `dumpsys`）。
   final Set<String> sources;
 
@@ -149,6 +153,7 @@ class BatteryReading {
     String? health,
     String? technology,
     String? basePath,
+    bool? interactive,
     Set<String>? sources,
   }) =>
       BatteryReading(
@@ -162,6 +167,7 @@ class BatteryReading {
         health: health ?? this.health,
         technology: technology ?? this.technology,
         basePath: basePath ?? this.basePath,
+        interactive: interactive ?? this.interactive,
         sources: sources ?? this.sources,
       );
 
@@ -171,7 +177,7 @@ class BatteryReading {
       'currentMa: $currentMa, temperatureC: $temperatureC, '
       'statusCode: $statusCode, statusLabel: $statusLabel, '
       'health: $health, technology: $technology, basePath: $basePath, '
-      'sources: $sources)';
+      'interactive: $interactive, sources: $sources)';
 }
 
 /// 从 Rust [BatteryReport]（sysfs）构造读数（`source='sysfs'`）。
@@ -202,6 +208,7 @@ BatteryReading batteryReadingFromBatteryManagerMap(Map<Object?, Object?> map) {
   final technology = _asString(map['technology']);
   final capacityPercent = _asInt(map['capacityPercent']);
   final present = map['present'] == true;
+  final interactive = _asBool(map['interactive']);
 
   return BatteryReading(
     present: present,
@@ -214,6 +221,7 @@ BatteryReading batteryReadingFromBatteryManagerMap(Map<Object?, Object?> map) {
     statusLabel: statusLabelFromCode(statusCode),
     health: healthLabelFromCode(healthCode),
     technology: technology,
+    interactive: interactive,
     sources: const <String>{'battery_manager'},
   );
 }
@@ -322,6 +330,7 @@ BatteryReading mergeBatteryReadings({
     health: _first<String>(ordered.map((r) => r?.health)),
     technology: _first<String>(ordered.map((r) => r?.technology)),
     basePath: _first<String>(ordered.map((r) => r?.basePath)),
+    interactive: _first<bool>(ordered.map((r) => r?.interactive)),
     sources: {
       for (final r in ordered)
         if (r != null) ...r.sources,
@@ -363,17 +372,77 @@ Future<String?> defaultBatteryShellRunner(String command) async {
   }
 }
 
-/// 读取并合并电池读数：sysfs → BatteryManager → （必要时）dumpsys。
+/// 廉价缓存 TTL（不含 `dumpsys`）。
+const Duration kBatteryReadingCheapTtl = Duration(seconds: 2);
+
+/// 完整缓存 TTL（含 `dumpsys`）。
+const Duration kBatteryReadingFullTtl = Duration(seconds: 60);
+
+class _BatteryReadingCacheEntry {
+  const _BatteryReadingCacheEntry(this.reading, this.at);
+
+  final BatteryReading? reading;
+  final DateTime at;
+}
+
+final Map<bool, _BatteryReadingCacheEntry> _batteryReadingCache =
+    <bool, _BatteryReadingCacheEntry>{};
+final Map<bool, Future<BatteryReading?>> _batteryReadingInFlight =
+    <bool, Future<BatteryReading?>>{};
+
+/// 清空 [readBatteryReading] 的 TTL 缓存（测试用）。
+void resetBatteryReadingCache() {
+  _batteryReadingCache.clear();
+  _batteryReadingInFlight.clear();
+}
+
+/// 读取并合并电池读数：sysfs → BatteryManager → （按需）dumpsys。
 ///
-/// 三步：
-/// 1. [sysfsReader]（默认 [defaultBatterySysfsReader]）；
-/// 2. [channel]（默认 `BatteryManagerChannel()`）；
-/// 3. 若合并后电流**或**电压仍为 null 且 [includeDumpsys]，执行 [shellRunner]
-///    解析 `dumpsys battery` 再合并。
+/// 热路径默认 **不** 执行 `dumpsys battery`（[includeDumpsys] 默认 `false`）：
+/// 3s 记录器 / 1s 刷新只走 sysfs + BatteryManager（平台通道，无 shell 进程）。
 ///
-/// 返回合并结果；全部源均 `present=false` 时返回 `null`。**绝不抛出**。
+/// 结果按 [includeDumpsys] 分键缓存：[kBatteryReadingCheapTtl]（廉价）/
+/// [kBatteryReadingFullTtl]（完整）。[forceRefresh] 或 TTL 过期时重新采集；
+/// [cacheTtl] 可显式覆盖 TTL。**绝不抛出**。
 Future<BatteryReading?> readBatteryReading({
-  bool includeDumpsys = true,
+  bool includeDumpsys = false,
+  bool forceRefresh = false,
+  Duration? cacheTtl,
+  BatterySysfsReader? sysfsReader,
+  BatteryManagerChannel? channel,
+  BatteryShellRunner? shellRunner,
+}) {
+  final ttl = cacheTtl ??
+      (includeDumpsys ? kBatteryReadingFullTtl : kBatteryReadingCheapTtl);
+  final cached = _batteryReadingCache[includeDumpsys];
+  if (!forceRefresh &&
+      cached != null &&
+      DateTime.now().difference(cached.at) < ttl) {
+    return Future<BatteryReading?>.value(cached.reading);
+  }
+  final inFlight = _batteryReadingInFlight[includeDumpsys];
+  if (!forceRefresh && inFlight != null) return inFlight;
+
+  final future = _readBatteryReadingUncached(
+    includeDumpsys: includeDumpsys,
+    sysfsReader: sysfsReader,
+    channel: channel,
+    shellRunner: shellRunner,
+  );
+  _batteryReadingInFlight[includeDumpsys] = future;
+  return future.then((reading) {
+    _batteryReadingCache[includeDumpsys] =
+        _BatteryReadingCacheEntry(reading, DateTime.now());
+    return reading;
+  }).whenComplete(() {
+    if (identical(_batteryReadingInFlight[includeDumpsys], future)) {
+      _batteryReadingInFlight.remove(includeDumpsys);
+    }
+  });
+}
+
+Future<BatteryReading?> _readBatteryReadingUncached({
+  required bool includeDumpsys,
   BatterySysfsReader? sysfsReader,
   BatteryManagerChannel? channel,
   BatteryShellRunner? shellRunner,
@@ -417,6 +486,92 @@ Future<BatteryReading?> readBatteryReading({
   return merged.present ? merged : null;
 }
 
+/// 单个数据源的诊断结果（[BatterySourceDiagnostic]）。
+///
+/// * [source]：`sysfs` / `battery_manager` / `dumpsys`；
+/// * [reading]：该源归一后的读数（解析失败 / 不可用为 `null`）；
+/// * [error]：该源抛出的错误字符串（无错误为 `null`）；
+/// * [raw]：原始输出（`dumpsys battery`；无输出时回退为错误字符串）。
+class BatterySourceDiagnostic {
+  const BatterySourceDiagnostic({
+    required this.source,
+    this.reading,
+    this.error,
+    this.raw,
+  });
+
+  final String source;
+  final BatteryReading? reading;
+  final String? error;
+  final String? raw;
+
+  @override
+  String toString() => 'BatterySourceDiagnostic(source: $source, '
+      'reading: $reading, error: $error, raw: $raw)';
+}
+
+/// 逐源诊断（供 UI 展示「哪一路数据源失败/缺什么」）。
+///
+/// 与 [readBatteryReading] 不同，本函数**强制**分别执行三个源（含 `dumpsys
+/// battery`）并原样捕获输出 / 错误，**绝不抛出**，也不写缓存。
+Future<List<BatterySourceDiagnostic>> readBatterySourceDiagnostics({
+  BatterySysfsReader? sysfsReader,
+  BatteryManagerChannel? channel,
+  BatteryShellRunner? shellRunner,
+}) async {
+  final out = <BatterySourceDiagnostic>[];
+
+  // sysfs
+  BatteryReading? sysfsReading;
+  String? sysfsError;
+  try {
+    sysfsReading = await (sysfsReader ?? defaultBatterySysfsReader)();
+  } catch (error) {
+    sysfsError = '$error';
+  }
+  out.add(BatterySourceDiagnostic(
+    source: 'sysfs',
+    reading: sysfsReading,
+    error: sysfsError,
+  ));
+
+  // battery_manager
+  BatteryReading? bmReading;
+  String? bmError;
+  try {
+    bmReading = await (channel ?? BatteryManagerChannel()).read();
+  } catch (error) {
+    bmError = '$error';
+  }
+  out.add(BatterySourceDiagnostic(
+    source: 'battery_manager',
+    reading: bmReading,
+    error: bmError,
+  ));
+
+  // dumpsys
+  String? output;
+  String? dumpsysError;
+  try {
+    output = await (shellRunner ?? defaultBatteryShellRunner)(
+      kBatteryDumpsysCommand,
+    );
+  } catch (error) {
+    dumpsysError = '$error';
+  }
+  final raw = (output != null && output.isNotEmpty) ? output : dumpsysError;
+  out.add(BatterySourceDiagnostic(
+    source: 'dumpsys',
+    reading: (output != null && output.isNotEmpty)
+        ? parseDumpsysBattery(output)
+        : null,
+    error: dumpsysError,
+    raw: raw,
+  ));
+
+  return out;
+}
+
 T? _first<T>(Iterable<T?> values) {
   for (final value in values) {
     if (value != null) return value;
@@ -436,4 +591,20 @@ String? _asString(Object? value) {
   if (value == null) return null;
   final text = value.toString();
   return text.isEmpty ? null : text;
+}
+
+bool? _asBool(Object? value) {
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  if (value is String) {
+    switch (value.trim().toLowerCase()) {
+      case 'true':
+      case '1':
+        return true;
+      case 'false':
+      case '0':
+        return false;
+    }
+  }
+  return null;
 }

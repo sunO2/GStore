@@ -14,6 +14,26 @@ class _StubChannel extends BatteryManagerChannel {
   Future<BatteryReading?> read() async => _reading;
 }
 
+/// 统计调用次数的假通道。
+class _CountingChannel extends BatteryManagerChannel {
+  _CountingChannel(this._reading);
+
+  final BatteryReading? _reading;
+  int calls = 0;
+
+  @override
+  Future<BatteryReading?> read() async {
+    calls++;
+    return _reading;
+  }
+}
+
+/// 读取即抛异常的假通道（诊断错误路径）。
+class _ThrowingChannel extends BatteryManagerChannel {
+  @override
+  Future<BatteryReading?> read() async => throw StateError('channel boom');
+}
+
 const String _fullDumpsys = '''
 Current Battery Service state:
   AC powered: false
@@ -32,6 +52,8 @@ Current Battery Service state:
 ''';
 
 void main() {
+  setUp(resetBatteryReadingCache);
+
   group('parseDumpsysBattery', () {
     test('完整样本：字段/单位全部归一', () {
       final r = parseDumpsysBattery(_fullDumpsys);
@@ -180,6 +202,23 @@ void main() {
       expect(merged.statusCode, 4);
       expect(merged.statusLabel, 'Not charging');
     });
+
+    test('interactive 取第一个非 null（sysfs > bm > dumpsys）', () {
+      final merged = mergeBatteryReadings(
+        sysfs: const BatteryReading(present: true, sources: {'sysfs'}),
+        batteryManager: const BatteryReading(
+          present: true,
+          interactive: false,
+          sources: {'battery_manager'},
+        ),
+        dumpsys: const BatteryReading(
+          present: true,
+          interactive: true,
+          sources: {'dumpsys'},
+        ),
+      );
+      expect(merged.interactive, isFalse);
+    });
   });
 
   group('BatteryManagerChannel 转换', () {
@@ -195,6 +234,7 @@ void main() {
         'technology': 'Li-ion',
         'currentUa': -550000,
         'capacityPercent': 80,
+        'interactive': true,
       });
       expect(r.present, isTrue);
       expect(r.voltageV, 4.123);
@@ -205,6 +245,7 @@ void main() {
       expect(r.health, 'Good');
       expect(r.technology, 'Li-ion');
       expect(r.capacityPercent, 80.0);
+      expect(r.interactive, isTrue);
       expect(r.sources, {'battery_manager'});
     });
 
@@ -220,6 +261,34 @@ void main() {
       expect(r.currentMa, isNull);
       expect(r.statusCode, 99);
       expect(r.statusLabel, 'Unknown');
+      expect(r.interactive, isNull);
+    });
+
+    test('interactive 解析：bool / 数字 / 字符串；缺失 → null', () {
+      expect(
+        batteryReadingFromBatteryManagerMap(
+          <String, Object?>{'interactive': true},
+        ).interactive,
+        isTrue,
+      );
+      expect(
+        batteryReadingFromBatteryManagerMap(
+          <String, Object?>{'interactive': 0},
+        ).interactive,
+        isFalse,
+      );
+      expect(
+        batteryReadingFromBatteryManagerMap(
+          <String, Object?>{'interactive': 'true'},
+        ).interactive,
+        isTrue,
+      );
+      expect(
+        batteryReadingFromBatteryManagerMap(
+          <String, Object?>{'interactive': 'garbage'},
+        ).interactive,
+        isNull,
+      );
     });
 
     test('mock MethodChannel handler 驱动 read()', () async {
@@ -298,6 +367,7 @@ void main() {
     test('sysfs + bm 都缺电流/电压 → 执行 dumpsys 合并', () async {
       String? shellCommand;
       final r = await readBatteryReading(
+        includeDumpsys: true,
         sysfsReader: () async => const BatteryReading(
           present: true,
           capacityPercent: 61.0,
@@ -327,6 +397,163 @@ void main() {
       );
       expect(r, isNotNull);
       expect(r!.voltageV, 3.9);
+    });
+  });
+
+  group('readBatteryReading TTL 缓存', () {
+    test('同键第二次命中缓存（不再读源）', () async {
+      var sysfsCalls = 0;
+      final channel =
+          _CountingChannel(const BatteryReading(present: true, interactive: true));
+
+      Future<BatteryReading?> read() => readBatteryReading(
+            sysfsReader: () async {
+              sysfsCalls++;
+              return const BatteryReading(present: true, capacityPercent: 50);
+            },
+            channel: channel,
+          );
+
+      final first = await read();
+      final second = await read();
+      expect(identical(first, second), isTrue);
+      expect(sysfsCalls, 1);
+      expect(channel.calls, 1);
+    });
+
+    test('forceRefresh 绕过缓存', () async {
+      var sysfsCalls = 0;
+      final channel = _CountingChannel(const BatteryReading(present: true));
+      Future<BatteryReading?> read({bool force = false}) => readBatteryReading(
+            forceRefresh: force,
+            sysfsReader: () async {
+              sysfsCalls++;
+              return const BatteryReading(present: true);
+            },
+            channel: channel,
+          );
+
+      await read();
+      await read();
+      expect(sysfsCalls, 1);
+      await read(force: true);
+      expect(sysfsCalls, 2);
+      expect(channel.calls, 2);
+    });
+
+    test('cacheTtl: Duration.zero → 每次都视为过期', () async {
+      var sysfsCalls = 0;
+      Future<BatteryReading?> read() => readBatteryReading(
+            cacheTtl: Duration.zero,
+            sysfsReader: () async {
+              sysfsCalls++;
+              return const BatteryReading(present: true);
+            },
+            channel: _StubChannel(null),
+          );
+
+      await read();
+      await read();
+      expect(sysfsCalls, 2);
+    });
+
+    test('includeDumpsys 分键缓存（完整结果不污染廉价结果）', () async {
+      var shellCalls = 0;
+      final channel = _CountingChannel(
+        const BatteryReading(present: true, capacityPercent: 42),
+      );
+
+      // 廉价：不跑 shell。
+      final cheap = await readBatteryReading(
+        sysfsReader: () async => null,
+        channel: channel,
+      );
+      expect(cheap!.capacityPercent, 42.0);
+      expect(shellCalls, 0);
+
+      // 完整：缺电流/电压 → 跑一次 shell。
+      final full = await readBatteryReading(
+        includeDumpsys: true,
+        sysfsReader: () async => null,
+        channel: channel,
+        shellRunner: (_) async {
+          shellCalls++;
+          return _fullDumpsys;
+        },
+      );
+      expect(full!.currentMa, -550.0);
+      expect(shellCalls, 1);
+
+      // 再取廉价 → 命中廉价缓存，不跑 shell。
+      final cheapAgain = await readBatteryReading(
+        sysfsReader: () async => null,
+        channel: channel,
+      );
+      expect(cheapAgain!.currentMa, isNull);
+      expect(shellCalls, 1);
+    });
+  });
+
+  group('readBatteryReading 默认不跑 dumpsys', () {
+    test('includeDumpsys 默认 false → shell 一次都不执行', () async {
+      var shellCalls = 0;
+      final r = await readBatteryReading(
+        sysfsReader: () async => const BatteryReading(
+          present: true,
+          capacityPercent: 42,
+        ),
+        channel: _StubChannel(null),
+        shellRunner: (_) async {
+          shellCalls++;
+          return _fullDumpsys;
+        },
+      );
+      expect(r, isNotNull);
+      expect(r!.capacityPercent, 42.0);
+      expect(r.currentMa, isNull); // 廉价路径不补电流
+      expect(shellCalls, 0);
+    });
+  });
+
+  group('readBatterySourceDiagnostics', () {
+    test('逐源返回 sysfs / battery_manager / dumpsys（含 raw 原文）', () async {
+      final list = await readBatterySourceDiagnostics(
+        sysfsReader: () async => const BatteryReading(
+          present: true,
+          capacityPercent: 70,
+          sources: {'sysfs'},
+        ),
+        channel: _StubChannel(
+          const BatteryReading(
+            present: true,
+            currentMa: -400,
+            sources: {'battery_manager'},
+          ),
+        ),
+        shellRunner: (_) async => _fullDumpsys,
+      );
+
+      expect(list.map((d) => d.source).toList(),
+          <String>['sysfs', 'battery_manager', 'dumpsys']);
+      expect(list[0].reading!.capacityPercent, 70.0);
+      expect(list[1].reading!.currentMa, -400.0);
+      expect(list[2].reading!.currentMa, -550.0);
+      expect(list[2].raw, _fullDumpsys);
+      expect(list.every((d) => d.error == null), isTrue);
+    });
+
+    test('单源抛异常 → 捕获到 error，绝不抛出；dumpsys raw 回退 error', () async {
+      final list = await readBatterySourceDiagnostics(
+        sysfsReader: () async => throw StateError('sysfs boom'),
+        channel: _ThrowingChannel(),
+        shellRunner: (_) async => throw StateError('shell boom'),
+      );
+
+      expect(list, hasLength(3));
+      expect(list[0].error, contains('sysfs boom'));
+      expect(list[1].error, contains('channel boom'));
+      expect(list[2].reading, isNull);
+      expect(list[2].raw, contains('shell boom'));
     });
   });
 

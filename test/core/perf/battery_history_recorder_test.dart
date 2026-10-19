@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/perf/battery_history.dart';
 import 'package:gstore/core/perf/battery_history_recorder.dart';
 import 'package:gstore/core/perf/battery_history_store.dart';
+import 'package:gstore/core/perf/battery_source.dart';
+import 'package:gstore/core/perf/privileged_shell.dart';
 
 /// 可推进时钟。
 class _Clock {
@@ -356,6 +358,104 @@ void main() {
       recorder.start();
       expect(recorder.isRecording, isFalse);
       expect(recorder.isDisposed, isTrue);
+    });
+  });
+
+  group('默认采样器：探测缓存 + 无 per-tick dumpsys', () {
+    tearDown(BatteryHistoryRecorder.resetTestSeams);
+
+    BatteryReading reading({bool? interactive}) => BatteryReading(
+          present: true,
+          capacityPercent: 50,
+          currentMa: -500,
+          voltageV: 4.0,
+          statusCode: kBatteryStatusDischarging,
+          interactive: interactive,
+        );
+
+    test('interactive=true → 不探测屏幕；前台 15s 缓存；无 dumpsys battery',
+        () async {
+      var now = DateTime.fromMillisecondsSinceEpoch(0);
+      final commands = <String>[];
+      BatteryHistoryRecorder.configureForTest(
+        clock: () => now,
+        shellRunner: (command) async {
+          commands.add(command);
+          // ok=false → 前台包名空串，且不触碰 PerfModule.foreground（FFI）。
+          return const PrivilegedResult(ok: false, output: '');
+        },
+      );
+
+      Future<BatteryHistorySample?> sample() =>
+          BatteryHistoryRecorder.sampleForTest(
+            readBattery: () async => reading(interactive: true),
+          );
+
+      final first = await sample();
+      expect(first, isNotNull);
+      expect(first!.screenOn, isTrue);
+      // 只有前台探测；屏幕由 interactive 提供，不跑 dumpsys power。
+      expect(commands, <String>[BatteryHistoryRecorder.foregroundCommand]);
+      expect(
+        commands.where((c) => c.contains('dumpsys battery')),
+        isEmpty,
+      );
+
+      // 10s 后（前台 TTL 15s 内）→ 缓存命中，无新命令。
+      now = now.add(const Duration(seconds: 10));
+      await sample();
+      expect(commands, hasLength(1));
+
+      // 再过 6s（累计 16s）→ 前台缓存过期，仅重跑前台探测。
+      now = now.add(const Duration(seconds: 6));
+      await sample();
+      expect(commands, hasLength(2));
+      expect(commands.last, BatteryHistoryRecorder.foregroundCommand);
+    });
+
+    test('interactive=null → dumpsys power 探测缓存 30s', () async {
+      var now = DateTime.fromMillisecondsSinceEpoch(0);
+      final commands = <String>[];
+      BatteryHistoryRecorder.configureForTest(
+        clock: () => now,
+        shellRunner: (command) async {
+          commands.add(command);
+          return const PrivilegedResult(ok: false, output: '');
+        },
+      );
+
+      Future<BatteryHistorySample?> sample() =>
+          BatteryHistoryRecorder.sampleForTest(
+            readBattery: () async => reading(interactive: null),
+          );
+
+      await sample();
+      // 屏幕 + 前台各一次。
+      expect(commands, <String>[
+        BatteryHistoryRecorder.screenCommand,
+        BatteryHistoryRecorder.foregroundCommand,
+      ]);
+
+      // 10s 内：两者都在缓存内。
+      now = now.add(const Duration(seconds: 10));
+      await sample();
+      expect(commands, hasLength(2));
+
+      // 16s：仅前台过期。
+      now = now.add(const Duration(seconds: 6));
+      await sample();
+      expect(commands, hasLength(3));
+      expect(commands.last, BatteryHistoryRecorder.foregroundCommand);
+
+      // 31s：屏幕（30s）与前台都过期。
+      now = now.add(const Duration(seconds: 15));
+      await sample();
+      expect(commands, hasLength(5));
+      expect(commands[3], BatteryHistoryRecorder.screenCommand);
+      expect(
+        commands.where((c) => c.contains('dumpsys battery')),
+        isEmpty,
+      );
     });
   });
 

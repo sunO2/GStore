@@ -13,7 +13,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -231,24 +231,21 @@ final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
 ///
 /// * [PerfModule.battery] 抛 [PerfModuleUnavailableException] 时**向上冒泡**
 ///   （保持既有整页降级语义）；
-/// * 仅当「sysfs 识别到电池但 `current + voltage + capacity` 不全」时才触发合并
-///   （含免权限兜底源）；`present=false` 或 sysfs 已够全时直接返回原始值；
+/// * **总是尝试合并**（不再因 sysfs `present=false` 短路）：部分设备 Rust sysfs
+///   报 `present=false`，但 BatteryManager 仍能给出真实读数；
+/// * 合并走**廉价**路径（`includeDumpsys: false`），热路径不执行 shell；
 /// * 合并流程抛异常 / 返回 `null` 时**回退**原始 [PerfModule.battery] 结果；
 /// * 绝不因合并本身失败而丢失数据。
-Future<BatteryReport> _readMergedBattery(PerfModule module) async {
+Future<BatteryReport> _readMergedBattery(
+  PerfModule module, {
+  BatteryManagerChannel? channel,
+}) async {
   final raw = await module.battery();
-  // 仅在「有 sysfs 电池但字段不全」时才触发免权限兜底源
-  // （BatteryManager / dumpsys 只会给出同字段的低优先级值）：
-  // * present=false：sysfs 未识别到电池，无字段可补；
-  // * current + voltage + capacity 已全：sysfs 优先级最高，无需合并。
-  final sysfsComplete = raw.present &&
-      raw.currentMa != null &&
-      raw.voltageV != null &&
-      raw.capacityPercent != null;
-  if (!raw.present || sysfsComplete) return raw;
   try {
     final reading = await readBatteryReading(
+      includeDumpsys: false,
       sysfsReader: () async => batteryReadingFromSysfs(raw),
+      channel: channel,
     );
     if (reading == null) return raw;
     return _batteryReportFromReading(reading, fallback: raw);
@@ -257,6 +254,14 @@ Future<BatteryReport> _readMergedBattery(PerfModule module) async {
     return raw;
   }
 }
+
+/// 测试 seam：与生产相同的合并流程，可注入 [BatteryManagerChannel]。
+@visibleForTesting
+Future<BatteryReport> readMergedBatteryForTest(
+  PerfModule module, {
+  BatteryManagerChannel? channel,
+}) =>
+    _readMergedBattery(module, channel: channel);
 
 /// 合并读数 → [BatteryReport]。缺失字段沿用 [fallback] 既有值（尤其
 /// `chargeFullUah` / `chargeFullDesignUah` / `cycleCount` 仅 sysfs 直读可得）。

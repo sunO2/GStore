@@ -75,14 +75,15 @@ class ChargeHistoryRecorder extends ChangeNotifier {
   final ChargeHistoryStore _store;
   final ChargeRecorderClock _clock;
 
-  /// 默认采样器（生产）：经 [readBatteryReading]（sysfs → BatteryManager →
-  /// dumpsys 多源合并）取电池读数 → [ChargeSnapshot]。**绝不抛出**。
+  /// 默认采样器（生产）：经 [readBatteryReading] 廉价读取（sysfs →
+  /// BatteryManager；**不含 `dumpsys`**，避免热路径 shell 进程）取电池读数 →
+  /// [ChargeSnapshot]。**绝不抛出**。
   ///
   /// [readBatteryReading] 返回 `null` → 返回 `null`（跳过本拍）。门控语义
   /// （`status==2 && |current|>100`）**不变**，由 [buildChargeRecord] 负责；
   /// `status` 采用合并后的展示标签（`Charging` / …，与 sysfs `status` 同口径）。
   static Future<ChargeSnapshot?> _defaultSampler() async {
-    final reading = await readBatteryReading();
+    final reading = await readBatteryReading(includeDumpsys: false);
     if (reading == null) return null;
     return ChargeSnapshot(
       currentMa: reading.currentMa,

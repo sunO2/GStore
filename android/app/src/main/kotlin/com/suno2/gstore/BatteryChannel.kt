@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.PowerManager
 import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -18,7 +19,10 @@ import io.flutter.plugin.common.MethodChannel
  * `BATTERY_STATS` 签名权限，普通应用本就无法申请），因此作为兜底数据源。
  *
  * - [read] 方法返回 [Map]（`present/level/scale/voltageMv/temperatureTenthsC/
- *   status/health/technology/currentUa/capacityPercent`），字段不可得时为 `null`；
+ *   status/health/technology/currentUa/capacityPercent/interactive`），字段不可得
+ *   时为 `null`；
+ * - `interactive` 来自 `PowerManager.isInteractive`（屏幕是否点亮；供记录器省掉
+ *   每拍 `dumpsys power`）；
  * - `currentUa` 由 `BatteryManager.getIntProperty(BATTERY_PROPERTY_CURRENT_NOW)`
  *   读取（µA，可为负；设备不支持时返回 `Int.MIN_VALUE` → 归一为 `null`）；
  * - 每个属性读取独立 try/catch：**绝不崩溃**，任何异常降级为 `null`。
@@ -86,6 +90,15 @@ object BatteryChannel {
             }
         }
 
+        val interactive = try {
+            val powerManager =
+                context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            powerManager?.isInteractive
+        } catch (e: Exception) {
+            Log.w(TAG, "读取 isInteractive 失败: ${e.message}")
+            null
+        }
+
         val out = HashMap<String, Any?>()
         out["present"] = sticky != null || level >= 0 || capacityPercent != null
         out["level"] = if (level >= 0) level else null
@@ -97,6 +110,7 @@ object BatteryChannel {
         out["technology"] = technology
         out["currentUa"] = currentUa
         out["capacityPercent"] = capacityPercent
+        out["interactive"] = interactive
         return out
     }
 }

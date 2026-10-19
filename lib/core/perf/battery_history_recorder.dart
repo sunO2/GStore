@@ -274,24 +274,71 @@ class BatteryHistoryRecorder extends ChangeNotifier {
   /// 前台探测命令（`dumpsys activity activities`）。
   static const String foregroundCommand = 'dumpsys activity activities';
 
-  /// 默认采样器（生产）：先探屏幕（熄屏 → 直接返回熄屏样本，不读电池 / 前台），
-  /// 再经 [readBatteryReading]（sysfs → BatteryManager → dumpsys 多源合并）读电池、
-  /// 经 Shizuku 探前台包名。**绝不抛出**。
-  ///
-  /// [readBatteryReading] 返回 `null`（所有源均 `present=false`）→ 返回 `null`
-  /// （跳过本拍）。`status` 优先取合并结果的整型码；
-  /// 无整型码时回退由 `statusLabel` 归一（[batteryStatusFromLabel]）。
-  static Future<BatteryHistorySample?> _defaultSampler() async {
-    final screenOn = await _probeScreenOn();
+  /// 屏幕探测缓存 TTL（BatteryManager 未提供 `interactive` 时的兜底）。
+  static const Duration screenProbeTtl = Duration(seconds: 30);
+
+  /// 前台包探测缓存 TTL。
+  static const Duration foregroundProbeTtl = Duration(seconds: 15);
+
+  static DateTime Function() _now = DateTime.now;
+  static Future<PrivilegedResult> Function(String command)? _shellOverride;
+  static DateTime? _screenProbeAt;
+  static bool _screenProbeValue = true;
+  static DateTime? _foregroundProbeAt;
+  static String _foregroundProbeValue = '';
+
+  /// 测试 seam：替换 shell / 时钟并清空探测缓存。
+  @visibleForTesting
+  static void configureForTest({
+    Future<PrivilegedResult> Function(String command)? shellRunner,
+    DateTime Function()? clock,
+  }) {
+    _shellOverride = shellRunner;
+    _now = clock ?? DateTime.now;
+    _screenProbeAt = null;
+    _screenProbeValue = true;
+    _foregroundProbeAt = null;
+    _foregroundProbeValue = '';
+  }
+
+  /// 测试 seam：恢复生产 shell / 时钟并清空探测缓存。
+  @visibleForTesting
+  static void resetTestSeams() {
+    _shellOverride = null;
+    _now = DateTime.now;
+    _screenProbeAt = null;
+    _screenProbeValue = true;
+    _foregroundProbeAt = null;
+    _foregroundProbeValue = '';
+  }
+
+  /// 默认采样器（生产）：**廉价**读取电池（不含 `dumpsys`），屏幕状态优先取
+  /// BatteryManager 的 `interactive`（无则缓存 `dumpsys power` 30s），前台包名
+  /// 缓存 15s。**热路径绝不执行 `dumpsys battery`。** **绝不抛出**。
+  static Future<BatteryHistorySample?> _defaultSampler() =>
+      _sampleWith(readBattery: () => readBatteryReading());
+
+  /// 测试 seam：用注入的电池读取器运行**与生产相同**的屏幕 / 前台缓存逻辑。
+  @visibleForTesting
+  static Future<BatteryHistorySample?> sampleForTest({
+    Future<BatteryReading?> Function()? readBattery,
+  }) =>
+      _sampleWith(readBattery: readBattery ?? () => readBatteryReading());
+
+  static Future<BatteryHistorySample?> _sampleWith({
+    required Future<BatteryReading?> Function() readBattery,
+  }) async {
+    final reading = await readBattery();
+    // 屏幕：BatteryManager 已给出 interactive 时零 shell 开销。
+    final screenOn = reading?.interactive ?? await _probeScreenOnCached();
     if (!screenOn) {
       return const BatteryHistorySample(
         status: kBatteryStatusUnknown,
         screenOn: false,
       );
     }
-    final reading = await readBatteryReading();
     if (reading == null) return null;
-    final package = await _probeForegroundPackage();
+    final package = await _probeForegroundPackageCached();
     return BatteryHistorySample(
       status: reading.statusCode ?? batteryStatusFromLabel(reading.statusLabel),
       screenOn: true,
@@ -305,11 +352,29 @@ class BatteryHistoryRecorder extends ChangeNotifier {
     );
   }
 
+  /// 执行探测命令（生产经共享 [_sharedShell]；测试可注入）。
+  static Future<PrivilegedResult> _runShell(String command) {
+    final override = _shellOverride;
+    if (override != null) return override(command);
+    return _sharedShell.run(_sharedShell.buildCommand(command));
+  }
+
+  /// 屏幕是否点亮（30s 缓存）。
+  static Future<bool> _probeScreenOnCached() async {
+    final last = _screenProbeAt;
+    if (last != null && _now().difference(last) < screenProbeTtl) {
+      return _screenProbeValue;
+    }
+    final value = await _probeScreenOn();
+    _screenProbeAt = _now();
+    _screenProbeValue = value;
+    return value;
+  }
+
   /// 屏幕是否点亮；命令失败 / 解析不确定 → `true`（fail-open，同 ForegroundWatcher）。
   static Future<bool> _probeScreenOn() async {
     try {
-      final result =
-          await _sharedShell.run(_sharedShell.buildCommand(screenCommand));
+      final result = await _runShell(screenCommand);
       if (!result.ok) return true;
       return ForegroundWatcher.parseScreenOn(result.output);
     } catch (error) {
@@ -318,11 +383,22 @@ class BatteryHistoryRecorder extends ChangeNotifier {
     }
   }
 
+  /// 前台包名（15s 缓存）；Shizuku 不可用 / 解析失败 → 空串（不猜测）。
+  static Future<String> _probeForegroundPackageCached() async {
+    final last = _foregroundProbeAt;
+    if (last != null && _now().difference(last) < foregroundProbeTtl) {
+      return _foregroundProbeValue;
+    }
+    final value = await _probeForegroundPackage();
+    _foregroundProbeAt = _now();
+    _foregroundProbeValue = value;
+    return value;
+  }
+
   /// 前台包名；Shizuku 不可用 / 解析失败 → 空串（不猜测）。**绝不抛出**。
   static Future<String> _probeForegroundPackage() async {
     try {
-      final result = await _sharedShell
-          .run(_sharedShell.buildCommand(foregroundCommand));
+      final result = await _runShell(foregroundCommand);
       if (!result.ok) return '';
       final report = await PerfModule.instance.foreground(result.output);
       return report.package ?? '';
