@@ -61,6 +61,28 @@
 /// 明确 `root-only` / `unsupported` 的 Scene 模式动作（[kSkippedRootOnlyModeActions]）
 /// **只记录 + 跳过，绝不写入**。
 ///
+/// ## 前台/屏幕事件驱动的自动模式切换（todo 28）
+/// 在同一条 [PerfProfileAutoEngine] 上扩展**屏幕**维度与 Scene 的 strict/delay 选项
+/// （复用既有引擎，**不**新建引擎）：
+///
+/// ```text
+/// 前台进入包 P（[onForegroundPackage]）→ 应用 P 的档案（含 mode 经预设合并）
+/// 熄屏（[onScreenState] false）→ sleep：立即还原当前档案（restore default/off），
+///                                并取消待处理的前台去抖事件
+/// 亮屏（[onScreenState] true） → resume：按最新期望前台包重新收敛（重应用）
+/// ```
+///
+/// * **strict**（[strict]）：目标与当前已应用档案相同时也强制重应用（Scene
+///   `strictMode`）；默认 `false` 保持 todo 24/26 的幂等短路。
+/// * **delay**（[delay]）：前台 / 亮屏收敛在 [debounce] 之上再等该窗口（Scene
+///   `delayToggleConfig`）；`Duration.zero` 默认不延迟。
+/// * **熄屏期间**的前台事件只记录期望、**零写入**（返回 `noop` / `screen_off`），
+///   resume 时统一收敛；熄屏 sleep **立即**执行（不耐受 delay），避免熄屏后仍保留覆盖。
+/// * **幂等**：重复同一屏幕状态 / 同一档案 → `noop`；[dispose] 后事件 → `superseded`。
+///
+/// > 生产接线：由模块装配层（[PerfProfilesCoordinator] 所在的生命周期）把屏幕
+/// > 开关事件喂给 [onScreenState]；本文件只提供引擎入口，**不**新建页面 / 数据源。
+///
 /// ## 可测试性
 /// store / 会话 / 四个控制动作 / `perf.tunables` / 能力提供者 / 全局开关 /
 /// 去抖时长 / **模式预设解析器（[PerfModePresetResolver]）/ SoC 平台 / 变体**
@@ -139,6 +161,9 @@ abstract final class PerfAutoApplyReason {
   /// 被更新的事件取代。
   static const String superseded = 'superseded';
 
+  /// 屏幕熄灭（sleep）：还原当前档案。
+  static const String screenOff = 'screen_off';
+
   /// 引擎已释放。
   static const String disposed = 'disposed';
 
@@ -159,6 +184,9 @@ abstract final class PerfAutoApplyRevertReason {
 
   /// 切换到另一个档案前的还原。
   static const String switchProfile = 'profile_switch';
+
+  /// 熄屏休眠（sleep）前的还原。
+  static const String sleep = 'profile_sleep';
 
   /// 部分失败后的回滚。
   static const String partialFailure = 'profile_partial_failure';
@@ -419,6 +447,8 @@ class PerfProfileAutoEngine {
     required PerfControlCapabilities? Function() capabilities,
     required bool Function() isGloballyEnabled,
     Duration debounce = defaultDebounce,
+    Duration delay = Duration.zero,
+    bool strict = false,
     String? socPlatform,
     PerfVariant variant = PerfVariant.defaultVariant,
     PerfModePresetResolver? modePresetResolver,
@@ -432,6 +462,8 @@ class PerfProfileAutoEngine {
         _capabilities = capabilities,
         _isGloballyEnabled = isGloballyEnabled,
         _debounce = debounce,
+        _delay = delay,
+        _strict = strict,
         _presetResolver = modePresetResolver ??
             ((PerfMode mode) =>
                 modePresetForPlatform(socPlatform, mode, variant: variant));
@@ -450,6 +482,18 @@ class PerfProfileAutoEngine {
   final bool Function() _isGloballyEnabled;
   final Duration _debounce;
 
+  /// 应用前**额外**稳定窗口（Scene `delayToggleConfig`，todo 28）。
+  ///
+  /// 前台 / 亮屏恢复的收敛在 [debounce] 之上再等 [delay]，期间到来的新事件
+  /// 取消本次并重新计时。`Duration.zero` = 不延迟（默认，保持既有行为）。
+  final Duration _delay;
+
+  /// 严格模式（Scene `strictMode`，todo 28）。
+  ///
+  /// `true` 时，目标与当前已应用档案**相同**也强制重新应用（跳过「幂等
+  /// unchanged」短路）；`false`（默认）保持 todo 24/26 的幂等语义。
+  final bool _strict;
+
   /// 模式 → 预设解析器（可注入；生产默认经 [modePresetForPlatform]）。
   ///
   /// 构造时以 `socPlatform` / `variant` 绑定 [modePresetForPlatform]：
@@ -459,6 +503,9 @@ class PerfProfileAutoEngine {
   /// 当前期望的前台包（最近一次事件）。
   String? _desiredPackage;
   bool _hasDesired = false;
+
+  /// 当前屏幕状态（默认亮屏）。熄屏 → sleep（还原）；亮屏 → resume（收敛）。
+  bool _screenOn = true;
 
   /// 当前已完整应用的档案（`null` = 未应用任何档案）。
   PerfProfile? _appliedProfile;
@@ -482,6 +529,9 @@ class PerfProfileAutoEngine {
   /// 最近一次事件期望的前台包。
   String? get desiredPackage => _desiredPackage;
 
+  /// 当前屏幕状态（`true` = 亮屏；`false` = 熄屏 / sleep）。
+  bool get isScreenOn => _screenOn;
+
   /// 是否正在执行一次 reconcile（应用 / 还原）。
   bool get isApplying => _isApplying;
 
@@ -498,8 +548,11 @@ class PerfProfileAutoEngine {
 
   /// 喂入一条前台包名事件（[package] 为 `null` = 离开前台 / 无法判定）。
   ///
-  /// [debounce] > 0 时按窗口合并快速切换；返回**处理最终期望态**的那次
-  /// reconcile 报告（被取代的事件报告 `superseded`）。
+  /// [debounce] + [delay] > 0 时按窗口合并快速切换；返回**处理最终期望态**的
+  /// 那次 reconcile 报告（被取代的事件报告 `superseded`）。
+  ///
+  /// **熄屏期间**：只记录期望前台包，**不写入**（返回 `noop` / `screen_off`）；
+  /// 亮屏 [onScreenState] 时再统一按最新期望态收敛。
   Future<PerfAutoApplyReport> onForegroundPackage(String? package) {
     if (_disposed) {
       return Future<PerfAutoApplyReport>.value(
@@ -512,7 +565,76 @@ class PerfProfileAutoEngine {
     _desiredPackage = package;
     _hasDesired = true;
 
-    if (_debounce <= Duration.zero) {
+    // 熄屏（sleep）期间只记录期望，绝不写入；resume 时统一收敛。
+    if (!_screenOn) {
+      return Future<PerfAutoApplyReport>.value(
+        PerfAutoApplyReport(
+          outcome: PerfAutoApplyOutcome.noop,
+          reason: PerfAutoApplyReason.screenOff,
+          package: package,
+        ),
+      );
+    }
+
+    return _scheduleReconcile();
+  }
+
+  /// 喂入一条屏幕状态事件（todo 28）。
+  ///
+  /// * `false`（熄屏）→ **sleep**：立即（不受前台去抖 / 延迟影响）还原当前已应用
+  ///   档案、取消待处理的去抖事件，绝不保留覆盖项。
+  /// * `true`（亮屏）→ **resume**：按最新期望前台包经 `[debounce] + [delay]`
+  ///   窗口重新收敛（重新应用其 mode / 档案）。
+  ///
+  /// **幂等**：与当前屏幕状态相同 → 零副作用 `noop`（零写入、不重排事件）。
+  /// **绝不抛出**：所有失败经报告降级。
+  Future<PerfAutoApplyReport> onScreenState(bool screenOn) {
+    if (_disposed) {
+      return Future<PerfAutoApplyReport>.value(
+        const PerfAutoApplyReport(
+          outcome: PerfAutoApplyOutcome.superseded,
+          reason: PerfAutoApplyReason.disposed,
+        ),
+      );
+    }
+    if (_screenOn == screenOn) {
+      return Future<PerfAutoApplyReport>.value(
+        const PerfAutoApplyReport(
+          outcome: PerfAutoApplyOutcome.noop,
+          reason: PerfAutoApplyReason.unchanged,
+        ),
+      );
+    }
+    _screenOn = screenOn;
+
+    if (!screenOn) {
+      // sleep：熄屏立即还原，避免熄屏后仍保留性能覆盖。取消待处理的前台去抖。
+      _debounceTimer?.cancel();
+      _debounceTimer = null;
+      final pending = _pendingCompleter;
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(
+          const PerfAutoApplyReport(
+            outcome: PerfAutoApplyOutcome.superseded,
+            reason: PerfAutoApplyReason.superseded,
+          ),
+        );
+      }
+      _pendingCompleter = null;
+      return reconcile();
+    }
+
+    // resume：按最新期望态收敛（若熄屏前无前台 / 无档案 → 幂等 no-op）。
+    return _scheduleReconcile();
+  }
+
+  /// 按 `[debounce] + [delay]` 窗口合并事件并延迟一次 [reconcile]。
+  ///
+  /// 窗口 `<= 0` 立即执行（既有行为）。窗口内到达的新事件把本次 Future 完成为
+  /// `superseded` 并重新计时（single-flight；最后收敛到最新期望态）。
+  Future<PerfAutoApplyReport> _scheduleReconcile() {
+    final window = _debounce + _delay;
+    if (window <= Duration.zero) {
       return reconcile();
     }
 
@@ -528,7 +650,7 @@ class PerfProfileAutoEngine {
     }
     final completer = Completer<PerfAutoApplyReport>();
     _pendingCompleter = completer;
-    _debounceTimer = Timer(_debounce, () {
+    _debounceTimer = Timer(window, () {
       _pendingCompleter = null;
       reconcile().then(
         (report) {
@@ -611,10 +733,13 @@ class PerfProfileAutoEngine {
     final globalEnabled = _isGloballyEnabled();
 
     // ---- 1. 解析目标档案（每次重新读 store：处理「档案被删/禁用」的陈旧态） ----
+    // 屏幕熄灭（sleep）优先于前台：熄屏时无目标 → 还原（见下面 target == null 分支）。
     PerfProfile? target;
     var skipReason = PerfAutoApplyReason.noForeground;
     if (!globalEnabled) {
       skipReason = PerfAutoApplyReason.globalDisabled;
+    } else if (!_screenOn) {
+      skipReason = PerfAutoApplyReason.screenOff;
     } else if (package == null) {
       skipReason = PerfAutoApplyReason.noForeground;
     } else {
@@ -646,8 +771,8 @@ class PerfProfileAutoEngine {
       return _revertCurrent(stopReason: skipReason, package: current.package);
     }
 
-    // ---- 3. 已应用且未变更 → 幂等 no-op（零写入） ----
-    if (current != null && current == target) {
+    // ---- 3. 已应用且未变更 → 幂等 no-op（零写入；strict 时强制重应用） ----
+    if (!_strict && current != null && current == target) {
       return PerfAutoApplyReport(
         outcome: PerfAutoApplyOutcome.noop,
         reason: PerfAutoApplyReason.unchanged,
@@ -711,6 +836,7 @@ class PerfProfileAutoEngine {
     final reason = switch (stopReason) {
       PerfAutoApplyReason.globalDisabled =>
         PerfAutoApplyRevertReason.globalDisabled,
+      PerfAutoApplyReason.screenOff => PerfAutoApplyRevertReason.sleep,
       PerfAutoApplyReason.profileDisabled ||
       PerfAutoApplyReason.profileMissing =>
         PerfAutoApplyRevertReason.profileDisabled,

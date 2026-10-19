@@ -313,3 +313,13 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 新测 +9：纯合并（显式胜/预设补空/空预设零拷贝）、动作集/跳过集断言、fake-shell 逐字段覆盖（9 覆盖项，显式 gpu/cpuset/thermal 全胜、foreground 未写）、回退表填充（未知 socPlatform）、不写 root-only 节点、解析抛异常降级、**capabilities=null（Shizuku 不可用）→ 模式预设也零写入无崩溃**。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 = 基线）；2 改动文件单文件分析 No issues；目标测试 **29 passed**；回归 5 文件 **78 passed**。证据 `.omo/evidence/task-26-mode-applier.txt`（`.omo/` gitignored，未提交）。
 - 并发/坑（同既往）：LSP daemon 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧 error，CLI analyze = 0 error，忽略。提交用 `flock` + **显式 pathspec**（只 2 文件）。
+
+## Todo 28 — 前台/屏幕事件自动模式切换（复用引擎）（2026-10-19）
+- **不新建引擎/存储/页面**：只扩展 `lib/core/perf/perf_profile_auto_engine.dart`。新增屏幕维度 + Scene strict/delay，复用 todo 25 `modeFor`/todo 26 `mergePerfModePreset`（mode 经预设逐字段合并后应用）。
+- **屏幕维度**：新入口 `onScreenState(bool)` + getter `isScreenOn`。熄屏 → **sleep**：取消待处理去抖（被取代事件报 superseded）+ **立即** reconcile；`_reconcileOnce` 中 `_screenOn == false` 使 target 恒 null → 经会话 `revertAll` 还原（reason `screen_off`；revert reason 新增 `profile_sleep`）。亮屏 → **resume**：经 `debounce+delay` 窗口按最新 `_desiredPackage` 重新收敛。熄屏期间 `onForegroundPackage` 只记录期望、返回 `noop`/`screen_off`、**零写入**；resume 统一收敛。同态重复 → `noop`（零写入）。
+- **strict**（ctor `bool strict=false`）：目标 == 当前已应用档案时**跳过** unchanged 短路，强制重应用（Scene `strictMode`）；实现为「先 revert 当前再 apply」（末态正确，代价是重复写；默认路径零影响）。**delay**（ctor `Duration delay=Duration.zero`）：收敛窗口 = `debounce + delay`（Scene `delayToggleConfig`），窗口内新事件取消本次。两者默认值使既有行为**逐字节不变**。
+- 抽取共享 `_scheduleReconcile()`（去抖+延迟），`onForegroundPackage` / `onScreenState(true)` 复用；`_tail` 串行 + single-flight 保持；`dispose()` 仍取消定时器 + 完成挂起。**todo 26 前置/precedence/回滚/fail-closed/root-only 跳过全部保留**（`_appliedProfile` 仍存原始档案）。
+- 测试：harness 加 `strict`/`delay` 透传；新 9 例（mode apply 且 == `store.modeFor`（仅 mode 档案 → fast 预设 cpuset top-app）；sleep 还原/resume 重应用；熄屏零写入；屏幕幂等；strict 强制重应用；delay 用 `fake_async` 验证窗口内未写+取代；全局关闭零写；未映射 reverted / null noop；dispose superseded）。fake runner/session/controller，零真机/Shizuku。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 = 基线；单文件 No issues found!）；`flutter test test/core/perf/perf_profile_auto_engine_test.dart` = **38 passed**（29 既有 + 9 新）；回归 coordinator/profile/mode_profiles/store = **73 passed**。证据 `.omo/evidence/task-28-auto-mode.txt`（`.omo/` gitignored，未提交）。
+- **范围边界**：本 todo 只扩展**引擎入口**；屏幕开关事件源接到 `PerfProfilesCoordinator`/生命周期属组装层，未在本 todo（未改 coordinator/page）。设备未验证。
+- 坑（同既往）：LSP daemon 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧 error（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略。提交用 `flock` + **显式 pathspec**（只 2 文件 + learnings.md）；`git add` 新文件后才能 pathspec 提交。

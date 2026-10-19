@@ -302,6 +302,8 @@ class _Harness {
     this.capabilities,
     this.globalEnabled = true,
     Duration debounce = Duration.zero,
+    Duration delay = Duration.zero,
+    bool strict = false,
     List<int>? cpusetPids,
     Set<String> denyWrite = const <String>{},
     Set<String> lieWrite = const <String>{},
@@ -350,6 +352,8 @@ class _Harness {
       capabilities: () => capabilities,
       isGloballyEnabled: () => globalEnabled,
       debounce: debounce,
+      delay: delay,
+      strict: strict,
       socPlatform: socPlatform,
       modePresetResolver: presetResolver,
     );
@@ -934,6 +938,212 @@ void main() {
       expect(h.runner.commands, isEmpty);
       expect(h.runner.current[_gov0], 'schedutil');
       expect(h.runner.current[_cpusetFgTasks], '');
+    });
+  });
+
+  group('自动模式切换：前台/屏幕事件（todo 28）', () {
+    test('前台变化 → 应用该 app 的 mode（与 modeFor 一致；仅 mode 即写预设旋钮）', () async {
+      // 仅设 mode=fast（无显式旋钮）：应用结果 = 该 app 的 mode 预设
+      // （fast 安全回退表 → cpuset top-app），即「前台变化 → 应用其 mode」。
+      const profile = PerfProfile(
+        package: 'com.mode',
+        enabled: true,
+        mode: PerfMode.fast,
+      );
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.mode': profile},
+        capabilities: _caps(),
+        cpusetPids: <int>[555],
+      );
+
+      final report = await h.engine.onForegroundPackage('com.mode');
+
+      expect(report.outcome, PerfAutoApplyOutcome.applied);
+      expect(h.engine.appliedProfile!.mode, PerfMode.fast);
+      // 应用的 mode 与 todo 25 的 store.modeFor 一致。
+      expect(h.engine.appliedProfile!.mode, await h.store.modeFor('com.mode'));
+      // fast 预设 → cpuset top-app 成员写入。
+      expect(h.runner.current[_cpusetTopTasks], contains('555'));
+    });
+
+    test('熄屏 → sleep 还原；亮屏 → resume 重新应用', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+
+      await h.engine.onForegroundPackage('com.a');
+      expect(h.engine.appliedPackage, 'com.a');
+
+      final sleep = await h.engine.onScreenState(false);
+
+      expect(sleep.outcome, PerfAutoApplyOutcome.reverted);
+      expect(sleep.reason, PerfAutoApplyReason.screenOff);
+      expect(h.engine.isScreenOn, isFalse);
+      expect(h.engine.appliedPackage, isNull);
+      expect(h.runner.current[_gov0], 'schedutil');
+      expect(h.session.pendingCount, 0);
+
+      final resume = await h.engine.onScreenState(true);
+
+      expect(resume.outcome, PerfAutoApplyOutcome.applied);
+      expect(resume.package, 'com.a');
+      expect(h.engine.isScreenOn, isTrue);
+      expect(h.engine.appliedPackage, 'com.a');
+      expect(h.runner.current[_gov0], 'performance');
+      expect(h.session.pendingCount, 3);
+    });
+
+    test('熄屏期间前台事件 → 零写入；resume 后按最新期望收敛', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+
+      await h.engine.onScreenState(false);
+      final before = h.runner.commands.length;
+
+      final off = await h.engine.onForegroundPackage('com.a');
+
+      expect(off.outcome, PerfAutoApplyOutcome.noop);
+      expect(off.reason, PerfAutoApplyReason.screenOff);
+      expect(h.runner.commands.length, before);
+      expect(h.engine.desiredPackage, 'com.a');
+
+      final resume = await h.engine.onScreenState(true);
+
+      expect(resume.outcome, PerfAutoApplyOutcome.applied);
+      expect(h.runner.current[_gov0], 'performance');
+    });
+
+    test('屏幕事件幂等：重复同态零写入', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+      await h.engine.onForegroundPackage('com.a');
+
+      final sleep1 = await h.engine.onScreenState(false);
+      expect(sleep1.outcome, PerfAutoApplyOutcome.reverted);
+      final afterSleep = h.runner.commands.length;
+
+      final sleep2 = await h.engine.onScreenState(false);
+      expect(sleep2.outcome, PerfAutoApplyOutcome.noop);
+      expect(sleep2.reason, PerfAutoApplyReason.unchanged);
+      expect(h.runner.commands.length, afterSleep);
+
+      await h.engine.onScreenState(true);
+      final afterResume = h.runner.commands.length;
+
+      final resume2 = await h.engine.onScreenState(true);
+      expect(resume2.outcome, PerfAutoApplyOutcome.noop);
+      expect(h.runner.commands.length, afterResume);
+    });
+
+    test('strict：目标未变化也强制重新应用', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+        strict: true,
+      );
+
+      final first = await h.engine.onForegroundPackage('com.a');
+      expect(first.outcome, PerfAutoApplyOutcome.applied);
+      final commandsAfterFirst = h.runner.commands.length;
+
+      final second = await h.engine.onForegroundPackage('com.a');
+
+      expect(second.outcome, PerfAutoApplyOutcome.applied);
+      expect(h.runner.commands.length, greaterThan(commandsAfterFirst));
+      expect(h.runner.current[_gov0], 'performance');
+      expect(h.session.pendingCount, 3);
+    });
+
+    test('delay：延迟窗口后才写入；窗口内事件取代', () {
+      fakeAsync((async) {
+        final h = _Harness(
+          profiles: <String, PerfProfile>{
+            'com.a': _profileA(),
+            'com.b': _profileB(),
+          },
+          capabilities: _caps(),
+          delay: const Duration(seconds: 1),
+        );
+
+        unawaited(h.engine.onForegroundPackage('com.a'));
+        async.elapse(const Duration(milliseconds: 500));
+        async.flushMicrotasks();
+        // 延迟窗口未到 → 尚未写入。
+        expect(h.runner.commands, isEmpty);
+
+        // 窗口内切换到 B → A 被取代，仅收敛到 B。
+        final bFuture = h.engine.onForegroundPackage('com.b');
+        async.elapse(const Duration(seconds: 1));
+        async.flushMicrotasks();
+
+        expect(h.engine.appliedPackage, 'com.b');
+        expect(h.runner.current[_gov0], 'powersave');
+
+        var applied = false;
+        unawaited(bFuture.then((r) {
+          applied = r.outcome == PerfAutoApplyOutcome.applied;
+        }));
+        async.flushMicrotasks();
+        expect(applied, isTrue);
+      });
+    });
+
+    test('全局关闭 → 屏幕事件零写入（disabled 不写）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+        globalEnabled: false,
+      );
+
+      final off = await h.engine.onScreenState(false);
+      expect(off.outcome, PerfAutoApplyOutcome.noop);
+      expect(off.reason, PerfAutoApplyReason.globalDisabled);
+
+      final on = await h.engine.onScreenState(true);
+      expect(on.outcome, PerfAutoApplyOutcome.noop);
+      expect(on.reason, PerfAutoApplyReason.globalDisabled);
+      expect(h.runner.commands, isEmpty);
+    });
+
+    test('前台未知 / 应用未映射 → 还原或 no-op（零残留）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+      await h.engine.onForegroundPackage('com.a');
+
+      // 未映射的包 → 还原已应用的 A。
+      final unmapped = await h.engine.onForegroundPackage('com.unknown');
+      expect(unmapped.outcome, PerfAutoApplyOutcome.reverted);
+      expect(unmapped.reason, PerfAutoApplyReason.profileMissing);
+      expect(h.engine.appliedPackage, isNull);
+      expect(h.runner.current[_gov0], 'schedutil');
+      expect(h.session.pendingCount, 0);
+
+      // 未知（null）前台且无已应用 → 幂等 no-op、零命令。
+      final before = h.runner.commands.length;
+      final unknown = await h.engine.onForegroundPackage(null);
+      expect(unknown.outcome, PerfAutoApplyOutcome.noop);
+      expect(unknown.reason, PerfAutoApplyReason.noForeground);
+      expect(h.runner.commands.length, before);
+    });
+
+    test('dispose 后屏幕事件为 superseded（不再收敛）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+      );
+      h.engine.dispose();
+
+      final report = await h.engine.onScreenState(false);
+
+      expect(report.outcome, PerfAutoApplyOutcome.superseded);
+      expect(h.runner.commands, isEmpty);
     });
   });
 }
