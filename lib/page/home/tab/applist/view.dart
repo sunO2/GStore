@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/page/home/logic.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -326,7 +325,8 @@ class _ApplistBody extends ConsumerWidget {
       // 还没有添加任何应用 - 使用独立的空状态组件
       return EmptyStateWidget(
         onImportSample: () {
-          ref.read(homeProvider.notifier).jumpToPage(1); // 切换到发现页
+          // 页面已路由化：进入发现页（不再是 tab 切换）
+          context.push(AppRoute.discovery);
           AppDialogs.showSuccess('请在"发现"页面浏览并添加您感兴趣的应用');
         },
       );

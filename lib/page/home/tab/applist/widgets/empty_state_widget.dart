@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/page/home/logic.dart';
 
 class EmptyStateWidget extends ConsumerWidget {
   final VoidCallback onImportSample;
@@ -35,7 +35,7 @@ class EmptyStateWidget extends ConsumerWidget {
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
-              '3种方式快速添加应用：',
+              '2种方式快速添加应用：',
               style: AppTypography.bodyMedium.copyWith(
                     color: AppColors.textSecondary,
                     fontWeight: AppTypography.weightMedium,
@@ -54,21 +54,12 @@ class EmptyStateWidget extends ConsumerWidget {
               context,
               icon: TablerIcons.compass_filled,
               title: '浏览发现页',
-              description: '切换到"发现"标签浏览应用',
+              description: '进入"发现"页浏览并添加应用',
               onTap: () {
-                ref.read(homeProvider.notifier).jumpToPage(1);
+                context.push(AppRoute.discovery);
               },
             ),
-            const SizedBox(height: AppSpacing.sm),
-            _buildQuickAddOption(
-              context,
-              icon: TablerIcons.category,
-              title: '我的频道',
-              description: '管理已添加的应用频道',
-              onTap: () {
-                ref.read(homeProvider.notifier).jumpToPage(2);
-              },
-            ),
+            // 注：原「我的频道」入口指向已移除的 mine tab，已删除（有意差异，见 todo 31）
             const SizedBox(height: AppSpacing.xl),
             FilledButton.icon(
               onPressed: onImportSample,
@@ -169,7 +160,7 @@ class EmptyStateWidget extends ConsumerWidget {
           _buildGuideStep(context, '3', '点击添加按钮添加应用'),
           const SizedBox(height: AppSpacing.md),
           Text(
-            '💡 提示：也可以切换到"发现"页面浏览更多应用',
+            '💡 提示：也可以进入"发现"页浏览更多应用',
             style: AppTypography.bodySmall.copyWith(
                   color: AppColors.textSecondary,
                 ),
