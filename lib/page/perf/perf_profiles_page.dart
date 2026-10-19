@@ -8,6 +8,8 @@
 ///   —— **绝不在 `initState` 触达 `installed_apps` / Shizuku / FFI 通道**
 ///   （无宿主的 widget 测试会挂起）；
 /// * 按能力探测（todo 15）**fail-closed** 禁用不可用控件，并给出可见原因；
+/// * **快捷模式选择器**（todo 29）：以能力门控的页面级选择器把所选场景模式经
+///   既有 [PerfProfileStore] 应用到**全部按应用档案**（不新建 store / 引擎）；
 /// * 频率等取值必须落在 `perf.tunables` 暴露的可用列表内，否则**就地**拒绝保存。
 ///
 /// 弹层一律走统一骨架（[AppSheet] / [AppDialogs]），**禁止**
@@ -26,6 +28,7 @@ import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/perf/third_party_perf_service.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
+import 'package:gstore/page/perf/perf_profiles_tile.dart';
 
 /// 设备可调项加载器（生产经 `PerfModule.instance.tunables`；测试注入罐头报告）。
 typedef PerfProfilesTunablesLoader = Future<TunablesReport> Function();
@@ -73,6 +76,14 @@ class _PerfProfilesPageState extends State<PerfProfilesPage> {
   List<AppTarget>? _apps;
   bool _loadingApps = false;
 
+  // ---- 快捷模式选择器（页面级，todo 29）----
+
+  /// 已探测能力（页面级；经注入加载器，`initState` 后 microtask 拉取）。
+  PerfControlCapabilities? _capabilities;
+  bool _capProbed = false;
+  bool _applyingMode = false;
+  String? _modeNotice;
+
   @override
   void initState() {
     super.initState();
@@ -82,6 +93,8 @@ class _PerfProfilesPageState extends State<PerfProfilesPage> {
         widget.tunablesLoader ?? (() => PerfModule.instance.tunables());
     _capabilitiesLoader = widget.capabilitiesLoader ?? _probeCapabilities;
     _reload();
+    // 页面级能力探测（经注入加载器；生产为 Shizuku，best-effort 绝不阻塞首帧）。
+    Future<void>.microtask(_probeCapabilitiesIfNeeded);
   }
 
   /// 生产能力探测：以已加载的 tunables 推导候选节点后 fail-closed 探测。
@@ -100,6 +113,79 @@ class _PerfProfilesPageState extends State<PerfProfilesPage> {
       _profiles = profiles;
       _loading = false;
     });
+  }
+
+  // ==================== 快捷模式（页面级，todo 29）====================
+
+  /// 页面级能力探测（best-effort；任何失败降级为 `null`，绝不阻塞/抛出）。
+  Future<void> _probeCapabilitiesIfNeeded() async {
+    if (_capProbed) return;
+    _capProbed = true;
+    try {
+      final tunables = await _tunablesLoader();
+      final capabilities = await _capabilitiesLoader(tunables);
+      if (!mounted) return;
+      setState(() => _capabilities = capabilities);
+    } catch (error) {
+      debugPrint('[PerfProfiles] 页面级能力探测失败（fail-closed）: $error');
+      if (!mounted) return;
+      setState(() => _capabilities = null);
+    }
+  }
+
+  /// 全部档案共享的单一模式；无档案 / 不一致 → `null`。
+  PerfMode? get _commonMode => commonPerfModeOf(_profiles);
+
+  /// 快捷模式选择器是否可用（能力已探测 + 存在可写类别 + 未在应用）。
+  bool get _modeSelectorEnabled {
+    if (!_capProbed || _applyingMode) return false;
+    final capabilities = _capabilities;
+    if (capabilities == null) return false;
+    return PerfControlCategory.values.any(capabilities.isCategoryAvailable);
+  }
+
+  /// 快捷模式选择器的可见说明 / 禁用原因（fail-closed）。
+  String get _modeSelectorReason {
+    if (!_capProbed) return '正在探测控制能力…';
+    final capabilities = _capabilities;
+    if (capabilities == null) {
+      return '控制能力未探测（Shizuku 不可用或探测失败），快捷模式已禁用。';
+    }
+    final anyWritable = PerfControlCategory.values
+        .any(capabilities.isCategoryAvailable);
+    if (!anyWritable) {
+      return '当前设备无可写控制类别（Shizuku 未授权 / 不适用），快捷模式不可用。';
+    }
+    final notice = _modeNotice;
+    if (notice != null) return notice;
+    return '选择后应用到全部按应用档案。';
+  }
+
+  /// 把 [mode] 应用到全部按应用档案（经既有 store）；绝不抛出。
+  Future<void> _onSelectCommonMode(PerfMode mode) async {
+    if (!_modeSelectorEnabled) return;
+    setState(() {
+      _applyingMode = true;
+      _modeNotice = null;
+    });
+    final count = await applyPerfModeToAllProfiles(_store, mode);
+    if (!mounted) return;
+    setState(() {
+      _applyingMode = false;
+      if (count == null) {
+        _modeNotice = '应用「${mode.label}」失败，请重试。';
+      } else if (count == 0) {
+        _modeNotice = '尚无按应用档案可更新。';
+      } else {
+        _modeNotice = '已应用「${mode.label}」到 $count 个档案。';
+      }
+    });
+    if (count == null) {
+      AppDialogs.showError('应用「${mode.label}」模式失败');
+    } else if (count > 0) {
+      AppDialogs.showSuccess('已应用「${mode.label}」模式到 $count 个档案');
+    }
+    await _reload();
   }
 
   /// 惰性加载已安装应用（仅用户显式触发；避免 widget 测试挂起在缺失通道上）。
@@ -240,18 +326,109 @@ class _PerfProfilesPageState extends State<PerfProfilesPage> {
       ),
       body: _loading
           ? const Center(child: AppLoading())
-          : profiles.isEmpty
-              ? _emptyState(context, theme)
-              : ListView(
-                  padding: AppSpacing.allLG,
-                  children: [
-                    for (final profile in profiles) ...[
-                      _profileTile(context, theme, profile),
-                      const SizedBox(height: AppSpacing.md),
-                    ],
-                    const SizedBox(height: AppSpacing.massive),
-                  ],
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    AppSpacing.lg,
+                    AppSpacing.lg,
+                    0,
+                  ),
+                  child: _modeSelectorCard(context, theme),
                 ),
+                Expanded(
+                  child: profiles.isEmpty
+                      ? _emptyState(context, theme)
+                      : ListView(
+                          padding: AppSpacing.allLG,
+                          children: [
+                            for (final profile in profiles) ...[
+                              _profileTile(context, theme, profile),
+                              const SizedBox(height: AppSpacing.md),
+                            ],
+                            const SizedBox(height: AppSpacing.massive),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  /// 快捷模式选择器卡片（页面级，todo 29）。
+  ///
+  /// 受控 [DropdownButton]（`value` 随 state）：能力可用时把所选模式经既有
+  /// [PerfProfileStore] 应用到全部档案；不可用 / 未探测时禁用并显示原因。
+  Widget _modeSelectorCard(BuildContext context, ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final enabled = _modeSelectorEnabled;
+    return Card(
+      key: const Key('perf_profiles_mode_card'),
+      child: Padding(
+        padding: AppSpacing.cardPadding,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  TablerIcons.bolt,
+                  size: AppTypography.iconMD,
+                  color: enabled ? scheme.primary : scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Text(
+                  '快捷模式',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: AppTypography.weightSemiBold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            InputDecorator(
+              decoration: InputDecoration(
+                labelText: '场景模式',
+                isDense: true,
+                border: const OutlineInputBorder(),
+                enabled: enabled,
+              ),
+              child: DropdownButton<PerfMode>(
+                key: const Key('perf_profiles_mode_selector'),
+                value: _commonMode,
+                isExpanded: true,
+                underline: const SizedBox.shrink(),
+                hint: Text(
+                  enabled ? '未设置' : '不可用',
+                  overflow: TextOverflow.ellipsis,
+                ),
+                items: [
+                  for (final mode in PerfMode.values)
+                    DropdownMenuItem<PerfMode>(
+                      value: mode,
+                      child: Text(mode.label),
+                    ),
+                ],
+                onChanged: enabled
+                    ? (value) {
+                        if (value != null) _onSelectCommonMode(value);
+                      }
+                    : null,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              _modeSelectorReason,
+              key: const Key('perf_profiles_mode_reason'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -853,26 +1030,44 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
   /// 场景模式选择（省电 / 均衡 / 性能 / 极速）。
   ///
   /// 模式为**纯本地**档案字段（应用到设备由自动引擎在能力门内完成，见 todos
-  /// 26/28），因此此处始终可编辑；缺失 / 旧档案 → 均衡（[PerfMode.balance]）。
+  /// 26/28）；**能力感知（todo 29）**：无任何可写类别 / 未探测 → 禁用并给出可见
+  /// 原因（fail-closed），避免「配了也无用」的无效编辑。缺失 / 旧档案 → 均衡。
   Widget _modeBlock(BuildContext context, ThemeData theme) {
+    final enabled = _modeAvailable;
     return DropdownButtonFormField<PerfMode>(
       key: const Key('perf_profile_editor_mode'),
       initialValue: _mode,
-      decoration: const InputDecoration(
+      decoration: InputDecoration(
         labelText: '性能模式',
         isDense: true,
-        helperText: '进入该应用前台时按此模式应用（受能力门限制）',
+        helperText: enabled
+            ? '进入该应用前台时按此模式应用（受能力门限制）'
+            : _modeDisabledReason,
         helperMaxLines: 2,
       ),
       items: [
         for (final mode in PerfMode.values)
           DropdownMenuItem<PerfMode>(value: mode, child: Text(mode.label)),
       ],
-      onChanged: (value) {
-        if (value != null) setState(() => _mode = value);
-      },
+      onChanged: enabled
+          ? (value) {
+              if (value != null) setState(() => _mode = value);
+            }
+          : null,
     );
   }
+
+  /// 编辑器内是否有任一可写控制类别（能力感知 fail-closed）。
+  bool get _modeAvailable {
+    final capabilities = widget.capabilities;
+    if (capabilities == null) return false;
+    return PerfControlCategory.values.any(capabilities.isCategoryAvailable);
+  }
+
+  /// 编辑器模式控件的禁用原因。
+  String get _modeDisabledReason => widget.capabilities == null
+      ? '不可用：控制能力未探测（Shizuku 未授权 / 探测失败）'
+      : '不可用：设备无可写控制类别';
 
   Widget _cpusetBlock(BuildContext context, ThemeData theme, TunablesReport tunables) {
     final available = _cpusetAvailable;

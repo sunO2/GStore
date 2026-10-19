@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
+import 'package:gstore/core/perf/perf_profile.dart';
+import 'package:gstore/core/perf/perf_profile_store.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/page/home/tab/dashboard/view.dart';
@@ -155,13 +157,14 @@ PerfControlCapabilities _caps({required bool available}) =>
       probedAtMs: 0,
     );
 
-/// 单 harness：仪表盘页 + 受控 perf 模块 / 帧监控 / 能力加载器。
+/// 单 harness：仪表盘页 + 受控 perf 模块 / 帧监控 / 能力加载器 / 模式存储。
 Widget _harness({
   required PerfModule module,
   required FrameMonitor monitor,
   required Stream<PerfAvailability> availability,
   DashboardTunablesLoader? tunablesLoader,
   DashboardCapabilitiesLoader? capabilitiesLoader,
+  PerfProfileStore? store,
 }) {
   return ProviderScope(
     overrides: <Override>[
@@ -173,6 +176,8 @@ Widget _harness({
       home: DashboardPage(
         tunablesLoader: tunablesLoader ?? () async => _tunables(),
         capabilitiesLoader: capabilitiesLoader,
+        // 默认内存存储：避免触达 shared_preferences 平台通道。
+        store: store ?? InMemoryPerfProfileStore(),
       ),
     ),
   );
@@ -186,18 +191,30 @@ Future<void> _settleAsync(WidgetTester tester) async {
   }
 }
 
-/// 断言四档模式按钮全部为禁用占位。
+const List<String> _modeIds = <String>[
+  'powersave',
+  'balance',
+  'performance',
+  'fast',
+];
+
+/// 断言四档模式按钮全部禁用（能力不可用 / 未探测）。
 void _expectModeButtonsDisabled(WidgetTester tester) {
-  for (final id in const <String>[
-    'powersave',
-    'balance',
-    'performance',
-    'fast',
-  ]) {
+  for (final id in _modeIds) {
     final button = tester.widget<OutlinedButton>(
       find.byKey(Key('dashboard_mode_$id')),
     );
-    expect(button.onPressed, isNull, reason: '$id 应为禁用占位');
+    expect(button.onPressed, isNull, reason: '$id 应为禁用');
+  }
+}
+
+/// 断言四档模式按钮全部可用（能力可写）。
+void _expectModeButtonsEnabled(WidgetTester tester) {
+  for (final id in _modeIds) {
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(Key('dashboard_mode_$id')),
+    );
+    expect(button.onPressed, isNotNull, reason: '$id 应可用');
   }
 }
 
@@ -238,12 +255,48 @@ void main() {
     expect(find.text('80%'), findsWidgets);
     expect(find.textContaining('最高 42.0'), findsOneWidget);
 
-    // 即便能力可写，四档按钮仍为**禁用占位**（接线在 todo 29）。
-    _expectModeButtonsDisabled(tester);
+    // 能力可写 → 四档按钮**已接线可用**（todo 29）。
+    _expectModeButtonsEnabled(tester);
     expect(
       find.byKey(const Key('dashboard_mode_reason')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('能力可写：点击模式按钮 → 应用所选模式到全部档案（store 更新）',
+      (tester) async {
+    _useTallViewport(tester);
+    final gateway = _FakeGateway(data: _moduleReadyData());
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.a': const PerfProfile(
+        package: 'com.a',
+        enabled: true,
+        mode: PerfMode.balance,
+      ),
+      'com.b': const PerfProfile(
+        package: 'com.b',
+        enabled: true,
+        mode: PerfMode.balance,
+      ),
+    });
+
+    await tester.pumpWidget(_harness(
+      module: PerfModule(gateway: gateway),
+      monitor: _publishedMonitor(),
+      availability: Stream<PerfAvailability>.value(PerfAvailability.ready),
+      capabilitiesLoader: (_) async => _caps(available: true),
+      store: store,
+    ));
+    await _settleAsync(tester);
+
+    _expectModeButtonsEnabled(tester);
+    await tester.tap(find.byKey(const Key('dashboard_mode_fast')));
+    await _settleAsync(tester);
+
+    expect((await store.load('com.a'))!.mode, PerfMode.fast);
+    expect((await store.load('com.b'))!.mode, PerfMode.fast);
+    expect(find.textContaining('已应用「极速」'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 

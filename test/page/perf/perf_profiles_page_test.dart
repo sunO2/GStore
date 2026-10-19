@@ -389,4 +389,101 @@ void main() {
     expect((await store.load('com.example.app'))!.mode, PerfMode.powersave);
     expect(tester.takeException(), isNull);
   });
+
+  // ==================== 快捷模式选择器（页面级，todo 29） ====================
+
+  testWidgets('页面级快捷模式：能力可用 → 可选并应用到全部档案', (tester) async {
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.a': const PerfProfile(package: 'com.a', mode: PerfMode.balance),
+      'com.b': const PerfProfile(package: 'com.b', mode: PerfMode.fast),
+    });
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+
+    final selector = tester.widget<DropdownButton<PerfMode>>(
+      find.byKey(const Key('perf_profiles_mode_selector')),
+    );
+    expect(selector.onChanged, isNotNull, reason: '能力可写 → 选择器可用');
+
+    await tester.tap(find.byKey(const Key('perf_profiles_mode_selector')));
+    await _pump(tester);
+    await tester.tap(find.text('性能').last);
+    await _pump(tester);
+
+    expect((await store.load('com.a'))!.mode, PerfMode.performance);
+    expect((await store.load('com.b'))!.mode, PerfMode.performance);
+    expect(find.textContaining('已应用「性能」'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('页面级快捷模式：无 writable 类别 → 禁用 + 可见原因', (tester) async {
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.a': const PerfProfile(package: 'com.a'),
+    });
+    await tester.pumpWidget(_harness(store: store, available: false));
+    await _pump(tester);
+
+    final selector = tester.widget<DropdownButton<PerfMode>>(
+      find.byKey(const Key('perf_profiles_mode_selector')),
+    );
+    expect(selector.onChanged, isNull);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('perf_profiles_mode_reason')))
+          .data,
+      contains('无可写控制类别'),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('页面级快捷模式：能力未探测（null）→ 禁用 + 未探测原因', (tester) async {
+    final store = InMemoryPerfProfileStore();
+    await tester.pumpWidget(_harness(store: store, capsNull: true));
+    await _pump(tester);
+
+    final selector = tester.widget<DropdownButton<PerfMode>>(
+      find.byKey(const Key('perf_profiles_mode_selector')),
+    );
+    expect(selector.onChanged, isNull);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('perf_profiles_mode_reason')))
+          .data,
+      contains('未探测'),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('编辑弹层模式选择：无 writable 类别 → 禁用 + 原因', (tester) async {
+    final store = InMemoryPerfProfileStore();
+    await tester.pumpWidget(_harness(store: store, available: false));
+    await _pump(tester);
+    await _openEditorViaAdd(tester);
+
+    final mode = tester.widget<DropdownButton<PerfMode>>(
+      find.descendant(
+        of: find.byKey(const Key('perf_profile_editor_mode')),
+        matching: find.byType(DropdownButton<PerfMode>),
+      ),
+    );
+    expect(mode.onChanged, isNull);
+    expect(find.textContaining('无可写控制类别'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('编辑弹层模式选择：能力可用 → 可选', (tester) async {
+    final store = InMemoryPerfProfileStore();
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+    await _openEditorViaAdd(tester);
+
+    final mode = tester.widget<DropdownButton<PerfMode>>(
+      find.descendant(
+        of: find.byKey(const Key('perf_profile_editor_mode')),
+        matching: find.byType(DropdownButton<PerfMode>),
+      ),
+    );
+    expect(mode.onChanged, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -5,9 +5,46 @@ import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
+import 'package:gstore/core/perf/perf_profile.dart';
+import 'package:gstore/core/perf/perf_profile_store.dart';
 
 /// 控制能力加载器（返回 `null` = 尚未探测 → 不阻断开关，引擎侧 fail-closed）。
 typedef PerfProfilesCapabilityLoader = Future<PerfControlCapabilities?> Function();
+
+// ==================== 四档模式快捷应用（todo 29） ====================
+
+/// 经**既有** [PerfProfileStore] 把 [mode] 应用到全部按应用档案。
+///
+/// 复用 todo-25 的每应用 mode 存储路径（`loadAll` / `saveAll`，**不新建
+/// store / 引擎**）；写入后由既有自动模式引擎（`perf_profile_auto_engine.dart`）
+/// 在下次前台 / 刷新收敛时消费该 mode。
+///
+/// 返回更新后的档案数：`0` = 尚无档案；`null` = 保存失败。**绝不抛出**。
+Future<int?> applyPerfModeToAllProfiles(
+  PerfProfileStore store,
+  PerfMode mode,
+) async {
+  try {
+    final all = await store.loadAll();
+    if (all.isEmpty) return 0;
+    final updated = <String, PerfProfile>{
+      for (final entry in all.entries)
+        entry.key: entry.value.copyWith(mode: mode),
+    };
+    final ok = await store.saveAll(updated);
+    return ok ? updated.length : null;
+  } catch (error) {
+    debugPrint('PerfProfilesTile: 应用模式到全部档案失败 - $error');
+    return null;
+  }
+}
+
+/// 全部档案共享的单一场景模式；无档案 / 模式不一致 → `null`。
+PerfMode? commonPerfModeOf(Map<String, PerfProfile> profiles) {
+  if (profiles.isEmpty) return null;
+  final modes = profiles.values.map((profile) => profile.mode).toSet();
+  return modes.length == 1 ? modes.first : null;
+}
 
 /// 读取「按应用性能模式」总开关（测试注入；生产走 [ConfigStore]）。
 typedef PerfProfilesBoolReader = Future<bool?> Function();
