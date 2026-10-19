@@ -199,6 +199,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const BatteryStatsPage(),
     ),
     GoRoute(
+      path: AppRoute.chargeCurve,
+      builder: (context, state) => const ChargeCurvePage(),
+    ),
+    GoRoute(
       path: AppRoute.cacheManage,
       builder: (context, state) => const CacheManagePage(),
     ),

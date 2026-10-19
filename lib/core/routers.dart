@@ -30,6 +30,7 @@ class AppRoute {
   static String perfMonitor = "/GStore/perfMonitor";
   static String perfProfiles = "/GStore/perfProfiles";
   static String batteryStats = "/GStore/batteryStats";
+  static String chargeCurve = "/GStore/chargeCurve";
   static String cacheManage = "/GStore/cacheManage";
   static String databaseManage = "/GStore/databaseManage";
   static String licenses = "/GStore/licenses";

@@ -1,0 +1,81 @@
+# task 22 — 充电曲线 UI（charge curve page）
+
+Date: 2026-10-19
+Plan: `.omo/plans/scene-to-gstore-parity.md` todo 22
+Status: DONE (tests green; `dart analyze lib/` 0 error)
+
+## Deliverables
+
+| File | Change |
+|---|---|
+| `lib/page/perf/charge_curve_page.dart` (NEW) | 充电曲线页：三图（电流-容量 / 温度-容量 / 功率-容量）+ 会话选择 + 空状态；数据源 = todo-21 `ChargeHistoryStore` |
+| `lib/core/routers.dart` | `AppRoute.chargeCurve = "/GStore/chargeCurve"` |
+| `lib/core/router/app_router.dart` | `GoRoute(AppRoute.chargeCurve → const ChargeCurvePage())` |
+| `lib/page/page.dart` | `export .../page/perf/charge_curve_page.dart` |
+| `test/core/router/charge_curve_route_test.dart` (NEW) | 路由经真实 `appRouter` 解析（2 用例） |
+| `test/page/perf/charge_curve_page_test.dart` (NEW) | widget + 纯函数测试（4 用例） |
+
+## Design / data reuse
+
+- Data source = **todo-21** `ChargeHistoryStore`（可注入；生产默认
+  `SharedPrefsChargeHistoryStore`）——**无第二 store/引擎**。
+- 记录 = `ChargeRecord`（Scene `charge8.records` 列逐字：`time,session,current,
+  voltage,capacity,temperature`），派生 `power = current*voltage/1000`（库内 getter）。
+- 三图均为**横轴 = 容量 (%)**（Scene 三条查询 `select capacity,<metric>,time ...
+  order by time`，见 task-33 `.omo/evidence/task-33-scene-data-schema.md`）：
+  1. 电流 `current`（mA）—— `select capacity,current,time`
+  2. 温度 `temperature`（℃）—— `select capacity,temperature,time`
+  3. 功率 `power = current*voltage/1000` —— `select capacity,(current*voltage/1000),time`
+- 会话分组复用 todo-21 `summarizeChargeSessions`；本页新增纯函数
+  `chargeCurveSeries(records, session:)` = 按会话过滤 + 按**容量升序**（同容量按时间）
+  排序，作为三图样本序。
+- 图表复用无第三方依赖的 `LineChart`（`lib/compent/line_chart.dart`，`CustomPainter`
+  自绘）——**不加依赖**。
+- 约定：颜色一律 `Theme.of(context).colorScheme`（current→primary、
+  temperature→tertiary、power→secondary），间距/圆角走 `AppSpacing`；loading 用
+  `AppLoading`；无硬编码颜色/字号。
+
+## 口径说明 / 与 plan 命名的对应
+
+- plan 文字记三图为「电流-容量、温度-容量、**时间-容量**」；`task-33` 的第三序列为
+  `capacity+power+time`。本页第三图取**功率-容量**（时间用于样本排序），与 todo-33
+  的「3 chart series = capacity+temperature / capacity+current / capacity+power」
+  （继承自 `task-33`）一致；第三图纵轴单位标 `unverified`（Scene CSV 标 `Power(mW)`
+  却对 `mA×V` 再 `/1000`，内部不一致）。
+- 空态：无记录时仍渲染**三张空图表**（`LineChart` 空值绘制基线）+ 顶部空提示卡。
+
+## Verification
+
+```
+$ dart analyze lib/page/perf/charge_curve_page.dart \
+    test/core/router/charge_curve_route_test.dart test/page/perf/charge_curve_page_test.dart
+  No issues found!
+
+$ dart analyze lib/
+  723 issues found.   # 全为存量 info/warning；error count = 0
+  # 基线 723（task-20 记录）→ 723：本次未新增任何 issue
+
+$ flutter test test/core/router/charge_curve_route_test.dart test/page/perf/charge_curve_page_test.dart
+  All tests passed! (6)
+
+$ flutter test test/core/router/
+  All tests passed! (15)   # 无路由回归（含 batteryStats / parity / perf / feature_hub）
+```
+
+## Acceptance mapping
+
+- [x] 三图渲染（电流-容量 / 温度-容量 / 功率-容量），widget 测试断言三 key
+- [x] 空状态（三张空图表）——`空 store → 空提示 + 三张空图表，无异常`
+- [x] 主题令牌 only；`AppLoading` 加载态；无硬编码颜色/字号
+- [x] 路由经真实 `appRouter` 解析（route test，2 用例）
+- [x] `dart analyze lib/` = 0 error
+- [x] 无第二 store（复用 todo-21 `ChargeHistoryStore`）
+- [x] 多会话选择器可选、切换后容量范围更新（受控 `DropdownButton`）
+
+## Notes / risks
+
+- LSP daemon 仍报 `lib/core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧错误
+  （pre-existing；`dart analyze` CLI = 0 error），同 todo-9/11/20 记录，忽略。
+- 并发：另一 worker（todo 17，FPS reports UI）同时运行。本 todo 只动上述 6 个文件；
+  提交用 `flock` + **pathspec**（`git commit -- <files>`），避免扫入他人 staged。
+- 无真机：曲线视觉保真 + 功率单位仍 `unverified`（残余风险）。

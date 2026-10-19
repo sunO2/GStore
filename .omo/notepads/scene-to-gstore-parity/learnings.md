@@ -232,6 +232,7 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 会话 id 默认 = 启动墙钟 ms（每次 App 运行唯一；Scene 用 SQLite `f0.l()` 自增），可经构造/`start(session:)` 覆盖；容量裁剪仍归 todo-18 store。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning = 基线）；`flutter test test/core/perf/battery_history_recorder_test.dart` = **16 passed**。证据 `.omo/evidence/task-19-battery-recorder.txt`（`.omo/` gitignored，不提交）。
 - 并发：提交用 `flock /tmp/opencode/gstore.git.lock` + pathspec 只 stage `battery_history_recorder.dart`/`main.dart`/测试；**不动 manifest**（决策即不改）。注意并发 worker（todo 20）当时已在改 routers/app_router/page.dart + battery_stats_page，且其 notepad 提到「收尾时 main.dart 报 `_startBatteryHistoryRecorder` undefined」——那正是本 todo 半成品状态，现已定义。
+- **⚠️ 并发提交坑（重要，后续 worker 必读）**：`flock` 只串行化「进入锁的 `git add && git commit`」，**不会清空锁外别的 worker 已 pre-staged 的 index 条目**。本次提交用了**裸 `git commit`**（提交整个 index），结果把并发 worker（todo 15）已 staged 的 `fps_session_recorder.dart` / `page/perf/logic.dart` / `test/core/perf/fps_session_recorder_test.dart` 一并卷进本 commit（`git show 3649321` 有 7 files 而非 3）。**正确姿势：提交时用 pathspec 形式 `git commit -- <你的文件>`（只提交指定路径，忽略 index 其余条目），而不是裸 `git commit`**。本次未改写共享历史（3 个 worker 活跃中，rebase/reset 会波及他人），内容已完整提交、树为绿，仅 4 个文件的归属 commit 交错——已在证据中记录。次优可接受：先 `git status --porcelain` 确认无他人残留 staged 再提交。
 
 ## Todo 15 — FpsSessionRecorder 采样 temp/power/size/mode（2026-10-19）
 - `lib/core/perf/fps_session_recorder.dart`：新增可注入 **环境采样 seam**（帧率 `sampler` 保持不动）：
@@ -246,3 +247,21 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 验证：`dart analyze lib/` = **0 error**（724 存量 warning/info，+1 系并发他人改动）；两改动文件单文件分析 **No issues**；recorder 测试 **11 passed**；回归 `perf_fps_session_test` + `fps_session_model_test` = **14 passed**。证据 `.omo/evidence/task-15-recorder.txt`（.omo/evidence 被 .gitignore 忽略，未提交；learnings.md 已跟踪，随本 todo 提交）。
 - 并发：仅动本 todo 的 3 个文件；提交用 `flock` + **pathspec**（`git add -- <3 files>` + `git commit -- <files>`）避免扫入他人 staged（`lib/main.dart`/`battery_history_recorder*` 等）。LSP 仍报 `lib/core/rust/generated/*` 陈旧错误 → CLI `dart analyze` = 0 error，忽略。
 - **并发事故（重要）**：本 todo 首次 `git add -- <4 files>` 因 learnings.md 位于被忽略的 `.omo/` 而**非零退出**，导致 `&& git commit` 未执行，但 3 个代码/测试文件**已被 stage**。修复期间另一 worker（battery-history recorder）用共享索引提交 `3649321`，把我的 `fps_session_recorder.dart`(+143)/`logic.dart`(+70)/`fps_session_recorder_test.dart`(+176) **一并扫入其提交**。随后我用 `git add -f learnings.md` + pathspec commit 生成 `3140853`（仅含 learnings.md）。**代码变更已在 HEAD 树中且测试全绿**；无法改历史（并发 + 禁 amend/force）。教训：被忽略路径混入 `git add` 会让整条命令失败却部分生效——`git add` 应**排除 `.omo/`（或对已在索引的 `.omo` 文件单独 `-f`）**，且 stage→commit 必须在**同一次 flock 内一次成功**。
+
+## Todo 22 — 充电曲线 UI（charge curve page）（2026-10-19）
+- 新页 `lib/page/perf/charge_curve_page.dart`（**复用 todo-21 `ChargeHistoryStore`，无第二 store**）：三张图横轴均为**容量 (%)**（Scene `select capacity,<metric>,time order by time`），纵轴 = 电流(mA) / 温度(℃) / 功率(`current*voltage/1000`，单位 `unverified`)。plan 文字第三图记「时间-容量」，按 todo-33 的第三序列（`capacity+power+time`）实现为**功率-容量**（时间用于排序），已在证据中说明对应关系。
+- 纯函数 `chargeCurveSeries(records, session:)` = 按会话过滤 + 按容量升序（同容量按时间）→ 三图样本序；会话分组复用 `summarizeChargeSessions`。
+- 图表复用 `lib/compent/line_chart.dart` 的 `LineChart`（零第三方依赖）；颜色走 `colorScheme`（current→primary、temperature→tertiary、power→secondary）；loading `AppLoading`；空态仍渲染**三张空图表**。路由/桶照 todo-20 模式：`AppRoute.chargeCurve` + `GoRoute` + `page.dart` export。
+- **受控 Dropdown 坑**：`DropdownButtonFormField` 的 `initialValue` 只在首帧生效，`setState` 切换会话**不会**刷新显示 → 本页改用受控 `DropdownButton`（`value:` 随 state）包在 `InputDecorator` 里，切换后容量范围正确更新。后续做「选会话/选项切换」的页面注意同一坑（battery_stats 的 byApp 下拉同理，只是其测试未覆盖切换）。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 = 基线，未新增）；新测试 **6 passed**；回归 `flutter test test/core/router/` = **15 passed**。证据 `.omo/evidence/task-22-charge-curve.txt`（`.omo/evidence` 被忽略，未提交）。
+- 并发：与 todo 17（FPS reports UI）并行；只动 `charge_curve_page.dart` + routers/app_router/page.dart + 2 测试；提交用 `flock` + **pathspec** `git commit -- <files>`（含 `git add -f` 处理被忽略的 `.omo` 证据路径）。
+
+## Todo 17 — FPS 会话 UI 显示 Scene-parity 指标 + CSV 对齐（2026-10-19）
+- `lib/page/perf/reports_page.dart`：`_sessionTile` 副标题追加 2 行（`流畅度 p% · 高温占比 p% · 功耗 x.xx W` + `模式 … · 视图 …`，非空才显示；maxLines 2→3）；新增 `onTap` → `_showSessionDetail`（`AppSheet.showCustom`+`AppSheetScaffold`+`perfKv`：模式/视图尺寸/平均功耗/流畅度/高温占比 + 既有统计）。
+  - 比率**复用 todo-16 纯函数** `fpsFluencyRatio`/`highTempRatio`（不内联重算）；新增文件级 `_sceneRatioPercent(ratio,{hasSamples})`（无样本 → `—`，有样本 → `67%`）与 `_scenePowerText`（`x.xx W`）。颜色/字号走 Theme、间距圆角走 AppSpacing/AppRadius 令牌。
+- `lib/core/perf/fps_session.dart`（`buildFpsSessionCsv`，**本 todo 拥有该文件**）：+ `import fps_analysis.dart`；旧 meta 列**原样保留**，仅追加 `mode`/`view_size`/`avg_power`/`fluency_ratio`/`high_temp_ratio`（后两者经 helper 计算，空会话 → `0.0`）。空会话仍产出有效 `key,value` + `index,fps` 表头。
+- 测试：`test/core/perf/fps_session_model_test.dart` **+2**（14 passed，共）；`test/page/perf/perf_fps_session_test.dart` **+2**（共 4，18 passed）。
+  - 坑：详情弹层里断言用**精确 `find.text('均衡')`/`find.text('1.25 W')`/`find.text('67%')`**，而列表里这些值是**长串**（`find.textContaining`）→ 精确/包含两套 finder 不会互相误命中（列表 `'模式 均衡 · 视图 …'` 不会被 `find.text('均衡')` 命中）。列表指标断言用 `textContaining('流畅度 67%')` 等。
+- 验证：4 改动文件 `dart analyze` = **No issues found!**；`dart analyze lib/` = **0 error**（723 存量 = 基线）；两目标测试 **18 passed**；回归 `flutter test test/core/perf/` = **600 passed**。证据 `.omo/evidence/task-17-fps-ui.txt`（`.omo/` gitignored，未提交）。
+- 并发：与 todo 22（charge curve + routers）并行；只动本 todo 4 文件 + learnings；提交用 `flock /tmp/opencode/gstore.git.lock` + **pathspec `git commit -- <files>`**（learnings.md 为已跟踪文件，普通 `git add` 即可，无 `-f`）。LSP 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` **陈旧**错误（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略。
+
