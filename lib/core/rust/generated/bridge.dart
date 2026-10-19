@@ -44,6 +44,18 @@ Future<bool?> batteryPowerInteractive() =>
 Future<String?> deviceStateReadJson() =>
     RustLib.instance.api.crateBridgeDeviceStateReadJson();
 
+/// 前台无障碍服务缓存 JSON（Rust → JNI →
+/// Kotlin `ForegroundAccessibilityService.readJson`）。
+/// 未初始化 / 服务未启用 / 调用失败 → `null`；Dart 侧据此决定是否跳过
+/// `dumpsys activity activities`。
+Future<String?> foregroundReadJson() =>
+    RustLib.instance.api.crateBridgeForegroundReadJson();
+
+/// 本应用帧指标摘要 JSON（Rust → JNI → Kotlin `FrameMetricsCollector.readJson`）。
+/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
+Future<String?> frameMetricsReadJson() =>
+    RustLib.instance.api.crateBridgeFrameMetricsReadJson();
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
 abstract class EventBridge implements RustOpaqueInterface {
   /// 应用侧事件下行：广播给所有已加载模块（模块经 ABI `on_event` 订阅）。

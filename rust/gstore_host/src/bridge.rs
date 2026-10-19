@@ -59,6 +59,20 @@ pub fn device_state_read_json() -> Option<String> {
     crate::device_state_bridge::read_json()
 }
 
+/// 前台无障碍服务缓存 JSON（Rust → JNI →
+/// Kotlin `ForegroundAccessibilityService.readJson`）。
+/// 未初始化 / 服务未启用 / 调用失败 → `null`；Dart 侧据此决定是否跳过
+/// `dumpsys activity activities`。
+pub fn foreground_read_json() -> Option<String> {
+    crate::battery_bridge::foreground_read_json()
+}
+
+/// 本应用帧指标摘要 JSON（Rust → JNI → Kotlin `FrameMetricsCollector.readJson`）。
+/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
+pub fn frame_metrics_read_json() -> Option<String> {
+    crate::frame_metrics_bridge::read_json()
+}
+
 /// 日志消息数据类（架构文档 6.8；普通数据类，跨模块 re-export 可被 FRB 跟随）
 pub use crate::log_bridge::LogMessage;
 

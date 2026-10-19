@@ -2,6 +2,7 @@
 library;
 
 import 'package:gstore/core/perf/device_state.dart';
+import 'package:gstore/core/perf/frame_metrics_source.dart';
 import 'package:gstore/core/perf/frame_stats.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
@@ -75,6 +76,7 @@ class PerfPageState {
     this.thirdPartyFps,
     this.thirdPartyFpsLabel,
     this.deviceState,
+    this.frameMetrics,
   });
 
   /// 是否正在读取模块数据（首次 / 手动刷新 / 切换排序）。
@@ -168,6 +170,9 @@ class PerfPageState {
   /// 批量设备状态快照（Rust JNI `DeviceStateChannel`）；不可用时为 `null`。
   final DeviceStateReading? deviceState;
 
+  /// 本应用帧指标摘要（Rust JNI `FrameMetricsCollector`）；不可用时为 `null`。
+  final FrameMetricsReading? frameMetrics;
+
   /// 模块实例是否可用（[PerfAvailability.ready]）。
   bool get moduleReady => availability == PerfAvailability.ready;
 
@@ -217,6 +222,7 @@ class PerfPageState {
     String? thirdPartyFpsLabel,
     bool clearThirdPartyFps = false,
     DeviceStateReading? deviceState,
+    FrameMetricsReading? frameMetrics,
   }) {
     return PerfPageState(
       loading: loading ?? this.loading,
@@ -244,7 +250,8 @@ class PerfPageState {
       cpuUsageHistory: cpuUsageHistory ?? this.cpuUsageHistory,
       memoryUsedHistory: memoryUsedHistory ?? this.memoryUsedHistory,
       thermalMaxHistory: thermalMaxHistory ?? this.thermalMaxHistory,
-      batteryCurrentHistory: batteryCurrentHistory ?? this.batteryCurrentHistory,
+      batteryCurrentHistory:
+          batteryCurrentHistory ?? this.batteryCurrentHistory,
       networkRxHistory: networkRxHistory ?? this.networkRxHistory,
       networkTxHistory: networkTxHistory ?? this.networkTxHistory,
       screenFps: clearScreenFps ? null : (screenFps ?? this.screenFps),
@@ -257,6 +264,7 @@ class PerfPageState {
           ? null
           : (thirdPartyFpsLabel ?? this.thirdPartyFpsLabel),
       deviceState: deviceState ?? this.deviceState,
+      frameMetrics: frameMetrics ?? this.frameMetrics,
     );
   }
 }

@@ -113,6 +113,18 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供 Rust JNI
+        // `frame_metrics_read_json` 读取。幂等；失败静默。
+        FrameMetricsCollector.attach(this)
+    }
+
+    override fun onPause() {
+        FrameMetricsCollector.detach(this)
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == ACTION_MANAGE_SPACE) {

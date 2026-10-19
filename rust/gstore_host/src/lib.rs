@@ -12,6 +12,9 @@ mod battery_bridge;
 // 批量设备状态 JNI 门面：Rust → JNI → Kotlin `DeviceStateChannel`（复用
 // battery_bridge 缓存的 VM / applicationContext）。
 mod device_state_bridge;
+// 本应用帧指标 JNI 门面：Rust → JNI → Kotlin `FrameMetricsCollector`（复用
+// battery_bridge 缓存的 JavaVM；类引用在 app 线程解析缓存）。
+mod frame_metrics_bridge;
 // T12 宿主 UID/包名解析 API。`resolve_uids` 的宿主侧消费者是 T13（内部事件消费），
 // 在接线前以库 API 暴露可避免暂存期 dead_code 告警。
 pub use jni_bridge::{resolve_uids, UidAnswer, UidQueryHost};

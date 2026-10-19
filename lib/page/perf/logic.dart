@@ -22,6 +22,7 @@ import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/device_state.dart';
 import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/fps_session_store.dart';
+import 'package:gstore/core/perf/frame_metrics_source.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
 import 'package:gstore/core/perf/perf_auto_export_service.dart';
 import 'package:gstore/core/perf/perf_auto_export_settings.dart';
@@ -138,7 +139,8 @@ final perfAutoExportServiceProvider = Provider<PerfAutoExportService>((ref) {
   void sync() {
     final perfState = ref.read(perfMonitorProvider);
     final settings = ref.read(perfAutoExportSettingsProvider);
-    final shouldRun = (perfState.live || perfState.sampling) && settings.enabled;
+    final shouldRun =
+        (perfState.live || perfState.sampling) && settings.enabled;
     final signature = '${settings.enabled}|${settings.intervalMinutes}'
         '|${settings.format.value}|${settings.maxKeep}';
     if (appliedRunning == shouldRun && appliedSignature == signature) return;
@@ -313,8 +315,7 @@ String? _logicalViewSize() {
 }
 
 /// 自动导出设置的加载 / 保存控制器。
-class PerfAutoExportSettingsNotifier
-    extends Notifier<PerfAutoExportSettings> {
+class PerfAutoExportSettingsNotifier extends Notifier<PerfAutoExportSettings> {
   bool _disposed = false;
 
   @override
@@ -342,6 +343,11 @@ class PerfAutoExportSettingsNotifier
 /// 批量设备状态桥（生产 Rust JNI；测试可覆盖为罐头读取）。
 final perfDeviceStateBridgeProvider = Provider<RustJniDeviceStateBridge>(
   (ref) => RustJniDeviceStateBridge(),
+);
+
+/// 本应用帧指标桥（生产 Rust JNI；测试可覆盖为罐头读取）。
+final perfFrameMetricsBridgeProvider = Provider<RustJniFrameMetricsBridge>(
+  (ref) => RustJniFrameMetricsBridge(),
 );
 
 /// 性能监控页 Provider。
@@ -402,6 +408,9 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   /// build 时捕获的批量设备状态桥（best-effort；失败不影响刷新）。
   RustJniDeviceStateBridge? _deviceStateBridge;
 
+  /// build 时捕获的本应用帧指标桥（best-effort；失败不影响刷新）。
+  RustJniFrameMetricsBridge? _frameMetricsBridge;
+
   /// 上次落盘时间（Unix ms），节流历史写入。
   int _lastHistorySaveMs = 0;
 
@@ -411,7 +420,8 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   List<double> _thirdPartyJank = const <double>[];
 
   PerfModule get _module => ref.read(perfModuleProvider);
-  FrameMonitor get _monitor => _monitorRef ?? ref.read(perfFrameMonitorProvider);
+  FrameMonitor get _monitor =>
+      _monitorRef ?? ref.read(perfFrameMonitorProvider);
   SystemFpsService get _systemFps =>
       _systemFpsServiceRef ?? ref.read(perfSystemFpsServiceProvider);
   ThirdPartyPerfService get _thirdParty =>
@@ -454,6 +464,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     // 跨会话历史：异步恢复磁盘上的滚动序列（失败静默降级）。
     _historyStore = ref.read(perfHistoryStoreProvider);
     _deviceStateBridge = ref.read(perfDeviceStateBridgeProvider);
+    _frameMetricsBridge = ref.read(perfFrameMetricsBridgeProvider);
     Future<void>.microtask(_restoreHistories);
 
     // 若帧监控已在运行（单例），首帧后启动系统帧率 / 第三方口径轮询。
@@ -516,7 +527,8 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     state = state.copyWith(
       fpsHistory: _mergeHistory(snapshot.fps, state.fpsHistory),
       cpuUsageHistory: _mergeHistory(snapshot.cpu, state.cpuUsageHistory),
-      memoryUsedHistory: _mergeHistory(snapshot.memory, state.memoryUsedHistory),
+      memoryUsedHistory:
+          _mergeHistory(snapshot.memory, state.memoryUsedHistory),
       thermalMaxHistory:
           _mergeHistory(snapshot.thermal, state.thermalMaxHistory),
     );
@@ -544,16 +556,16 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     if (store == null) return;
     store
         .save(
-          PerfHistorySnapshot(
-            fps: state.fpsHistory,
-            cpu: state.cpuUsageHistory,
-            memory: state.memoryUsedHistory,
-            thermal: state.thermalMaxHistory,
-            thirdPartyCpu: _thirdPartyCpu,
-            thirdPartyMem: _thirdPartyMem,
-            thirdPartyJank: _thirdPartyJank,
-          ),
-        )
+      PerfHistorySnapshot(
+        fps: state.fpsHistory,
+        cpu: state.cpuUsageHistory,
+        memory: state.memoryUsedHistory,
+        thermal: state.thermalMaxHistory,
+        thirdPartyCpu: _thirdPartyCpu,
+        thirdPartyMem: _thirdPartyMem,
+        thirdPartyJank: _thirdPartyJank,
+      ),
+    )
         .catchError((Object error) {
       debugPrint('[PerfMonitor] 保存历史失败（忽略）: $error');
     });
@@ -592,6 +604,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         _softFetch(module.batteryHealth),
         _softFetch(module.storage),
         _readDeviceState(),
+        _readFrameMetrics(),
       ]);
       if (_disposed) return;
       state = state.copyWith(
@@ -608,6 +621,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         batteryHealth: results[9] as PerfBatteryHealthReport?,
         storage: results[10] as PerfStorageReport?,
         deviceState: results[11] as DeviceStateReading?,
+        frameMetrics: results[12] as FrameMetricsReading?,
       );
       _appendModuleHistories();
     } on PerfModuleUnavailableException catch (error) {
@@ -638,6 +652,17 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       return await _deviceStateBridge?.read();
     } catch (error) {
       debugPrint('[PerfMonitor] 设备状态读取失败（降级）: $error');
+      return null;
+    }
+  }
+
+  /// 读取本应用帧指标（Rust JNI）：**best-effort**，任何失败 → `null`，
+  /// 绝不拖垮并行的模块报告批次。
+  Future<FrameMetricsReading?> _readFrameMetrics() async {
+    try {
+      return await _frameMetricsBridge?.read();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 帧指标读取失败（降级）: $error');
       return null;
     }
   }
@@ -711,8 +736,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     state = state.copyWith(processSort: sort);
     if (!state.moduleReady) return;
     try {
-      final report =
-          await _module.processes(limit: 10, sort: sort.value);
+      final report = await _module.processes(limit: 10, sort: sort.value);
       if (_disposed) return;
       state = state.copyWith(processes: report);
     } on PerfModuleUnavailableException {
@@ -881,17 +905,17 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         debugPrint('[PerfMonitor] 开启采样失败: $error');
         AppDialogs.showError('开启采样失败');
       }
-  } else {
-    await _sampleSub?.cancel();
-    _sampleSub = null;
-    try {
-      await _module.stopSampling();
-    } catch (error) {
-      debugPrint('[PerfMonitor] 停止采样失败（忽略）: $error');
+    } else {
+      await _sampleSub?.cancel();
+      _sampleSub = null;
+      try {
+        await _module.stopSampling();
+      } catch (error) {
+        debugPrint('[PerfMonitor] 停止采样失败（忽略）: $error');
+      }
+      if (_disposed) return;
+      state = state.copyWith(sampling: false);
     }
-    if (_disposed) return;
-    state = state.copyWith(sampling: false);
-  }
     _syncTicker();
   }
 

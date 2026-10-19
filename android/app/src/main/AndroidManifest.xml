@@ -111,6 +111,21 @@
                 android:value="performance_overlay" />
         </service>
 
+        <!-- 前台应用事件源（可选开关）：用户启用无障碍服务后，系统在窗口切换时
+             推送 package/class，Rust 宿主经 JNI 直读，替代周期性 dumpsys。
+             只订阅 typeWindowStateChanged，不读取界面内容。 -->
+        <service
+            android:name=".ForegroundAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
         <!-- 代理 QS 磁贴：快捷设置开关，仅发信号给 App（连接由 Dart 编排）。
              BIND_QUICK_SETTINGS_TILE 是系统绑定所需权限（service 上声明，
              不是 uses-permission）。 -->

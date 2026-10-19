@@ -38,6 +38,11 @@ import 'package:shizuku_api/shizuku_api.dart';
 
 import 'package:gstore/core/perf/battery_source.dart'
     show BatteryManagerChannel;
+import 'package:gstore/core/perf/foreground_source.dart'
+    show
+        ForegroundAccessibilityProbe,
+        ForegroundReading,
+        RustJniForegroundBridge;
 import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 
@@ -146,6 +151,7 @@ class ForegroundWatcher {
     ScreenOnProbe? screenOnProbe,
     BatteryManagerChannel? batteryChannel,
     ShizukuAvailabilityProbe? shizukuProbe,
+    ForegroundAccessibilityProbe? accessibilityProbe,
     Clock? clock,
     Duration interval = defaultInterval,
     Duration telemetryInterval = defaultTelemetryInterval,
@@ -159,8 +165,11 @@ class ForegroundWatcher {
             ),
         _clock = clock ?? DateTime.now,
         _shizukuProbe = shizukuProbe ?? _defaultShizukuProbe,
+        _accessibilityProbe =
+            accessibilityProbe ?? RustJniForegroundBridge().read,
         interval = clampInterval(interval, telemetryInterval),
-        telemetryInterval = clampInterval(telemetryInterval, telemetryInterval) {
+        telemetryInterval =
+            clampInterval(telemetryInterval, telemetryInterval) {
     _screenOnProbe = screenOnProbe ??
         _defaultScreenOnProbe(
           shell: _shell,
@@ -196,6 +205,7 @@ class ForegroundWatcher {
   final PrivilegedShell _shell;
   final Clock _clock;
   final ShizukuAvailabilityProbe _shizukuProbe;
+  final ForegroundAccessibilityProbe _accessibilityProbe;
   late final ScreenOnProbe _screenOnProbe;
 
   /// 有效轮询间隔（已按 [clampInterval] 钳制）。
@@ -221,6 +231,7 @@ class ForegroundWatcher {
   bool _running = false;
   bool _pollerInFlight = false;
   bool _disposed = false;
+  bool _accessibilityOnly = false;
   int _consecutiveFailures = 0;
   String? _disabledReason;
   String? _lastPackage;
@@ -277,11 +288,18 @@ class ForegroundWatcher {
     final available = await _shizukuProbe();
     if (_disposed || !_running) return; // 探测期间被 stop/dispose
     if (!available) {
-      _running = false;
-      _status = ForegroundWatcherStatus.disabled;
-      _disabledReason = ForegroundDisabledReason.shizukuUnavailable;
-      debugPrint('[ForegroundWatcher] Shizuku 不可用 → 监视器已禁用（零轮询）');
-      return;
+      // Shizuku 不可用：若无障碍事件源已启用，仍可零 shell 运行。
+      final access = await _safeAccessibilityProbe();
+      if (_disposed || !_running) return;
+      if (!_isAccessibilityUsable(access)) {
+        _running = false;
+        _status = ForegroundWatcherStatus.disabled;
+        _disabledReason = ForegroundDisabledReason.shizukuUnavailable;
+        debugPrint('[ForegroundWatcher] Shizuku 不可用 → 监视器已禁用（零轮询）');
+        return;
+      }
+      _accessibilityOnly = true;
+      debugPrint('[ForegroundWatcher] Shizuku 不可用，但无障碍事件源已启用 → 继续');
     }
     _consecutiveFailures = 0;
     _disabledReason = null;
@@ -345,6 +363,18 @@ class ForegroundWatcher {
       if (_status == ForegroundWatcherStatus.paused) {
         _status = ForegroundWatcherStatus.running;
       }
+      // 无障碍事件源可用 → 零 shell 直接取包名，跳过 dumpsys。
+      final access = await _safeAccessibilityProbe();
+      if (_disposed || !_running) return;
+      final accessPackage = access?.package;
+      if (_isAccessibilityUsable(access) &&
+          accessPackage != null &&
+          accessPackage.isNotEmpty) {
+        _pollCount++;
+        _consecutiveFailures = 0;
+        _maybeEmit(accessPackage);
+        return;
+      }
       final result = await _shell
           .run(_shell.buildCommand(dumpsysCommand))
           .timeout(maxPollBudget);
@@ -375,6 +405,23 @@ class ForegroundWatcher {
   /// fail-open，避免静默停摆）。
   Future<bool> _probeScreenOnForBudget() =>
       _screenOnProbe().timeout(maxPollBudget, onTimeout: () => true);
+
+  /// 无障碍事件源探测：未启用 / 未收到事件 / 异常 / 超预算 → `null`（回退
+  /// dumpsys）。绝不抛出。
+  Future<ForegroundReading?> _safeAccessibilityProbe() async {
+    try {
+      return await _accessibilityProbe().timeout(maxPollBudget);
+    } catch (error) {
+      debugPrint('[ForegroundWatcher] 无障碍探测失败（回退 dumpsys）: $error');
+      return null;
+    }
+  }
+
+  /// 无障碍读数是否可直接作为前台数据源。
+  static bool _isAccessibilityUsable(ForegroundReading? reading) =>
+      reading != null &&
+      reading.enabled &&
+      (reading.package?.isNotEmpty ?? false);
 
   void _registerFailure(String reason) {
     _consecutiveFailures++;

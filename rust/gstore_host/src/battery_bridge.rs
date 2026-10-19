@@ -26,7 +26,12 @@ static APP_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
 /// `com.suno2.gstore.BatteryChannel` 的全局引用（静态方法的 `jclass`）。
 static BATTERY_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
+/// `com.suno2.gstore.ForegroundAccessibilityService` 的全局引用
+/// （`readJson(Context)` 静态方法的 `jclass`）。
+static FOREGROUND_A11Y_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+
 const BATTERY_CLASS_NAME: &str = "com/suno2/gstore/BatteryChannel";
+const FOREGROUND_A11Y_CLASS_NAME: &str = "com/suno2/gstore/ForegroundAccessibilityService";
 const READ_JSON_METHOD: &str = "readJson";
 const READ_JSON_SIG: &str = "(Landroid/content/Context;)Ljava/lang/String;";
 const IS_INTERACTIVE_METHOD: &str = "isInteractive";
@@ -127,6 +132,90 @@ pub(crate) fn init_context(env: &mut JNIEnv, context: &JObject) {
     }
 
     crate::device_state_bridge::init_class(env);
+    crate::frame_metrics_bridge::init_class(env);
+
+    // 前台无障碍服务：同 app 线程解析类引用，后续 Rust 线程直接调静态 readJson。
+    if FOREGROUND_A11Y_CLASS.get().is_none() {
+        match env.find_class(FOREGROUND_A11Y_CLASS_NAME) {
+            Ok(class) => match env.new_global_ref(&class) {
+                Ok(global) => {
+                    let _ = FOREGROUND_A11Y_CLASS.set(global);
+                    crate::log_bridge::push_host_log(
+                        1,
+                        "ForegroundAccessibilityService: 已缓存类引用（JNI 前台事件源就绪）"
+                            .to_string(),
+                    );
+                }
+                Err(e) => {
+                    crate::log_bridge::push_host_log(
+                        3,
+                        format!(
+                            "ForegroundAccessibilityService: 类 GlobalRef 失败: {e}"
+                        ),
+                    );
+                }
+            },
+            Err(e) => {
+                take_pending_exception(env, "init_context/foreground_find_class");
+                crate::log_bridge::push_host_log(
+                    3,
+                    format!("ForegroundAccessibilityService: find_class 失败: {e}"),
+                );
+            }
+        }
+    }
+}
+
+/// 读取前台无障碍服务缓存 JSON（Kotlin `ForegroundAccessibilityService.readJson`）。
+///
+/// 未初始化 / attach 失败 / 调用失败 / 异常 / null → `None`。绝不 panic。
+pub fn foreground_read_json() -> Option<String> {
+    catch_unwind(AssertUnwindSafe(foreground_read_json_inner)).unwrap_or(None)
+}
+
+fn foreground_read_json_inner() -> Option<String> {
+    let jvm = VM.get()?;
+    let class = FOREGROUND_A11Y_CLASS.get()?;
+    let context = APP_CONTEXT.get()?;
+
+    let mut env = match jvm.attach_current_thread() {
+        Ok(env) => env,
+        Err(e) => {
+            crate::log_bridge::push_host_log(
+                3,
+                format!("ForegroundAccessibilityService.readJson: JNI attach 失败: {e}"),
+            );
+            return None;
+        }
+    };
+
+    let value = match env.call_static_method(
+        class,
+        READ_JSON_METHOD,
+        READ_JSON_SIG,
+        &[JValue::Object(context.as_obj())],
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            take_pending_exception(&env, "foreground_readJson");
+            crate::log_bridge::push_host_log(
+                3,
+                format!("ForegroundAccessibilityService.readJson JNI 调用失败: {e}"),
+            );
+            return None;
+        }
+    };
+
+    if take_pending_exception(&env, "foreground_readJson") {
+        return None;
+    }
+
+    let obj = value.l().ok()?;
+    if obj.is_null() {
+        return None;
+    }
+    let jstr: JString = obj.into();
+    env.get_string(&jstr).map(|s| s.into()).ok()
 }
 
 /// 读取电池 JSON（Kotlin `BatteryChannel.readJson`）。

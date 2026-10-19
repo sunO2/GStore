@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  前台应用事件源配置（ForegroundAccessibilityService）。
+  只订阅窗口状态变化（typeWindowStateChanged），不读取界面内容
+  （canRetrieveWindowContent=false）；notificationTimeout=100ms 限制事件频率。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false" />

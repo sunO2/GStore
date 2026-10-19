@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/perf/battery_source.dart';
+import 'package:gstore/core/perf/foreground_source.dart';
 import 'package:gstore/core/perf/foreground_watcher.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
@@ -110,6 +111,7 @@ ForegroundWatcher _watcher({
   required _FakeGateway gateway,
   ScreenOnProbe? screen,
   ShizukuAvailabilityProbe? shizuku,
+  ForegroundAccessibilityProbe? accessibility,
   Duration interval = const Duration(seconds: 5),
   Duration telemetry = const Duration(seconds: 2),
   Duration budget = const Duration(seconds: 30),
@@ -123,6 +125,7 @@ ForegroundWatcher _watcher({
       ),
       screenOnProbe: screen ?? () async => true,
       shizukuProbe: shizuku ?? () async => true,
+      accessibilityProbe: accessibility ?? () async => null,
       clock: () => DateTime.fromMillisecondsSinceEpoch(1000),
       interval: interval,
       telemetryInterval: telemetry,
@@ -536,8 +539,7 @@ void main() {
     });
   });
 
-  test('默认屏幕探测：通道可用且亮屏 → 继续 dumpsys activity（零 dumpsys power）',
-      () {
+  test('默认屏幕探测：通道可用且亮屏 → 继续 dumpsys activity（零 dumpsys power）', () {
     fakeAsync((async) {
       const channel = MethodChannel('test/gstore_battery_interactive_on');
       final messenger =
@@ -643,12 +645,101 @@ void main() {
     });
   });
 
+  test('无障碍 enabled + package → 零 dumpsys，事件直接来自事件源', () {
+    fakeAsync((async) {
+      final runner = _FakeRunner();
+      final watcher = _watcher(
+        runner: runner,
+        gateway: _FakeGateway(<String?>['com.ignored']),
+        accessibility: () async => const ForegroundReading(
+          enabled: true,
+          package: 'com.a',
+          activity: '.Main',
+          updatedAtMs: 123,
+        ),
+      );
+      final events = <ForegroundEvent>[];
+      watcher.events.listen(events.add);
+
+      watcher.start();
+      async.flushMicrotasks();
+      expect(events.map((e) => e.package).toList(), <String?>['com.a']);
+      expect(runner.dumpsysCalls, 0, reason: '无障碍可用时不得执行 dumpsys');
+
+      async.elapse(const Duration(seconds: 15));
+      async.flushMicrotasks();
+      expect(runner.dumpsysCalls, 0, reason: '后续拍同样零 shell');
+      expect(watcher.status, ForegroundWatcherStatus.running);
+
+      unawaited(watcher.dispose());
+      async.flushMicrotasks();
+    });
+  });
+
+  test('无障碍 disabled / 抛异常 → 回退 dumpsys 路径', () {
+    fakeAsync((async) {
+      final disabledRunner = _FakeRunner();
+      final disabledWatcher = _watcher(
+        runner: disabledRunner,
+        gateway: _FakeGateway(<String?>['com.a']),
+        accessibility: () async => const ForegroundReading(enabled: false),
+      );
+      disabledWatcher.start();
+      async.flushMicrotasks();
+      expect(disabledRunner.dumpsysCalls, greaterThan(0));
+      unawaited(disabledWatcher.dispose());
+      async.flushMicrotasks();
+
+      final throwingRunner = _FakeRunner();
+      final throwingWatcher = _watcher(
+        runner: throwingRunner,
+        gateway: _FakeGateway(<String?>['com.b']),
+        accessibility: () async => throw StateError('jni unavailable'),
+      );
+      final events = <ForegroundEvent>[];
+      throwingWatcher.events.listen(events.add);
+      throwingWatcher.start();
+      async.flushMicrotasks();
+      expect(throwingRunner.dumpsysCalls, greaterThan(0));
+      expect(events.map((e) => e.package).toList(), <String?>['com.b']);
+      unawaited(throwingWatcher.dispose());
+      async.flushMicrotasks();
+    });
+  });
+
+  test('Shizuku 不可用但无障碍可用 → 继续零命令运行', () {
+    fakeAsync((async) {
+      final runner = _FakeRunner();
+      final watcher = _watcher(
+        runner: runner,
+        gateway: _FakeGateway(<String?>['com.ignored']),
+        shizuku: () async => false,
+        accessibility: () async => const ForegroundReading(
+          enabled: true,
+          package: 'com.a',
+        ),
+      );
+      final events = <ForegroundEvent>[];
+      watcher.events.listen(events.add);
+
+      watcher.start();
+      async.flushMicrotasks();
+      expect(watcher.status, ForegroundWatcherStatus.running);
+      expect(events.map((e) => e.package).toList(), <String?>['com.a']);
+      expect(runner.commands, isEmpty, reason: '无障碍事件源零 shell');
+
+      unawaited(watcher.dispose());
+      async.flushMicrotasks();
+    });
+  });
+
   test('parseScreenOn', () {
     expect(ForegroundWatcher.parseScreenOn('mWakefulness=Awake'), isTrue);
     expect(ForegroundWatcher.parseScreenOn('mWakefulness=Asleep'), isFalse);
     expect(ForegroundWatcher.parseScreenOn('mWakefulness=Dozing'), isFalse);
     expect(ForegroundWatcher.parseScreenOn('Display Power: state=ON'), isTrue);
-    expect(ForegroundWatcher.parseScreenOn('Display Power: state=OFF'), isFalse);
+    expect(
+        ForegroundWatcher.parseScreenOn('Display Power: state=OFF'), isFalse);
     expect(ForegroundWatcher.parseScreenOn('mScreenOn=true'), isTrue);
     expect(ForegroundWatcher.parseScreenOn('mScreenOn=false'), isFalse);
     expect(ForegroundWatcher.parseScreenOn('unparseable'), isTrue);
