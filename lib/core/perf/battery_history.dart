@@ -18,8 +18,8 @@
 /// * `temperature` = ℃、`current` = mA、`voltage` = volt、`capacity` = %（Scene 自有
 ///   CSV 表头佐证）；
 /// * `time` = 时间戳（ms，DB 中声明为 `text` 主键）；
-/// * `status` = Android `BATTERY_STATUS_*`（查询过滤 `status in (3,4)` =
-///   DISCHARGING / NOT_CHARGING）；
+/// * `status` = Android `BATTERY_STATUS_*`；**功耗样本过滤为
+///   `screen_on = 1 且 status ∉ {2 CHARGING, 5 FULL}`**（见 [BatteryHistoryRecord.isPowerSample]）。
 /// * `mode` = Scene 功耗模式标签（自由文本）；
 /// * `package` = 前台包名；`screen_on` = 0/1。
 /// * **功率单位 `unverified`**：`power8.records` 用原始 `avg(current * voltage)`，
@@ -36,8 +36,17 @@ library;
 /// Android `BATTERY_STATUS_DISCHARGING`（Scene 查询 `status in (3,4)` 之一）。
 const int kBatteryStatusDischarging = 3;
 
-/// Android `BATTERY_STATUS_NOT_CHARGING`（Scene 查询 `status in (3,4)` 之一）。
+/// Android `BATTERY_STATUS_NOT_CHARGING`。
 const int kBatteryStatusNotCharging = 4;
+
+// 功耗样本**排除**的两种状态。以私有常量表达（本文件已导出
+// `kBatteryStatusDischarging` / `kBatteryStatusNotCharging`；充电 / 满电由记录器
+// 侧导出同名常量，公开放入本文件会与 `battery_history_recorder.dart` 的导入冲突）。
+/// Android `BATTERY_STATUS_CHARGING`（功耗样本排除）。
+const int _kBatteryStatusCharging = 2;
+
+/// Android `BATTERY_STATUS_FULL`（功耗样本排除）。
+const int _kBatteryStatusFull = 5;
 
 /// 一次采样记录（对应 `power8.records` 一行）。
 ///
@@ -89,13 +98,24 @@ class BatteryHistoryRecord {
   /// `capacity`（INTEGER）—— 电量（%）。
   final int capacity;
 
-  /// 是否为「点亮屏幕且处于放电/未充电」的有效功耗样本。
+  /// 是否为「点亮屏幕且非充电/满电」的有效功耗样本。
   ///
-  /// 即 Scene 聚合 SQL 的过滤条件 `screen_on = 1 and status in (3, 4)`。
+  /// ## 相对 Scene 的**有意偏差**（务必保留注释）
+  /// Scene 聚合 SQL 逐字过滤 `screen_on = 1 and status in (3, 4)`
+  /// （DISCHARGING / NOT_CHARGING）。但 GStore 的记录侧在部分 ROM 上读到的是
+  /// `status = 1 (UNKNOWN)`（sysfs `status` 节点缺失 / 非标准字符串 →
+  /// `batteryStatusFromLabel` 归一为 1），于是**行被记录、却永远不被聚合**
+  /// （「记了但看不见」）。为消除该静默丢弃，此处改为**排除法**：
+  /// `screen_on = 1 且 status ∉ {2 CHARGING, 5 FULL}`，从而把
+  /// `1 Unknown`、`3 Discharging`、`4 Not charging` 全部纳入聚合。
+  ///
+  /// 语义等价性：在 Scene 自身的 ROM 上状态总落在 `(3,4)`（或充电的 `2/5`），
+  /// 故本过滤对 Scene 行为**逐字一致**；偏差仅体现在它把 Scene 会漏掉的
+  /// `UNKNOWN` 行也计入。
   bool get isPowerSample =>
       screenOn == 1 &&
-      (status == kBatteryStatusDischarging ||
-          status == kBatteryStatusNotCharging);
+      status != _kBatteryStatusCharging &&
+      status != _kBatteryStatusFull;
 
   /// 复制并覆盖字段。
   BatteryHistoryRecord copyWith({
@@ -253,6 +273,9 @@ class BatteryAppPowerStat {
 
 /// 会话功耗聚合的过滤条件（Scene SQL `where session = ? and status in (?, ?)
 /// and screen_on = 1`；per-app 另加 `and package != ''`）。
+///
+/// Scene 的 `status in (?, ?)` 在 GStore 侧替换为 [BatteryHistoryRecord.isPowerSample]
+/// 的**排除法**（`status ∉ {2,5}`）——见该 getter 的偏差说明。
 bool _matchesSession(BatteryHistoryRecord r, int session) =>
     r.session == session && r.isPowerSample;
 

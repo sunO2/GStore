@@ -79,25 +79,30 @@ void main() {
       recorder.dispose();
     });
 
-    test('状态 == 2（CHARGING）→ 不落库', () async {
+    test('状态 == 2（CHARGING）→ 仍落库（放宽：充电行也记录）', () async {
       final store = InMemoryBatteryHistoryStore();
       final recorder = BatteryHistoryRecorder(
         store: store,
         sampler: () async => _sample(status: kBatteryStatusCharging),
       );
-      expect(await recorder.sampleOnce(), isFalse);
-      expect(await store.load(), isEmpty);
+      expect(await recorder.sampleOnce(), isTrue);
+      final rows = await store.load();
+      expect(rows.length, 1);
+      expect(rows.single.status, kBatteryStatusCharging);
+      expect(recorder.lastSkipReason, 'stored');
       recorder.dispose();
     });
 
-    test('状态 == 5（FULL）→ 不落库', () async {
+    test('状态 == 5（FULL）→ 仍落库（放宽：满电行也记录）', () async {
       final store = InMemoryBatteryHistoryStore();
       final recorder = BatteryHistoryRecorder(
         store: store,
         sampler: () async => _sample(status: kBatteryStatusFull),
       );
-      expect(await recorder.sampleOnce(), isFalse);
-      expect(await store.load(), isEmpty);
+      expect(await recorder.sampleOnce(), isTrue);
+      final rows = await store.load();
+      expect(rows.length, 1);
+      expect(rows.single.status, kBatteryStatusFull);
       recorder.dispose();
     });
 
@@ -110,18 +115,75 @@ void main() {
       expect(await recorder.sampleOnce(), isFalse);
       expect(await store.load(), isEmpty);
       expect(recorder.skippedForScreenOffCount, 1);
+      expect(recorder.lastSkipReason, 'screen_off');
       recorder.dispose();
     });
 
-    test('数值缺失 / 非有限 → 不落库', () async {
+    test('温度缺失（其余完整）→ 仍落库（温度可选，缺省 -1）', () async {
+      final store = InMemoryBatteryHistoryStore();
+      final recorder = BatteryHistoryRecorder(
+        store: store,
+        sampler: () async => _sample(temperatureC: null),
+      );
+      expect(await recorder.sampleOnce(), isTrue);
+      final row = (await store.load()).single;
+      expect(row.temperature, -1); // Scene DDL 缺省
+      expect(recorder.lastSkipReason, 'stored');
+      recorder.dispose();
+    });
+
+    test('缺电流 / 电压但容量存在 → 落库（power pair 或 level 二选一）', () async {
+      final store = InMemoryBatteryHistoryStore();
+      final recorder = BatteryHistoryRecorder(
+        store: store,
+        sampler: () async => _sample(currentMa: null, voltageV: null),
+      );
+      expect(await recorder.sampleOnce(), isTrue);
+      final row = (await store.load()).single;
+      expect(row.current, -1);
+      expect(row.voltage, 0);
+      expect(row.capacity, 61);
+      recorder.dispose();
+    });
+
+    test('缺容量但有电流 + 电压 → 落库（capacity 缺省 0）', () async {
+      final store = InMemoryBatteryHistoryStore();
+      final recorder = BatteryHistoryRecorder(
+        store: store,
+        sampler: () async => _sample(capacityPercent: null),
+      );
+      expect(await recorder.sampleOnce(), isTrue);
+      final row = (await store.load()).single;
+      expect(row.capacity, 0);
+      expect(row.current, -850);
+      expect(row.voltage, 4.2);
+      recorder.dispose();
+    });
+
+    test('电流 / 电压 / 容量全缺 → 不落库（incomplete）', () async {
+      final store = InMemoryBatteryHistoryStore();
+      final recorder = BatteryHistoryRecorder(
+        store: store,
+        sampler: () async => _sample(
+          currentMa: null,
+          voltageV: null,
+          capacityPercent: null,
+        ),
+      );
+      expect(await recorder.sampleOnce(), isFalse);
+      expect(await store.load(), isEmpty);
+      expect(recorder.lastSkipReason, 'incomplete');
+      recorder.dispose();
+    });
+
+    test('非有限值（NaN / Infinity）/ 非正电压 → 不落库', () async {
       final store = InMemoryBatteryHistoryStore();
       for (final sampler in <BatteryHistorySampler>[
-        () async => _sample(currentMa: null),
-        () async => _sample(voltageV: null),
         () async => _sample(voltageV: 0), // Scene `if (dP > 0)`：非正电压丢弃
         () async => _sample(voltageV: double.nan),
-        () async => _sample(temperatureC: null),
-        () async => _sample(capacityPercent: null),
+        () async => _sample(currentMa: double.nan),
+        () async => _sample(temperatureC: double.nan),
+        () async => _sample(capacityPercent: double.infinity),
       ]) {
         final recorder =
             BatteryHistoryRecorder(store: store, sampler: sampler);
@@ -131,12 +193,13 @@ void main() {
       expect(await store.load(), isEmpty);
     });
 
-    test('sampler 返回 null → 跳过（不抛、不落库）', () async {
+    test('sampler 返回 null → 跳过（no_reading，不抛、不落库）', () async {
       final store = InMemoryBatteryHistoryStore();
       final recorder =
           BatteryHistoryRecorder(store: store, sampler: () async => null);
       expect(await recorder.sampleOnce(), isFalse);
       expect(await store.load(), isEmpty);
+      expect(recorder.lastSkipReason, 'no_reading');
       recorder.dispose();
     });
 
@@ -148,6 +211,7 @@ void main() {
       );
       expect(await recorder.sampleOnce(), isFalse);
       expect(await store.load(), isEmpty);
+      expect(recorder.lastSkipReason, 'no_reading');
       recorder.dispose();
     });
   });
@@ -167,10 +231,10 @@ void main() {
       expect(record.package, 'com.example.app');
     });
 
-    test('门控不通过 → null', () {
+    test('门控不通过 → null（不完整 / 熄屏）', () {
       expect(
         buildBatteryHistoryRecord(
-          _sample(status: kBatteryStatusCharging),
+          _sample(currentMa: null, voltageV: null, capacityPercent: null),
           time: 1,
           session: 1,
         ),
@@ -183,6 +247,25 @@ void main() {
           session: 1,
         ),
         isNull,
+      );
+    });
+
+    test('充电 / 满电 → 门控通过（交由聚合侧排除）', () {
+      expect(
+        buildBatteryHistoryRecord(
+          _sample(status: kBatteryStatusCharging),
+          time: 1,
+          session: 1,
+        ),
+        isNotNull,
+      );
+      expect(
+        buildBatteryHistoryRecord(
+          _sample(status: kBatteryStatusFull),
+          time: 1,
+          session: 1,
+        ),
+        isNotNull,
       );
     });
 

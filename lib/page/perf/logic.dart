@@ -18,6 +18,7 @@ import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/fps_session_store.dart';
 import 'package:gstore/core/perf/frame_monitor.dart';
@@ -191,7 +192,8 @@ final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
       double? voltageV;
       double? currentMa;
       try {
-        final battery = await ref.read(perfModuleProvider).battery();
+        // 多源合并（sysfs → BatteryManager → dumpsys）：仅 sysfs 常缺电流 / 电压。
+        final battery = await _readMergedBattery(ref.read(perfModuleProvider));
         if (battery.present) {
           temperatureC = battery.temperatureC;
           voltageV = battery.voltageV;
@@ -222,6 +224,60 @@ final fpsSessionRecorderProvider = Provider<FpsSessionRecorder>((ref) {
   ref.onDispose(recorder.dispose);
   return recorder;
 });
+
+/// 经多源合并读取电池报告：sysfs（[PerfModule.battery]）→ Android `BatteryManager`
+/// → `dumpsys battery`（[readBatteryReading]），再把合并后的 [BatteryReading]
+/// 转回 [BatteryReport]（保留原始 charge-full / cycle 字段）。
+///
+/// * [PerfModule.battery] 抛 [PerfModuleUnavailableException] 时**向上冒泡**
+///   （保持既有整页降级语义）；
+/// * 仅当「sysfs 识别到电池但 `current + voltage + capacity` 不全」时才触发合并
+///   （含免权限兜底源）；`present=false` 或 sysfs 已够全时直接返回原始值；
+/// * 合并流程抛异常 / 返回 `null` 时**回退**原始 [PerfModule.battery] 结果；
+/// * 绝不因合并本身失败而丢失数据。
+Future<BatteryReport> _readMergedBattery(PerfModule module) async {
+  final raw = await module.battery();
+  // 仅在「有 sysfs 电池但字段不全」时才触发免权限兜底源
+  // （BatteryManager / dumpsys 只会给出同字段的低优先级值）：
+  // * present=false：sysfs 未识别到电池，无字段可补；
+  // * current + voltage + capacity 已全：sysfs 优先级最高，无需合并。
+  final sysfsComplete = raw.present &&
+      raw.currentMa != null &&
+      raw.voltageV != null &&
+      raw.capacityPercent != null;
+  if (!raw.present || sysfsComplete) return raw;
+  try {
+    final reading = await readBatteryReading(
+      sysfsReader: () async => batteryReadingFromSysfs(raw),
+    );
+    if (reading == null) return raw;
+    return _batteryReportFromReading(reading, fallback: raw);
+  } catch (error) {
+    debugPrint('[PerfMonitor] 合并电池读数失败（回退原始）: $error');
+    return raw;
+  }
+}
+
+/// 合并读数 → [BatteryReport]。缺失字段沿用 [fallback] 既有值（尤其
+/// `chargeFullUah` / `chargeFullDesignUah` / `cycleCount` 仅 sysfs 直读可得）。
+BatteryReport _batteryReportFromReading(
+  BatteryReading reading, {
+  required BatteryReport fallback,
+}) =>
+    BatteryReport(
+      present: reading.present,
+      basePath: reading.basePath,
+      capacityPercent: reading.capacityPercent,
+      voltageV: reading.voltageV,
+      currentMa: reading.currentMa,
+      temperatureC: reading.temperatureC,
+      status: reading.statusLabel,
+      health: reading.health,
+      technology: reading.technology,
+      chargeFullUah: fallback.chargeFullUah,
+      chargeFullDesignUah: fallback.chargeFullDesignUah,
+      cycleCount: fallback.cycleCount,
+    );
 
 /// 主视图逻辑像素尺寸串（`MediaQuery.size` 等价，如 `'1080.0x2340.0'`）。
 ///
@@ -504,7 +560,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       final results = await Future.wait<Object?>([
         module.cpu(),
         module.memory(),
-        module.battery(),
+        _readMergedBattery(module),
         module.thermal(),
         module.gpu(),
         module.network(),

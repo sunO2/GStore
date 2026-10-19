@@ -45,13 +45,17 @@
 ///    （不落库、不抛）。GStore 屏幕状态经 Shizuku `dumpsys power` 解析
 ///    （复用 [ForegroundWatcher.parseScreenOn]，与 23 号前台监视器同口径）；
 ///    无法判定时 **fail-open 视为亮屏**（与 `ForegroundWatcher` 一致，避免静默停摆）。
-/// 3. **状态条件**：`status == 2 (CHARGING) || status == 5 (FULL)` 时**不采样**
-///    （Scene `GlobalStatus.p.h()` 短路）；即仅记录放电 / 未充电（及 UNKNOWN）行。
-///    查询侧仍按 Scene SQL 过滤 `screen_on = 1 and status in (3, 4)`
-///    （见 `battery_history.dart`）。
-/// 4. **数值完整性**：`temperature` / `current` / `voltage` / `capacity` 缺失或非有限
-///    → 跳过该拍（**安全偏差**：Scene 会以默认值 `-1` / `0` 落库，但那会污染聚合；
-///    GStore 选择丢弃不完整读数，已在证据中标注）。
+/// 3. **状态条件（放宽，见下）**：Scene 在 `status == 2 (CHARGING) || 5 (FULL)`
+///    时短路**不采样**；GStore **有意放宽**为「充电行也记录」，仅由聚合侧
+///    （[BatteryHistoryRecord.isPowerSample]）把它们排除出功耗统计。理由：部分
+///    ROM 会在充电 / 满电与放电之间抖动，Scene 的短路会让这些时段**完全无行**；
+///    记录后交聚合过滤既不污染功耗口径，又保留可诊断性。
+/// 4. **数值完整性（放宽，见下）**：Scene 要求 `temperature` / `current` /
+///    `voltage` / `capacity` 全部存在；GStore 改为**只要 `capacity` 或
+///    `current + voltage`（功率对）至少一组完整**即可记录——`temperature` 可缺
+///    省，`voltage > 0` 仅在提供时校验。存在的数值必须有限（NaN / ±Inf 丢弃）。
+///    （Scene 会以默认值 `-1` / `0` 落库，但那是 Scene 自带字段的缺省；GStore
+///    对缺失字段沿用同一缺省，且已在证据中标为安全偏差。）
 ///
 /// ## 会话 id
 /// Scene 从 `f0.l()` 取「下一个会话号」（自增 + 裁剪）。GStore 无需 SQLite 会话表，
@@ -76,7 +80,10 @@
 /// * 落库失败静默（仅日志）。
 ///
 /// ## 可观测
-/// [ChangeNotifier]：`start` / `stop` / 每拍成功落库后通知 UI。
+/// [ChangeNotifier]：`start` / `stop` / 每拍成功落库后通知 UI。[insertedCount] /
+/// [skippedForScreenOffCount] / [lastSample] 保留；新增 [lastSkipReason]（每拍更新，
+/// 取值 `stored` / `screen_off` / `no_reading` / `incomplete` / `store_failed`）
+/// 供诊断卡片（Task 3）展示「为何无数据」。
 library;
 
 import 'dart:async';
@@ -86,9 +93,9 @@ import 'package:flutter/foundation.dart'
 
 import 'package:gstore/core/perf/battery_history.dart';
 import 'package:gstore/core/perf/battery_history_store.dart';
+import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/foreground_watcher.dart' show ForegroundWatcher;
 import 'package:gstore/core/perf/privileged_shell.dart';
-import 'package:gstore/core/rust/perf/PerfContract.dart' show BatteryReport;
 import 'package:gstore/core/rust/perf/PerfModule.dart' show PerfModule;
 
 /// 采样器：返回本拍实时读数（含屏幕 / 前台包 / 模式）；无数据返回 `null`。
@@ -176,29 +183,35 @@ class BatteryHistorySample {
       'package: $package, mode: $mode)';
 }
 
-/// 门控判定（逐条复刻 Scene `PowerStat`）：
+/// 门控判定（Scene `PowerStat` 的**放宽**等价）：
 /// * **亮屏**（[BatteryHistorySample.screenOn]）；
-/// * **非充电 / 满电**（`status != 2 && status != 5`）；
-/// * `temperature` / `current` / `voltage` / `capacity` 均存在且有限，`voltage > 0`。
+/// * **充电 / 满电不再短路**（Scene 会跳过；GStore 记录，交聚合侧排除）；
+/// * **至少一组完整**：`capacity` 存在，**或** `current` 与 `voltage` 同时存在；
+/// * 存在的数值必须**有限**；提供 `voltage` 时必须 `> 0`；`temperature` 可选。
 bool passesBatteryHistoryGate(BatteryHistorySample sample) {
   if (!sample.screenOn) return false;
-  if (sample.status == kBatteryStatusCharging ||
-      sample.status == kBatteryStatusFull) {
-    return false;
-  }
   final temperature = sample.temperatureC;
   final current = sample.currentMa;
   final voltage = sample.voltageV;
   final capacity = sample.capacityPercent;
-  if (temperature == null || !temperature.isFinite) return false;
-  if (current == null || !current.isFinite) return false;
-  if (voltage == null || !voltage.isFinite || voltage <= 0) return false;
-  if (capacity == null || !capacity.isFinite) return false;
+  // 存在即须有限（NaN / ±Inf 一律丢弃）。
+  if (temperature != null && !temperature.isFinite) return false;
+  if (current != null && !current.isFinite) return false;
+  if (capacity != null && !capacity.isFinite) return false;
+  // 电压仅在校验提供时：须有限且为正（Scene `if (dP > 0)`）。
+  if (voltage != null && (!voltage.isFinite || voltage <= 0)) return false;
+  // 需「电量」或「电流 + 电压（功率对）」至少一组完整。
+  final hasCapacity = capacity != null;
+  final hasPowerPair = current != null && voltage != null;
+  if (!hasCapacity && !hasPowerPair) return false;
   return true;
 }
 
 /// 由实时读数构造一行 [BatteryHistoryRecord]（[time] / [session] 由调用方注入，
 /// 保证确定性）。返回 `null`（不落库）当且仅当未过 [passesBatteryHistoryGate]。
+///
+/// 缺失字段沿用 Scene DDL 缺省（`temperature` / `current` = `-1`、`voltage` /
+/// `capacity` = `0`），因为放宽后的门控允许部分字段缺失。
 BatteryHistoryRecord? buildBatteryHistoryRecord(
   BatteryHistorySample sample, {
   required int time,
@@ -208,14 +221,14 @@ BatteryHistoryRecord? buildBatteryHistoryRecord(
   return BatteryHistoryRecord(
     time: time.toString(),
     session: session,
-    temperature: sample.temperatureC!,
+    temperature: sample.temperatureC ?? -1,
     status: sample.status,
     mode: sample.mode,
-    current: sample.currentMa!.round(),
-    voltage: sample.voltageV!,
+    current: sample.currentMa?.round() ?? -1,
+    voltage: sample.voltageV ?? 0,
     package: sample.package,
     screenOn: sample.screenOn ? 1 : 0,
-    capacity: sample.capacityPercent!.round(),
+    capacity: sample.capacityPercent?.round() ?? 0,
   );
 }
 
@@ -262,7 +275,12 @@ class BatteryHistoryRecorder extends ChangeNotifier {
   static const String foregroundCommand = 'dumpsys activity activities';
 
   /// 默认采样器（生产）：先探屏幕（熄屏 → 直接返回熄屏样本，不读电池 / 前台），
-  /// 再经 [PerfModule] 读电池、经 Shizuku 探前台包名。**绝不抛出**。
+  /// 再经 [readBatteryReading]（sysfs → BatteryManager → dumpsys 多源合并）读电池、
+  /// 经 Shizuku 探前台包名。**绝不抛出**。
+  ///
+  /// [readBatteryReading] 返回 `null`（所有源均 `present=false`）→ 返回 `null`
+  /// （跳过本拍）。`status` 优先取合并结果的整型码；
+  /// 无整型码时回退由 `statusLabel` 归一（[batteryStatusFromLabel]）。
   static Future<BatteryHistorySample?> _defaultSampler() async {
     final screenOn = await _probeScreenOn();
     if (!screenOn) {
@@ -271,22 +289,16 @@ class BatteryHistoryRecorder extends ChangeNotifier {
         screenOn: false,
       );
     }
-    final BatteryReport report;
-    try {
-      report = await PerfModule.instance.battery();
-    } catch (error) {
-      debugPrint('[BatteryHistoryRecorder] 电池读取失败（跳过本拍）: $error');
-      return null;
-    }
-    if (!report.present) return null;
+    final reading = await readBatteryReading();
+    if (reading == null) return null;
     final package = await _probeForegroundPackage();
     return BatteryHistorySample(
-      status: batteryStatusFromLabel(report.status),
+      status: reading.statusCode ?? batteryStatusFromLabel(reading.statusLabel),
       screenOn: true,
-      temperatureC: report.temperatureC,
-      currentMa: report.currentMa,
-      voltageV: report.voltageV,
-      capacityPercent: report.capacityPercent,
+      temperatureC: reading.temperatureC,
+      currentMa: reading.currentMa,
+      voltageV: reading.voltageV,
+      capacityPercent: reading.capacityPercent,
       package: package,
       // Scene `ModeSwitcher.v.d()` 等价标签由 todo 24/25 提供；此处留空。
       mode: '',
@@ -327,6 +339,7 @@ class BatteryHistoryRecorder extends ChangeNotifier {
   int _insertedCount = 0;
   int _skippedForScreenOffCount = 0;
   BatteryHistorySample? _lastSample;
+  String? _lastSkipReason;
 
   /// 是否正在录制。
   bool get isRecording => _recording;
@@ -345,6 +358,10 @@ class BatteryHistoryRecorder extends ChangeNotifier {
 
   /// 最近一拍的原始读数（无论是否落库）；尚无采样时为 `null`。
   BatteryHistorySample? get lastSample => _lastSample;
+
+  /// 最近一拍的处置原因（诊断用）：`stored` / `screen_off` / `no_reading` /
+  /// `incomplete` / `store_failed`；尚无采样时为 `null`。
+  String? get lastSkipReason => _lastSkipReason;
 
   /// 开始采样（幂等：采样中调用为 no-op）。
   ///
@@ -382,12 +399,18 @@ class BatteryHistoryRecorder extends ChangeNotifier {
       sample = await _sampler();
     } catch (error) {
       debugPrint('[BatteryHistoryRecorder] 采样异常（跳过本拍）: $error');
+      _lastSkipReason = 'no_reading';
       return false;
     }
-    if (_disposed || sample == null) return false;
+    if (_disposed) return false;
+    if (sample == null) {
+      _lastSkipReason = 'no_reading';
+      return false;
+    }
     _lastSample = sample;
     if (!sample.screenOn) {
       _skippedForScreenOffCount++;
+      _lastSkipReason = 'screen_off';
       return false;
     }
     final record = buildBatteryHistoryRecord(
@@ -395,15 +418,20 @@ class BatteryHistoryRecorder extends ChangeNotifier {
       time: _clock().millisecondsSinceEpoch,
       session: _sessionId,
     );
-    if (record == null) return false;
+    if (record == null) {
+      _lastSkipReason = 'incomplete';
+      return false;
+    }
     try {
       await _store.append(record);
     } catch (error) {
       debugPrint('[BatteryHistoryRecorder] 落库失败（忽略）: $error');
+      _lastSkipReason = 'store_failed';
       return false;
     }
     if (_disposed) return false;
     _insertedCount++;
+    _lastSkipReason = 'stored';
     notifyListeners();
     return true;
   }

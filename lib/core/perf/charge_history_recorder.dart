@@ -35,10 +35,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart'
     show ChangeNotifier, debugPrint, visibleForTesting;
 
+import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/charge_history.dart';
 import 'package:gstore/core/perf/charge_history_store.dart';
-import 'package:gstore/core/rust/perf/PerfContract.dart' show BatteryReport;
-import 'package:gstore/core/rust/perf/PerfModule.dart' show PerfModule;
 
 /// 采样器：返回本拍实时电池读数；无数据返回 `null`。
 typedef ChargeSampler = Future<ChargeSnapshot?> Function();
@@ -76,22 +75,22 @@ class ChargeHistoryRecorder extends ChangeNotifier {
   final ChargeHistoryStore _store;
   final ChargeRecorderClock _clock;
 
-  /// 默认采样器（生产）：`PerfModule.instance.battery()` → [ChargeSnapshot]。
+  /// 默认采样器（生产）：经 [readBatteryReading]（sysfs → BatteryManager →
+  /// dumpsys 多源合并）取电池读数 → [ChargeSnapshot]。**绝不抛出**。
+  ///
+  /// [readBatteryReading] 返回 `null` → 返回 `null`（跳过本拍）。门控语义
+  /// （`status==2 && |current|>100`）**不变**，由 [buildChargeRecord] 负责；
+  /// `status` 采用合并后的展示标签（`Charging` / …，与 sysfs `status` 同口径）。
   static Future<ChargeSnapshot?> _defaultSampler() async {
-    try {
-      final BatteryReport report = await PerfModule.instance.battery();
-      if (!report.present) return null;
-      return ChargeSnapshot(
-        currentMa: report.currentMa,
-        voltageV: report.voltageV,
-        capacityPercent: report.capacityPercent,
-        temperatureC: report.temperatureC,
-        status: report.status,
-      );
-    } catch (error) {
-      debugPrint('[ChargeHistoryRecorder] 默认采样失败（跳过）: $error');
-      return null;
-    }
+    final reading = await readBatteryReading();
+    if (reading == null) return null;
+    return ChargeSnapshot(
+      currentMa: reading.currentMa,
+      voltageV: reading.voltageV,
+      capacityPercent: reading.capacityPercent,
+      temperatureC: reading.temperatureC,
+      status: reading.statusLabel,
+    );
   }
 
   bool _disposed = false;

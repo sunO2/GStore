@@ -142,7 +142,7 @@ void main() {
   });
 
   group('聚合（Scene SQL 逐字）', () {
-    test('per-app 分组：过滤 screen_on=1 & status in(3,4) & package!=', () {
+    test('per-app 分组：过滤 screen_on=1 & status ∉ {2,5} & package!=', () {
       final records = <BatteryHistoryRecord>[
         // 有效：com.a / balance —— current 100, 200；voltage 4.0, 5.0
         _rec(timeMs: 1, package: 'com.a', mode: 'balance', current: 100,
@@ -155,7 +155,7 @@ void main() {
         // 被过滤：screen_on=0
         _rec(timeMs: 4, package: 'com.a', mode: 'balance', current: 9999,
             voltage: 4.0, screenOn: 0),
-        // 被过滤：status=2（CHARGING，不在 (3,4)）
+        // 被过滤：status=2（CHARGING，功耗样本排除）
         _rec(timeMs: 5, package: 'com.a', mode: 'balance', current: 8888,
             voltage: 4.0, status: 2),
         // 被过滤：package 为空
