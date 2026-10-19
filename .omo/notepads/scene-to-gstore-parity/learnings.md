@@ -203,3 +203,12 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - **ApiSurface 给 todo 22**：`summarizeChargeSessions()`（三图读侧可直接用）+ `ChargeRecord.power`。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 info）；`flutter test` 两新测试 = **21 passed**。证据 `.omo/evidence/task-21-charge-history.txt`（`.omo/` gitignored，不提交）。
 - 坑：`fakeAsync` 定时器用例断言 `initialDelay=Duration.zero` 时 `elapse(1s)` → 初始 tick + 1 周期 = **2** 次落库（准确，非 >=1 模糊断言）；`PerfModule` 门面在纯单测里不触发（sampler 全注入）。
+
+## Todo 16 — 分析助手（fpsFluencyRatio / highTempRatio / avgPower，2026-10-19）
+- 新增 **`lib/core/perf/fps_analysis.dart`**（纯 Dart，唯一 import = `scene_thresholds.dart`）；**未改 `fps_session.dart`**（有意选新文件：a. 分析逻辑与模型解耦；b. todo 17 拥有 `fps_session.dart`/`buildFpsSessionCsv`，避免冲突）。计划允许二选一。
+- 三纯函数：`fpsFluencyRatio(Iterable<double> samples)` = 有限样本中 `>= sceneFluencyFpsThreshold` 占比；`highTempRatio(Iterable<double> temperatures)` = 有限样本中 `>= sceneHighTempCThreshold` 占比；**`avgPower(Iterable<double> voltageV, Iterable<double> currentMa)`** = 逐拍 `V×I/1000` 均值（GStore 等价定义，对齐 todo 14 的 `FpsSession.avgPower` 文档 / task-33）。
+- **阈值全走共享常量**，`fps_analysis.dart` 内**无 `45`/`46` 字面量**（grep 门 exit=1）。**重要坑**：`45`/`46` 出现在 **doc 注释散文**里也会被粗 grep 命中——首版文档写了「值 45/46」被命中，已全部改写为引用 `[sceneFluency...]` 常量名；示例里的 `46.0` 也换成 `47.0`。若将来加 grep 门，记得 doc 注释也算。
+- **非有限值语义**：`NaN`/`±Inf` **整样本/整配对忽略**，既不计分子也不计分母；空/全无效 → `0`（`isFinite` 断言）。**ratio 分母保留有限负值**（负 fps/负温自然 < 阈值，不入分子）；`avgPower` **保留电流负号**（充/放物理有意义）。与 `FpsStats`（额外滤负 fps）的差异已在 doc 注明。
+- `avgPower` 两序列**长度不等取较短者**逐位配对；任一维非有限 → 该对跳过。仅 `1000`/`0` 为数值字面量。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning，= 基线）；`flutter test` 新测 `fps_analysis_test.dart` = **17 passed**，加 fps_session/scene_thresholds 回归共 **37 passed**。证据 `.omo/evidence/task-16-analysis.txt`。
+- 并发：**只新增文件**（+ append-only 证据/notepad），提交用 `flock /tmp/opencode/gstore.git.lock` + **pathspec 只 stage 本 todo 文件**，不扫他人 staged 改动。
