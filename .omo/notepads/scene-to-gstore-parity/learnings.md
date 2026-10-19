@@ -159,3 +159,47 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 坑：`module_manage_page_test` 断言 `find.text('数据与同步')` findsOneWidget 且在 800x1400 视口内构建 —— 故**未改分组顺序/名称**，只加右侧徽标；新增组置于「下载」之后、「关于」之前。
 - 坑：`test/page/settings/` 下 pump `MaterialApp.router` 必须包 `ProviderScope`（`settings_page.dart` 用 `Consumer` watch `themeProvider`），否则 `Bad state: No ProviderScope found`。
 - 验证：`flutter test`（新增 4 + 7 个回归文件）= 46 passed；`dart analyze lib/` = 0 error。证据 `.omo/evidence/task-13-settings-groups.txt`。
+
+## Todo 18 — BatteryHistoryStore（Scene `battery-history` 等价，2026-10-19）
+- 新增 `lib/core/perf/battery_history.dart`（模型+聚合纯函数）+ `battery_history_store.dart`（持久化+查询委托）+ `test/core/perf/battery_history_store_test.dart`（12 用例）。**未碰任何他人文件**；只 stage 本 todo 3 个文件 + 证据。
+- **schema 逐字对齐 Scene**：`power8.records(time,session,temperature,status,mode,current,voltage,package,screen_on,capacity)`（task-33）。JSON 键=列名。`voltage` DDL 声明 int 但 Scene 插 `Double`→实际 REAL，故模型用 `double` 存**原始操作数**（不换算）。
+- **机制差异（已文档化）**：Scene 用 SQLite（`power8`），GStore 无 SQLite 依赖、全部 perf store 走 `shared_preferences` 单键 JSON → 本 store 沿用 GStore 约定（键 `battery_history_records`），但**字段 schema/聚合公式逐字取 Scene**。机制选择写进库文档注释。
+- **聚合逐字取 task-33 SQL**（非猜测）：per-app `where session=? and status in(3,4) and screen_on=1 and package!='' group by package,mode order by current`，`power=avg(current*voltage)`、`avg/min/max(temperature)`、`count(current)`；会话功耗 `avg(current*voltage)`（status in 3/4 & screen_on=1）；样本数 `count(current)`。**功率单位标 unverified**（`power8` 不做 `/1000`，对照 fps_history）。
+- **容量裁剪**：Scene `f0.l()` 保留 ≤99 **会话** → `kBatteryHistorySessionCapacity=99`；`normalizeBatteryHistory` 保留最新 99 会话（新旧=会话内 max `time`，回退 session id）及其全部记录。
+- **宽容解码**：null/空/非 JSON/非数组→空列表；数组内坏条目跳过；字段缺失→Scene 默认（temperature/status/current=-1，其余 0/''）；绝不抛。
+- 验证：`dart analyze <两文件>` = No issues；`dart analyze lib/` = **0 error**（723 存量 info/warning）；`flutter test` 新测 = **12 passed**。证据 `.omo/evidence/task-18-battery-history.txt`。
+- **并发坑**：收尾时另两 worker 正在改 `lib/page/home/tab/dashboard/view.dart`（阈值 `_kCpuHigh`/`_kRamHigh` 瞬时 Undefined，因 `lib/core/perf/scene_thresholds.dart` 尚未提交）与 `fps_session.dart` → LSP/analyze 期会看到**瞬时**错误；提交用 `flock` + pathspec 只 stage 本 todo 文件，不扫入他人改动。
+
+## Todo 14 — FpsSession scene-parity fields（2026-10-19）
+- `lib/core/perf/fps_session.dart`（本文件序列 14→16→17，本 todo 最先动）：新增 4 字段 + `sessionId` 别名。
+  - `avgPower`(double,默认 0)/`viewSize`(String,默认 '')/`mode`(**String 自由串**，默认 '')/`temperatures`(**List<double>，GStore-only 非 Scene 字段**，默认 `const <double>[]`)。
+  - `sessionId` 是 **getter 别名** `String get sessionId => id;` —— **不是新字段**；`toJson` 仍只写 `id`（测试断言无 `session_id` 键）；`fromJson` 仅在 `id` 缺失时回退读 `session_id`（`id` 优先）。
+  - JSON 键 `avg_power`/`view_size`/`mode`/`temperatures`；新键往返，旧 JSON 缺键 → 安全默认不抛。
+  - `fromRecording` 增可选 `avgPower/viewSize/mode/temperatures`（供 todo 15 recorder 注入，本次定好签名避免 todo 15 再改模型）。
+  - `==`/`hashCode` 纳入 4 新字段（`temperatures` 按 `.length` 比对，**沿用既有 `samples.length` 风格**，不引入 `listEquals` 依赖）。
+- **未动**：`buildFpsSessionCsv`（CSV 字段对齐归 todo 17）、`fps_session_recorder.dart`(15)、`fps_session_store.dart`。**无 `PerfMode` 引用**。
+- 新 helper `_finiteValues(Object?)`：过滤 NaN/±Inf，**保留负值**（电池低温）——与 `_doubleList`（额外滤 `<0`）不同，温度用前者。
+- 坑：`id` 与 `session_id` 同时存在时 **`id` 优先**（测试初版写反了对 `session_id` 的期望，已改）。
+- 验证：`dart analyze <2 文件>` = **No issues found**；`flutter test test/core/perf/fps_session_model_test.dart` = **12 passed**（+4 新）；整 `test/core/perf/` = **532 passed** 无回归。
+- 并发瞬态（同 todo 12）：repo 级 `dart analyze lib/` 期间另一 worker 正在改 `lib/page/home/tab/dashboard/view.dart`（todo 23/29 的 `SceneLoadTier`/`_kTemp*`）→ 报 19 个 error **全在该文件**，与 `fps_session.dart` 无关；本 todo 门禁以「改动文件 0 error」为准。证据：`.omo/evidence/task-14-session-model.txt`。
+
+## Todo 23 — Scene 阈值集中化（2026-10-19）
+- 新增 `lib/core/perf/scene_thresholds.dart`（**纯 Dart，无 Flutter import**）：adopted 常量 FPS 45 / 高温 46 / CPU 85·65 / RAM 89·80 / temp 48·44·41（出处 task-2 §4）+ 纯档位解析 `SceneLoadTier`/`SceneTempTier` + `sceneCpuLoadTier`/`sceneRamLoadTier`/`sceneTempTier`（边界语义原样保留：CPU/RAM `>`；temp `≥48` / `>44` / `>41`）。
+- **`not aligned` = 空**：task-2 §4.4 确认 5 组阈值全部有据可依；process 阈值 task-2 未取证 → 无可采用项，保持原状。
+- **要点：计划点名的文件其实没有阈值**。`lib/page/perf/view.dart`、`third_party_section.dart` 只有 `perf_alert_settings` 告警入口（告警语义，非色档）；`lib/compent/*chart*.dart` 只有 `line_chart.dart`（数据无关自绘，颜色由调用方传，无内建阈值）。**真正的使用站点是 todo 7 的 `lib/page/home/tab/dashboard/view.dart`**（原本自带 7 个私有 `_k*` 常量）——本 todo 在该处集中化（删除 7 个本地常量 + 5 个卡片站点改走共享档位解析）。计划 Refs 的这三处是过时/推测，勿据其在空文件里硬塞常量。
+- 告警分离（task-2 §4.5）：`perf_alert_settings.dart` **未改未引**；单测显式断言色档值 ≠ 告警默认（CPU 85≠80、temp 48/44/41≠45、FPS 45≠50），防将来误合并。
+- **grep 门坑**：dashboard 残留唯一 `80` 是**布局 bottom padding**（`view.dart:184`，避让悬浮导航胶囊），与 RAM 色档阈值 80 无关 → 误报，明确排除；同时把类 doc 里「CPU 85/65…」的字面量改成指向共享文件的引用，避免粗 grep 误伤。
+- 验证：`dart analyze lib/` = **0 error**（723 issues 全存量）；`flutter test scene_thresholds_test.dart + dashboard_page_test.dart` = **13 passed**（8 新 + 5 回归）。证据 `.omo/evidence/task-23-thresholds.txt`（`.omo/` gitignored，未提交，循惯例）。
+- 并发：开工时其它 worker 正改 `fps_session.dart`(todo 14) / 新增 `battery_history*.dart`(todo 18/21)；反向地，todo 14/18 的 worker 也观察到本 todo 在 `dashboard/view.dart` 的**瞬时** Undefined（`scene_thresholds.dart` 未提交前）——提交用 `flock` + **pathspec 只 stage 本 todo 的 3 个文件**。
+
+## Todo 21 — ChargeHistoryStore + 充电采样（2026-10-19）
+- 新增 `lib/core/perf/charge_history.dart`（模型+门控+会话聚合）+ `charge_history_store.dart`（持久化+裁剪）+ `charge_history_recorder.dart`（1s 采样器）+ `test/core/perf/charge_history_store_test.dart`(13) / `charge_history_recorder_test.dart`(8)。**未碰他人文件**（并发中他人正改 `fps_session.dart`/`battery_history*`/阈值）。
+- **schema 逐字对齐 Scene**：真实表是 `com.omarea.store.n`（DB `charge8`，`store_n.txt:372`）`records(time,session,current,voltage,capacity,temperature)`，**不是**计划别名 `charge_history2`。JSON 键=列名；`current` int mA，`voltage` double V，`capacity` int %，`temperature` double ℃（单位来自 Scene CSV 表头，task-33）。派生 `power=current*voltage/1000` 标 **unverified**（Scene 自相矛盾：CSV 写 mW 却又 /1000）。
+- **机制差异（已文档化）**：Scene 用 SQLite（DB `charge8`），GStore 无 SQLite、perf store 统一走 `shared_preferences` 单键 JSON → 键 `charge_history`，但字段 schema/查询口径逐字取 Scene。`time` Scene 声明 text 主键实际写 long → GStore 用 int ms。
+- **门控逐字取 todo 33 的 `ChargeStat.c()`**（`rea_t33_out.txt`）：`status==2`(BATTERY_STATUS_CHARGING) **且** `Math.abs(current)>100` 才 insert；定时器 `a0.e(5000L,1000L)`=**初始 5s + 周期 1s**。落库 `n.a(session,current,voltage,capacity,temperature)`，`time=System.currentTimeMillis()`，**每拍即写无缓冲**。
+  - **移植偏差（已文档化）**：GStore 经 `PerfModule.battery()` 拿到的是 sysfs `status` **字符串**（`battery.rs`），Scene 是 `BatteryManager.getIntProperty(BATTERY_STATUS)==2`；`"Charging"` 即 `BATTERY_STATUS_CHARGING` 的 sysfs 拼写 → Dart 侧 `isChargingStatus()` 按键大小写不敏感匹配 `"Charging"`。`perf.battery` 的**控制反转**：recorder 注入 `ChargeSampler`，默认实现调 `PerfModule.instance.battery()`，异常（如 `PerfModuleUnavailableException`）→ 返回 null 跳过本拍。
+- **容量裁剪**：Scene `n.l()` 保留 ≤99 **会话** → `kChargeHistoryMaxSessions=99`；`pruneChargeHistory` 超限时丢弃 `|capacityRatio|` 最小者（`capacityRatio=首容量−末容量`，Scene `n.g()`），并列取更旧 session。记录恒按 `time` 升序。
+  - **明确不照搬 Scene 裁剪 bug**：Scene `n.l()` 的三档 `capacityRatio<{5,10,20}` 对任何充电会话恒真（充电时首<末⇒ratio 负），且实现里重复删 `h().get(0)`；只采纳可辩护核心（≤99 会话 + 按摆动保留），保确定性。
+- **ApiSurface 给 todo 22**：`summarizeChargeSessions()`（三图读侧可直接用）+ `ChargeRecord.power`。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 info）；`flutter test` 两新测试 = **21 passed**。证据 `.omo/evidence/task-21-charge-history.txt`（`.omo/` gitignored，不提交）。
+- 坑：`fakeAsync` 定时器用例断言 `initialDelay=Duration.zero` 时 `elapse(1s)` → 初始 tick + 1 周期 = **2** 次落库（准确，非 >=1 模糊断言）；`PerfModule` 门面在纯单测里不触发（sampler 全注入）。
