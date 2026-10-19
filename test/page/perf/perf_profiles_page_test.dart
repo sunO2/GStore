@@ -303,4 +303,90 @@ void main() {
     expect(await store.load('com.example.app'), isNull);
     expect(tester.takeException(), isNull);
   });
+
+  // ==================== 每应用场景模式（todo 25） ====================
+
+  testWidgets('列表显示场景模式（模式 极速）', (tester) async {
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.example.app': const PerfProfile(
+        package: 'com.example.app',
+        enabled: true,
+        mode: PerfMode.fast,
+      ),
+    });
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+
+    expect(find.textContaining('模式 极速'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('新增档案：默认模式均衡，改选「性能」保存 → store.mode 更新', (tester) async {
+    final store = InMemoryPerfProfileStore();
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+
+    await _openEditorViaAdd(tester);
+
+    // 缺失 → 预设默认（均衡）。
+    expect(find.text('均衡'), findsWidgets);
+
+    await tester.tap(find.byKey(const Key('perf_profile_editor_mode')));
+    await _pump(tester);
+    await tester.tap(find.text('性能').last);
+    await _pump(tester);
+
+    await tester.tap(find.byKey(const Key('perf_profile_editor_save')));
+    await _pump(tester);
+
+    final saved = await store.load('com.example.app');
+    expect(saved, isNotNull);
+    expect(saved!.mode, PerfMode.performance);
+    expect(saved.enabled, isFalse, reason: '仅改模式，未启用');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('编辑既有档案：mode=fast 预选极速，保存后保持', (tester) async {
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.example.app': const PerfProfile(
+        package: 'com.example.app',
+        mode: PerfMode.fast,
+      ),
+    });
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+
+    await tester
+        .tap(find.byKey(const Key('perf_profile_edit_com.example.app')));
+    await _pump(tester);
+
+    expect(find.text('极速'), findsWidgets);
+
+    await tester.tap(find.byKey(const Key('perf_profile_editor_save')));
+    await _pump(tester);
+
+    expect((await store.load('com.example.app'))!.mode, PerfMode.fast);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('模式改选省电：保存 → store.mode=省电', (tester) async {
+    final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+      'com.example.app': const PerfProfile(package: 'com.example.app'),
+    });
+    await tester.pumpWidget(_harness(store: store));
+    await _pump(tester);
+
+    await tester
+        .tap(find.byKey(const Key('perf_profile_edit_com.example.app')));
+    await _pump(tester);
+    await tester.tap(find.byKey(const Key('perf_profile_editor_mode')));
+    await _pump(tester);
+    await tester.tap(find.text('省电').last);
+    await _pump(tester);
+    await tester.tap(find.byKey(const Key('perf_profile_editor_save')));
+    await _pump(tester);
+
+    expect((await store.load('com.example.app'))!.mode, PerfMode.powersave);
+    expect(tester.takeException(), isNull);
+  });
 }

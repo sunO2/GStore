@@ -9,8 +9,16 @@
 ///
 /// ## 存储形态与安全默认
 /// * 存储值 = `{"<package>": <PerfProfile.toJson>}`。
+/// * 每个档案**自带场景模式**（`PerfProfile.mode`，todo 24）：[PerfProfile.toJson]
+///   始终写出 `mode`，[PerfProfile.fromJson] 经 `PerfMode.fromWire` 宽容解码。
+///   **旧档案缺失 `mode` → [PerfMode.balance]（预设默认）**，与 todo 24 一致。
 /// * 无记录 / 空串 / 未知（非 Map）/ **畸形 JSON** / 部分损坏的条目
 ///   → 退化为空 map（损坏条目 best-effort 跳过），**绝不抛异常**。
+///
+/// ## 每应用模式的便捷读写
+/// [PerfProfileStore.modeFor] / [PerfProfileStore.saveMode] 在既有 CRUD
+/// （`save`/`load`/`remove`/`clear`）之上提供「只关心 mode」的便利封装：
+/// 缺失一律回退 [PerfMode.defaultMode]，**不新增第二套存储**。
 ///
 /// ## 解耦
 /// 本层只读写配置，**不**执行任何 Shizuku 命令、**不**依赖控制会话（todo 20）
@@ -90,6 +98,14 @@ abstract class PerfProfileStore {
 
   /// 清空全部档案（写空 map）。
   Future<bool> clear();
+
+  /// 读取单个包的场景模式；无档案 / 缺失 / 损坏 → [PerfMode.defaultMode]（均衡）。
+  Future<PerfMode> modeFor(String package);
+
+  /// 仅更新单个包的场景模式，保持其它字段不变；包名为空 → `false`。
+  ///
+  /// 无既有档案时新建「仅含该模式」的档案（`enabled` 默认 `false`，fail-closed）。
+  Future<bool> saveMode(String package, PerfMode mode);
 }
 
 /// 生产实现：经由 [ConfigStore] 读写配置键 [ConfigKeys.perfProfiles]。
@@ -145,6 +161,21 @@ class ConfigPerfProfileStore implements PerfProfileStore {
 
   @override
   Future<bool> clear() => saveAll(<String, PerfProfile>{});
+
+  @override
+  Future<PerfMode> modeFor(String package) async {
+    final profile = await load(package);
+    return profile?.mode ?? PerfMode.defaultMode;
+  }
+
+  @override
+  Future<bool> saveMode(String package, PerfMode mode) async {
+    if (package.isEmpty) return false;
+    final existing = await load(package);
+    final updated =
+        (existing ?? PerfProfile(package: package)).copyWith(mode: mode);
+    return save(updated);
+  }
 }
 
 /// 内存实现（测试 / 无持久化环境回退）。
@@ -185,6 +216,19 @@ class InMemoryPerfProfileStore implements PerfProfileStore {
   @override
   Future<bool> clear() async {
     _profiles.clear();
+    return true;
+  }
+
+  @override
+  Future<PerfMode> modeFor(String package) async =>
+      _profiles[package]?.mode ?? PerfMode.defaultMode;
+
+  @override
+  Future<bool> saveMode(String package, PerfMode mode) async {
+    if (package.isEmpty) return false;
+    final existing = _profiles[package];
+    _profiles[package] =
+        (existing ?? PerfProfile(package: package)).copyWith(mode: mode);
     return true;
   }
 }

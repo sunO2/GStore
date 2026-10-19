@@ -208,4 +208,80 @@ void main() {
       expect(await store.loadAll(), isEmpty);
     });
   });
+
+  group('每应用场景模式（todo 25，复用既有 store）', () {
+    test('decodePerfProfiles：缺失 mode → 均衡（预设默认）', () {
+      final decoded = decodePerfProfiles(<String, dynamic>{
+        'com.a': <String, dynamic>{'enabled': true},
+      });
+      expect(decoded['com.a']!.mode, PerfMode.balance);
+      expect(decoded['com.a']!.mode, PerfMode.defaultMode);
+    });
+
+    test('decodePerfProfiles：非法 mode → 均衡（绝不抛）', () {
+      final decoded = decodePerfProfiles(<String, dynamic>{
+        'com.a': <String, dynamic>{'mode': 'turbo-9000', 'enabled': true},
+      });
+      expect(decoded['com.a']!.mode, PerfMode.balance);
+    });
+
+    test('encodePerfProfiles：始终写出 mode 线格式', () {
+      final encoded = encodePerfProfiles(<String, PerfProfile>{
+        'com.a': _profile('com.a').copyWith(mode: PerfMode.fast),
+      });
+      expect((encoded['com.a']! as Map)['mode'], 'fast');
+    });
+
+    test('ConfigPerfProfileStore：save → loadAll 往返保留 mode', () async {
+      const store = ConfigPerfProfileStore();
+      await store.save(_profile('com.a').copyWith(mode: PerfMode.performance));
+      expect((await store.load('com.a'))!.mode, PerfMode.performance);
+      expect(await store.modeFor('com.a'), PerfMode.performance);
+    });
+
+    test('ConfigPerfProfileStore：旧档案（无 mode）加载 → 均衡', () async {
+      const store = ConfigPerfProfileStore();
+      await ConfigStore.instance.write(ConfigKeys.perfProfiles, <String, dynamic>{
+        'com.legacy': <String, dynamic>{'enabled': true, 'gpu_level': 2},
+      });
+      final loaded = await store.load('com.legacy');
+      expect(loaded!.enabled, isTrue);
+      expect(loaded.gpuLevel, 2);
+      expect(loaded.mode, PerfMode.balance);
+    });
+
+    test('modeFor：无档案 → 预设默认（均衡）', () async {
+      const config = ConfigPerfProfileStore();
+      expect(await config.modeFor('com.missing'), PerfMode.balance);
+      final memory = InMemoryPerfProfileStore();
+      expect(await memory.modeFor('com.missing'), PerfMode.defaultMode);
+    });
+
+    test('saveMode：仅改 mode，保留其它既有字段', () async {
+      final store = InMemoryPerfProfileStore(<String, PerfProfile>{
+        'com.a': _profile('com.a', gpuLevel: 2),
+      });
+      expect(await store.saveMode('com.a', PerfMode.fast), isTrue);
+      final saved = (await store.load('com.a'))!;
+      expect(saved.mode, PerfMode.fast);
+      expect(saved.enabled, isTrue, reason: '既有字段不受影响');
+      expect(saved.gpuLevel, 2);
+      expect(await store.modeFor('com.a'), PerfMode.fast);
+    });
+
+    test('saveMode：无既有档案 → 新建仅含 mode（enabled=false）', () async {
+      const store = ConfigPerfProfileStore();
+      expect(await store.saveMode('com.new', PerfMode.powersave), isTrue);
+      final created = (await store.load('com.new'))!;
+      expect(created.mode, PerfMode.powersave);
+      expect(created.enabled, isFalse);
+      expect(created.cpuClusters, isEmpty);
+    });
+
+    test('saveMode：空包名 → false 且不写入', () async {
+      const store = ConfigPerfProfileStore();
+      expect(await store.saveMode('', PerfMode.fast), isFalse);
+      expect(await store.loadAll(), isEmpty);
+    });
+  });
 }

@@ -296,13 +296,14 @@ class _PerfProfilesPageState extends State<PerfProfilesPage> {
     final scheme = theme.colorScheme;
     final clusters = profile.cpuClusters.length;
     final parts = <String>[
+      '模式 ${profile.mode.label}',
       if (clusters > 0) '$clusters 簇',
       if (profile.gpuLevel != null) 'GPU ${profile.gpuLevel}',
       if (profile.cpuset != null) 'cpuset ${profile.cpuset}',
       if (profile.thermalEnabled != null)
         profile.thermalEnabled! ? '散热开' : '散热关',
     ];
-    final summary = parts.isEmpty ? '未配置覆盖项' : parts.join(' · ');
+    final summary = parts.join(' · ');
     return Card(
       child: ListTile(
         key: Key('perf_profile_tile_${profile.package}'),
@@ -509,6 +510,9 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
   late bool _enabled;
   late bool _thermal;
 
+  /// 场景模式；缺失 / 旧档案 → [PerfMode.balance]（[widget.initial] 已保证）。
+  late PerfMode _mode;
+
   /// 每个 CPU 簇的编辑态（governor / 最低 / 最高频率文本）。
   final Map<String, String?> _governors = <String, String?>{};
   final Map<String, TextEditingController> _minControllers =
@@ -526,6 +530,7 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
     final initial = widget.initial;
     _enabled = initial.enabled;
     _thermal = initial.thermalEnabled ?? true;
+    _mode = initial.mode;
     for (final cluster in widget.tunables?.cpuClusters ?? const <PerfCpuCluster>[]) {
       final saved = initial.cpuClusters[cluster.policy];
       _governors[cluster.policy] = saved?.governor;
@@ -641,6 +646,7 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
         gpuLevel: gpuLevel,
         cpuset: _cpuset,
         thermalEnabled: _thermalAvailable ? _thermal : widget.initial.thermalEnabled,
+        mode: _mode,
       ),
     );
   }
@@ -689,6 +695,8 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
             onChanged: (value) => setState(() => _enabled = value),
           ),
           const Divider(height: AppSpacing.xxl),
+          _sectionLabel(context, theme, '场景模式'),
+          _modeBlock(context, theme),
           if (widget.capabilities == null)
             _hint(
               context,
@@ -839,6 +847,30 @@ class _PerfProfileEditorSheetState extends State<_PerfProfileEditorSheet> {
             : '不可用：GPU 控制不可写（Shizuku 未授权 / 不适用）',
         helperMaxLines: 2,
       ),
+    );
+  }
+
+  /// 场景模式选择（省电 / 均衡 / 性能 / 极速）。
+  ///
+  /// 模式为**纯本地**档案字段（应用到设备由自动引擎在能力门内完成，见 todos
+  /// 26/28），因此此处始终可编辑；缺失 / 旧档案 → 均衡（[PerfMode.balance]）。
+  Widget _modeBlock(BuildContext context, ThemeData theme) {
+    return DropdownButtonFormField<PerfMode>(
+      key: const Key('perf_profile_editor_mode'),
+      initialValue: _mode,
+      decoration: const InputDecoration(
+        labelText: '性能模式',
+        isDense: true,
+        helperText: '进入该应用前台时按此模式应用（受能力门限制）',
+        helperMaxLines: 2,
+      ),
+      items: [
+        for (final mode in PerfMode.values)
+          DropdownMenuItem<PerfMode>(value: mode, child: Text(mode.label)),
+      ],
+      onChanged: (value) {
+        if (value != null) setState(() => _mode = value);
+      },
     );
   }
 

@@ -293,3 +293,12 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 验证：`dart analyze lib/` = **0 error**（723 存量 = 基线）；单文件 + 测试 `dart analyze` = **No issues found!**；`flutter test test/core/perf/perf_mode_profiles_test.dart` = **15 passed**。证据 `.omo/evidence/task-27-mode-profiles.txt`（`.omo/` gitignored，未提交）。
 - 并发：与 todo 25（store/page 每应用 mode）并行且**文件不相交**；只动 2 新文件 + learnings；提交用 `flock /tmp/opencode/gstore.git.lock` + **显式 pathspec**。坑：`git commit -- <新文件>` **不会**提交未跟踪文件 → 先 `git add` 再 pathspec 提交；`dist/` 与并发改动的 `perf_profile_store.dart`/`perf_profiles_page.dart` 保持不动。
 
+
+
+## Todo 25 — 每应用 mode 经既有 PerfProfileStore/perf_profiles_page（2026-10-19）
+- `lib/core/perf/perf_profile_store.dart`（**本 todo 拥有该文件**）：模式持久化**已由 todo 24 的模型自动覆盖**（`PerfProfile.toJson` 恒写 `mode`、`fromJson` 宽容 → 缺失 balance），故只需**显式化契约 + 便利读写**：`PerfProfileStore` 新增 abstract `modeFor(pkg)`（无档案/缺失 → `PerfMode.defaultMode`）与 `saveMode(pkg, mode)`（**仅改 mode**、保留其它字段；无档案 → 新建 `enabled=false` 的最小档案；空包名 → false）；`ConfigPerfProfileStore` 经 load/save 委托、`InMemoryPerfProfileStore` 直取 map；**CRUD 签名未动**。
+  - 坑（Dart）：abstract 类里给方法**写具体实现体**对 `implements X` 的实现类**不生效**（仍报 Missing concrete implementations）；`mixin M on Interface` 也**无法**混入只 `implements Interface` 的类（报 "can't be mixed onto Object because Object doesn't implement ..."）。正解：接口声明为 abstract，两个实现类各自实现（本 todo 就 2 个实现，grep 确认）。
+  - page 侧：编辑弹层加 `_mode`（自 `initial.mode`，缺失即 balance）+ `DropdownButtonFormField<PerfMode>`（key `perf_profile_editor_mode`，恒可编辑——mode 是纯本地存储意图，应用由引擎在能力门内做，todos 26/28）；`_submit` 带 `mode`；列表 tile 摘要首位加 `模式 <label>`（原「未配置覆盖项」分支随 mode 恒在而消失，测试无依赖，安全）。
+- 测试：store +9（decode 缺失/非法→balance、encode 恒写 mode、Config 往返、旧档案→balance、modeFor 回退、saveMode 保字段/新建/空包名）；page +4（tile 显示、新增默认均衡→选性能保存、既有 fast 预选极速、改省电）。下拉选择写法：`tap(dropdown key)` → `_pump` → `tap(find.text('性能').last)`（关闭态只显示当前项，菜单项唯一，`.last` 稳妥）。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning ≤ todo 24 基线 728）；4 改动文件单文件分析 No issues；目标 **36 passed**；回归 6 文件 **68 passed**。证据 `.omo/evidence/task-25-per-app-mode.txt`（`.omo/evidence` gitignored，未提交）。
+- 并发：与 todo 27（`perf_mode_profiles.dart` 常量表）并行且不相交；提交用 `flock /tmp/opencode/gstore.git.lock` + **显式 pathspec**（`git commit -- <files>`，只提交 2 源码 + 2 测试 + learnings.md）。LSP 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧错误（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略。
