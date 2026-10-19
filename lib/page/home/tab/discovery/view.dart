@@ -10,11 +10,6 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'logic.dart';
 import 'state.dart';
 
-/// 「发现」页——自包含的可 push 路由页（`AppRoute.discovery`）。
-///
-/// 页面自带**唯一** `Scaffold`；`AppBar` 依赖 `automaticallyImplyLeading`
-/// 在 push 进入时提供返回按钮，pop 返回上一页。该页不再作为首页 tab 嵌入，
-/// 因此没有 tab 保活 / 悬浮导航胶囊避让逻辑。
 class DiscoveryPage extends ConsumerStatefulWidget {
   const DiscoveryPage({super.key});
 
@@ -22,10 +17,15 @@ class DiscoveryPage extends ConsumerStatefulWidget {
   ConsumerState<DiscoveryPage> createState() => _DiscoveryPageState();
 }
 
-class _DiscoveryPageState extends ConsumerState<DiscoveryPage> {
+/// 保持页面状态（tab 切换不销毁：滚动位置/筛选状态保留）
+class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
+    with AutomaticKeepAliveClientMixin {
   late DiscoveryNotifier logic;
 
   final ScrollController _gridScrollController = ScrollController();
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -48,6 +48,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 要求
     logic = ref.read(discoveryProvider.notifier);
     final state = ref.watch(discoveryProvider);
     return Scaffold(
@@ -444,12 +445,12 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage> {
 
     return GridView.builder(
       controller: _gridScrollController,
-      // 底部留出安全区内边距（本页为独立路由页，无悬浮导航胶囊需要避让）
+      // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
       padding: EdgeInsets.fromLTRB(
         AppSpacing.lg,
         AppSpacing.lg,
         AppSpacing.lg,
-        AppSpacing.lg + MediaQuery.of(context).padding.bottom,
+        80 + MediaQuery.of(context).padding.bottom,
       ),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: state.crossAxisCount,

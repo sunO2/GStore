@@ -20,10 +20,6 @@ import 'package:gstore/page/backup/state.dart';
 class MinePage extends ConsumerStatefulWidget {
   const MinePage({super.key});
 
-  /// 「设置」tab 标签（Scene 三 tab 外壳的功能标签；
-  /// 首页导航栏与页面 AppBar 共用同一文案来源）。
-  static const String tabLabel = '设置';
-
   @override
   ConsumerState<MinePage> createState() => _MinePageState();
 }
@@ -306,7 +302,7 @@ class _MinePageState extends ConsumerState<MinePage>
     final user = ref.watch(userInfoProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text(MinePage.tabLabel),
+        title: const Text('我的'),
       ),
       body: SingleChildScrollView(
         // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
@@ -352,22 +348,6 @@ class _MinePageState extends ConsumerState<MinePage>
             ],
           );
         }),
-      ),
-    );
-  }
-
-  /// Scene 分组对齐徽标（todo 13）：标注本卡片对应的 Scene 设置分组名。
-  ///
-  /// 仅做分组语义对齐，不改变卡片内既有入口/键；使用主题令牌着色。
-  Widget _sceneGroupBadge(BuildContext context, String sceneGroup) {
-    return Padding(
-      padding: const EdgeInsets.only(left: AppSpacing.sm),
-      child: Text(
-        'Scene · $sceneGroup',
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: AppTypography.weightMedium,
-            ),
       ),
     );
   }
@@ -552,8 +532,6 @@ class _MinePageState extends ConsumerState<MinePage>
                         fontWeight: AppTypography.weightSemiBold,
                       ),
                 ),
-                // 分组对齐 Scene（todo 13）：工具卡 = Scene「调试 / 日志」等价组
-                _sceneGroupBadge(context, '调试 / 日志'),
                 const Spacer(),
                 InkWell(
                   onTap: _toggleToolsExpanded,
@@ -703,8 +681,6 @@ class _MinePageState extends ConsumerState<MinePage>
                         fontWeight: AppTypography.weightSemiBold,
                       ),
                 ),
-                // 分组对齐 Scene（todo 13）：外观卡 = Scene「主题」分组等价项
-                _sceneGroupBadge(context, '主题'),
                 const Spacer(),
                 InkWell(
                   onTap: () {

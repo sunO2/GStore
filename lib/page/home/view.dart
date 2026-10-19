@@ -3,11 +3,11 @@ import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
-import 'package:gstore/page/home/tab/feature_hub/view.dart';
-import 'package:gstore/page/home/tab/dashboard/view.dart';
+import 'package:gstore/page/home/tab/applist/view.dart';
+import 'package:gstore/page/agent/view.dart';
+import 'package:gstore/page/home/tab/discovery/view.dart';
 
 import 'logic.dart';
-import 'state.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
@@ -88,6 +88,13 @@ class _HomePageState extends ConsumerState<HomePage>
   int? _fromIndex;
   int? _toIndex;
 
+  /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手入口显隐）
+  bool _agentModuleEnabled =
+      ModuleManager.instance.isModuleEnabled('agent_tools');
+
+  /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _agentSub;
+
   /// 是否已注册 index 变化监听（listenManual 一次性）
   bool _listeningIndex = false;
 
@@ -95,13 +102,36 @@ class _HomePageState extends ConsumerState<HomePage>
   void initState() {
     super.initState();
     _fadeController.addListener(_onFadeTick);
+
+    // 监听 agent_tools 模块上下线：下线隐藏 AI 助手入口（底部 tab），上线恢复
+    _agentSub = ModuleManager.instance.watchModule('agent_tools').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _agentModuleEnabled =
+            ModuleManager.instance.isModuleEnabled('agent_tools');
+      });
+      // 运行中下线且当前在 AI tab → 跳回来源 tab，防用户困在无入口页面
+      final notifier = ref.read(homeProvider.notifier);
+      if (!_agentModuleEnabled && notifier.state.index == 2) {
+        notifier.jumpToPage(notifier.state.sourceIndex);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _agentSub?.cancel();
     _fadeController.dispose();
     super.dispose();
   }
+
+  /// raw(0..3) → display（AI 隐藏时：首页0 发现1 我的3→2）
+  int _displayIndex(int raw) =>
+      _agentModuleEnabled ? raw : (raw == 3 ? 2 : raw);
+
+  /// display → raw（AI 隐藏时：display2=我的→raw3）
+  int _rawIndex(int display) =>
+      _agentModuleEnabled ? display : (display == 2 ? 3 : display);
 
   /// 两段式交叉淡入淡出（底部导航等视图内跳转）：
   /// 记录源页/目标页 → 淡出源页 → 中点瞬移切换 → 淡入目标页。
@@ -147,7 +177,7 @@ class _HomePageState extends ConsumerState<HomePage>
     final notifier = ref.read(homeProvider.notifier);
     final index = homeState.index;
 
-    // 外部 jumpToPage（功能网格 / applist 等）落地后触发单段淡入动画。
+    // 外部 jumpToPage（agent 返回/applist 等）落地后触发单段淡入动画。
     // listenManual 一次性注册，避免 build 重复订阅。
     if (!_listeningIndex) {
       _listeningIndex = true;
@@ -160,153 +190,206 @@ class _HomePageState extends ConsumerState<HomePage>
       });
     }
 
-    return Scaffold(
-      // 内容延伸到悬浮导航胶囊后方，磨砂才能透出页面内容
-      extendBody: true,
-      // 禁用自动键盘压缩：输入栏位置由各页用 viewInsets 手动控制
-      resizeToAvoidBottomInset: false,
-      body: PageView(
-        physics: const NeverScrollableScrollPhysics(),
-        controller: notifier.controller,
-        children: [
-          _TabFadeThrough(
-            index: HomeTab3.features.tabIndex,
-            currentIndex: index,
-            fromIndex: _fromIndex,
-            toIndex: _toIndex,
-            fadeValue: _fadeController.value,
-            child: const FeatureHubPage(),
-          ),
-          _TabFadeThrough(
-            index: HomeTab3.home.tabIndex,
-            currentIndex: index,
-            fromIndex: _fromIndex,
-            toIndex: _toIndex,
-            fadeValue: _fadeController.value,
-            child: const DashboardPage(),
-          ),
-          _TabFadeThrough(
-            index: HomeTab3.settings.tabIndex,
-            currentIndex: index,
-            fromIndex: _fromIndex,
-            toIndex: _toIndex,
-            fadeValue: _fadeController.value,
-            child: const MinePage(),
-          ),
-        ],
-      ),
-      // 悬浮磨砂导航胶囊：BackdropFilter 磨砂 + 半透明主题底 + 圆角悬浮（M3 主题令牌）
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            0,
-            AppSpacing.lg,
-            AppSpacing.md,
-          ),
-          child: Container(
-            // 细描边层次试验：描边必须在 ClipRRect 外层（内层会被
-            // 磨砂/圆角裁掉），圆角半径与内层完全一致避免错位。
-            // outlineVariant 深浅色自适应；宽度随主题 borderStyle
-            // （AppBorders，无边框档真不绘制）。
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(
-                AppRadius.xxl + AppRadius.sm,
-              ),
-              border: AppBorders.all(
-                context,
-                color: Theme.of(context)
-                    .colorScheme
-                    .outlineVariant
-                    .withValues(alpha: 0.6),
-              ),
+    // AI 助手 tab 时拦截系统返回：回到来源 tab（而非退出 app）
+    // canPop 动态跟随 index：非 AI tab 返回键正常退出
+    final isAiTab = index == 2;
+    return PopScope(
+      canPop: !isAiTab,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && isAiTab) {
+          notifier.jumpToPage(homeState.sourceIndex);
+        }
+      },
+      child: Scaffold(
+        // 内容延伸到悬浮导航胶囊后方，磨砂才能透出页面内容
+        extendBody: true,
+        // 禁用自动键盘压缩：输入栏位置由各页用 viewInsets 手动控制
+        // （AI 悬浮输入栏需精确贴键盘，Scaffold 压缩会导致双倍偏移）
+        resizeToAvoidBottomInset: false,
+        body: PageView(
+          physics: const NeverScrollableScrollPhysics(),
+          controller: notifier.controller,
+          children: [
+            _TabFadeThrough(
+              index: 0,
+              currentIndex: index,
+              fromIndex: _fromIndex,
+              toIndex: _toIndex,
+              fadeValue: _fadeController.value,
+              child: const ApplistPage(),
             ),
-            child: ClipRRect(
-              // 大圆角胶囊（高度 64 时近似全圆）
-              borderRadius: BorderRadius.circular(
-                AppRadius.xxl + AppRadius.sm,
-              ),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                child: Builder(builder: (context) {
-                  // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑）。
-                  // 必须 copyWith 合并应用主题已定义的 navigationBarTheme，
-                  // 否则会整体替换掉 backgroundColor/elevation/indicatorColor/
-                  // iconTheme/labelTextStyle，选中态退回 M3 默认（secondaryContainer）。
-                  return Theme(
-                    data: Theme.of(context).copyWith(
-                      navigationBarTheme: Theme.of(context)
-                          .navigationBarTheme
-                          .copyWith(height: 64),
+            _TabFadeThrough(
+              index: 1,
+              currentIndex: index,
+              fromIndex: _fromIndex,
+              toIndex: _toIndex,
+              fadeValue: _fadeController.value,
+              child: const DiscoveryPage(),
+            ),
+            _TabFadeThrough(
+              index: 2,
+              currentIndex: index,
+              fromIndex: _fromIndex,
+              toIndex: _toIndex,
+              fadeValue: _fadeController.value,
+              child: const AgentPage(isTabEmbedded: true),
+            ),
+            _TabFadeThrough(
+              index: 3,
+              currentIndex: index,
+              fromIndex: _fromIndex,
+              toIndex: _toIndex,
+              fadeValue: _fadeController.value,
+              child: const MinePage(),
+            ),
+          ],
+        ),
+        // 悬浮磨砂导航胶囊：BackdropFilter 磨砂 + 半透明主题底 + 圆角悬浮（M3 主题令牌）
+        // AI 助手页激活时下沉滑出（聚焦模式，由输入栏左侧"返回"按钮接管导航）
+        bottomNavigationBar: AnimatedSlide(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          offset: isAiTab ? const Offset(0, 1.2) : Offset.zero,
+          child: ExcludeSemantics(
+            excluding: isAiTab,
+            child: IgnorePointer(
+              ignoring: isAiTab,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    0,
+                    AppSpacing.lg,
+                    AppSpacing.md,
+                  ),
+                  child: Container(
+                    // 细描边层次试验：描边必须在 ClipRRect 外层（内层会被
+                    // 磨砂/圆角裁掉），圆角半径与内层完全一致避免错位。
+                    // outlineVariant 深浅色自适应；宽度随主题 borderStyle
+                    // （AppBorders，无边框档真不绘制）。
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(
+                        AppRadius.xxl + AppRadius.sm,
+                      ),
+                      border: AppBorders.all(
+                        context,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outlineVariant
+                            .withValues(alpha: 0.6),
+                      ),
                     ),
-                    child: NavigationBar(
-                      selectedIndex: index,
-                      // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
-                      onDestinationSelected: _crossFadeTo,
-                      destinations: [
-                        _buildDestination(
-                          index,
-                          HomeTab3.features,
-                          selectedIcon: TablerIcons.layout_grid_filled,
-                          unselectedIcon: TablerIcons.layout_grid,
-                          selectedKey: 0,
-                          unselectedKey: 1,
-                        ),
-                        _buildDestination(
-                          index,
-                          HomeTab3.home,
-                          selectedIcon: TablerIcons.home_filled,
-                          unselectedIcon: TablerIcons.home,
-                          selectedKey: 2,
-                          unselectedKey: 3,
-                        ),
-                        _buildDestination(
-                          index,
-                          HomeTab3.settings,
-                          selectedIcon: TablerIcons.settings_filled,
-                          unselectedIcon: TablerIcons.settings,
-                          selectedKey: 4,
-                          unselectedKey: 5,
-                        ),
-                      ],
+                    child: ClipRRect(
+                      // 大圆角胶囊（高度 64 时近似全圆）
+                      borderRadius: BorderRadius.circular(
+                        AppRadius.xxl + AppRadius.sm,
+                      ),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                        child: Builder(builder: (context) {
+                          // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑）。
+                          // 必须 copyWith 合并应用主题已定义的 navigationBarTheme，
+                          // 否则会整体替换掉 backgroundColor/elevation/indicatorColor/
+                          // iconTheme/labelTextStyle，选中态退回 M3 默认（secondaryContainer）。
+                          return Theme(
+                            data: Theme.of(context).copyWith(
+                              navigationBarTheme: Theme.of(context)
+                                  .navigationBarTheme
+                                  .copyWith(height: 64),
+                            ),
+                            child: NavigationBar(
+                              selectedIndex: _displayIndex(index),
+                              onDestinationSelected: (display) {
+                                // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
+                                // display 下标 → raw 下标（AI 隐藏时 display2=我的→raw3）
+                                _crossFadeTo(_rawIndex(display));
+                              },
+                              destinations: [
+                                NavigationDestination(
+                                  // 选中项图标微放大（AnimatedScale 包在 AnimatedSwitcher 外，
+                                  // 两动画独立叠加：切换淡入淡出 + 缩放）
+                                  icon: AnimatedScale(
+                                    scale: (index == 0) ? 1.15 : 1.0,
+                                    duration: AppAnimation.fast,
+                                    curve: AppAnimation.curve,
+                                    child: AnimatedSwitcher(
+                                      duration: AppAnimations.normal,
+                                      child: Icon(
+                                        (index == 0)
+                                            ? TablerIcons.home_filled
+                                            : TablerIcons.home,
+                                        key: ValueKey(index == 0 ? 0 : 1),
+                                        size: AppTypography.iconLG,
+                                      ),
+                                    ),
+                                  ),
+                                  label: "首页",
+                                ),
+                                NavigationDestination(
+                                  icon: AnimatedScale(
+                                    scale: (index == 1) ? 1.15 : 1.0,
+                                    duration: AppAnimation.fast,
+                                    curve: AppAnimation.curve,
+                                    child: AnimatedSwitcher(
+                                      duration: AppAnimations.normal,
+                                      child: (index == 1)
+                                          ? const Icon(TablerIcons.compass_filled,
+                                              key: ValueKey(2))
+                                          : const Icon(TablerIcons.compass,
+                                              key: ValueKey(3)),
+                                    ),
+                                  ),
+                                  label: "发现",
+                                ),
+                                // AI 助手入口随 agent_tools 模块上下线显隐
+                                if (_agentModuleEnabled)
+                                  NavigationDestination(
+                                    icon: AnimatedScale(
+                                      scale: (index == 2) ? 1.15 : 1.0,
+                                      duration: AppAnimation.fast,
+                                      curve: AppAnimation.curve,
+                                      child: AnimatedSwitcher(
+                                        duration: AppAnimations.normal,
+                                        child: (index == 2)
+                                            ? const Icon(
+                                                TablerIcons.message_chatbot_filled,
+                                                key: ValueKey(6))
+                                            : const Icon(
+                                                TablerIcons.message_chatbot,
+                                                key: ValueKey(7)),
+                                      ),
+                                    ),
+                                    label: "AI 助手",
+                                  ),
+                                NavigationDestination(
+                                  icon: AnimatedScale(
+                                    scale: (index == 3) ? 1.15 : 1.0,
+                                    duration: AppAnimation.fast,
+                                    curve: AppAnimation.curve,
+                                    child: AnimatedSwitcher(
+                                      duration: AppAnimations.normal,
+                                      child: (index == 3)
+                                          ? const Icon(TablerIcons.user_filled,
+                                              key: ValueKey(4))
+                                          : const Icon(TablerIcons.user,
+                                              key: ValueKey(5)),
+                                    ),
+                                  ),
+                                  label: "我的",
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ),
                     ),
-                  );
-                }),
+                  ),
+                ),
               ),
             ),
           ),
         ),
       ),
-    );
-  }
-
-  /// 单个底部导航 destination：选中项图标微放大（AnimatedScale 包在
-  /// AnimatedSwitcher 外，两动画独立叠加：切换淡入淡出 + 缩放），
-  /// 文案取自 [HomeTab3] 的稳定标签来源。
-  Widget _buildDestination(
-    int selectedIndex,
-    HomeTab3 tab, {
-    required IconData selectedIcon,
-    required IconData unselectedIcon,
-    required int selectedKey,
-    required int unselectedKey,
-  }) {
-    final isSelected = selectedIndex == tab.tabIndex;
-    return NavigationDestination(
-      icon: AnimatedScale(
-        scale: isSelected ? 1.15 : 1.0,
-        duration: AppAnimation.fast,
-        curve: AppAnimation.curve,
-        child: AnimatedSwitcher(
-          duration: AppAnimations.normal,
-          child: Icon(
-            isSelected ? selectedIcon : unselectedIcon,
-            key: ValueKey(isSelected ? selectedKey : unselectedKey),
-            size: AppTypography.iconLG,
-          ),
-        ),
-      ),
-      label: tab.label,
     );
   }
 }

@@ -20,7 +20,7 @@ import 'package:gstore/page/home/view.dart';
 /// ② 浅色主题 navigationBarTheme.backgroundColor 存在（磨砂 surface@82% 收编全局主题）
 /// ③ 首页 NavigationBar 的局部 64px 高度覆盖必须「合并」而非「替换」应用主题，
 ///    保证 indicatorColor/iconTheme/labelTextStyle/elevation/backgroundColor 仍在。
-/// ④ 三个 tab（功能/首页/设置）图标中心与等分中心对齐（几何偏移测量）。
+/// ④ 四个 tab 图标中心与等分中心对齐（几何偏移测量）。
 
 /// 测试用 agent_tools 模块（无依赖、无副作用，不绑定服务）
 class TestAgentToolsModule extends AppModule {
@@ -68,13 +68,13 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // 挂载真实首页（PageView 三页：功能/首页/设置），测量底部 NavigationBar。
+  // 挂载真实首页（PageView 四页），测量底部 NavigationBar。
   //
   // 背景：home/view.dart 内层用 Theme(copyWith(navigationBarTheme: ...)) 局部压缩
   // 胶囊高度到 64。若直接 new 一个 NavigationBarThemeData(height: 64)，会整体替换
   // 掉应用主题里已定义的 backgroundColor/elevation/indicatorColor/iconTheme/
   // labelTextStyle，导致选中态退回 M3 默认（secondaryContainer + 弱化图标色）。
-  // 本组测试锁定该合并语义，并测量三个 tab 的几何中心是否等分对齐。
+  // 本组测试锁定该合并语义，并测量四个 tab 的几何中心是否等分对齐。
   // ---------------------------------------------------------------------------
   group('首页 NavigationBar 局部主题合并 + tab 几何对齐', () {
     final manager = ModuleManager.instance;
@@ -145,7 +145,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('④ 三个 tab 图标中心与等分中心对齐（偏移测量）', (tester) async {
+    testWidgets('④ 四个 tab 图标中心与等分中心对齐（偏移测量）', (tester) async {
       // 固定视口，消除设备尺寸对等分中心的影响
       tester.view.physicalSize = const Size(400, 800);
       tester.view.devicePixelRatio = 1.0;
@@ -154,16 +154,17 @@ void main() {
       await pumpHome(tester);
 
       final bar = tester.getRect(find.byType(NavigationBar));
-      // 当前选中 tab 0（功能）：其图标为 layout_grid_filled，其余为各自未选中图标。
+      // 当前选中 tab 0：其图标为 home_filled，其余为各自未选中图标
       final glyphs = <IconData>[
-        TablerIcons.layout_grid_filled,
-        TablerIcons.home,
-        TablerIcons.settings,
+        TablerIcons.home_filled,
+        TablerIcons.compass,
+        TablerIcons.message_chatbot,
+        TablerIcons.user,
       ];
 
       for (var i = 0; i < glyphs.length; i++) {
         final centerDx = tester.getCenter(find.byIcon(glyphs[i])).dx;
-        final expected = bar.left + bar.width * (2 * i + 1) / 6;
+        final expected = bar.left + bar.width * (2 * i + 1) / 8;
         final delta = centerDx - expected;
         debugPrint(
             '[navbar-measure] tab $i center=$centerDx expected=$expected delta=$delta');

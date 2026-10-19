@@ -1,6 +1,4 @@
 export 'package:gstore/page/home/view.dart';
-export 'package:gstore/page/home/tab/applist/view.dart';
-export 'package:gstore/page/home/tab/discovery/view.dart';
 export 'package:gstore/page/detail/view.dart';
 export 'package:gstore/page/search/view.dart';
 export 'package:gstore/page/download/view.dart';

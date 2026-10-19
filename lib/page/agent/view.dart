@@ -7,6 +7,7 @@ import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
 
@@ -14,14 +15,23 @@ import 'logic.dart';
 import 'chat_list_view.dart';
 
 class AgentPage extends ConsumerStatefulWidget {
-  const AgentPage({super.key});
+  /// 是否内嵌在首页 tab（底部有悬浮导航胶囊需避让）；
+  /// 独立路由进入（我的页 → AI 助手）时无胶囊，输入栏贴底常规间距
+  final bool isTabEmbedded;
+
+  const AgentPage({super.key, this.isTabEmbedded = false});
 
   @override
   ConsumerState<AgentPage> createState() => _AgentPageState();
 }
 
-class _AgentPageState extends ConsumerState<AgentPage> {
-  /// 悬浮输入框焦点
+/// 保持页面状态（作为首页 tab 时切换不销毁：输入/滚动/对话状态保留）
+class _AgentPageState extends ConsumerState<AgentPage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  /// 悬浮输入框焦点（tab 内嵌时离开 AI tab 自动失焦收键盘）
   final FocusNode _inputFocusNode = FocusNode();
 
   /// 滚动控制器（AgentNotifier 持有；initState 取引用，dispose 时 ref 不可用）
@@ -38,8 +48,10 @@ class _AgentPageState extends ConsumerState<AgentPage> {
   @override
   void initState() {
     super.initState();
-    // 路由进入：标记 AI 页可见（服务层后台通知/敏感拦截门控）
-    HomeTabVisibility.instance.setAgentRoute(true);
+    // 独立路由进入：标记 AI 页可见（服务层后台通知/敏感拦截门控）
+    if (!widget.isTabEmbedded) {
+      HomeTabVisibility.instance.setAgentRoute(true);
+    }
     // 触发 AgentNotifier 建立（首帧初始化）
     ref.read(agentProvider);
 
@@ -47,6 +59,22 @@ class _AgentPageState extends ConsumerState<AgentPage> {
     // 自绘列表使用 notifier.scrollController，此处直接监听
     _scroll = _notifier.scrollController;
     _scroll.addListener(_onScrollChanged);
+
+    // tab 内嵌场景：离开 AI tab 自动失焦（收键盘），进入不自动聚焦——由用户点击输入框唤起键盘
+    if (widget.isTabEmbedded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.listenManual(homeProvider.select((s) => s.index), (prev, next) {
+          if (!mounted) return;
+          // 等一帧确保输入框已构建（keepAlive 页输入框常驻，index 变化后立即失焦）
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (next != 2) {
+              _inputFocusNode.unfocus();
+            }
+          });
+        });
+      });
+    }
   }
 
   /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史；
@@ -85,8 +113,10 @@ class _AgentPageState extends ConsumerState<AgentPage> {
 
   @override
   void dispose() {
-    // 路由退出：复位 AI 页可见性
-    HomeTabVisibility.instance.setAgentRoute(false);
+    // 独立路由退出：复位 AI 页可见性（首页 tab 场景由 HomeNotifier 管理）
+    if (!widget.isTabEmbedded) {
+      HomeTabVisibility.instance.setAgentRoute(false);
+    }
     _inputFocusNode.dispose();
     _scroll.removeListener(_onScrollChanged);
     super.dispose();
@@ -125,6 +155,7 @@ class _AgentPageState extends ConsumerState<AgentPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 要求
     // 按字段拆分监听（而不是整体 watch agentProvider）：
     // 流式输出时 messageCount 每个 chunk 都变化，整体 watch 会导致整页（含
     // 消息列表外层 Stack/AnimatedPadding）每 chunk 重建一次 → 视觉跳动。
@@ -277,17 +308,21 @@ class _AgentPageState extends ConsumerState<AgentPage> {
     );
   }
 
-  /// 悬浮输入栏外层：按键盘高度平滑顶起（路由页常规贴底）
+  /// 悬浮输入栏外层：按键盘高度与 AI tab 激活状态计算贴底/上浮
   Widget _buildFloatingInputWrapper(BuildContext context) {
+    final homeIndex = ref.watch(homeProvider.select((s) => s.index));
+    final aiActive = widget.isTabEmbedded && homeIndex == 2;
     return AnimatedPadding(
       duration: const Duration(milliseconds: 200),
       curve: Curves.easeOut,
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom > 0
             ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-            : 16,
+            : widget.isTabEmbedded
+                ? (aiActive ? 16 : 100)
+                : 16,
       ),
-      child: _buildFloatingInput(context),
+      child: _buildFloatingInput(context, showBack: aiActive),
     );
   }
 
@@ -407,14 +442,20 @@ class _AgentPageState extends ConsumerState<AgentPage> {
     );
   }
 
-  /// 输入栏避让高度（键盘弹出/常规下的悬浮输入栏占位，消息列表与
+  /// 输入栏避让高度（键盘/胶囊状态下的悬浮输入栏占位，消息列表与
   /// "回到底部"按钮共用同一套数值保证视觉一致不重叠）
   double _inputBarClearance() {
-    return MediaQuery.of(context).viewInsets.bottom > 0 ? 72 : 80;
+    return MediaQuery.of(context).viewInsets.bottom > 0
+        ? 72
+        : widget.isTabEmbedded
+            ? (ref.read(homeProvider).index == 2 ? 80 : 156)
+            : 80;
   }
 
   /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
-  Widget _buildFloatingInput(BuildContext context) {
+  /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
+  /// [showBack] 为 true（AI tab 激活、胶囊滑出）时，左侧显示"返回来源 tab"按钮
+  Widget _buildFloatingInput(BuildContext context, {bool showBack = false}) {
     final scheme = Theme.of(context).colorScheme;
     final logic = ref.read(agentProvider.notifier);
     return Padding(
@@ -436,6 +477,11 @@ class _AgentPageState extends ConsumerState<AgentPage> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // 返回来源 tab 按钮（与发送按钮对称；仅胶囊滑出时显示）
+                if (showBack) ...[
+                  _buildBackButton(context),
+                  const SizedBox(width: AppSpacing.xs),
+                ],
                 Expanded(
                   child: TextField(
                     controller: logic.inputController,
@@ -497,6 +543,62 @@ class _AgentPageState extends ConsumerState<AgentPage> {
     }
     notifier.inputController.clear();
     notifier.sendText(text);
+  }
+
+  /// 返回来源 tab 按钮（图标 = 进入 AI 页前的 tab，点击直接跳回并展开导航）
+  /// filledTonal 圆底装饰，与右侧发送按钮（filled）视觉对称
+  Widget _buildBackButton(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final homeState = ref.read(homeProvider);
+    final sourceIndex = homeState.sourceIndex;
+    final (icon, tooltip) = switch (sourceIndex) {
+      0 => (
+          Icon(
+            TablerIcons.home,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回首页',
+        ),
+      1 => (
+          Icon(
+            TablerIcons.compass,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回发现',
+        ),
+      2 => (
+          Icon(
+            TablerIcons.message_chatbot,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回 AI 助手',
+        ),
+      3 => (
+          Icon(
+            TablerIcons.user,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回我的',
+        ),
+      _ => (
+          Icon(
+            TablerIcons.message_chatbot,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回',
+        ),
+    };
+    return IconButton.filledTonal(
+      tooltip: tooltip,
+      icon: icon,
+      onPressed: () =>
+          ref.read(homeProvider.notifier).jumpToPage(sourceIndex),
+    );
   }
 
   /// 显示会话列表弹窗（切换/删除）
