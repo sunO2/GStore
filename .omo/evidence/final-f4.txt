@@ -1,0 +1,55 @@
+# Final wave F4 — Evidence existence assertion
+
+- Date (UTC): 2026-10-19T08:31:21Z
+- Plan: `.omo/plans/scene-to-gstore-parity.md`
+- Method: explicitly enumerated every todo's declared `Evidence:` path straight from the plan (parsed the plan's own Evidence lines; NOT a broad glob), then asserted each exists on disk.
+
+## Per-todo evidence assertion
+
+| Todo | Declared Evidence path | Present | Bytes |
+|------|------------------------|---------|-------|
+| 10 | `.omo/evidence/task-10-entry-map.txt` | PRESENT | 5891 |
+| 11 | `.omo/evidence/task-11-applist.txt` | PRESENT | 4612 |
+| 12 | `.omo/evidence/task-12-discovery.txt` | PRESENT | 3524 |
+| 13 | `.omo/evidence/task-13-settings-groups.txt` | PRESENT | 5036 |
+| 14 | `.omo/evidence/task-14-session-model.txt` | PRESENT | 4561 |
+| 15 | `.omo/evidence/task-15-recorder.txt` | PRESENT | 4518 |
+| 16 | `.omo/evidence/task-16-analysis.txt` | PRESENT | 4736 |
+| 17 | `.omo/evidence/task-17-fps-ui.txt` | PRESENT | 2772 |
+| 18 | `.omo/evidence/task-18-battery-history.txt` | PRESENT | 5521 |
+| 19 | `.omo/evidence/task-19-battery-recorder.txt` | PRESENT | 9552 |
+| 1 | `.omo/evidence/task-1-parity-baseline.txt` | PRESENT | 1534270 |
+| 20 | `.omo/evidence/task-20-battery-stats.txt` | PRESENT | 3570 |
+| 21 | `.omo/evidence/task-21-charge-history.txt` | PRESENT | 7052 |
+| 22 | `.omo/evidence/task-22-charge-curve.txt` | PRESENT | 4490 |
+| 23 | `.omo/evidence/task-23-thresholds.txt` | PRESENT | 5620 |
+| 24 | `.omo/evidence/task-24-perf-mode-model.txt` | PRESENT | 4476 |
+| 25 | `.omo/evidence/task-25-per-app-mode.txt` | PRESENT | 4782 |
+| 26 | `.omo/evidence/task-26-mode-applier.txt` | PRESENT | 7034 |
+| 27 | `.omo/evidence/task-27-mode-profiles.txt` | PRESENT | 5260 |
+| 28 | `.omo/evidence/task-28-auto-mode.txt` | PRESENT | 7210 |
+| 29 | `.omo/evidence/task-29-mode-ui.txt` | PRESENT | 4410 |
+| 2 | `.omo/evidence/task-2-scene-reference.md` | PRESENT | 15520 |
+| 30 | `.omo/evidence/task-30-root-gate.txt` | PRESENT | 3833 |
+| 31 | `.omo/evidence/task-31-parity-spec.md` | PRESENT | 28831 |
+| 32 | `.omo/evidence/task-32-agent-route.txt` | PRESENT | 2547 |
+| 33 | `.omo/evidence/task-33-scene-data-schema.md` | PRESENT | 13284 |
+| 3 | `.omo/evidence/task-3-mode-feasibility.md` | PRESENT | 21193 |
+| 4 | `.omo/evidence/task-4-home-state.txt` | PRESENT | 7415 |
+| 5 | `.omo/evidence/task-5-home-shell.txt` | PRESENT | 4444 |
+| 6 | `.omo/evidence/task-6-feature-hub.txt` | PRESENT | 3390 |
+| 7 | `.omo/evidence/task-7-dashboard.txt` | PRESENT | 1002 |
+| 8 | `.omo/evidence/task-8-settings-tab.txt` | PRESENT | 5337 |
+| 9 | `.omo/evidence/task-9-routes.txt` | PRESENT | 784 |
+
+Declared unique Evidence files: 33
+Missing: 0
+
+## Device QA checklist
+
+- `.omo/evidence/device-qa-scene-parity.md`: PRESENT
+- Explicit NOT EXECUTED marker: PRESENT (device-dependent UI / mode-switch / visual-fidelity items marked UNVERIFIED — no device).
+
+## Verdict
+
+**PASS** — all 33 declared Evidence files exist on disk; device-qa checklist present and explicitly marks device-dependent items as NOT executed (no device).
