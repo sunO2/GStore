@@ -24,12 +24,33 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/perf/battery_history_recorder.dart';
+import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 
 import 'perf_common.dart';
 
 /// 缺失字段占位（读数 / 计数器缺省一律展示）。
 const String kBatteryDiagnosticsMissing = '—';
+
+/// 原始输出最多展示的行数（只取尾部，避免 `dumpsys` 全量刷屏）。
+const int kBatteryDiagnosticsRawTailLines = 20;
+
+/// 逐源诊断加载 seam（生产：[readBatterySourceDiagnostics]）。
+typedef BatterySourceDiagnosticsLoader
+    = Future<List<BatterySourceDiagnostic>> Function();
+
+/// 取 [raw] 的最后 [maxLines] 行（先去掉尾部空行）；不足则原样返回。
+String batteryDiagnosticsRawTail(
+  String raw, {
+  int maxLines = kBatteryDiagnosticsRawTailLines,
+}) {
+  final lines = raw.split('\n').toList();
+  while (lines.isNotEmpty && lines.last.trim().isEmpty) {
+    lines.removeLast();
+  }
+  if (lines.length <= maxLines) return lines.join('\n');
+  return lines.sublist(lines.length - maxLines).join('\n');
+}
 
 /// 由读数 + 采样器状态推导「为何无数据」的简短原因提示（纯函数）。
 ///
@@ -74,6 +95,7 @@ class BatteryDiagnosticsCard extends StatefulWidget {
     this.reading,
     this.sources = const <String>{},
     this.recorder,
+    this.diagnosticsLoader,
   });
 
   /// 多源合并后的电池读数（生产：`PerfPageState.battery`）；`null` → 全 `—`。
@@ -85,12 +107,29 @@ class BatteryDiagnosticsCard extends StatefulWidget {
   /// 采样器；`null` → App 级单例 [batteryHistoryRecorder]。
   final BatteryHistoryRecorder? recorder;
 
+  /// 逐源诊断加载器；`null` → 生产实现 [readBatterySourceDiagnostics]。
+  ///
+  /// 仅由「逐源读取」按钮按需触发，**不会**定时轮询；测试注入假实现即可
+  /// 完全绕开 FFI / 平台通道 / 真机。
+  final BatterySourceDiagnosticsLoader? diagnosticsLoader;
+
   @override
   State<BatteryDiagnosticsCard> createState() => _BatteryDiagnosticsCardState();
 }
 
 class _BatteryDiagnosticsCardState extends State<BatteryDiagnosticsCard> {
   bool _expanded = false;
+
+  /// 最近一次逐源诊断结果；`null` = 尚未读取 / 已重置。
+  List<BatterySourceDiagnostic>? _diagnostics;
+  bool _diagnosticsLoading = false;
+  String? _diagnosticsError;
+
+  /// 已展开原始输出的源（按 source 记录）。
+  final Set<String> _expandedRawSources = <String>{};
+
+  /// 每次读取 / 重置自增；用于丢弃收起卡片后才完成的过期结果。
+  int _diagnosticsRun = 0;
 
   BatteryHistoryRecorder get _recorder =>
       widget.recorder ?? batteryHistoryRecorder;
@@ -119,6 +158,50 @@ class _BatteryDiagnosticsCardState extends State<BatteryDiagnosticsCard> {
 
   void _onRecorderChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// 收起卡片时清空诊断结果（含在途读取）。
+  void _clearDiagnostics() {
+    _diagnosticsRun++;
+    _diagnostics = null;
+    _diagnosticsLoading = false;
+    _diagnosticsError = null;
+    _expandedRawSources.clear();
+  }
+
+  void _toggleExpanded() {
+    setState(() {
+      _expanded = !_expanded;
+      if (!_expanded) _clearDiagnostics();
+    });
+  }
+
+  /// 手动执行逐源读取：重跑时先清空旧结果，完成后仅接受最新一次运行。
+  Future<void> _runDiagnostics() async {
+    if (_diagnosticsLoading) return;
+    final loader = widget.diagnosticsLoader ?? readBatterySourceDiagnostics;
+    final run = ++_diagnosticsRun;
+    setState(() {
+      _diagnosticsLoading = true;
+      _diagnostics = null;
+      _diagnosticsError = null;
+      _expandedRawSources.clear();
+    });
+    try {
+      final result = await loader();
+      if (!mounted || run != _diagnosticsRun) return;
+      setState(() {
+        _diagnostics = result;
+        _diagnosticsLoading = false;
+      });
+    } catch (error) {
+      debugPrint('[BatteryDiagnosticsCard] 逐源读取失败: $error');
+      if (!mounted || run != _diagnosticsRun) return;
+      setState(() {
+        _diagnosticsError = '$error';
+        _diagnosticsLoading = false;
+      });
+    }
   }
 
   @override
@@ -165,7 +248,7 @@ class _BatteryDiagnosticsCardState extends State<BatteryDiagnosticsCard> {
                 IconButton(
                   key: const Key('battery_diagnostics_toggle'),
                   tooltip: _expanded ? '收起' : '展开',
-                  onPressed: () => setState(() => _expanded = !_expanded),
+                  onPressed: _toggleExpanded,
                   icon: Icon(
                     _expanded
                         ? TablerIcons.chevron_up
@@ -188,6 +271,8 @@ class _BatteryDiagnosticsCardState extends State<BatteryDiagnosticsCard> {
               Text('采样器', style: theme.textTheme.titleSmall),
               const SizedBox(height: AppSpacing.xs),
               ..._recorderRows(context, recorder),
+              const SizedBox(height: AppSpacing.md),
+              _sourceDiagnosticsSection(context, theme),
             ],
           ],
         ),
@@ -282,6 +367,179 @@ class _BatteryDiagnosticsCardState extends State<BatteryDiagnosticsCard> {
       perfKv(context, '最近样本', lastSampleText),
     ];
   }
+
+  // ==================== 逐源读取 ====================
+
+  Widget _sourceDiagnosticsSection(BuildContext context, ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final diagnostics =
+        _diagnostics ?? const <BatterySourceDiagnostic>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('逐源读取', style: theme.textTheme.titleSmall),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '手动读取 sysfs / BatteryManager / dumpsys，不会自动轮询。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            key: const Key('battery_diagnostics_run'),
+            onPressed: _diagnosticsLoading ? null : _runDiagnostics,
+            icon: const Icon(
+              TablerIcons.refresh,
+              size: AppTypography.iconSM,
+            ),
+            label: const Text('逐源读取'),
+          ),
+        ),
+        if (_diagnosticsLoading) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            key: const Key('battery_diagnostics_loading'),
+            children: [
+              const AppLoading(size: AppLoadingSize.small),
+              const SizedBox(width: AppSpacing.sm),
+              Text(
+                '读取中…',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (_diagnosticsError != null) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            '逐源读取失败：$_diagnosticsError',
+            key: const Key('battery_diagnostics_error'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.error,
+            ),
+          ),
+        ],
+        for (final diagnostic in diagnostics)
+          _diagnosticTile(theme, diagnostic),
+      ],
+    );
+  }
+
+  Widget _diagnosticTile(ThemeData theme, BatterySourceDiagnostic diagnostic) {
+    final scheme = theme.colorScheme;
+    final source = diagnostic.source;
+    final raw = diagnostic.raw;
+    final rawExpanded = _expandedRawSources.contains(source);
+    return Container(
+      key: Key('battery_diagnostics_source_$source'),
+      margin: const EdgeInsets.only(top: AppSpacing.sm),
+      padding: AppSpacing.allSM,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: AppRadius.allSM,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            source,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: AppTypography.weightSemiBold,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            _sourceSummary(diagnostic.reading),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          if (diagnostic.error != null) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              'error: ${diagnostic.error}',
+              key: Key('battery_diagnostics_source_error_$source'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.error,
+              ),
+            ),
+          ],
+          if (raw != null && raw.isNotEmpty) ...[
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: Key('battery_diagnostics_raw_$source'),
+                onPressed: () => setState(() {
+                  if (!_expandedRawSources.add(source)) {
+                    _expandedRawSources.remove(source);
+                  }
+                }),
+                icon: Icon(
+                  rawExpanded
+                      ? TablerIcons.chevron_up
+                      : TablerIcons.chevron_down,
+                  size: AppTypography.iconSM,
+                ),
+                label: Text(
+                  rawExpanded
+                      ? '收起原始输出'
+                      : '原始输出（末 $kBatteryDiagnosticsRawTailLines 行）',
+                ),
+              ),
+            ),
+            if (rawExpanded)
+              Container(
+                key: Key('battery_diagnostics_raw_output_$source'),
+                width: double.infinity,
+                padding: AppSpacing.allSM,
+                decoration: BoxDecoration(
+                  color: scheme.surface,
+                  borderRadius: AppRadius.allXS,
+                ),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Text(
+                    batteryDiagnosticsRawTail(raw),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      // 原始 shell 输出需要等宽；generic family 由系统解析。
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 单源读数摘要（缺失字段展示 `—`）。
+  static String _sourceSummary(BatteryReading? reading) {
+    if (reading == null) return '无读数';
+    final interactive = reading.interactive == null
+        ? kBatteryDiagnosticsMissing
+        : (reading.interactive! ? '是' : '否');
+    return <String>[
+      reading.present ? 'present' : 'not present',
+      '电量 ${_format(reading.capacityPercent, 0, '%')}',
+      '电压 ${_format(reading.voltageV, 2, ' V')}',
+      '电流 ${_format(reading.currentMa, 1, ' mA')}',
+      '温度 ${_format(reading.temperatureC, 1, ' °C')}',
+      'status ${reading.statusLabel ?? kBatteryDiagnosticsMissing}',
+      'interactive $interactive',
+    ].join(' · ');
+  }
+
+  /// 数值 → 固定小数位 + 单位；`null` → `—`。
+  static String _format(double? value, int digits, String unit) =>
+      value == null
+          ? kBatteryDiagnosticsMissing
+          : '${value.toStringAsFixed(digits)}$unit';
 
   /// 数值 → 固定小数位；`null` → `—`。
   static String _num(double? value, int digits) =>
