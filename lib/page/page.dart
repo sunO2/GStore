@@ -26,6 +26,7 @@ export 'package:gstore/page/perf/control_page.dart';
 export 'package:gstore/page/perf/reports_page.dart';
 export 'package:gstore/page/perf/third_party_page.dart';
 export 'package:gstore/page/perf/perf_profiles_page.dart';
+export 'package:gstore/page/perf/battery_stats_page.dart';
 export 'package:gstore/page/proxy/proxy_home_page.dart';
 export 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 export 'package:gstore/page/proxy/proxy_capture_ca_page.dart';
