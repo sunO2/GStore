@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/perf/miui_thermal.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
 
+import 'battery_diagnostics_card.dart';
 import 'logic.dart';
 import 'perf_common.dart';
 import 'state.dart';
@@ -56,6 +59,7 @@ class PerfHardwarePage extends ConsumerWidget {
           ..add(_buildMemoryCard(context, state))
           ..add(_buildPressureCard(context, state))
           ..add(_buildBatteryCard(context, state))
+          ..add(BatteryDiagnosticsCard(reading: state.battery))
           ..add(_buildBatteryHealthCard(context, state))
           ..add(_buildThermalCard(context, state))
           ..add(_buildCoolingCard(context, state))
@@ -393,6 +397,13 @@ class PerfHardwarePage extends ConsumerWidget {
                 ),
                 perfMetric(
                   context,
+                  '电流',
+                  report.currentMa == null
+                      ? '—'
+                      : '${report.currentMa!.toStringAsFixed(0)} mA',
+                ),
+                perfMetric(
+                  context,
                   '温度',
                   report.temperatureC == null
                       ? '—'
@@ -405,6 +416,28 @@ class PerfHardwarePage extends ConsumerWidget {
             perfKv(context, '健康', report.health ?? '未知'),
             if (report.technology != null)
               perfKv(context, '材质', report.technology!),
+            const SizedBox(height: AppSpacing.sm),
+            // 电池历史 / 充电曲线的唯二入口（此前不可达 → 「看不到耗电信息」）。
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                TextButton.icon(
+                  key: const Key('battery_stats_entry'),
+                  onPressed: () => context.push(AppRoute.batteryStats),
+                  icon: const Icon(TablerIcons.chart_line,
+                      size: AppTypography.iconSM),
+                  label: const Text('耗电统计'),
+                ),
+                TextButton.icon(
+                  key: const Key('battery_curve_entry'),
+                  onPressed: () => context.push(AppRoute.chargeCurve),
+                  icon: const Icon(TablerIcons.chart_line,
+                      size: AppTypography.iconSM),
+                  label: const Text('充电曲线'),
+                ),
+              ],
+            ),
           ],
         ),
       ),

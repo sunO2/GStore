@@ -152,4 +152,58 @@ void main() {
     expect(find.byKey(const Key('battery_stats_empty')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('仅有充电样本：提示「仅有充电/无效样本」而非空白（空 store 仍走空状态）',
+      (tester) async {
+    // 两条充电样本（status=2 CHARGING）：非空 store，但零有效功耗样本。
+    BatteryHistoryRecord charging({required int timeMs, required int session}) =>
+        BatteryHistoryRecord(
+          time: '$timeMs',
+          session: session,
+          temperature: 30,
+          status: 2, // BATTERY_STATUS_CHARGING
+          mode: 'balance',
+          current: 100,
+          voltage: 4.0,
+          package: 'com.c.app',
+          screenOn: 1,
+          capacity: 50,
+        );
+    final store = InMemoryBatteryHistoryStore(
+      seed: <BatteryHistoryRecord>[
+        charging(timeMs: 1000, session: 1),
+        charging(timeMs: 2000, session: 1),
+      ],
+    );
+    await tester.pumpWidget(harness(store));
+    await pump(tester);
+
+    // 非空 store：不显示「暂无电池记录」空状态。
+    expect(find.byKey(const Key('battery_stats_empty')), findsNothing);
+
+    // 按时间：会话卡内提示。
+    expect(
+      find.byKey(const Key('battery_stats_no_power_note_1')),
+      findsOneWidget,
+    );
+
+    // 按应用：会话有记录但零功耗样本 → 专用提示（非通用「暂无逐应用样本」）。
+    await tester.tap(find.byKey(const Key('battery_stats_mode_app')));
+    await pump(tester);
+    expect(
+      find.byKey(const Key('battery_stats_no_power_note')),
+      findsOneWidget,
+    );
+    expect(find.text('该会话仅有充电/无效样本，未计入功耗统计'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('空 store：仍显示空状态（不误报「仅有充电样本」）', (tester) async {
+    await tester.pumpWidget(harness(InMemoryBatteryHistoryStore()));
+    await pump(tester);
+
+    expect(find.byKey(const Key('battery_stats_empty')), findsOneWidget);
+    expect(find.byKey(const Key('battery_stats_no_power_note')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }

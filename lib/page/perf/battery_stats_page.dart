@@ -302,6 +302,14 @@ class _BatteryStatsPageState extends State<BatteryStatsPage> {
                 ),
               ],
             ),
+            if (summary.powerSampleCount == 0) ...[
+              const SizedBox(height: AppSpacing.sm),
+              _noPowerSampleNote(
+                context,
+                theme,
+                key: Key('battery_stats_no_power_note_${summary.session}'),
+              ),
+            ],
           ],
         ),
       ),
@@ -351,12 +359,19 @@ class _BatteryStatsPageState extends State<BatteryStatsPage> {
         ),
         Expanded(
           child: stats.isEmpty
-              ? _byAppEmpty(
-                  context,
-                  theme,
-                  '该会话暂无逐应用功耗样本\n'
-                      '（需屏幕点亮且处于放电 / 未充电状态）',
-                )
+              ? (selected.powerSampleCount == 0
+                  // 会话有记录，但没有一条有效功耗样本 → 显式说明「为何为 0」。
+                  ? _noPowerSampleNote(
+                      context,
+                      theme,
+                      key: const Key('battery_stats_no_power_note'),
+                    )
+                  : _byAppEmpty(
+                      context,
+                      theme,
+                      '该会话暂无逐应用功耗样本\n'
+                          '（需屏幕点亮且处于放电 / 未充电状态）',
+                    ))
               : ListView(
                   padding: AppSpacing.horizontalLG_bottomLG,
                   children: [
@@ -385,6 +400,40 @@ class _BatteryStatsPageState extends State<BatteryStatsPage> {
             color: scheme.onSurfaceVariant,
           ),
         ),
+      ),
+    );
+  }
+
+  /// 「仅有充电 / 无效样本」提示（非空 store，但零 [BatteryHistoryRecord.isPowerSample]）。
+  ///
+  /// 与「空 store」区分：真正空的 store 仍走 [build] 的空状态。
+  Widget _noPowerSampleNote(
+    BuildContext context,
+    ThemeData theme, {
+    Key? key,
+  }) {
+    final scheme = theme.colorScheme;
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            TablerIcons.info_circle,
+            size: AppTypography.iconSM,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              '该会话仅有充电/无效样本，未计入功耗统计',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -475,6 +524,7 @@ class _SessionSummary {
     required this.startMs,
     required this.endMs,
     required this.sampleCount,
+    required this.powerSampleCount,
     required this.avgTemperature,
     required this.minTemperature,
     required this.maxTemperature,
@@ -485,6 +535,10 @@ class _SessionSummary {
   final int startMs;
   final int endMs;
   final int sampleCount;
+
+  /// 有效功耗样本数（[BatteryHistoryRecord.isPowerSample]）；用于「仅有充电 /
+  /// 无效样本」提示（[sampleCount] > 0 但本值为 0）。
+  final int powerSampleCount;
 
   /// 平均温度（℃）；无有效温度样本 → `null`。
   final double? avgTemperature;
@@ -543,6 +597,8 @@ _SessionSummary _buildSummary(
     startMs: startMs,
     endMs: endMs,
     sampleCount: sorted.length,
+    powerSampleCount:
+        sorted.where((record) => record.isPowerSample).length,
     avgTemperature: tempCount == 0 ? null : sumTemp / tempCount,
     minTemperature: tempCount == 0 ? null : minTemp,
     maxTemperature: tempCount == 0 ? null : maxTemp,
