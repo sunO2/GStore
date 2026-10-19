@@ -149,3 +149,13 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - **Gotcha（并发编译失败）**：首次跑测试时另一 worker 正在改 `lib/page/settings/settings_page.dart`（`_buildLogDebugSection` 暂缺）→ 整仓编译失败波及我的测试文件。**这是并发瞬态**，等该文件 `dart analyze` 恢复后重跑即过；不要据此改自己的代码。
 - **Gotcha（Scaffold 计数）**：`find.byType(Scaffold)` 默认跳过 offstage 的上一路由，故 push 后 `findsOneWidget` 成立（与 applist_push_test 一致）；同时用 `find.descendant(of: DiscoveryPage, matching: Scaffold)` 显式断言「页面自身唯一 Scaffold」更稳。
 - 验证：`dart analyze lib/` = **0 error**（723 issues，全 info/warning）；`flutter test test/page/home/discovery/discovery_route_test.dart` = **4 passed**；回归 `other_pages_border_theme_test.dart + parity_routes_test.dart` = **9 passed**。证据 `.omo/evidence/task-12-discovery.txt`（`.omo/` gitignored，未提交，循项目惯例）。
+
+## Todo 13 — 设置 tab 分组对齐 Scene（2026-10-19）
+- Scene 设置页 = `ActivityOtherSettings`（`/tmp/vtools/app/src/main/res/layout/activity_other_settings.xml`）：三张卡 → 任务所列五组 = **SELinux**（`settings_disable_selinux`,`strings.xml:71`）/ **主题**（`settings_theme`:73 + 主题色按钮 + `settings_theme_wallpaper`:74）/ **通知**（`settings_black_notification`:84，位于主题卡内）/ **调试**（`settings_debug_layer`:76 / `settings_help_icon`:78 / `settings_auto_exit`:80）/ **日志**（`settings_logcat_title`:82 错误日志）。
+- GStore 映射（复用既有条目，零新增功能/键）：主题→「外观」组+MinePage 外观卡；SELinux→「安装与权限」组（Shizuku）；通知→「下载」组（GStore 无独立通知外观设置，取语义最近）；调试/日志→**新增「日志与调试」组**复用既有路由 `logViewer`/`proxy`/`requestDebug`（与 MinePage 工具卡同源）。
+- 实现：`settings_page.dart` `_buildSectionHeader(title, {sceneGroup})` 保留原分组名（左侧不动）并在右侧加 `Scene · <组>` 徽标；`mine/view.dart` 外观卡/工具卡加 `_sceneGroupBadge`（`Scene · 主题` / `Scene · 调试 / 日志`）。
+- **缺失目标页→禁用行**：`GoRouter.maybeOf(context)?.configuration.findMatch(Uri.parse(route)).matches.isNotEmpty`（go_router 14.8.1：未匹配返回 `_errorRouteMatchList`，其 `matches == const []` → 判 false）。据此 `enabled` / `onTap` 降级，subtitle 显示「功能不可用」。
+- 坑：`SettingsPage` 在多数既有测试里用 `MaterialApp(home:)` **无 GoRouter** → `maybeOf` 返回 null → 新行禁用；断言/操作既有行的测试不受影响。
+- 坑：`module_manage_page_test` 断言 `find.text('数据与同步')` findsOneWidget 且在 800x1400 视口内构建 —— 故**未改分组顺序/名称**，只加右侧徽标；新增组置于「下载」之后、「关于」之前。
+- 坑：`test/page/settings/` 下 pump `MaterialApp.router` 必须包 `ProviderScope`（`settings_page.dart` 用 `Consumer` watch `themeProvider`），否则 `Bad state: No ProviderScope found`。
+- 验证：`flutter test`（新增 4 + 7 个回归文件）= 46 passed；`dart analyze lib/` = 0 error。证据 `.omo/evidence/task-13-settings-groups.txt`。

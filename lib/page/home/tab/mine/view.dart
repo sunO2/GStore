@@ -356,6 +356,22 @@ class _MinePageState extends ConsumerState<MinePage>
     );
   }
 
+  /// Scene 分组对齐徽标（todo 13）：标注本卡片对应的 Scene 设置分组名。
+  ///
+  /// 仅做分组语义对齐，不改变卡片内既有入口/键；使用主题令牌着色。
+  Widget _sceneGroupBadge(BuildContext context, String sceneGroup) {
+    return Padding(
+      padding: const EdgeInsets.only(left: AppSpacing.sm),
+      child: Text(
+        'Scene · $sceneGroup',
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.primary,
+              fontWeight: AppTypography.weightMedium,
+            ),
+      ),
+    );
+  }
+
   /// 构建登录卡片（未登录状态）- 小卡片
   Widget _buildLoginCard(BuildContext context) {
     return Card(
@@ -536,6 +552,8 @@ class _MinePageState extends ConsumerState<MinePage>
                         fontWeight: AppTypography.weightSemiBold,
                       ),
                 ),
+                // 分组对齐 Scene（todo 13）：工具卡 = Scene「调试 / 日志」等价组
+                _sceneGroupBadge(context, '调试 / 日志'),
                 const Spacer(),
                 InkWell(
                   onTap: _toggleToolsExpanded,
@@ -685,6 +703,8 @@ class _MinePageState extends ConsumerState<MinePage>
                         fontWeight: AppTypography.weightSemiBold,
                       ),
                 ),
+                // 分组对齐 Scene（todo 13）：外观卡 = Scene「主题」分组等价项
+                _sceneGroupBadge(context, '主题'),
                 const Spacer(),
                 InkWell(
                   onTap: () {

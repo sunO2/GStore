@@ -83,8 +83,8 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       body: ListView(
         children: [
-          // Appearance section
-          _buildSectionHeader('外观'),
+          // Appearance section（对齐 Scene「主题」分组）
+          _buildSectionHeader('外观', sceneGroup: '主题'),
           _buildAppearanceSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
@@ -103,14 +103,19 @@ class _SettingsPageState extends State<SettingsPage> {
           _buildModuleSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
-          // Install & Permission section
-          _buildSectionHeader('安装与权限'),
+          // Install & Permission section（对齐 Scene「SELinux 权限」语义）
+          _buildSectionHeader('安装与权限', sceneGroup: 'SELinux 权限'),
           _buildInstallSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
-          // Download section
-          _buildSectionHeader('下载'),
+          // Download section（对齐 Scene「通知」分组：下载/通知行为）
+          _buildSectionHeader('下载', sceneGroup: '通知'),
           _buildDownloadSection(context),
+          const SizedBox(height: AppSpacing.xxl),
+
+          // Scene 设置分组「调试 / 日志」的 GStore 等价入口（复用既有路由）
+          _buildSectionHeader('日志与调试', sceneGroup: '调试 / 日志'),
+          _buildLogDebugSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
           // About section
@@ -121,16 +126,36 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildSectionHeader(String title) {
+  /// 分组标题。
+  ///
+  /// [sceneGroup] 非空时在右侧标注该分组对齐的 Scene 设置分组
+  /// （Scene 4.x `ActivityOtherSettings`：SELinux / 主题 / 通知 / 调试 / 日志），
+  /// 左侧文案保持 GStore 原有分组名不变（既有入口/键全部保留）。
+  Widget _buildSectionHeader(String title, {String? sceneGroup}) {
     return Padding(
       padding: AppSpacing.onlyHorizontalLG,
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: AppTypography.sizeSM,
-          fontWeight: AppTypography.weightMedium,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: AppTypography.sizeSM,
+              fontWeight: AppTypography.weightMedium,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          if (sceneGroup != null) ...[
+            const Spacer(),
+            Text(
+              'Scene · $sceneGroup',
+              style: TextStyle(
+                fontSize: AppTypography.sizeXS,
+                fontWeight: AppTypography.weightMedium,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -287,6 +312,78 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     );
+  }
+
+  /// Scene 设置分组「调试 / 日志」的 GStore 等价入口。
+  ///
+  /// 复用既有路由（日志查看 / 网络调试 / 请求调试）——不新增功能、不新增键；
+  /// 目标路由未在当前 GoRouter 注册时该行渲染为禁用态（不崩溃）。
+  Widget _buildLogDebugSection(BuildContext context) {
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          _buildSceneLinkedTile(
+            context,
+            key: const Key('scene_log_entry'),
+            icon: TablerIcons.bug,
+            title: '查看日志',
+            subtitle: '运行日志与错误排查',
+            route: AppRoute.logViewer,
+          ),
+          const Divider(height: 1),
+          _buildSceneLinkedTile(
+            context,
+            key: const Key('scene_proxy_debug_entry'),
+            icon: TablerIcons.shield,
+            title: '网络调试',
+            subtitle: 'VPN / 局域网与流量',
+            route: AppRoute.proxy,
+          ),
+          const Divider(height: 1),
+          _buildSceneLinkedTile(
+            context,
+            key: const Key('scene_request_debug_entry'),
+            icon: TablerIcons.api,
+            title: '请求调试',
+            subtitle: '集合 / 历史 / 环境 / 改写规则',
+            route: AppRoute.requestDebug,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Scene 对齐组内的跳转行；目标路由未注册 → 禁用行（no crash）。
+  Widget _buildSceneLinkedTile(
+    BuildContext context, {
+    required Key key,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required String route,
+  }) {
+    final available = _routeIsRegistered(context, route);
+    return ListTile(
+      key: key,
+      enabled: available,
+      leading: Icon(icon, size: AppTypography.iconMD),
+      title: Text(title),
+      subtitle: Text(available ? subtitle : '功能不可用'),
+      trailing: const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
+      onTap: available ? () => context.push(route) : null,
+    );
+  }
+
+  /// 目标路由是否已在当前 GoRouter 注册（无路由器时视为不可用）。
+  bool _routeIsRegistered(BuildContext context, String route) {
+    final router = GoRouter.maybeOf(context);
+    if (router == null) return false;
+    try {
+      return router.configuration.findMatch(Uri.parse(route)).matches.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 显示 GitHub 代理设置底部弹层
