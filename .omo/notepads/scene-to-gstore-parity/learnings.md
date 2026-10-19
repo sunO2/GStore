@@ -281,3 +281,8 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - `PerfProfile`：新增 `mode`（默认 balance，**非 null**，无法区分「未设」与 balance → 默认即 balance 语义）；`isEmpty` 增 `mode==balance`（唯一 mode 项 → 非空）；`copyWith` 加 `mode`；`toJson` **始终**写 `'mode': wireName`；`fromJson` 经 `fromWire`（旧档案缺 mode → balance，**向后兼容**）；`==`/`hashCode` 含 mode → **仅 mode 变化即被引擎 `current==target`（:472）识别为 changed**。
 - 测试：`perf_profile_test.dart` 新增 PerfMode 3 + PerfModePreset 5 + PerfProfile.mode 7 组；`perf_profile_auto_engine_test.dart` +1（仅 mode 变化 → refresh 返回 `applied` 而非 `unchanged`）。验证：`dart analyze lib/` = **0 error**（728 存量 = 基线）；`flutter test` 目标 4 文件 **68 passed** + 页面回归 **17 passed**。
 - 坑：LSP 报 `core/rust/generated/*` 与 `rust_shizuku_runner.dart` 陈旧错误（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略即可。并发：与 todo 30（miui_thermal/root_status）并行且**文件不相交**；提交用 `flock /tmp/opencode/gstore.git.lock` + **显式 pathspec**（只提交 perf_profile.dart + 2 测试，**不**动 todo 30 的改动）。证据 `.omo/evidence/task-24-perf-mode-model.txt`（`.omo/` gitignored）。
+
+## Todo 17 follow-up — `mode` CSV 列核验（2026-10-19）
+- 复核「`buildFpsSessionCsv` 缺 `mode` 列」的报障：**不成立**。`meta('mode', session.mode)` 已在 `lib/core/perf/fps_session.dart:321`（`view_size`/`avg_power`/`fluency_ratio`/`high_temp_ratio` 之前），且测试 `fps_session_model_test.dart:221` 已断言 `contains('mode,均衡')`。两者均随 **`022c728`** 入库（`git show HEAD:lib/core/perf/fps_session.dart` 已确认含该列）。
+- 验证：`flutter test test/core/perf/fps_session_model_test.dart` = **14 passed**；`dart analyze lib/` = **0 error**。**无代码改动 → 无新提交**（空提交会被 git 拒绝；不得伪造）。教训：下手前先 `grep`/`git show HEAD:<file>` 核对现状，避免重复改动。
+
