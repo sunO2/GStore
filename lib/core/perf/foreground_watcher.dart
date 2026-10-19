@@ -231,7 +231,6 @@ class ForegroundWatcher {
   bool _running = false;
   bool _pollerInFlight = false;
   bool _disposed = false;
-  bool _accessibilityOnly = false;
   int _consecutiveFailures = 0;
   String? _disabledReason;
   String? _lastPackage;
@@ -298,7 +297,6 @@ class ForegroundWatcher {
         debugPrint('[ForegroundWatcher] Shizuku 不可用 → 监视器已禁用（零轮询）');
         return;
       }
-      _accessibilityOnly = true;
       debugPrint('[ForegroundWatcher] Shizuku 不可用，但无障碍事件源已启用 → 继续');
     }
     _consecutiveFailures = 0;
