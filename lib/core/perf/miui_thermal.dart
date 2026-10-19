@@ -32,6 +32,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/perf/privileged_shell.dart';
+import 'package:gstore/core/perf/root_status.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 
 /// 已知 MIUI 温控配置路径白名单（`*` 为**单段**通配，不跨 `/`）。
@@ -69,6 +70,21 @@ abstract final class MiuiThermalError {
 
   /// 回读比对失败（size 不一致 / 读不到）。
   static const String readBackMismatch = 'read_back_mismatch';
+
+  /// root-only 动作但当前未检测到 Root → 拒绝且**零写入**（绝不静默 no-op）。
+  static const String rootRequired = 'root_required';
+}
+
+/// 温控动作 id（供 UI 统一引用，避免魔法串）。
+abstract final class MiuiThermalAction {
+  /// 备份（Shizuku 主路径）。
+  static const String backup = 'miui_thermal_backup';
+
+  /// 恢复（Shizuku 主路径）。
+  static const String restore = 'miui_thermal_restore';
+
+  /// 直写（**root-only**；需 uid 0）。
+  static const String directWriteAsRoot = 'miui_thermal_direct_write_as_root';
 }
 
 // ==================== 模型 ====================
@@ -205,6 +221,41 @@ class MiuiThermalActionResult {
       'MiuiThermalActionResult(ok: $ok, error: $error, detail: $detail)';
 }
 
+/// 一条温控动作的**能力条目**（UI 据此显隐 / 禁用 + 显示显式标签）。
+///
+/// * [rootOnly] 为真 → 无 Root 时 UI **必须**隐藏 / 禁用（[available] 为假，
+///   [reason] 给出显式原因）；**绝不**静默 no-op。
+/// * Shizuku 主路径动作 [rootOnly] 恒为假、[available] 恒为真。
+class MiuiThermalActionCapability {
+  const MiuiThermalActionCapability({
+    required this.id,
+    required this.label,
+    required this.rootOnly,
+    required this.available,
+    this.reason,
+  });
+
+  /// 动作 id（见 [MiuiThermalAction]）。
+  final String id;
+
+  /// 展示标签（**显式**标注「Shizuku」/「需 Root」）。
+  final String label;
+
+  /// 是否 root-only。
+  final bool rootOnly;
+
+  /// 当前是否可用。
+  final bool available;
+
+  /// 不可用原因（可用时为 `null`）。
+  final String? reason;
+
+  @override
+  String toString() =>
+      'MiuiThermalActionCapability($id, rootOnly: $rootOnly, '
+      'available: $available)';
+}
+
 // ==================== 服务 ====================
 
 /// MIUI 温控检测 / 诊断 / 备份 / 恢复服务。
@@ -216,6 +267,7 @@ class MiuiThermalService {
   MiuiThermalService({
     CommandRunner? runner,
     PrivilegedShell? shell,
+    RootDetector? rootDetector,
     String backupDir = kMiuiThermalBackupDir,
     List<String> allowlist = kMiuiThermalAllowlist,
     int Function()? clock,
@@ -227,12 +279,19 @@ class MiuiThermalService {
               timeout: timeout,
               inShellTimeoutSeconds: inShellTimeoutSeconds,
             ),
+        _rootDetector = rootDetector ??
+            RootDetector(
+              runner: runner ?? rustShizukuRunner,
+              timeout: timeout,
+              inShellTimeoutSeconds: inShellTimeoutSeconds,
+            ),
         _backupDir = backupDir,
         _allowlist = List<String>.unmodifiable(allowlist),
         _clock = clock ?? (() => DateTime.now().millisecondsSinceEpoch),
         _matchers = allowlist.map(_globToRegExp).toList(growable: false);
 
   final PrivilegedShell _shell;
+  final RootDetector _rootDetector;
   final String _backupDir;
   final List<String> _allowlist;
   final int Function() _clock;
@@ -263,6 +322,47 @@ class MiuiThermalService {
       versionName: versionName.isEmpty ? null : versionName,
       versionCode: versionCode,
     );
+  }
+
+  // ==================== Root 可选能力门（Shizuku 为主） ====================
+
+  /// 探测 Root 状态（**严格可选**；失败降级为「无 Root」）。
+  Future<RootStatus> rootStatus({bool refresh = false}) =>
+      _rootDetector.detect(refresh: refresh);
+
+  /// 列出温控动作的能力条目（UI 据此显隐 / 禁用 + 显示显式标签）。
+  ///
+  /// * 备份 / 恢复（Shizuku 主路径）**恒可用**；
+  /// * 直写（`thermal_disguise`，root-only）**仅**在检测到 Root 时可用，
+  ///   否则 [MiuiThermalActionCapability.available] 为假且带显式 [reason]。
+  Future<List<MiuiThermalActionCapability>> actionCapabilities({
+    bool refresh = false,
+  }) async {
+    final root = await rootStatus(refresh: refresh);
+    final gate = RootCapabilityGate(root);
+    return <MiuiThermalActionCapability>[
+      const MiuiThermalActionCapability(
+        id: MiuiThermalAction.backup,
+        label: '备份温控配置（Shizuku）',
+        rootOnly: false,
+        available: true,
+      ),
+      const MiuiThermalActionCapability(
+        id: MiuiThermalAction.restore,
+        label: '恢复温控配置（Shizuku）',
+        rootOnly: false,
+        available: true,
+      ),
+      MiuiThermalActionCapability(
+        id: MiuiThermalAction.directWriteAsRoot,
+        label: '温控直写（需 Root）',
+        rootOnly: true,
+        available: gate.isAvailable(RootOnlyCapability.miuiThermalDirectWrite),
+        reason: gate.unavailableReason(
+          RootOnlyCapability.miuiThermalDirectWrite,
+        ),
+      ),
+    ];
   }
 
   // ==================== 诊断（只读） ====================
@@ -353,12 +453,44 @@ class MiuiThermalService {
 
   // ==================== 恢复 ====================
 
-  /// 从「本应用备份」恢复一个配置文件到白名单目标。
+  /// 从「本应用备份」恢复一个配置文件到白名单目标（**Shizuku 主路径**）。
   ///
   /// 门禁顺序：确认 → 备份归属 → 目标白名单 → 备份存在 → `cp` → 回读比对。
   Future<MiuiThermalActionResult> restore(
     MiuiThermalBackup backup, {
     bool confirmed = false,
+  }) =>
+      _restoreVia(backup, confirmed: confirmed, asRoot: false);
+
+  /// **root-only** 直写：经 `su` 把「本应用备份」写回白名单目标。
+  ///
+  /// 这是 [restore] 的 Root 变体（用于 Shizuku uid 2000 被拒、但 uid 0 可写的
+  /// 场景，如 MIUI `thermal_disguise`）。**门禁更严**：
+  /// 1. **先**要求已检测到 Root，否则 `root_required` 且**零写入**；
+  /// 2. 其后与 [restore] 完全一致（确认 → 备份归属 → 白名单 → 存在 → 回读）。
+  ///
+  /// 该动作**绝不**是默认路径；仅当 [actionCapabilities] 报告其可用时，
+  /// UI 才可展示 / 启用。
+  Future<MiuiThermalActionResult> directWriteAsRoot(
+    MiuiThermalBackup backup, {
+    bool confirmed = false,
+  }) async {
+    final root = await rootStatus();
+    if (!root.rooted) {
+      debugPrint('[MiuiThermal] 温控直写需要 Root（未检测到）→ 零写入');
+      return MiuiThermalActionResult.failure(
+        MiuiThermalError.rootRequired,
+        '温控直写需要 Root（当前未检测到，${root.display}）→ 拒绝；请使用 Shizuku 恢复',
+      );
+    }
+    return _restoreVia(backup, confirmed: confirmed, asRoot: true);
+  }
+
+  /// 恢复 / 直写共享执行体（[asRoot] 决定传输是否经 `su`）。
+  Future<MiuiThermalActionResult> _restoreVia(
+    MiuiThermalBackup backup, {
+    required bool confirmed,
+    required bool asRoot,
   }) async {
     if (!confirmed) {
       debugPrint('[MiuiThermal] 恢复缺少二次确认 → 零写入');
@@ -388,7 +520,10 @@ class MiuiThermalService {
         '备份文件不存在或不可读：${backup.backupPath}',
       );
     }
-    final res = await _run('cp -f ${backup.backupPath} ${backup.sourcePath}');
+    final cpBody = 'cp -f ${backup.backupPath} ${backup.sourcePath}';
+    final res = asRoot
+        ? await _shell.run(_shell.buildCommand("su -c '$cpBody'"))
+        : await _run(cpBody);
     if (!res.ok) {
       return MiuiThermalActionResult.failure(
         MiuiThermalError.commandFailed,
@@ -402,9 +537,11 @@ class MiuiThermalService {
         '恢复回读校验失败：期望 $srcSize 字节，实得 ${readBack ?? '读取失败'}',
       );
     }
-    debugPrint('[MiuiThermal] 已恢复 ${backup.sourcePath}（$readBack 字节，已回读校验）');
+    final via = asRoot ? 'Root 直写' : 'Shizuku';
+    debugPrint(
+        '[MiuiThermal] 已恢复 ${backup.sourcePath}（$readBack 字节，经 $via，已回读校验）');
     return MiuiThermalActionResult.success(
-      '已恢复到 ${backup.sourcePath}（$readBack 字节，已回读校验）',
+      '已恢复到 ${backup.sourcePath}（$readBack 字节，经 $via，已回读校验）',
     );
   }
 
