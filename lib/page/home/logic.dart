@@ -46,3 +46,10 @@ class HomeNotifier extends Notifier<HomeState> {
 final homeProvider = NotifierProvider<HomeNotifier, HomeState>(
   HomeNotifier.new,
 );
+
+/// Scene 经典三 tab（功能 / 首页 / 设置）的稳定导航顺序。
+///
+/// **纯增量**：作为后续 todo 5 三 tab 外壳的规范顺序来源，
+/// 供 `PageView`/`PageController` 等消费方引用以避免散落的魔法下标。
+/// 当前四 tab `PageView` 路径不使用本常量，因此不改变任何既有行为。
+const List<HomeTab3> homeTab3Order = HomeTab3.values;
