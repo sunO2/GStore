@@ -40,9 +40,31 @@
 /// 「已授权」传入 `confirmed: true`。`enabled=true` 为安全方向（保持/恢复降温），
 /// `enabled=false` 才是危险方向。编辑器需在写入 `thermalEnabled` 时向用户明示。
 ///
+/// ## 场景模式预设的逐字段合并（todo 26）
+/// 应用档案前，先把该档案的 [PerfProfile.mode]（todo 24）映射为 [PerfModePreset]
+/// （经 `perf_mode_profiles.dart`（todo 27）的 [modePresetForPlatform] 或注入的
+/// [PerfModePresetResolver]），再按**逐字段优先级**合并（[mergePerfModePreset]）：
+///
+/// ```text
+/// 有效值 = 显式非 null 的档案字段 ?? 预设字段
+/// ```
+///
+/// * **CPU 每簇 + 每字段独立**：档案显式给出的 `governor` / `minFreqMhz` /
+///   `maxFreqMhz` 各自覆盖预设；未设的字段由预设补齐；档案未提及的簇整簇取预设。
+/// * **GPU / cpuset / thermal 各自独立**：显式非 null 的 `gpuLevel` / `cpuset` /
+///   `thermalEnabled` 覆盖预设，`null` 才由预设填充。
+/// * 合并**不改变**档案身份：`_appliedProfile` 仍记录**原始**档案（含 mode），
+///   保证 `current == target` 的幂等 / 变更检测语义不变（见 :472）。
+///
+/// **仅应用 `shizuku-writable` 动作**（task-3 §6 可达集的既有旋钮子集，见
+/// [kShizukuWritableModeActions]）：CPU 每簇 / GPU / cpuset / thermal。
+/// 明确 `root-only` / `unsupported` 的 Scene 模式动作（[kSkippedRootOnlyModeActions]）
+/// **只记录 + 跳过，绝不写入**。
+///
 /// ## 可测试性
 /// store / 会话 / 四个控制动作 / `perf.tunables` / 能力提供者 / 全局开关 /
-/// 去抖时长**全部可注入**；测试注入假 [CommandRunner] 构造的 [PrivilegedShell]、
+/// 去抖时长 / **模式预设解析器（[PerfModePresetResolver]）/ SoC 平台 / 变体**
+/// **全部可注入**；测试注入假 [CommandRunner] 构造的 [PrivilegedShell]、
 /// [InMemoryPerfProfileStore]、[InMemoryPerfControlSessionStore]，**无需
 /// Shizuku / 真机 / 原生模块 / SharedPreferences 平台通道**。
 library;
@@ -57,6 +79,7 @@ import 'package:gstore/core/perf/control_gpu.dart';
 import 'package:gstore/core/perf/control_thermal.dart';
 import 'package:gstore/core/perf/perf_capability_probe.dart';
 import 'package:gstore/core/perf/perf_control_session.dart';
+import 'package:gstore/core/perf/perf_mode_profiles.dart';
 import 'package:gstore/core/perf/perf_profile.dart';
 import 'package:gstore/core/perf/perf_profile_store.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart';
@@ -234,6 +257,149 @@ class _ApplyOutcome {
   final PerfAutoApplyReport? report;
 }
 
+// ==================== 模式预设合并 / 动作分类（todo 26） ====================
+
+/// 解析某 [PerfMode] 对应的 [PerfModePreset]（可注入；生产默认经
+/// `perf_mode_profiles.dart` 的 [modePresetForPlatform]）。
+typedef PerfModePresetResolver = PerfModePreset Function(PerfMode mode);
+
+/// 模式应用的**确定性动作类**（仅这些是 `shizuku-writable`，见 task-3 §6）。
+abstract final class PerfModeAction {
+  /// CPU 每簇：governor / min·max 频率。
+  static const String cpu = 'cpu';
+
+  /// GPU：`gpuLevel` → kgsl `max_pwrlevel`。
+  static const String gpu = 'gpu';
+
+  /// cpuset：目标包归属组（写 `/dev/cpuset/<name>/tasks`）。
+  static const String cpuset = 'cpuset';
+
+  /// thermal：`thermal_zone*/mode` 开关。
+  static const String thermal = 'thermal';
+}
+
+/// 应用器**唯一**会写入的模式动作（`shizuku-writable`；顺序稳定）。
+///
+/// 即 task-3 §6 静态可达集在既有 [PerfProfile] 旋钮形状上的子集。
+const List<String> kShizukuWritableModeActions = <String>[
+  PerfModeAction.cpu,
+  PerfModeAction.gpu,
+  PerfModeAction.cpuset,
+  PerfModeAction.thermal,
+];
+
+/// 明确 `root-only` / `unsupported`、应用器**只记录 + 跳过、绝不写入**的
+/// Scene 模式动作（逐字取自 task-3 §3 判决；顺序稳定）。
+///
+/// 这些动作**不在** `perf_mode_profiles.dart` 的常量表中编码，应用器也**没有**
+/// 对应的写路径；列出仅为透明度 / 证据（每次应用记入日志）。
+const List<String> kSkippedRootOnlyModeActions = <String>[
+  'sched_config',
+  'sched_boost',
+  'stune_top_app',
+  'set_ctl',
+  'core_ctl',
+  'msm_performance',
+  'cpu_boost',
+  'set_hispeed_freq',
+  'set_hispeed_load',
+  'sched_limit',
+  'set_cpu_pl',
+  'set_core_online',
+  'cpuctl',
+  'devfreq_bw',
+  'cgroup_procs',
+  'taskset_affinity',
+  'renice',
+  'disable_migt',
+  'thermal_disguise',
+  'pm_disable',
+  'miuibooster',
+];
+
+/// 一次模式应用的**动作计划**（诊断 / 证据；应用层只执行 [applied]）。
+class PerfModeActionPlan {
+  const PerfModeActionPlan({required this.applied, required this.skipped});
+
+  /// 将被执行的 `shizuku-writable` 动作（顺序稳定，来自 [modeActionsFor]）。
+  final List<String> applied;
+
+  /// 被记录 + 跳过的 `root-only` / `unsupported` 动作（见
+  /// [kSkippedRootOnlyModeActions]）。
+  final List<String> skipped;
+
+  @override
+  String toString() => 'PerfModeActionPlan(applied: $applied, skipped: $skipped)';
+}
+
+/// 从**有效档案**（已合并预设）得出确定性动作集：只含 `shizuku-writable` 类。
+///
+/// 结果必为 [kShizukuWritableModeActions] 的子集（顺序稳定）。
+List<String> modeActionsFor(PerfProfile effective) {
+  final actions = <String>[];
+  if (effective.cpuClusters.values.any((cluster) => !cluster.isEmpty)) {
+    actions.add(PerfModeAction.cpu);
+  }
+  if (effective.gpuLevel != null) actions.add(PerfModeAction.gpu);
+  if (effective.cpuset != null) actions.add(PerfModeAction.cpuset);
+  if (effective.thermalEnabled != null) actions.add(PerfModeAction.thermal);
+  return List<String>.unmodifiable(actions);
+}
+
+/// 计算一次模式应用的动作计划（`root-only` / `unsupported` 恒为跳过项）。
+PerfModeActionPlan planPerfModeActions(PerfProfile effective) =>
+    PerfModeActionPlan(
+      applied: modeActionsFor(effective),
+      skipped: kSkippedRootOnlyModeActions,
+    );
+
+/// **逐字段**把 [preset] 合并进 [profile]（todo 26 锁定语义）。
+///
+/// * CPU **每簇 + 每字段**：[profile] 显式非 null 的字段覆盖预设，预设只填
+///   [profile] 未设（`null`）的字段；[profile] 未提及的簇整簇取预设。
+/// * GPU / cpuset / thermal **各自独立**：显式非 null 覆盖预设，`null` 才填充。
+/// * `package` / `enabled` / `mode` 原样保留（合并**不**改档案身份）。
+///
+/// [preset] 为空（[PerfModePreset.isEmpty]）时原样返回 [profile]（零拷贝）。
+PerfProfile mergePerfModePreset(PerfProfile profile, PerfModePreset preset) {
+  if (preset.isEmpty) return profile;
+
+  final clusters = <String, PerfCpuClusterProfile>{};
+
+  void mergeCluster(
+    String key,
+    PerfCpuClusterProfile? explicit,
+    PerfCpuClusterProfile? fromPreset,
+  ) {
+    final merged = PerfCpuClusterProfile(
+      governor: explicit?.governor ?? fromPreset?.governor,
+      minFreqMhz: explicit?.minFreqMhz ?? fromPreset?.minFreqMhz,
+      maxFreqMhz: explicit?.maxFreqMhz ?? fromPreset?.maxFreqMhz,
+    );
+    if (!merged.isEmpty) clusters[key] = merged;
+  }
+
+  // 1) 档案已提及的簇：逐字段合并（显式字段胜出，预设补空）。
+  for (final entry in profile.cpuClusters.entries) {
+    mergeCluster(entry.key, entry.value, preset.cpuClusters[entry.key]);
+  }
+  // 2) 档案未提及、但预设提供的簇：整簇取预设。
+  for (final entry in preset.cpuClusters.entries) {
+    if (profile.cpuClusters.containsKey(entry.key)) continue;
+    mergeCluster(entry.key, null, entry.value);
+  }
+
+  return PerfProfile(
+    package: profile.package,
+    enabled: profile.enabled,
+    cpuClusters: clusters,
+    gpuLevel: profile.gpuLevel ?? preset.gpuLevel,
+    cpuset: profile.cpuset ?? preset.cpuset,
+    thermalEnabled: profile.thermalEnabled ?? preset.thermalEnabled,
+    mode: profile.mode,
+  );
+}
+
 // ==================== 引擎 ====================
 
 /// 每应用性能档案的自动应用 / 还原引擎（无状态持久化；状态在内存）。
@@ -253,6 +419,9 @@ class PerfProfileAutoEngine {
     required PerfControlCapabilities? Function() capabilities,
     required bool Function() isGloballyEnabled,
     Duration debounce = defaultDebounce,
+    String? socPlatform,
+    PerfVariant variant = PerfVariant.defaultVariant,
+    PerfModePresetResolver? modePresetResolver,
   })  : _store = store,
         _session = session,
         _cpuControl = cpuControl,
@@ -262,7 +431,10 @@ class PerfProfileAutoEngine {
         _tunables = tunables,
         _capabilities = capabilities,
         _isGloballyEnabled = isGloballyEnabled,
-        _debounce = debounce;
+        _debounce = debounce,
+        _presetResolver = modePresetResolver ??
+            ((PerfMode mode) =>
+                modePresetForPlatform(socPlatform, mode, variant: variant));
 
   /// 默认去抖窗口（前台快速切换时合并处理）。
   static const Duration defaultDebounce = Duration(milliseconds: 400);
@@ -277,6 +449,12 @@ class PerfProfileAutoEngine {
   final PerfControlCapabilities? Function() _capabilities;
   final bool Function() _isGloballyEnabled;
   final Duration _debounce;
+
+  /// 模式 → 预设解析器（可注入；生产默认经 [modePresetForPlatform]）。
+  ///
+  /// 构造时以 `socPlatform` / `variant` 绑定 [modePresetForPlatform]：
+  /// `null` / 未知平台 → `perf_mode_profiles.dart` 的安全回退表。
+  final PerfModePresetResolver _presetResolver;
 
   /// 当前期望的前台包（最近一次事件）。
   String? _desiredPackage;
@@ -554,17 +732,41 @@ class PerfProfileAutoEngine {
     );
   }
 
+  /// 解析 [PerfProfile.mode] 对应的预设（[PerfModePresetResolver]；绝不抛出）。
+  ///
+  /// 解析异常 → 空预设（安全回退：行为等同「无预设」）。
+  PerfModePreset _modePresetFor(PerfMode mode) {
+    try {
+      return _presetResolver(mode);
+    } catch (error) {
+      debugPrint('[PerfProfileAutoEngine] 模式预设解析失败（mode=${mode.wireName}）'
+          ' → 空预设: $error');
+      return PerfModePreset.empty;
+    }
+  }
+
   /// 把档案映射到 todos 16-19 的动作并依次应用；每个成功结果经会话登记。
+  ///
+  /// **todo 26**：先按 [mergePerfModePreset] 把该档案 mode 的预设**逐字段**合并为
+  /// 有效档案（显式非 null 覆盖预设，预设只填未设字段），再按
+  /// [planPerfModeActions] 只执行 `shizuku-writable` 动作；`root-only` /
+  /// `unsupported` 动作记录 + 跳过、绝不写入。
   ///
   /// 任一动作失败 → 会话 `revertAll` 回滚本次已登记的全部覆盖项（绝不半应用）。
   Future<_ApplyOutcome> _applyProfile(
     PerfProfile profile,
     PerfControlCapabilities capabilities,
   ) async {
+    final preset = _modePresetFor(profile.mode);
+    final effective = mergePerfModePreset(profile, preset);
+    final plan = planPerfModeActions(effective);
+    debugPrint('[PerfProfileAutoEngine] 档案 ${profile.package} '
+        'mode=${profile.mode.wireName} 应用动作=${plan.applied} '
+        '跳过(root-only/unsupported)=${plan.skipped}');
     var count = 0;
 
     // ---- CPU：每个策略簇一次 applyCpuPolicy ----
-    for (final entry in profile.cpuClusters.entries) {
+    for (final entry in effective.cpuClusters.entries) {
       final cluster = entry.value;
       if (cluster.isEmpty) continue;
       final result = await _cpuControl.applyCpuPolicy(
@@ -586,9 +788,9 @@ class PerfProfileAutoEngine {
     }
 
     // ---- GPU：`gpuLevel` → kgsl `max_pwrlevel`（功率档位上限） ----
-    if (profile.gpuLevel != null) {
+    if (effective.gpuLevel != null) {
       final result = await _gpuControl.applyGpuPolicy(
-        GpuPolicy(maxPwrlevel: profile.gpuLevel),
+        GpuPolicy(maxPwrlevel: effective.gpuLevel),
         tunables: _tunables,
       );
       if (!result.applied) {
@@ -604,10 +806,10 @@ class PerfProfileAutoEngine {
     }
 
     // ---- cpuset：把目标包归属到指定 cpuset ----
-    if (profile.cpuset != null) {
+    if (effective.cpuset != null) {
       final result = await _cpusetControl.applyCpuset(
         pkgOrPid: profile.package,
-        cpuset: profile.cpuset!,
+        cpuset: effective.cpuset!,
       );
       if (!result.ok) {
         return _rollbackPartial(
@@ -621,9 +823,9 @@ class PerfProfileAutoEngine {
     }
 
     // ---- thermal：档案显式配置 + 全局授权 = 视为已确认（见文件头说明） ----
-    if (profile.thermalEnabled != null) {
+    if (effective.thermalEnabled != null) {
       final result = await _thermalControl.setThermalEnabled(
-        profile.thermalEnabled!,
+        effective.thermalEnabled!,
         confirmed: true,
         tunables: _tunables,
         capabilities: capabilities,

@@ -35,6 +35,8 @@ const String _thermal = '/sys/class/thermal/thermal_zone0/mode';
 const String _cpusetBgTasks = '/dev/cpuset/background/tasks';
 const String _cpusetBgCpus = '/dev/cpuset/background/cpus';
 const String _cpusetTopTasks = '/dev/cpuset/top-app/tasks';
+const String _cpusetFgTasks = '/dev/cpuset/foreground/tasks';
+const String _cpusetFgCpus = '/dev/cpuset/foreground/cpus';
 
 /// 记录命令并模拟**节点状态机**的假 runner（不触碰 Shizuku / 真机）。
 class _FakeRunner {
@@ -163,6 +165,8 @@ Map<String, String> _initialNodes() => <String, String>{
       _cpusetBgTasks: '',
       _cpusetBgCpus: '0-7',
       _cpusetTopTasks: '1234',
+      _cpusetFgTasks: '',
+      _cpusetFgCpus: '0-7',
     };
 
 /// 能力快照：默认四类皆可用、所有目标节点可写。
@@ -255,6 +259,41 @@ PerfProfile _profileTwoClusters() => const PerfProfile(
       },
     );
 
+// ---- todo 26：模式预设 fixtures ----
+
+/// 逐字段覆盖用预设：policy0/policy4 的 governor/min·max + GPU/cpuset/thermal。
+const PerfModePreset _presetAll = PerfModePreset(
+  cpuClusters: <String, PerfCpuClusterProfile>{
+    'policy0': PerfCpuClusterProfile(
+      governor: 'schedutil',
+      minFreqMhz: 300,
+      maxFreqMhz: 1800,
+    ),
+    'policy4': PerfCpuClusterProfile(
+      governor: 'schedutil',
+      minFreqMhz: 300,
+      maxFreqMhz: 1800,
+    ),
+  },
+  gpuLevel: 1,
+  cpuset: 'foreground',
+  thermalEnabled: false,
+);
+
+/// 显式覆盖档案：policy0 仅显式 governor（min/max 应由预设填）、
+/// GPU/cpuset/thermal 显式非 null（应胜过预设）。
+const PerfProfile _profileOverride = PerfProfile(
+  package: 'com.ovr',
+  enabled: true,
+  mode: PerfMode.performance,
+  cpuClusters: <String, PerfCpuClusterProfile>{
+    'policy0': PerfCpuClusterProfile(governor: 'performance'),
+  },
+  gpuLevel: 3,
+  cpuset: 'background',
+  thermalEnabled: true,
+);
+
 /// 测试装配：全部依赖注入，零 Shizuku / 真机 / 平台通道。
 class _Harness {
   _Harness({
@@ -266,6 +305,8 @@ class _Harness {
     List<int>? cpusetPids,
     Set<String> denyWrite = const <String>{},
     Set<String> lieWrite = const <String>{},
+    this.presetResolver,
+    this.socPlatform,
   })  : runner = _FakeRunner(
           current: nodes ?? _initialNodes(),
           denyWrite: denyWrite,
@@ -302,13 +343,15 @@ class _Harness {
       cpusetControl: CpusetController(
         shell: shell,
         pidResolver: (pkg) async => cpusetPids ?? const <int>[],
-        cpusetNames: const <String>['top-app', 'background'],
+        cpusetNames: const <String>['top-app', 'foreground', 'background'],
       ),
       thermalControl: ThermalToggleController(shell: shell),
       tunables: _tunables,
       capabilities: () => capabilities,
       isGloballyEnabled: () => globalEnabled,
       debounce: debounce,
+      socPlatform: socPlatform,
+      modePresetResolver: presetResolver,
     );
   }
 
@@ -316,6 +359,12 @@ class _Harness {
   final InMemoryPerfProfileStore store;
   PerfControlCapabilities? capabilities;
   bool globalEnabled;
+
+  /// 注入的模式预设解析器（`null` → 引擎默认经 `perf_mode_profiles` 解析）。
+  final PerfModePresetResolver? presetResolver;
+
+  /// 注入的 SoC 平台（`null` → `perf_mode_profiles` 安全回退表）。
+  final String? socPlatform;
 
   late final InMemoryPerfControlSessionStore sessionStore;
   late final PerfControlSession session;
@@ -590,9 +639,12 @@ void main() {
     });
 
     test('仅 mode 变化 → 不被视为 unchanged（重新应用）', () async {
+      // 本用例只验证「mode 参与相等性 / 变更检测」；注入空预设隔离预设合并
+      // （预设行为由下方「模式预设逐字段合并」组单独守护）。
       final h = _Harness(
         profiles: <String, PerfProfile>{'com.a': _profileA()},
         capabilities: _caps(),
+        presetResolver: (_) => PerfModePreset.empty,
       );
 
       final first = await h.engine.onForegroundPackage('com.a');
@@ -685,6 +737,203 @@ void main() {
       final report = await h.engine.onForegroundPackage('com.a');
       expect(report.outcome, PerfAutoApplyOutcome.superseded);
       expect(h.runner.commands, isEmpty);
+    });
+  });
+
+  group('模式预设逐字段合并（todo 26）', () {
+    test('mergePerfModePreset：显式非 null 覆盖预设，预设只填未设字段', () {
+      final merged = mergePerfModePreset(_profileOverride, _presetAll);
+
+      // CPU 每簇 + 每字段独立：profile0 的 governor 胜出，min/max 由预设补齐。
+      expect(merged.cpuClusters['policy0']!.governor, 'performance');
+      expect(merged.cpuClusters['policy0']!.minFreqMhz, 300);
+      expect(merged.cpuClusters['policy0']!.maxFreqMhz, 1800);
+      // 档案未提及的簇整簇取预设。
+      expect(merged.cpuClusters['policy4']!.governor, 'schedutil');
+      expect(merged.cpuClusters['policy4']!.minFreqMhz, 300);
+      expect(merged.cpuClusters['policy4']!.maxFreqMhz, 1800);
+      // GPU/cpuset/thermal：显式胜过预设。
+      expect(merged.gpuLevel, 3);
+      expect(merged.cpuset, 'background');
+      expect(merged.thermalEnabled, isTrue);
+      // 档案身份（package/enabled/mode）原样保留。
+      expect(merged.package, 'com.ovr');
+      expect(merged.enabled, isTrue);
+      expect(merged.mode, PerfMode.performance);
+    });
+
+    test('预设填充未设的 GPU/cpuset/thermal 与 CPU 簇', () {
+      const bare = PerfProfile(package: 'com.fill', mode: PerfMode.performance);
+      final merged = mergePerfModePreset(bare, _presetAll);
+
+      expect(merged.gpuLevel, 1);
+      expect(merged.cpuset, 'foreground');
+      expect(merged.thermalEnabled, isFalse);
+      expect(merged.cpuClusters['policy0']!.governor, 'schedutil');
+      expect(merged.cpuClusters['policy4']!.maxFreqMhz, 1800);
+    });
+
+    test('空预设原样返回（零合并 / 零拷贝）', () {
+      const p = PerfProfile(
+        package: 'com.x',
+        cpuClusters: <String, PerfCpuClusterProfile>{
+          'policy0': PerfCpuClusterProfile(governor: 'performance'),
+        },
+      );
+      expect(
+        identical(mergePerfModePreset(p, PerfModePreset.empty), p),
+        isTrue,
+      );
+    });
+
+    test('确定性动作集：仅 shizuku-writable 类', () {
+      final effective = mergePerfModePreset(_profileOverride, _presetAll);
+      final actions = modeActionsFor(effective);
+
+      expect(actions, <String>[
+        PerfModeAction.cpu,
+        PerfModeAction.gpu,
+        PerfModeAction.cpuset,
+        PerfModeAction.thermal,
+      ]);
+      expect(kShizukuWritableModeActions, actions);
+    });
+
+    test('root-only / unsupported 动作仅记录+跳过，绝不写入', () {
+      final plan =
+          planPerfModeActions(mergePerfModePreset(_profileOverride, _presetAll));
+
+      expect(plan.skipped, kSkippedRootOnlyModeActions);
+      // 覆盖 task-3 §2 的 root-only / unsupported 命名动作。
+      for (final id in <String>[
+        'sched_config',
+        'stune_top_app',
+        'sched_boost',
+        'set_ctl',
+        'msm_performance',
+        'thermal_disguise',
+        'pm_disable',
+      ]) {
+        expect(plan.skipped, contains(id));
+      }
+      // 可写集合与跳过集合不相交。
+      expect(
+        kShizukuWritableModeActions.toSet().intersection(plan.skipped.toSet()),
+        isEmpty,
+      );
+    });
+
+    test('引擎按逐字段优先级写入（显式胜，预设补空）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.ovr': _profileOverride},
+        capabilities: _caps(),
+        cpusetPids: <int>[1234],
+        presetResolver: (_) => _presetAll,
+      );
+
+      final report = await h.engine.onForegroundPackage('com.ovr');
+
+      // cpu(policy0 3 + policy4 3) + gpu 1 + cpuset 1 + thermal 1 = 9。
+      expect(report.outcome, PerfAutoApplyOutcome.applied);
+      expect(report.appliedOverrides, 9);
+      // policy0：governor 显式胜，min/max 预设补齐。
+      expect(h.runner.current[_gov0], 'performance');
+      expect(h.runner.current[_min0], '300000');
+      expect(h.runner.current[_max0], '1800000');
+      // policy4：档案未提及 → 整簇取预设。
+      expect(h.runner.current[_gov4], 'schedutil');
+      expect(h.runner.current[_min4], '300000');
+      expect(h.runner.current[_max4], '1800000');
+      // 显式 gpuLevel=3 胜过预设 1。
+      expect(h.runner.current[_gpuPwr], '3');
+      // 显式 cpuset=background 胜过预设 foreground（foreground 未被写）。
+      expect(h.runner.current[_cpusetBgTasks], contains('1234'));
+      expect(h.runner.current[_cpusetFgTasks], '');
+      // 显式 thermalEnabled=true 胜过预设 false。
+      expect(h.runner.current[_thermal], 'enabled');
+    });
+
+    test('mode=performance 经 perf_mode_profiles 回退表填充未设 cpuset', () async {
+      const profile = PerfProfile(
+        package: 'com.perf',
+        enabled: true,
+        mode: PerfMode.performance,
+        cpuClusters: <String, PerfCpuClusterProfile>{
+          'policy0': PerfCpuClusterProfile(governor: 'performance'),
+        },
+      );
+      // 不注入解析器；未知 socPlatform → 引擎默认经 modePresetForPlatform 的
+      // 安全回退表（performance → cpuset foreground）。
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.perf': profile},
+        capabilities: _caps(),
+        cpusetPids: <int>[777],
+        socPlatform: 'not-a-known-soc',
+      );
+
+      final report = await h.engine.onForegroundPackage('com.perf');
+
+      expect(report.outcome, PerfAutoApplyOutcome.applied);
+      expect(h.runner.current[_gov0], 'performance');
+      // 档案未设 cpuset → 预设（回退表）填充 foreground。
+      expect(h.runner.current[_cpusetFgTasks], contains('777'));
+      expect(h.runner.current[_cpusetBgTasks], '');
+    });
+
+    test('引擎不写任何 root-only 节点（仅 4 类可写旋钮）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.ovr': _profileOverride},
+        capabilities: _caps(),
+        cpusetPids: <int>[1234],
+        presetResolver: (_) => _presetAll,
+      );
+
+      await h.engine.onForegroundPackage('com.ovr');
+
+      expect(h.runner.writeCommands, isNotEmpty);
+      for (final command in h.runner.writeCommands) {
+        expect(command.contains('/proc/'), isFalse);
+        expect(command.contains('/sys/module/'), isFalse);
+        expect(command.contains('/dev/stune/'), isFalse);
+        expect(command.contains('core_ctl'), isFalse);
+      }
+    });
+
+    test('预设解析抛异常 → 降级空预设（不崩溃）', () async {
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.a': _profileA()},
+        capabilities: _caps(),
+        presetResolver: (_) => throw StateError('preset boom'),
+      );
+
+      final report = await h.engine.onForegroundPackage('com.a');
+
+      expect(report.outcome, PerfAutoApplyOutcome.applied);
+      expect(report.appliedOverrides, 3);
+    });
+
+    test('Shizuku 不可用（能力 unknown）→ 模式预设也零写入、无崩溃', () async {
+      const profile = PerfProfile(
+        package: 'com.perf',
+        enabled: true,
+        mode: PerfMode.performance,
+        cpuClusters: <String, PerfCpuClusterProfile>{
+          'policy0': PerfCpuClusterProfile(governor: 'performance'),
+        },
+      );
+      final h = _Harness(
+        profiles: <String, PerfProfile>{'com.perf': profile},
+        capabilities: null,
+        cpusetPids: <int>[777],
+      );
+
+      final report = await h.engine.onForegroundPackage('com.perf');
+
+      expect(report.outcome, PerfAutoApplyOutcome.skipped);
+      expect(report.reason, PerfAutoApplyReason.capabilityUnknown);
+      expect(h.runner.commands, isEmpty);
+      expect(h.runner.current[_gov0], 'schedutil');
+      expect(h.runner.current[_cpusetFgTasks], '');
     });
   });
 }

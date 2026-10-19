@@ -302,3 +302,14 @@ Only 7 knob classes are expressible by the existing applier: CPU governor + min/
 - 测试：store +9（decode 缺失/非法→balance、encode 恒写 mode、Config 往返、旧档案→balance、modeFor 回退、saveMode 保字段/新建/空包名）；page +4（tile 显示、新增默认均衡→选性能保存、既有 fast 预选极速、改省电）。下拉选择写法：`tap(dropdown key)` → `_pump` → `tap(find.text('性能').last)`（关闭态只显示当前项，菜单项唯一，`.last` 稳妥）。
 - 验证：`dart analyze lib/` = **0 error**（723 存量 info/warning ≤ todo 24 基线 728）；4 改动文件单文件分析 No issues；目标 **36 passed**；回归 6 文件 **68 passed**。证据 `.omo/evidence/task-25-per-app-mode.txt`（`.omo/evidence` gitignored，未提交）。
 - 并发：与 todo 27（`perf_mode_profiles.dart` 常量表）并行且不相交；提交用 `flock /tmp/opencode/gstore.git.lock` + **显式 pathspec**（`git commit -- <files>`，只提交 2 源码 + 2 测试 + learnings.md）。LSP 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧错误（bridge 生成物），CLI `dart analyze lib/` = 0 error，忽略。
+
+## Todo 26 — 既有应用器执行 mode preset + 逐字段优先级 (2026-10-19)
+- **不新建 applier**：只在 `lib/core/perf/perf_profile_auto_engine.dart` 扩展。新增 import `perf_mode_profiles.dart`；`_applyProfile` 前先 `_modePresetFor(mode)` → `mergePerfModePreset(profile, preset)` 得 `effective`，再逐类应用；`_appliedProfile` 仍存**原始档案**（含 mode）→ `current == target` 幂等/变更检测语义不变（:472）。revert/部分失败回滚路径零改动。
+- **逐字段合并（锁定语义）** `mergePerfModePreset`：CPU **每簇+每字段** `explicit?.field ?? preset?.field`（档案未提及的簇整簇取预设）；GPU/cpuset/thermal 各自 `profile.x ?? preset.x`；`package/enabled/mode` 原样保留；空预设原样返回（`identical` 测试）。
+- **可注入 seam**：ctor 新增 `String? socPlatform`、`PerfVariant variant=conservative`、`PerfModePresetResolver? modePresetResolver`；默认解析器 = `(mode) => modePresetForPlatform(socPlatform, mode, variant: variant)`。解析**绝不抛**（异常→空预设）。测试 harness 透传 `presetResolver`/`socPlatform`。
+- **shizuku-writable 治理**：`PerfModeAction{cpu,gpu,cpuset,thermal}` + `kShizukuWritableModeActions`（= 可达集既有旋钮子集）+ `kSkippedRootOnlyModeActions`（task-3 §3 的 root-only/unsupported 全清单）+ `modeActionsFor`/`planPerfModeActions`。`_applyProfile` 每次 `debugPrint` 应用/跳过集；引擎**绝不**写 `/proc`、`/sys/module`、`/dev/stune`、`core_ctl`（测试断言）。
+- **必须改的既有测试**：`仅 mode 变化` 用了 mode=fast；默认（无注入）解析器 = `perf_mode_profiles` 回退表 → fast 会补 cpuset `top-app` 从而改变覆盖项。故该用例显式注入 `(_) => PerfModePreset.empty` 隔离「mode 相等性」语义；预设行为由新组单独守护。**其余既有用例 mode=balance（回退表 = empty）零影响**。
+- harness 需给 cpusetNames 补 `foreground`，并 seed `/dev/cpuset/foreground/{tasks,cpus}` 节点（否则预设 foreground 会失败）。
+- 新测 +9：纯合并（显式胜/预设补空/空预设零拷贝）、动作集/跳过集断言、fake-shell 逐字段覆盖（9 覆盖项，显式 gpu/cpuset/thermal 全胜、foreground 未写）、回退表填充（未知 socPlatform）、不写 root-only 节点、解析抛异常降级、**capabilities=null（Shizuku 不可用）→ 模式预设也零写入无崩溃**。
+- 验证：`dart analyze lib/` = **0 error**（723 存量 = 基线）；2 改动文件单文件分析 No issues；目标测试 **29 passed**；回归 5 文件 **78 passed**。证据 `.omo/evidence/task-26-mode-applier.txt`（`.omo/` gitignored，未提交）。
+- 并发/坑（同既往）：LSP daemon 报 `core/rust/generated/*` + `rust_shizuku_runner.dart` 陈旧 error，CLI analyze = 0 error，忽略。提交用 `flock` + **显式 pathspec**（只 2 文件）。
