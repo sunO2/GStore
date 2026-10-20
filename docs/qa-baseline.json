@@ -1,0 +1,5049 @@
+{
+ "meta": {
+  "captured_at": "2026-10-20T23:41:47.128615+00:00",
+  "commit": "9ec51320c0d2af107379744463325d36cdcd661c",
+  "dart_analyze_exit": 2,
+  "clippy_exit": {
+   "gstore_contract": 0,
+   "gstore_host": 101,
+   "gstore_mod_analyzer": 101,
+   "gstore_mod_download": 101,
+   "gstore_mod_llm": 101,
+   "gstore_mod_perf": 0,
+   "gstore_mod_proxy": 101,
+   "gstore_mod_qr": 101,
+   "gstore_mod_repo": 101
+  }
+ },
+ "dart": [
+  {
+   "file": "lib/compent/markdown_widget.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/compent/link_text.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:app_installer/app_installer.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_cast",
+   "message": "Unnecessary cast.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unused_element",
+   "message": "The declaration '_publishToolStepNotification' isn't referenced.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'manager' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_cast",
+   "message": "Unnecessary cast.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unused_field",
+   "message": "The value of the field '_eventSub' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'dart:io'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unused_field",
+   "message": "The value of the field '_prefs' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'now' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/AppUpdateCheckMixin.dart",
+   "code": "override_on_non_overriding_member",
+   "message": "The method doesn't override an inherited method.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:dio/dio.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'localResult' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'githubResult' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/IChannel.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/core/channel/model/ChannelType.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unused_element",
+   "message": "The declaration '_createNotFoundApp' isn't referenced.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/VivoChannel.dart",
+   "code": "unused_field",
+   "message": "The value of the field '_cachedCategories' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/VivoChannel.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'downloadUrl' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/channel/impl/standard_detail_channel.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:flutter/material.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/config/AppConfig.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/core/channel/model/ChannelType.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/config/config_manager.dart",
+   "code": "unnecessary_type_check",
+   "message": "Unnecessary type check; the result is always 'true'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'app_shadows.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'app_animations.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/download/manager/download_manager.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:path_provider/path_provider.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/download/rust/rust_download_service.dart",
+   "code": "unused_element",
+   "message": "The declaration '_toTask' isn't referenced.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'code' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "unused_local_variable",
+   "message": "The value of the local variable 'dioError' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/logger/LogManager.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:flutter/foundation.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/model/AppDetailInfo.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:flutter/material.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/model/AppDetailRequest.dart",
+   "code": "unnecessary_cast",
+   "message": "Unnecessary cast.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/model/BackupData.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/core/channel/model/ChannelType.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/model/proxy/ChannelDetailProxy.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:flutter/foundation.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/perf/battery_source.dart",
+   "code": "invalid_use_of_internal_member",
+   "message": "The member 'api' can only be used within its package.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/perf/battery_source.dart",
+   "code": "invalid_use_of_internal_member",
+   "message": "The member 'api' can only be used within its package.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/perf/device_state.dart",
+   "code": "invalid_use_of_internal_member",
+   "message": "The member 'api' can only be used within its package.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/resource/Disposable.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/core/exception/AppException.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "unused_element",
+   "message": "The declaration 'ValidationResult._' isn't referenced.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "unused_element_parameter",
+   "message": "A value for optional parameter 'errorMessage' isn't ever given.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/service/apk_library_analyzer.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'dart:io'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/service/apk_library_analyzer.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:archive/archive.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/webdav/webdav_service.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'dart:typed_data'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/db/apps/AppInfoDatabase.dart",
+   "code": "experimental_member_use",
+   "message": "'TypeConverters' is experimental and could be removed or changed at any time.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/db/apps/AppInfoDatabase.dart",
+   "code": "experimental_member_use",
+   "message": "'TypeConverter' is experimental and could be removed or changed at any time.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/http/github/github_auth_api.g.dart",
+   "code": "unused_element_parameter",
+   "message": "A value for optional parameter 'baseUrl' isn't ever given.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/http/github/github_auth_api.g.dart",
+   "code": "unused_element_parameter",
+   "message": "A value for optional parameter 'errorLogger' isn't ever given.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/http/github/github_client.g.dart",
+   "code": "unused_element_parameter",
+   "message": "A value for optional parameter 'baseUrl' isn't ever given.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/http/github/github_client.g.dart",
+   "code": "unused_element_parameter",
+   "message": "A value for optional parameter 'errorLogger' isn't ever given.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/agent/markdown_message.dart",
+   "code": "unused_import",
+   "message": "Unused import: 'package:gstore/core/router/app_router.dart'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "unnecessary_null_comparison",
+   "message": "The operand can't be 'null', so the condition is always 'true'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/backup/widgets/backup_progress_sheet.dart",
+   "code": "unused_field",
+   "message": "The value of the field '_failed' isn't used.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'sourceIdentity' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'sourceIdentity' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'normalizeRepoUrl' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'normalizeRepoUrl' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'normalizeRepoUrl' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'normalizeRepoUrl' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'sourceIdentity' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'sourceIdentity' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/fdroid_repo/logic.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/app_card_widget.dart",
+   "code": "unnecessary_null_comparison",
+   "message": "The operand can't be 'null', so the condition is always 'true'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/app_card_widget.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/app_card_widget.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/app_card_widget.dart",
+   "code": "invalid_null_aware_operator",
+   "message": "The receiver can't be null, so the null-aware operator '?.' is unnecessary.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/app_card_widget.dart",
+   "code": "unnecessary_non_null_assertion",
+   "message": "The '!' will have no effect because the receiver can't be null.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/horizontal_app_row.dart",
+   "code": "invalid_null_aware_operator",
+   "message": "The receiver can't be null, so the null-aware operator '?.' is unnecessary.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/horizontal_app_row.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/horizontal_app_row.dart",
+   "code": "dead_null_aware_expression",
+   "message": "The left operand can't be null, so the right operand is never executed.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "unnecessary_type_check",
+   "message": "Unnecessary type check; the result is always 'true'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "unnecessary_type_check",
+   "message": "Unnecessary type check; the result is always 'true'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'state' can only be used within 'package:riverpod/src/notifier.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_protected_member",
+   "message": "The member 'state' can only be used within instance members of subclasses of 'NotifierBase'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'state' can only be used within 'package:riverpod/src/notifier.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_protected_member",
+   "message": "The member 'state' can only be used within instance members of subclasses of 'NotifierBase'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_visible_for_testing_member",
+   "message": "The member 'state' can only be used within 'package:riverpod/src/notifier.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/page/home/view.dart",
+   "code": "invalid_use_of_protected_member",
+   "message": "The member 'state' can only be used within instance members of subclasses of 'NotifierBase'.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/compent/link_text.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/utils/unit.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/compent/markdown_widget.dart",
+   "code": "depend_on_referenced_packages",
+   "message": "The imported package 'html' isn't a dependency of the importing package.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/compent/markdown_widget.dart",
+   "code": "depend_on_referenced_packages",
+   "message": "The imported package 'html' isn't a dependency of the importing package.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_notification_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_notification_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/routers.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_notification_service.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_model_store.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_session_store.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/platform_arch.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/fdroid/FdroidRepoManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/utils/unit.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_client.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAggregatorManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "prefer_final_fields",
+   "message": "The private field _actionController could be 'final'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAddedDatabase.dart",
+   "code": "file_names",
+   "message": "The file name 'AppAddedDatabase.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAddedDatabase.g.dart",
+   "code": "file_names",
+   "message": "The file name 'AppAddedDatabase.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "file_names",
+   "message": "The file name 'AppAggregatorManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAddedDatabase.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/channel/channel.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/channel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/channel/channel.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/event/database_event.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppIdentity.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'removeApp' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getAllAddedApps' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getAppsByChannel' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'isAppAdded' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getTotalCount' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "file_names",
+   "message": "The file name 'CacheManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/AppConfig.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/cache/CacheManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/exception/AppException.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/cache/ReadmeCache.dart",
+   "code": "file_names",
+   "message": "The file name 'ReadmeCache.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/AppUpdateCheckMixin.dart",
+   "code": "file_names",
+   "message": "The file name 'AppUpdateCheckMixin.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelIntegration.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example1_BasicUsage' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example2_SpecifyChannel' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example3_AutoFallback' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example4_Search' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example5_CategorySearch' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example6_CheckUpdate' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'example7_GetAppInfo' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelIntegration.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/ChannelManager.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/IChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'IChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/IDetailChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'IDetailChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:flutter/foundation.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'addApp' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/FdroidChannel.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'removeApp' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'GitHubChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:flutter/foundation.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/IChannel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelResult.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/data/metadata_repository.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/GitHubChannel.dart",
+   "code": "prefer_conditional_assignment",
+   "message": "The 'if' statement could be replaced by a null-aware assignment.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/JsChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'JsChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'LocalDbChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:flutter/foundation.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/IChannel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/logger/LogManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelResult.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/data/metadata_repository.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/db_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/utils/unit.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "prefer_conditional_assignment",
+   "message": "The 'if' statement could be replaced by a null-aware assignment.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/LocalDbChannel.dart",
+   "code": "prefer_is_empty",
+   "message": "Use 'isNotEmpty' instead of 'length' to test whether the collection is empty.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/VivoChannel.dart",
+   "code": "file_names",
+   "message": "The file name 'VivoChannel.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/VivoChannel.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/VivoChannel.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/js_detail_channel.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/logger/LogManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/js_detail_channel.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'versionOptions' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/js_detail_channel.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'switchVersion' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/impl/js_detail_channel.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'buildHistory' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/model/AppUpdateCheckResult.dart",
+   "code": "file_names",
+   "message": "The file name 'AppUpdateCheckResult.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/model/ChannelInfo.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelInfo.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/model/ChannelResult.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelResult.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/channel/model/ChannelType.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelType.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/AppConfig.dart",
+   "code": "file_names",
+   "message": "The file name 'AppConfig.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/AppConfig.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/exception/AppException.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/AppConfig.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_initializer.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'config_registry.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_initializer.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'config_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_provider.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/config_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/providers/download_config_provider.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/providers/update_config_provider.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/config/providers/update_config_provider.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/data/metadata_repository.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/data/metadata_repository.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/data/metadata_repository.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/data/metadata_repository.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/data/metadata_repository.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_colors.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_components.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_dialogs.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_dialogs.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXS_verticalSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXS_verticalMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXS_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXS_verticalXL' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalSM_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalSM_verticalMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalSM_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalSM_verticalXL' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalMD_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalMD_verticalSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalMD_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalMD_verticalXL' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_verticalSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_verticalMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_verticalXL' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXL_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXL_verticalSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXL_verticalMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXL_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXXL_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXXL_verticalSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXXL_verticalMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXXL_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'onlyHorizontalXS_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'onlyHorizontalSM_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'onlyHorizontalMD_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'onlyHorizontalLG_verticalLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalXS_verticalXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_bottomXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_bottomSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_bottomMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_bottomLG' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topXS_bottomXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topXS_bottomSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topXS_bottomMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topSM_bottomXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topSM_bottomSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topSM_bottomMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topMD_bottomXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topMD_bottomSM' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_topMD_bottomMD' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/design/app_spacing.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'horizontalLG_verticalSM_bottomXS' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "file_names",
+   "message": "The file name 'ServiceContainer.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceContainer.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "file_names",
+   "message": "The file name 'ServiceRegistrar.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/IChannel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/AppConfig.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/di/ServiceContainer.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/error/ErrorHandler.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/di/ServiceRegistrar.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/security/UrlValidator.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/DownloadStrategyManager.dart",
+   "code": "file_names",
+   "message": "The file name 'DownloadStrategyManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/DownloadStrategyManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/DownloadStrategyManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/download/strategy/IDownloadStrategy.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/DownloadStrategyManager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/exception/DownloadException.dart",
+   "code": "file_names",
+   "message": "The file name 'DownloadException.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/manager/download_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'retry' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/manager/download_repository.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/rust/rust_download_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/rust/rust_download_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'listTasks' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/BaseDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'BaseDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/IDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'IDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/FdroidDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/GitHubDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'GitHubDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/GitHubDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/GitHubDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/GitHubDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/HttpDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'HttpDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/LocalDbDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'LocalDbDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/LocalDbDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/LocalDbDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/LocalDbDownloadStrategy.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/download/strategy/impl/VivoDownloadStrategy.dart",
+   "code": "file_names",
+   "message": "The file name 'VivoDownloadStrategy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/error/ErrorHandler.dart",
+   "code": "file_names",
+   "message": "The file name 'ErrorHandler.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/error/ErrorHandler.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/exception/AppException.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/error/ErrorHandler.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/AppConfig.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/error/ErrorHandler.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "file_names",
+   "message": "The file name 'AppException.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/exception/AppException.dart",
+   "code": "use_super_parameters",
+   "message": "Parameters ''message', 'originalError', 'code', and 'stackTrace'' could be super parameters.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoDeepLink.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidRepoDeepLink.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidRepoManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'currentSource' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'sources' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'switchSource' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'loadRepository' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'searchApps' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getAppByPackageName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getAllApps' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getAppCount' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getStatistics' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'addSource' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'setSourceEnabled' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'loadAllEnabled' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'updateSource' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'removeSource' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoManager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'clearData' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/fdroid/FdroidRepoModels.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidRepoModels.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/icons/Icons.dart",
+   "code": "file_names",
+   "message": "The file name 'Icons.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/icons/Icons.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/icons/Icons.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/icons/Icons.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/icons/Icons.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/logger/LogManager.dart",
+   "code": "file_names",
+   "message": "The file name 'LogManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/logger/LogManager.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/logger/LogManager.dart",
+   "code": "avoid_print",
+   "message": "Don't invoke 'print' in production code.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/AppDetailInfo.dart",
+   "code": "file_names",
+   "message": "The file name 'AppDetailInfo.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/AppDetailRequest.dart",
+   "code": "file_names",
+   "message": "The file name 'AppDetailRequest.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/AppIdentity.dart",
+   "code": "file_names",
+   "message": "The file name 'AppIdentity.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/AppSummary.dart",
+   "code": "file_names",
+   "message": "The file name 'AppSummary.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/BackupData.dart",
+   "code": "file_names",
+   "message": "The file name 'BackupData.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/BackupData.g.dart",
+   "code": "file_names",
+   "message": "The file name 'BackupData.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/IDetailInfo.dart",
+   "code": "file_names",
+   "message": "The file name 'IDetailInfo.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/StatTag.dart",
+   "code": "file_names",
+   "message": "The file name 'StatTag.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/ChannelDetailProxy.dart",
+   "code": "file_names",
+   "message": "The file name 'ChannelDetailProxy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidChannelDetailProxy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'channelType' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appId' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'name' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'icon' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'description' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'version' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'developer' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'packageName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'projectUrl' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'downloads' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'sections' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'buildStatTags' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'screenshots' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'readme' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'changelog' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/FdroidChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'permissions' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "file_names",
+   "message": "The file name 'GitHubChannelDetailProxy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'channelType' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appId' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'name' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'icon' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'description' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'version' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'developer' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'packageName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'projectUrl' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'downloads' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'sections' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/GitHubChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'buildStatTags' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "file_names",
+   "message": "The file name 'LocalDbChannelDetailProxy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'channelType' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appId' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'name' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'icon' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'description' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'version' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'developer' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'packageName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'projectUrl' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'readme' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'downloads' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'sections' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/LocalDbChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'buildStatTags' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "file_names",
+   "message": "The file name 'VivoChannelDetailProxy.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'channelType' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appId' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'name' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'appName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'icon' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'description' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'version' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'developer' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'packageName' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'projectUrl' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'downloads' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'sections' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/model/proxy/VivoChannelDetailProxy.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'buildStatTags' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAggregatorManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/config_registry.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/fdroid/FdroidRepoManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/backup_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/badge_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/install_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/app_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/theme/theme_controller.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/infra_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/config_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/infra_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/event/database_event.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/infra_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/infra_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/db_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/infra_modules.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/user_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/module/module_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'module_event.dart' is unnecessary because all of the used elements are also provided by the import of 'module.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/resource/Disposable.dart",
+   "code": "file_names",
+   "message": "The file name 'Disposable.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/resource/Disposable.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/resource/Disposable.dart",
+   "code": "prefer_final_fields",
+   "message": "The private field _resource could be 'final'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/router/app_router.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/AnalyzerRustDecoder.dart",
+   "code": "file_names",
+   "message": "The file name 'AnalyzerRustDecoder.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/Contract.dart",
+   "code": "file_names",
+   "message": "The file name 'Contract.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/FdroidRustRepoManager.dart",
+   "code": "file_names",
+   "message": "The file name 'FdroidRustRepoManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/ModuleBootstrap.dart",
+   "code": "file_names",
+   "message": "The file name 'ModuleBootstrap.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/ModuleContext.dart",
+   "code": "file_names",
+   "message": "The file name 'ModuleContext.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/ModuleLoader.dart",
+   "code": "file_names",
+   "message": "The file name 'ModuleLoader.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/ModuleManager.dart",
+   "code": "file_names",
+   "message": "The file name 'ModuleManager.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/QrRustDecoder.dart",
+   "code": "file_names",
+   "message": "The file name 'QrRustDecoder.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/RustBridge.dart",
+   "code": "file_names",
+   "message": "The file name 'RustBridge.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/RustTask.dart",
+   "code": "file_names",
+   "message": "The file name 'RustTask.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/contract/GStoreException.dart",
+   "code": "file_names",
+   "message": "The file name 'GStoreException.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/contract/ModuleTypes.dart",
+   "code": "file_names",
+   "message": "The file name 'ModuleTypes.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/generated/contract/envelope.pb.dart",
+   "code": "depend_on_referenced_packages",
+   "message": "The imported package 'fixnum' isn't a dependency of the importing package.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/perf/PerfContract.dart",
+   "code": "file_names",
+   "message": "The file name 'PerfContract.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/perf/PerfModule.dart",
+   "code": "file_names",
+   "message": "The file name 'PerfModule.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/proxy/ProxyContract.dart",
+   "code": "file_names",
+   "message": "The file name 'ProxyContract.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/proxy/ProxyModule.dart",
+   "code": "file_names",
+   "message": "The file name 'ProxyModule.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "file_names",
+   "message": "The file name 'UrlValidator.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/security/UrlValidator.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_info_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_info_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAggregatorManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_info_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_info_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/impl/GitHubChannel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_info_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/apk_native_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/app_icon_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/fdroid/FdroidRepoManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_model_store.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'exportData' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'exportCompressedBackup' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'importFromFile' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "unnecessary_brace_in_string_interps",
+   "message": "Unnecessary braces in a string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'importBackupBytes' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'getBackupFiles' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/backup_service.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'deleteBackupFile' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/badge_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_dialogs.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/utils/unit.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/impl/LocalDbChannel.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/db_manager.dart",
+   "code": "prefer_typing_uninitialized_variables",
+   "message": "An uninitialized variable should have an explicit type annotation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/download_notification_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/download_notification_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/routers.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'installApk' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'managePackage' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'clearAppData' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'clearAppCache' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'forceStopApp' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/metadata_submit_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/data/metadata_repository.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/metadata_submit_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/user_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/metadata_submit_service.dart",
+   "code": "unnecessary_string_escapes",
+   "message": "Unnecessary escape in string literal.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/metadata_submit_service.dart",
+   "code": "unnecessary_string_escapes",
+   "message": "Unnecessary escape in string literal.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/proxy_ca_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/proxy_ca_service.dart",
+   "code": "prefer_initializing_formals",
+   "message": "Use an initializing formal to assign a parameter to a field.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/proxy_ca_service.dart",
+   "code": "prefer_initializing_formals",
+   "message": "Use an initializing formal to assign a parameter to a field.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/user_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/service/user_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/design_tokens.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/app_theme_config.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/app_theme_config.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/app_theme_config.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/app_theme_config.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/theme_data_builder.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/theme_data_builder.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/theme_data_builder.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/theme_data_builder.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/theme/theme_data_builder.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAddedDatabase.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAggregatorManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/ChannelManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/update/app_update_info.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/update/update_manager.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/update/update_log.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/utils/unit.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'KB' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/utils/unit.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'MB' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/utils/unit.dart",
+   "code": "constant_identifier_names",
+   "message": "The constant name 'GB' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/webdav/webdav_client.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/webdav/webdav_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/webdav/webdav_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_client.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/core/webdav/webdav_service.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/db/apps/AppInfo.dart",
+   "code": "file_names",
+   "message": "The file name 'AppInfo.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/db/apps/AppInfoDao.dart",
+   "code": "file_names",
+   "message": "The file name 'AppInfoDao.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/db/apps/AppInfoDatabase.dart",
+   "code": "file_names",
+   "message": "The file name 'AppInfoDatabase.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/db/apps/AppInfoDatabase.g.dart",
+   "code": "file_names",
+   "message": "The file name 'AppInfoDatabase.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'default_branch' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'stargazers_count' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'html_url' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'created_at' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'full_name' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'default_branch' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'stargazers_count' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'created_at' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'full_name' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/github_client.dart",
+   "code": "non_constant_identifier_names",
+   "message": "The variable name 'html_url' isn't a lowerCamelCase identifier.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/http/github/user_info/user_info.dart",
+   "code": "hash_and_equals",
+   "message": "Missing a corresponding override of '=='.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/main.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/main.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/logger/LogManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/main.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/main.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/module/module_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/main.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/routers.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/agent_settings_page.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_model_store.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/agent_settings_page.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/agent_settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/agent_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/agent_settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "deprecated_member_use",
+   "message": "'cacheExtent' is deprecated and shouldn't be used. Use scrollCacheExtent instead. This feature was deprecated after v3.41.0-0.0.pre.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/chat_list_view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/markdown_message.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/markdown_message.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:flutter/services.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/agent/agent_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/view.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/app_snapshot/apps_list.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_radius.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/app_snapshot/apps_list.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_spacing.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/app_snapshot/apps_list.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_typography.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/app_snapshot/apps_list.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/auth/view.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/logic.dart",
+   "code": "use_build_context_synchronously",
+   "message": "Don't use 'BuildContext's across async gaps.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/design_tokens.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/backup/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/detail_ui_mixins.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/detail_ui_mixins.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/detail_ui_mixins.dart",
+   "code": "curly_braces_in_flow_control_structures",
+   "message": "Statements in an if should be enclosed in a block.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/logic.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'state' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/logic.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'request' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/logic.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'uiContext' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/logic.dart",
+   "code": "annotate_overrides",
+   "message": "The member 'detailChannel' overrides an inherited member but isn't annotated with '@override'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/IDetailInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/design_tokens.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_literals_to_create_immutables",
+   "message": "Use 'const' literals as arguments to constructors of '@immutable' classes.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/detail/widgets.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/download_page_providers.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/download_page_providers.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/db_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/download_page_providers.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/db/apps/AppInfo.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_literals_to_create_immutables",
+   "message": "Use 'const' literals as arguments to constructors of '@immutable' classes.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_literals_to_create_immutables",
+   "message": "Use 'const' literals as arguments to constructors of '@immutable' classes.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/download/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "unnecessary_to_list_in_spreads",
+   "message": "Unnecessary use of 'toList' in a spread.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/fdroid_repo/view.dart",
+   "code": "unnecessary_to_list_in_spreads",
+   "message": "Unnecessary use of 'toList' in a spread.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/banner_widget.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/applist/widgets/horizontal_app_row.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/aggregate/AppAggregatorManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:flutter/foundation.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/config_registry.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/config/config_service.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_dialogs.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/design_tokens.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/logic.dart",
+   "code": "unnecessary_string_interpolations",
+   "message": "Unnecessary use of string interpolation.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/channel/model/ChannelType.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/design/app_components.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/model/AppSummary.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/discovery/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'axisAlignment' is deprecated and shouldn't be used. Use alignment instead. This property provides full control over both axes, which is an improvement over the old axisAlignment. This feature was deprecated after v3.41.0-1.0.pre.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'axisAlignment' is deprecated and shouldn't be used. Use alignment instead. This property provides full control over both axes, which is an improvement over the old axisAlignment. This feature was deprecated after v3.41.0-1.0.pre.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'axisAlignment' is deprecated and shouldn't be used. Use alignment instead. This property provides full control over both axes, which is an improvement over the old axisAlignment. This feature was deprecated after v3.41.0-1.0.pre.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/home/tab/mine/view.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/sdk_analysis_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/service/install_manager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/installed_apps/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/licenses/licenses_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:convert' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "curly_braces_in_flow_control_structures",
+   "message": "Statements in an if should be enclosed in a block.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "prefer_const_literals_to_create_immutables",
+   "message": "Use 'const' literals as arguments to constructors of '@immutable' classes.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/settings_page.dart",
+   "code": "curly_braces_in_flow_control_structures",
+   "message": "Statements in an if should be enclosed in a block.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/settings/theme_settings_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:async' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/logic.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/download/DownloadStrategyManager.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'dart:ui' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/view.dart",
+   "code": "prefer_const_declarations",
+   "message": "Use 'const' for final variables initialized to a constant value.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/update/view.dart",
+   "code": "prefer_const_constructors",
+   "message": "Use 'const' with the constructor to improve performance.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/webdav_config/providers.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/webdav_config/view.dart",
+   "code": "unnecessary_import",
+   "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
+   "severity": "INFO"
+  }
+ ],
+ "clippy": {
+  "gstore_contract": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    }
+   ]
+  },
+  "gstore_host": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition name: `frb_expand`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/bridge.rs",
+     "code": "unused_imports",
+     "message": "unused import: `super::models::*`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/frame_metrics_bridge.rs",
+     "code": "unused_imports",
+     "message": "unused import: `JValue`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/manager.rs",
+     "code": "unused_mut",
+     "message": "variable does not need to be mutable",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "unused_unsafe",
+     "message": "unnecessary `unsafe` block",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/task_bridge.rs",
+     "code": "unused_mut",
+     "message": "variable does not need to be mutable",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/models.rs",
+     "code": "dead_code",
+     "message": "struct `ApkInfo` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/models.rs",
+     "code": "dead_code",
+     "message": "struct `QrDecodeResult` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/models.rs",
+     "code": "dead_code",
+     "message": "struct `ApkComponents` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/models.rs",
+     "code": "dead_code",
+     "message": "struct `ElfSoInfo` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/models.rs",
+     "code": "dead_code",
+     "message": "struct `ApkElfScanResult` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/manager.rs",
+     "code": "dead_code",
+     "message": "method `register_preload` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/dl_adapter.rs",
+     "code": "dead_code",
+     "message": "type alias `AllocFn` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/event_bridge.rs",
+     "code": "dead_code",
+     "message": "function `host_emit_event_simple` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/frb_generated.rs",
+     "code": "clippy::default_constructed_unit_structs",
+     "message": "use of `default` to create a unit struct",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/manager.rs",
+     "code": "clippy::too_many_arguments",
+     "message": "this function has too many arguments (8/7)",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/trust.rs",
+     "code": "clippy::manual_is_multiple_of",
+     "message": "manual implementation of `.is_multiple_of()`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_host/src/log_bridge.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  },
+  "gstore_mod_analyzer": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/browser.rs",
+     "code": "clippy::needless_borrow",
+     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/cert.rs",
+     "code": "clippy::derivable_impls",
+     "message": "this `impl` can be derived",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/cert.rs",
+     "code": "clippy::derivable_impls",
+     "message": "this `impl` can be derived",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/elf.rs",
+     "code": "clippy::redundant_guards",
+     "message": "redundant guard",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/rules.rs",
+     "code": "clippy::needless_borrow",
+     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/rules.rs",
+     "code": "clippy::manual_range_patterns",
+     "message": "this OR pattern can be rewritten using a range",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/rules.rs",
+     "code": "clippy::needless_borrow",
+     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/signature.rs",
+     "code": "clippy::field_reassign_with_default",
+     "message": "field assignment outside of initializer for an instance created with Default::default()",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_analyzer/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  },
+  "gstore_mod_download": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::collapsible_if",
+     "message": "this `if` statement can be collapsed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::unnecessary_map_or",
+     "message": "this `map_or` can be simplified",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::too_many_arguments",
+     "message": "this function has too many arguments (10/7)",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::unnecessary_cast",
+     "message": "casting to the same type is unnecessary (`u64` -> `u64`)",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::too_many_arguments",
+     "message": "this function has too many arguments (9/7)",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/engine.rs",
+     "code": "clippy::suspicious_open_options",
+     "message": "file opened with `create`, but `truncate` behavior not defined",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/scheduler.rs",
+     "code": "clippy::needless_borrows_for_generic_args",
+     "message": "the borrowed expression implements the required traits",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/scheduler.rs",
+     "code": "clippy::needless_borrows_for_generic_args",
+     "message": "the borrowed expression implements the required traits",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/store.rs",
+     "code": "clippy::doc_lazy_continuation",
+     "message": "doc list item without indentation",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/store.rs",
+     "code": "clippy::too_many_arguments",
+     "message": "this function has too many arguments (8/7)",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/lib.rs",
+     "code": "clippy::let_unit_value",
+     "message": "this let-binding has unit value",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_download/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  },
+  "gstore_mod_llm": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/lib.rs",
+     "code": "dead_code",
+     "message": "function `emit_event` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/engine.rs",
+     "code": "dead_code",
+     "message": "struct `BusyGuard` is never constructed",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_llm/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  },
+  "gstore_mod_perf": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    }
+   ]
+  },
+  "gstore_mod_proxy": {
+   "state": "unavailable",
+   "reason": "cargo clippy could not run for gstore_mod_proxy: rc=101 with no compiler diagnostics (build-script/toolchain failure, e.g. missing libclang for bindgen); stderr tail:\nfind any valid shared libraries matching: ['libclang.so', 'libclang-*.so', 'libclang.so.*', 'libclang-*.so.*'], set the `LIBCLANG_PATH` environment variable to a path where one of these files can be found (invalid: [])\"\n  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+   "findings": []
+  },
+  "gstore_mod_qr": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::needless_borrows_for_generic_args",
+     "message": "the borrowed expression implements the required traits",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::manual_div_ceil",
+     "message": "manually reimplementing `div_ceil`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::manual_div_ceil",
+     "message": "manually reimplementing `div_ceil`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_qr/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  },
+  "gstore_mod_repo": {
+   "state": "ok",
+   "reason": null,
+   "findings": [
+    {
+     "file": "rust/gstore_contract/src/lib.rs",
+     "code": "unexpected_cfgs",
+     "message": "unexpected `cfg` condition value: `dynamic-pb`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::empty_line_after_doc_comments",
+     "message": "empty line after doc comment",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "unused_mut",
+     "message": "variable does not need to be mutable",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/fdroid_url.rs",
+     "code": "dead_code",
+     "message": "field `version` is never read",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/fdroid_url.rs",
+     "code": "dead_code",
+     "message": "function `verify_sha256` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/fdroid_url.rs",
+     "code": "dead_code",
+     "message": "function `hex_lower` is never used",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/fdroid_url.rs",
+     "code": "clippy::doc_lazy_continuation",
+     "message": "doc list item without indentation",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::field_reassign_with_default",
+     "message": "field assignment outside of initializer for an instance created with Default::default()",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::if_same_then_else",
+     "message": "this `if` has identical blocks",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::needless_borrow",
+     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::needless_borrow",
+     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::manual_map",
+     "message": "manual implementation of `Option::map`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::manual_map",
+     "message": "manual implementation of `Option::map`",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/repo.rs",
+     "code": "clippy::needless_lifetimes",
+     "message": "the following explicit lifetimes could be elided: 'a",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/lib.rs",
+     "code": "clippy::let_unit_value",
+     "message": "this let-binding has unit value",
+     "level": "warning"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    },
+    {
+     "file": "rust/gstore_mod_repo/src/lib.rs",
+     "code": "clippy::not_unsafe_ptr_arg_deref",
+     "message": "this public function might dereference a raw pointer but is not marked `unsafe`",
+     "level": "error"
+    }
+   ]
+  }
+ }
+}
