@@ -53,6 +53,9 @@ app.*.map.json
 rust/*/target/
 rust/target/
 
+# 仓库根目录构建/证据产物（spike 证据 target/spike-evidence/ 不入库）
+/target/
+
 # GStore-Repositorys 临时克隆
 /git.temp/
 
