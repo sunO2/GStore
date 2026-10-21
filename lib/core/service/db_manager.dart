@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -148,6 +149,7 @@ class DbManager {
   }
 
   Future<void> addDBRepositroy(DBRepository dbRepositroy) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     return;
   }
 
