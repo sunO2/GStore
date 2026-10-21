@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::db::DbError;
 
+// Embedded refinery migrations; `V1__core_schema.sql` mirrors
+// `docs/core-schema.sql` (without the ledger table, which refinery owns).
+refinery::embed_migrations!("migrations");
+
 /// Directory name, under the app files dir, where Dart-side migration payloads land.
 pub const MIGRATION_DIR: &str = "migration";
 
@@ -15,62 +19,23 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
 pub const CORE_SCHEMA_VERSION: i32 = 1;
 
-/// Applies the core schema idempotently and stamps the schema version.
+/// Name of the refinery ledger table.
+pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";
+
+/// Applies the embedded core migrations idempotently and stamps the schema
+/// version.
 ///
-/// Spike note: the ordered Dart→Rust handoff tables (`channel_env`,
-/// `update_prefs`) are folded into `user_version = 1` instead of a separate
-/// v2 migration, because the spike core database is always freshly created.
-/// A production core will split them into a numbered migration step.
-pub fn apply_core_schema(conn: &rusqlite::Connection) -> Result<(), DbError> {
-    conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS core_writes(
-            domain TEXT PRIMARY KEY,
-            first_write_at INTEGER NOT NULL,
-            snapshot_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS download_task(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            module_task_id TEXT UNIQUE,
-            dedup_key TEXT UNIQUE,
-            app_id TEXT,
-            app_name TEXT,
-            version TEXT,
-            file_name TEXT,
-            kind TEXT,
-            resource_id TEXT,
-            resource_version TEXT,
-            url TEXT,
-            dest_path TEXT,
-            status TEXT NOT NULL DEFAULT '',
-            bytes_done INTEGER NOT NULL DEFAULT 0,
-            total INTEGER NOT NULL DEFAULT 0,
-            speed_bps INTEGER NOT NULL DEFAULT 0,
-            eta_sec INTEGER,
-            segments_json TEXT,
-            retries INTEGER NOT NULL DEFAULT 0,
-            server_meta TEXT,
-            priority INTEGER NOT NULL DEFAULT 0,
-            headers_json TEXT,
-            expected_sha256 TEXT,
-            install_after_download INTEGER NOT NULL DEFAULT 0,
-            error TEXT,
-            last_started_at INTEGER,
-            created_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS channel_env(
-            channel_key TEXT PRIMARY KEY,
-            env_json TEXT NOT NULL,
-            imported_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS update_prefs(
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            imported_at INTEGER NOT NULL
-        );
-        PRAGMA user_version = {CORE_SCHEMA_VERSION};"
-    ))
-    .map_err(|e| DbError(format!("apply core schema: {e}")))?;
+/// Refinery records each applied migration in `schema_migrations`, so opening
+/// an already-migrated database is a no-op. The SQL is also written with
+/// `IF NOT EXISTS` so a database created by the pre-refinery spike is adopted
+/// without being re-created.
+pub fn apply_core_schema(conn: &mut rusqlite::Connection) -> Result<(), DbError> {
+    migrations::runner()
+        .set_migration_table_name(MIGRATION_LEDGER_TABLE)
+        .run(conn)
+        .map_err(|e| DbError(format!("apply core schema: {e}")))?;
+    conn.pragma_update(None, "user_version", CORE_SCHEMA_VERSION)
+        .map_err(|e| DbError(format!("stamp user_version: {e}")))?;
     Ok(())
 }
 
@@ -93,7 +58,8 @@ pub fn import_migration_document(
     if version != Some(MIGRATION_DOC_VERSION) {
         return Err(DbError(format!(
             "CORE_E_MIGRATION_VERSION: expected {MIGRATION_DOC_VERSION}, got {}",
-            doc.get("version").map_or_else(|| "missing".to_string(), ToString::to_string)
+            doc.get("version")
+                .map_or_else(|| "missing".to_string(), ToString::to_string)
         )));
     }
 
@@ -129,7 +95,11 @@ fn import_channel_env(
              env_json = excluded.env_json, imported_at = excluded.imported_at",
         rusqlite::params![channel_key, env_json],
     )
-    .map_err(|e| DbError(format!("CORE_E_MIGRATION_WRITE: channel_env {channel_key}: {e}")))?;
+    .map_err(|e| {
+        DbError(format!(
+            "CORE_E_MIGRATION_WRITE: channel_env {channel_key}: {e}"
+        ))
+    })?;
     Ok(1)
 }
 
@@ -185,10 +155,7 @@ pub fn import_migration_file(
 }
 
 /// Returns how many `channel_env` rows exist for `channel_key`.
-pub fn channel_env_count(
-    conn: &rusqlite::Connection,
-    channel_key: &str,
-) -> Result<i64, DbError> {
+pub fn channel_env_count(conn: &rusqlite::Connection, channel_key: &str) -> Result<i64, DbError> {
     conn.query_row(
         "SELECT COUNT(*) FROM channel_env WHERE channel_key=?1",
         [channel_key],
@@ -279,8 +246,8 @@ mod tests {
 
     #[test]
     fn download_task_ddl_has_reconcile_columns() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        apply_core_schema(&conn).unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
         let mut stmt = conn.prepare("PRAGMA table_info(download_task)").unwrap();
         let columns: Vec<String> = stmt
             .query_map([], |r| r.get(1))
@@ -294,9 +261,9 @@ mod tests {
 
     #[test]
     fn apply_core_schema_is_idempotent() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        apply_core_schema(&conn).unwrap();
-        apply_core_schema(&conn).unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
+        apply_core_schema(&mut conn).unwrap();
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
@@ -305,8 +272,8 @@ mod tests {
 
     #[test]
     fn core_writes_guard() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        apply_core_schema(&conn).unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
 
         ensure_legacy_write_allowed(&conn, "channel").expect("unmarked domain is writable");
 
@@ -336,8 +303,8 @@ mod tests {
 
     #[test]
     fn migration_handoff_roundtrip() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        apply_core_schema(&conn).unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
 
         let channel = serde_json::json!({
             "version": 1,
@@ -429,6 +396,9 @@ mod tests {
         let files_dir = Path::new("/tmp/files");
         let dir = migration_dir(files_dir);
         assert!(dir.starts_with(files_dir));
-        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some(MIGRATION_DIR));
+        assert_eq!(
+            dir.file_name().and_then(|n| n.to_str()),
+            Some(MIGRATION_DIR)
+        );
     }
 }

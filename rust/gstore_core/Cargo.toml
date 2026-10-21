@@ -12,6 +12,7 @@ gstore_contract = { path = "../gstore_contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+refinery = { version = "0.8", default-features = false, features = ["rusqlite"] }
 log = "0.4"
 
 [profile.release]

@@ -626,7 +626,7 @@ mod tests {
 
     fn port_with<B: ModuleBridge>(bridge: B) -> (ModuleDownloadPort<B>, SharedConn) {
         let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-        crate::migration::apply_core_schema(&conn.lock().unwrap()).unwrap();
+        crate::migration::apply_core_schema(&mut conn.lock().unwrap()).unwrap();
         let port = ModuleDownloadPort::new(bridge, conn.clone(), PathBuf::from("/tmp/core.db"));
         (port, conn)
     }

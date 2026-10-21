@@ -542,8 +542,8 @@ mod tests {
     #[test]
     fn download_legacy_and_reconcile_floor_and_module_db() {
         let dir = TempDir::new("floor_module");
-        let core = Connection::open_in_memory().unwrap();
-        crate::migration::apply_core_schema(&core).unwrap();
+        let mut core = Connection::open_in_memory().unwrap();
+        crate::migration::apply_core_schema(&mut core).unwrap();
 
         let url = "https://example.test/app.apk";
         let dest = "/storage/emulated/0/Download/app.apk";
@@ -764,8 +764,8 @@ mod tests {
     #[test]
     fn download_legacy_and_reconcile_absent_table_is_db_error() {
         let dir = TempDir::new("absent_table");
-        let core = Connection::open_in_memory().unwrap();
-        crate::migration::apply_core_schema(&core).unwrap();
+        let mut core = Connection::open_in_memory().unwrap();
+        crate::migration::apply_core_schema(&mut core).unwrap();
 
         let empty_path = dir.path().join("empty.db");
         Connection::open(&empty_path).unwrap();
