@@ -13,7 +13,8 @@ pub mod ports;
 pub use channel::{
     validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
     ChannelRecord, ChannelRegistry, ChannelStore, InMemoryChannelDriver, InMemoryChannelRegistry,
-    InMemoryChannelStore, PackIconSource, SqliteChannelRegistry, SqliteChannelStore,
+    InMemoryChannelStore, InstalledPack, PackError, PackIconSource, PackLimits, PackStore,
+    SqliteChannelRegistry, SqliteChannelStore,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
