@@ -392,6 +392,114 @@ mod tests {
     }
 
     #[test]
+    fn core_writes_empty_after_init_and_migration() {
+        let root = std::env::temp_dir().join(format!(
+            "gstore_core_writes_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+
+        let conn = crate::db::open(&data_dir).expect("open core db");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .unwrap();
+        println!("after init: SELECT COUNT(*) FROM core_writes = {count}");
+        assert_eq!(count, 0, "init must not write core_writes markers");
+
+        let migration_path = migration_dir(&files_dir);
+        std::fs::create_dir_all(&migration_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .unwrap();
+        println!("after migrate_paths: core_writes count = {count}");
+        assert_eq!(count, 0, "migrate_paths must not arm core_writes");
+        for domain in CORE_WRITES_DOMAINS {
+            assert!(
+                core_write_marker(&conn, domain).unwrap().is_none(),
+                "migrate_paths armed {domain}"
+            );
+        }
+
+        let channel_doc = migration_path.join("channel_env.json");
+        std::fs::write(
+            &channel_doc,
+            br#"{"version":1,"channel_key":"js.wave01","env":{"USER":"alice"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            import_migration_file(&conn, "channel_env", &channel_doc).unwrap(),
+            1
+        );
+
+        let prefs_doc = migration_path.join("update_prefs.json");
+        std::fs::write(
+            &prefs_doc,
+            br#"{"version":1,"prefs":{"update_last_checked_at":"1700000000000","update_preferred_apk":"{\"github:a\":\"a.apk\"}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            import_migration_file(&conn, "update_prefs", &prefs_doc).unwrap(),
+            2
+        );
+        assert_eq!(channel_env_count(&conn, "js.wave01").unwrap(), 1);
+        assert_eq!(
+            update_pref(&conn, "update_last_checked_at").unwrap(),
+            Some("1700000000000".to_string())
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .unwrap();
+        println!("after migration import: core_writes count = {count}");
+        assert_eq!(count, 0, "migration imports must not arm core_writes");
+
+        let snapshot = root.join("snapshot.db");
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![snapshot.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        let snap = rusqlite::Connection::open_with_flags(
+            &snapshot,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let snap_version: i32 = snap
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(snap_version, CORE_SCHEMA_VERSION);
+        let snap_count: i64 = snap
+            .query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .unwrap();
+        println!("snapshot core_writes count = {snap_count}");
+        assert_eq!(snap_count, 0, "snapshot must not contain markers");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .unwrap();
+        println!("after snapshot export/import: core_writes count = {count}");
+        assert_eq!(count, 0, "snapshot round-trip must not arm core_writes");
+
+        for domain in CORE_WRITES_DOMAINS {
+            let marker = core_write_marker(&conn, domain).unwrap();
+            println!("marker[{domain}] = {marker:?}");
+            assert!(marker.is_none(), "{domain} must not be armed");
+            ensure_legacy_write_allowed(&conn, domain)
+                .unwrap_or_else(|e| panic!("guard must stay disabled for {domain}: {}", e.0));
+        }
+
+        drop(snap);
+        drop(conn);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn migration_dir_is_under_files_dir() {
         let files_dir = Path::new("/tmp/files");
         let dir = migration_dir(files_dir);

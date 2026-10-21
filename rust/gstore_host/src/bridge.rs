@@ -457,10 +457,6 @@ impl CoreApi {
         }
         let conn = core_db::open(std::path::Path::new(&data_dir))
             .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
-        for domain in core_migration::CORE_WRITES_DOMAINS {
-            core_migration::mark_core_write(&conn, domain, Some("spike-init"))
-                .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
-        }
         Ok(CoreApi {
             paths: std::sync::Mutex::new(Some(CorePaths {
                 data_dir,
@@ -651,24 +647,14 @@ mod core_api_tests {
             migration_dir.display()
         );
 
-        let channel = api
-            .core_writes("channel".to_string())
-            .expect("core_writes channel")
-            .expect("init must mark channel");
-        assert!(channel.first_write_at > 0, "channel first_write_at must be > 0");
-        assert_eq!(channel.snapshot_id, Some("spike-init".to_string()));
-        for domain in ["update", "download"] {
-            let marker = api
-                .core_writes(domain.to_string())
-                .expect("core_writes")
-                .unwrap_or_else(|| panic!("init must mark {domain}"));
-            assert!(marker.first_write_at > 0, "{domain} first_write_at must be > 0");
-            assert_eq!(marker.snapshot_id, Some("spike-init".to_string()));
+        for domain in ["channel", "update", "download"] {
+            assert!(
+                api.core_writes(domain.to_string())
+                    .expect("core_writes")
+                    .is_none(),
+                "init must not arm {domain}"
+            );
         }
-        assert!(api
-            .core_writes("other".to_string())
-            .expect("core_writes other")
-            .is_none());
 
         let sample = root.join("a.txt");
         let content = b"hello gstore core";
@@ -719,6 +705,202 @@ mod core_api_tests {
             err.contains("CORE_E_IMPORT_NOT_FOUND"),
             "unexpected error: {err}"
         );
+
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "gstore_core_api_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn core_writes_count(db_path: &str) -> i64 {
+        let conn = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open live db read-only");
+        conn.query_row("SELECT COUNT(*) FROM core_writes", [], |r| r.get(0))
+            .expect("count core_writes")
+    }
+
+    #[test]
+    fn core_writes_empty_after_init_and_migration() {
+        let root = temp_root("writes");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+
+        let init = api.migrate_paths().expect("migrate_paths");
+        let count = core_writes_count(&init.db_path);
+        println!("after init+migrate_paths: SELECT COUNT(*) FROM core_writes = {count}");
+        assert_eq!(count, 0, "init/migrate_paths must not arm core_writes");
+        for domain in core_migration::CORE_WRITES_DOMAINS {
+            let marker = api
+                .core_writes(domain.to_string())
+                .expect("core_writes");
+            println!(
+                "after init+migrate_paths: marker[{domain}] present = {}",
+                marker.is_some()
+            );
+            assert!(marker.is_none(), "{domain} must not be armed");
+        }
+
+        let migration_path = files_dir.join("migration");
+        let channel_doc = migration_path.join("channel_env.json");
+        std::fs::write(
+            &channel_doc,
+            br#"{"version":1,"channel_key":"js.wave01","env":{"USER":"alice"}}"#,
+        )
+        .unwrap();
+        let channel_rows = api
+            .import_migration_file(
+                "channel_env".to_string(),
+                channel_doc.to_string_lossy().into_owned(),
+            )
+            .expect("import channel_env");
+        assert_eq!(channel_rows, 1);
+
+        let prefs_doc = migration_path.join("update_prefs.json");
+        std::fs::write(
+            &prefs_doc,
+            br#"{"version":1,"prefs":{"update_last_checked_at":"1700000000000"}}"#,
+        )
+        .unwrap();
+        let pref_rows = api
+            .import_migration_file(
+                "update_prefs".to_string(),
+                prefs_doc.to_string_lossy().into_owned(),
+            )
+            .expect("import update_prefs");
+        assert_eq!(pref_rows, 1);
+
+        let count = core_writes_count(&init.db_path);
+        println!("after migration imports: core_writes count = {count}");
+        assert_eq!(count, 0, "migration imports must not arm core_writes");
+
+        let snapshot = root.join("snapshot.db");
+        let size = api
+            .export_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("export_snapshot");
+        assert!(size > 0);
+
+        let stale = rusqlite::Connection::open(&snapshot).expect("open snapshot");
+        stale
+            .execute(
+                "INSERT INTO core_writes(domain, first_write_at, snapshot_id) \
+                 VALUES ('channel', 1, 'stale-snapshot')",
+                [],
+            )
+            .expect("seed snapshot marker");
+        drop(stale);
+        let stale_count = core_writes_count(&snapshot.to_string_lossy());
+        println!("seeded snapshot core_writes count = {stale_count}");
+        assert_eq!(stale_count, 1);
+
+        assert_eq!(
+            api.import_snapshot(snapshot.to_string_lossy().into_owned())
+                .expect("import_snapshot"),
+            1
+        );
+
+        let count = core_writes_count(&init.db_path);
+        println!("after snapshot export/import: core_writes count = {count}");
+        assert_eq!(count, 0, "snapshot round-trip must not arm core_writes");
+
+        let live = rusqlite::Connection::open_with_flags(
+            &init.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open live db");
+        for domain in core_migration::CORE_WRITES_DOMAINS {
+            let marker = api
+                .core_writes(domain.to_string())
+                .expect("core_writes");
+            assert!(marker.is_none(), "{domain} must stay unarmed");
+            core_migration::ensure_legacy_write_allowed(&live, domain)
+                .unwrap_or_else(|e| panic!("guard must stay disabled for {domain}: {}", e.0));
+        }
+
+        drop(live);
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn malformed_migration_leaves_core_writes_empty() {
+        let root = temp_root("malformed");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+        let init = api.migrate_paths().expect("migrate_paths");
+
+        let cases: [(&str, &str, &str); 3] = [
+            (
+                "bad-json.json",
+                "channel_env",
+                r#"{"version":1,"channel_key":"js.bad","env":{"a":"b"}"#,
+            ),
+            (
+                "bad-version.json",
+                "channel_env",
+                r#"{"version":2,"channel_key":"js.bad","env":{"a":"b"}}"#,
+            ),
+            (
+                "bad-shape.json",
+                "update_prefs",
+                r#"{"version":1,"prefs":[]}"#,
+            ),
+        ];
+
+        for (name, kind, body) in cases {
+            let path = root.join(name);
+            std::fs::write(&path, body).unwrap();
+            let err = api
+                .import_migration_file(kind.to_string(), path.to_string_lossy().into_owned())
+                .expect_err("malformed document must fail");
+            println!("{name}: {err}");
+            assert!(
+                err.starts_with("CORE_E_IMPORT_MIGRATION"),
+                "{name}: expected typed error, got {err}"
+            );
+            println!("{name}: document retained = {}", path.is_file());
+            assert!(path.is_file(), "{name}: document must be retained on failure");
+            let count = core_writes_count(&init.db_path);
+            println!("{name}: core_writes count = {count}");
+            assert_eq!(count, 0, "{name}: failure must not arm core_writes");
+            for domain in core_migration::CORE_WRITES_DOMAINS {
+                let marker = api
+                    .core_writes(domain.to_string())
+                    .expect("core_writes");
+                println!(
+                    "{name}: marker[{domain}] present = {}",
+                    marker.is_some()
+                );
+                assert!(
+                    marker.is_none(),
+                    "{name}: {domain} must not be armed"
+                );
+            }
+        }
 
         drop(api);
         std::fs::remove_dir_all(&root).unwrap();

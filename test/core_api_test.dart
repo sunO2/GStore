@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -75,11 +76,54 @@ void main() {
     );
   });
 
-  test('init writes core_writes markers before mutation', () async {
-    final marker = await api.coreWrites(domain: 'channel');
+  test('init, migrate and import leave core_writes empty', () async {
+    const domains = <String>['channel', 'update', 'download'];
 
-    expect(marker, isNotNull);
-    expect(marker!.firstWriteAt > 0, isTrue);
-    expect(marker.snapshotId, 'spike-init');
+    for (final domain in domains) {
+      expect(await api.coreWrites(domain: domain), isNull,
+          reason: 'init must not arm $domain');
+    }
+
+    await api.migratePaths();
+    for (final domain in domains) {
+      expect(await api.coreWrites(domain: domain), isNull,
+          reason: 'migratePaths must not arm $domain');
+    }
+
+    final channelDoc = File('${root.path}/channel_env.json');
+    await channelDoc.writeAsString(jsonEncode(<String, Object?>{
+      'version': 1,
+      'channel_key': 'js.wave01',
+      'env': <String, String>{'USER': 'alice'},
+    }));
+    expect(
+      await api.importMigrationFile(
+        kind: 'channel_env',
+        path: channelDoc.path,
+      ),
+      1,
+    );
+
+    final prefsDoc = File('${root.path}/update_prefs.json');
+    await prefsDoc.writeAsString(jsonEncode(<String, Object?>{
+      'version': 1,
+      'prefs': <String, String>{'update_last_checked_at': '1700000000000'},
+    }));
+    expect(
+      await api.importMigrationFile(
+        kind: 'update_prefs',
+        path: prefsDoc.path,
+      ),
+      1,
+    );
+
+    final snap = '${root.path}/markers.db';
+    await api.exportSnapshot(path: snap);
+    expect(await api.importSnapshot(path: snap), 1);
+
+    for (final domain in domains) {
+      expect(await api.coreWrites(domain: domain), isNull,
+          reason: 'import/snapshot must not arm $domain');
+    }
   });
 }
