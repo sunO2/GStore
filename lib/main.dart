@@ -35,6 +35,7 @@ import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/core/rust/DioModuleFetcher.dart';
+import 'package:gstore/debug/core_smoke.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleDownloader.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
@@ -265,6 +266,22 @@ Future<void> _initModuleManager(Stopwatch sw) async {
 
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 调试专用核心冒烟（F3 真机 QA）：仅当构建带
+  // `--dart-define=GSTORE_CORE_SMOKE=true` 且 kDebugMode 时执行，正常启动
+  // 完全惰性（enabled 为编译期 false）。失败时记录日志后重新抛出，避免
+  // "看起来成功" 的静默降级。
+  if (CoreSmoke.enabled) {
+    try {
+      await CoreSmoke.run();
+    } on Object catch (error, stackTrace) {
+      appLog.error('CoreSmoke: 启动失败', data: {
+        'error': error.toString(),
+        'stack': stackTrace.toString(),
+      });
+      rethrow;
+    }
+  }
 
   // 初始化前台任务通信端口（后台 isolate 保活）
   FlutterForegroundTask.initCommunicationPort();
