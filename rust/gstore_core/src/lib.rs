@@ -12,9 +12,9 @@ pub mod ports;
 
 pub use channel::{
     validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
-    ChannelRecord, ChannelRegistry, ChannelStore, InMemoryChannelDriver, InMemoryChannelRegistry,
-    InMemoryChannelStore, InstalledPack, PackError, PackIconSource, PackLimits, PackStore,
-    SqliteChannelRegistry, SqliteChannelStore,
+    ChannelRecord, ChannelRegistry, ChannelStore, GitHubDriver, InMemoryChannelDriver,
+    InMemoryChannelRegistry, InMemoryChannelStore, InstalledPack, LocalDbDriver, PackError,
+    PackIconSource, PackLimits, PackStore, SqliteChannelRegistry, SqliteChannelStore,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,

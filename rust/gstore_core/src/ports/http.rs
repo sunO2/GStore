@@ -126,7 +126,10 @@ impl HttpResponse {
 }
 
 /// Synchronous HTTP transport.
-pub trait HttpPort {
+///
+/// Implementations must be thread-safe because channel drivers are
+/// `Send + Sync` and hold the transport behind an `Arc`.
+pub trait HttpPort: Send + Sync {
     /// Performs a GET request.
     fn get(&self, url: &str, options: &HttpOptions) -> Result<HttpResponse, Error>;
 

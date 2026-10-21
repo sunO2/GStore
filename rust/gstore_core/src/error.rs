@@ -12,6 +12,9 @@ pub const CODE_INVALID_ARGUMENT: &str = "invalid_argument";
 pub const CODE_CONFLICT: &str = "conflict";
 pub const CODE_IO: &str = "io";
 pub const CODE_NETWORK: &str = "network";
+pub const CODE_UNAUTHORIZED: &str = "unauthorized";
+pub const CODE_FORBIDDEN: &str = "forbidden";
+pub const CODE_RATE_LIMITED: &str = "rate_limited";
 pub const CODE_SERIALIZATION: &str = "serialization";
 pub const CODE_UNSUPPORTED: &str = "unsupported";
 pub const CODE_INTERNAL: &str = "internal";
@@ -28,8 +31,14 @@ pub enum Error {
     Conflict(String),
     /// Filesystem or other local I/O failure.
     Io(String),
-    /// Remote/network failure.
+    /// Remote/network failure (including 5xx responses and timeouts).
     Network(String),
+    /// Authentication is missing or rejected (HTTP 401).
+    Unauthorized(String),
+    /// Authenticated but not allowed (HTTP 403 without a rate-limit signal).
+    Forbidden(String),
+    /// Remote rate limit (HTTP 429, or 403 whose body says rate limit).
+    RateLimited(String),
     /// JSON/encoding/decoding failure.
     Serialization(String),
     /// The operation is not supported in this wave.
@@ -47,6 +56,9 @@ impl Error {
             Self::Conflict(_) => CODE_CONFLICT,
             Self::Io(_) => CODE_IO,
             Self::Network(_) => CODE_NETWORK,
+            Self::Unauthorized(_) => CODE_UNAUTHORIZED,
+            Self::Forbidden(_) => CODE_FORBIDDEN,
+            Self::RateLimited(_) => CODE_RATE_LIMITED,
             Self::Serialization(_) => CODE_SERIALIZATION,
             Self::Unsupported(_) => CODE_UNSUPPORTED,
             Self::Internal(_) => CODE_INTERNAL,
@@ -61,6 +73,9 @@ impl Error {
             | Self::Conflict(message)
             | Self::Io(message)
             | Self::Network(message)
+            | Self::Unauthorized(message)
+            | Self::Forbidden(message)
+            | Self::RateLimited(message)
             | Self::Serialization(message)
             | Self::Unsupported(message)
             | Self::Internal(message) => message,

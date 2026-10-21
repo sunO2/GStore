@@ -170,6 +170,14 @@ impl<M: MetadataPort> CachedMetadataPort<M> {
     }
 }
 
+/// The TTL decorator is itself a [`MetadataPort`]: drivers accept
+/// `Arc<dyn MetadataPort>` and get the 24h cache without knowing about it.
+impl<M: MetadataPort> MetadataPort for CachedMetadataPort<M> {
+    fn fetch(&self, owner: &str, repo: &str) -> Result<Option<PackageMetadata>, Error> {
+        self.resolve(owner, repo)
+    }
+}
+
 fn cache_key(owner: &str, repo: &str) -> Result<String, Error> {
     for (label, value) in [("owner", owner), ("repo", repo)] {
         if value.is_empty()

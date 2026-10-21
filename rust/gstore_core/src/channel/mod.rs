@@ -22,6 +22,8 @@ mod sealed {
 
 mod driver;
 mod fake;
+mod github;
+mod localdb;
 mod pack;
 mod pack_loader;
 mod registry;
@@ -30,6 +32,8 @@ mod store;
 
 pub use driver::{ChannelCategory, ChannelConfig, ChannelDriver};
 pub use fake::{InMemoryChannelDriver, InMemoryChannelStore};
+pub use github::GitHubDriver;
+pub use localdb::LocalDbDriver;
 pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
 pub use pack_loader::{InstalledPack, PackError, PackLimits, PackStore};
 pub use registry::ChannelRegistry;
