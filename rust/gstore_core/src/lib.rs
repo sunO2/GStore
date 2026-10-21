@@ -8,6 +8,7 @@ pub mod error;
 pub mod event;
 pub mod flags;
 pub mod migration;
+pub mod ports;
 
 pub use channel::{
     validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
@@ -21,3 +22,7 @@ pub use dto::{
 pub use error::Error;
 pub use event::{CoreEvent, ScriptUiField};
 pub use flags::{flags, reset_flags, set_flags, Flags, FlagsApi, FlagsPatch};
+pub use ports::{
+    Capability, CapabilitySet, CoreConfig, DownloadPort, FileSecretPort, HttpPort, MetadataPort,
+    PlatformHost, RepoPort,
+};

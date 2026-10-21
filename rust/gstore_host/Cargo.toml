@@ -20,6 +20,8 @@ libloading = "0.8"
 # 只用于 Android 运行时；宿主的 Linux 测试构建同样可编译（默认 feature 不含
 # invocation，不链接 libjvm），JNI 函数在非 Android 上不会被调用。
 jni = { version = "0.21", default-features = false }
+# HTTP 客户端（Todo 6 HttpPort 的生产实现；同步 blocking，核心层不引入 async runtime）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # JSON 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
