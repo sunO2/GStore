@@ -81,6 +81,8 @@ fn host_entry() -> GStoreModuleEntry {
         context: std::ptr::null_mut(),
         // ABI v3：代理域模块经此槽安装一个 SocketProtector 覆盖全部出站 socket。
         protect_fd: Some(host_protect_fd),
+        // ABI v4：Todo 4 按模块探测结果填充真实 platform vtable；此前保持 NULL。
+        platform: std::ptr::null(),
     }
 }
 

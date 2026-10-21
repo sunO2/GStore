@@ -2651,6 +2651,7 @@ mod abi_tests {
             emit_event: Some(record_event),
             context: std::ptr::null_mut(),
             protect_fd: Some(dummy_protect),
+            platform: std::ptr::null(),
         };
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
         let code = gstore_mod_proxy_register(&entry, api.as_mut_ptr());

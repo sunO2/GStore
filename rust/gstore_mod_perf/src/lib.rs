@@ -306,6 +306,7 @@ mod tests {
             emit_event: None,
             context: std::ptr::null_mut(),
             protect_fd: None,
+            platform: std::ptr::null(),
         }
     }
 
