@@ -19,7 +19,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use gstore_contract::abi::{
     ABI_ERR_ABI_MISMATCH, ABI_ERR_NO_INSTANCE, ABI_ERR_NULL, ABI_ERR_PANIC, ABI_OK,
-    GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION, MIN_HOST_ABI,
 };
 use gstore_contract::context::ModuleContext;
 
@@ -143,6 +143,12 @@ fn on_event_impl(
 
 // ==================== C ABI 导出 ====================
 
+/// 模块构建时的 ABI 版本探测：宿主 dlsym `gstore_mod_perf_abi` 决定按哪个 ABI 握手。
+#[no_mangle]
+pub extern "C" fn gstore_mod_perf_abi() -> u32 {
+    GSTORE_MODULE_ABI_VERSION
+}
+
 /// 注册入口：宿主 `dlsym` 此符号并调用（握手）。
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -156,8 +162,8 @@ pub extern "C" fn gstore_mod_perf_register(
             return Err(ABI_ERR_NULL);
         }
         let e = unsafe { &*entry };
-        // 只拒绝更旧的宿主；末尾追加字段对更新宿主前向兼容（不做精确匹配）。
-        if e.abi_version < GSTORE_MODULE_ABI_VERSION {
+        // 接受 ABI 3（v3 宿主，无 platform 槽）与本构建 ABI 4；拒绝更旧/更新的宿主。
+        if e.abi_version < MIN_HOST_ABI || e.abi_version > GSTORE_MODULE_ABI_VERSION {
             return Err(ABI_ERR_ABI_MISMATCH);
         }
         let _ = HOST_ABI.set(e.abi_version);
@@ -179,7 +185,7 @@ pub extern "C" fn gstore_mod_perf_register(
         let api = unsafe { &mut *out };
         api.name = c"perf".as_ptr();
         api.version = MODULE_VERSION;
-        api.min_host_abi = GSTORE_MODULE_ABI_VERSION;
+        api.min_host_abi = MIN_HOST_ABI;
         api.init = Some(init_export);
         api.create = Some(create_export);
         api.call = Some(call_export);
@@ -344,17 +350,36 @@ mod tests {
         let api = unsafe { api.assume_init() };
         let name = unsafe { CStr::from_ptr(api.name) }.to_str().unwrap();
         assert_eq!(name, "perf");
-        assert_eq!(api.min_host_abi, GSTORE_MODULE_ABI_VERSION);
+        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
         assert_eq!(api.version, MODULE_VERSION);
         assert!(api.call.is_some() && api.create.is_some() && api.destroy.is_some());
     }
 
     #[test]
-    fn register_rejects_older_host_abi() {
+    fn register_accepts_v3_host() {
         let mut e = entry();
-        e.abi_version = GSTORE_MODULE_ABI_VERSION - 1;
+        e.abi_version = 3;
+        e.entry_size = GStoreModuleEntry::PLATFORM_OFFSET as u32;
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
-        assert_eq!(gstore_mod_perf_register(&e, api.as_mut_ptr()), ABI_ERR_ABI_MISMATCH);
+        assert_eq!(gstore_mod_perf_register(&e, api.as_mut_ptr()), ABI_OK);
+        let api = unsafe { api.assume_init() };
+        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+    }
+
+    #[test]
+    fn register_rejects_out_of_range_host_abi() {
+        for bad in [2u32, 5u32] {
+            let mut e = entry();
+            e.abi_version = bad;
+            let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+            assert_eq!(gstore_mod_perf_register(&e, api.as_mut_ptr()), ABI_ERR_ABI_MISMATCH);
+        }
+    }
+
+    #[test]
+    fn abi_probe_reports_build_version() {
+        assert_eq!(gstore_mod_perf_abi(), GSTORE_MODULE_ABI_VERSION);
+        assert_eq!(gstore_mod_perf_abi(), 4);
     }
 
     #[test]

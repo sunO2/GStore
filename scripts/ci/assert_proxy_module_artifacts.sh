@@ -62,6 +62,14 @@ fi
 MODULE="gstore_mod_proxy"
 NAME="proxy"
 ABIS=(arm64-v8a armeabi-v7a x86 x86_64)
+# Expected min_host_abi is derived from the contract sources (frozen by the ABI
+# todo), never hard-coded: a contract bump must fail loudly here, not silently
+# assert a stale string.
+MIN_HOST_ABI="$(sed -n 's/^pub const MIN_HOST_ABI: u32 = \([0-9][0-9]*\);$/\1/p' "$REPO_ROOT/rust/gstore_contract/src/abi.rs" | head -n1)"
+if [ -z "$MIN_HOST_ABI" ]; then
+  echo "ERROR: 无法从 rust/gstore_contract/src/abi.rs 推导 MIN_HOST_ABI" >&2
+  exit 2
+fi
 # Proxy may only depend on Android system libraries. Anything else (notably
 # libstdc++.so, a host-only lib, or another gstore module) is unexpected.
 ALLOWED_NEEDED=(libc.so libdl.so libm.so libc++_shared.so liblog.so libandroid.so libz.so)
@@ -189,21 +197,21 @@ if [ ! -s "$MANIFEST" ]; then
   fail "缺少发布清单: $MANIFEST（先运行 ./generate_modules_manifest.sh）"
   failures=$((failures + 1))
 else
-  if ! python3 - "$MANIFEST" "$FIXTURE_DIR" "$NAME" "${ABIS[@]}" <<'PY'
+  if ! python3 - "$MANIFEST" "$FIXTURE_DIR" "$NAME" "$MIN_HOST_ABI" "${ABIS[@]}" <<'PY'
 import hashlib
 import json
 import os
 import re
 import sys
 
-manifest_path, fixture_dir, name = sys.argv[1], sys.argv[2], sys.argv[3]
-abis = sys.argv[4:]
+manifest_path, fixture_dir, name, min_host_abi = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+abis = sys.argv[5:]
 manifest = json.load(open(manifest_path, encoding="utf-8"))
 mod = manifest.get("modules", {}).get(name)
 if mod is None:
     raise SystemExit(f"modules.json 缺少 '{name}' 条目")
-if str(mod.get("min_host_abi", "")) != "3":
-    raise SystemExit(f"{name}.min_host_abi={mod.get('min_host_abi')!r}，期望 '3'（ABI v3）")
+if str(mod.get("min_host_abi", "")) != min_host_abi:
+    raise SystemExit(f"{name}.min_host_abi={mod.get('min_host_abi')!r}，期望 {min_host_abi!r}（ABI v{min_host_abi}）")
 entry_abis = mod.get("abi", {})
 missing = [a for a in abis if a not in entry_abis]
 if missing:
