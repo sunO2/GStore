@@ -22,6 +22,7 @@ mod sealed {
 
 mod driver;
 mod fake;
+mod fdroid;
 mod github;
 mod localdb;
 mod pack;
@@ -29,9 +30,11 @@ mod pack_loader;
 mod registry;
 mod sqlite_store;
 mod store;
+mod vivo;
 
 pub use driver::{ChannelCategory, ChannelConfig, ChannelDriver};
 pub use fake::{InMemoryChannelDriver, InMemoryChannelStore};
+pub use fdroid::FdroidDriver;
 pub use github::GitHubDriver;
 pub use localdb::LocalDbDriver;
 pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
@@ -39,6 +42,7 @@ pub use pack_loader::{InstalledPack, PackError, PackLimits, PackStore};
 pub use registry::ChannelRegistry;
 pub use sqlite_store::SqliteChannelStore;
 pub use store::{ChannelRecord, ChannelStore};
+pub use vivo::VivoDriver;
 
 /// [`ChannelRegistry`] backed by the persistent [`SqliteChannelStore`].
 pub type SqliteChannelRegistry = ChannelRegistry<SqliteChannelStore>;

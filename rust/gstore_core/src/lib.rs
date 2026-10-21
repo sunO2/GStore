@@ -12,9 +12,10 @@ pub mod ports;
 
 pub use channel::{
     validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
-    ChannelRecord, ChannelRegistry, ChannelStore, GitHubDriver, InMemoryChannelDriver,
-    InMemoryChannelRegistry, InMemoryChannelStore, InstalledPack, LocalDbDriver, PackError,
-    PackIconSource, PackLimits, PackStore, SqliteChannelRegistry, SqliteChannelStore,
+    ChannelRecord, ChannelRegistry, ChannelStore, FdroidDriver, GitHubDriver,
+    InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore, InstalledPack,
+    LocalDbDriver, PackError, PackIconSource, PackLimits, PackStore, SqliteChannelRegistry,
+    SqliteChannelStore, VivoDriver,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,

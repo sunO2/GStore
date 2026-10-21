@@ -2,10 +2,12 @@ mod frb_generated; /* AUTO INJECTED BY flutter_rust_bridge. This line may not be
 mod models;
 mod bridge;
 mod manager;
+mod repo_port;
 mod dl_adapter;
 mod jni_bridge;
 pub mod http_port;
 pub use http_port::ReqwestHttpPort;
+pub use repo_port::{ModuleManagerBridge, ModuleRepoPort, RepoBridge};
 // 统一特权 shell 门面：Rust → JNI → Kotlin `ShizukuExecBridge` → Shizuku。
 mod shizuku_bridge;
 // 免权限电池 JNI 门面：Rust → JNI → Kotlin `BatteryChannel`（applicationContext 由

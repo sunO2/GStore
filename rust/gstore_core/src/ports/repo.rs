@@ -52,7 +52,7 @@ pub struct RepoApp {
 }
 
 /// Commands the F-Droid driver needs from the repository module.
-pub trait RepoPort {
+pub trait RepoPort: Send + Sync {
     /// Downloads/refreshes the repository index and returns its metadata.
     fn download_repo(&self, source: &str) -> Result<RepoMeta, Error>;
 
