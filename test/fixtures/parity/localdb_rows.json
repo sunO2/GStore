@@ -1,0 +1,35 @@
+[
+  {
+    "appId": "demo.alpha",
+    "name": "Demo Alpha",
+    "user": "alice",
+    "repositories": "alice/demo-alpha",
+    "icon": "https://example.test/alpha.png",
+    "des": "A demo application for parity testing.",
+    "readme": null,
+    "category": "[\"tools\",\"demo\"]",
+    "extra": "{\"packageName\":\"com.example.demoalpha\",\"stars\":12}"
+  },
+  {
+    "appId": "beta.notes",
+    "name": "Beta Notes",
+    "user": "bob",
+    "repositories": "bob/beta-notes",
+    "icon": "https://example.test/beta.png",
+    "des": "A notes app bundled with a demo mode.",
+    "readme": "# Beta Notes\nSecond fixture row.",
+    "category": "[\"notes\"]",
+    "extra": null
+  },
+  {
+    "appId": "gamma.timer",
+    "name": "Gamma Timer",
+    "user": "carol",
+    "repositories": "carol/gamma-timer",
+    "icon": "https://example.test/gamma.png",
+    "des": "Countdown timer with alarms.",
+    "readme": null,
+    "category": null,
+    "extra": null
+  }
+]

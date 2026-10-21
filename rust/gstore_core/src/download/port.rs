@@ -318,7 +318,11 @@ fn field_i64(value: &Value, names: &[&str]) -> Option<i64> {
     })
 }
 
-fn status_label(code: i64) -> &'static str {
+/// Maps a download module status code to the core task status label.
+///
+/// Public so harnesses (for example the LocalDb parity bin) can assert the
+/// exact rule without duplicating it.
+pub fn status_label(code: i64) -> &'static str {
     match code {
         0..=2 => "running",
         3 => "paused",
