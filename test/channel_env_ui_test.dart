@@ -17,6 +17,8 @@ import 'package:gstore/page/settings/settings_page.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/settle.dart';
+
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
 class _FakePathProvider extends PathProviderPlatform {
   final String path;
@@ -123,34 +125,6 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 等待真实异步（QuickJS FFI + 文件 IO 非帧驱动）完成
-  Future<void> settleAsync(WidgetTester tester) async {
-    for (var i = 0; i < 3; i++) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 300)));
-      await tester.pump();
-    }
-    await tester.pumpAndSettle();
-  }
-
-  /// 有界轮询真实异步直到 [ready] 成立。
-  ///
-  /// 全量测试并发时 QuickJS FFI + 文件 IO 可能远超固定 900ms；固定等待会让
-  /// 「导入完成」断言在慢机上偶发失败。这里只延长**等待**，不改变任何断言。
-  Future<void> settleUntil(
-    WidgetTester tester,
-    bool Function() ready, {
-    Duration timeout = const Duration(seconds: 20),
-  }) async {
-    final deadline = DateTime.now().add(timeout);
-    while (!ready() && DateTime.now().isBefore(deadline)) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 100)));
-      await tester.pump();
-    }
-    await tester.pumpAndSettle();
-  }
-
   /// 打开导入 BottomSheet（db8fa14 起：环境变量区改由 requiredEnvVars 引导，
   /// 选文件后按需出现，不再有可展开 section）
   Future<void> openImportDialog(WidgetTester tester) async {
@@ -187,7 +161,6 @@ void main() {
     await tester.ensureVisible(find.text('导入'));
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
     final base = fileName.toLowerCase().endsWith('.zip')
         ? fileName.substring(0, fileName.length - 4)
         : fileName;
@@ -223,7 +196,19 @@ void main() {
     // 确认导入
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
+    // 注册 + QuickJS 初始化 + 文件落盘 + 成功提示都是真实异步，固定 900ms
+    // 在并发负载下不够；改为有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () {
+        final c = ChannelManager.instance.getChannelByKey('js_file1');
+        return c is JsChannel &&
+            c.isInitialized &&
+            File('${tempDir.path}/channels/file1.zip').existsSync() &&
+            find.textContaining('渠道包已导入').evaluate().isNotEmpty;
+      },
+      reason: '导入后必须注册 js_file1、落盘并显示成功提示',
+    );
 
     expect(ChannelManager.instance.getChannelByKey('js_file1'), isNotNull);
     expect(File('${tempDir.path}/channels/file1.zip').existsSync(), isTrue);
@@ -286,7 +271,18 @@ void main() {
     await tester.ensureVisible(find.text('导入'));
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
+    // 固定等待换成有界轮询：注册与环境变量落盘都是真实异步，并发下可能
+    // 远超固定 900ms。断言不变，仅等待机制变化。
+    await settleUntil(
+      tester,
+      () async {
+        final c = ChannelManager.instance.getChannelByKey('js_envdel');
+        if (c is! JsChannel) return false;
+        final env = await c.getAllEnv();
+        return env.length == 1 && env['KEEP'] == '1';
+      },
+      reason: '导入后必须能取到 js_envdel 且环境变量仅保留 KEEP',
+    );
 
     final channel =
         ChannelManager.instance.getChannelByKey('js_envdel') as JsChannel;
@@ -347,7 +343,20 @@ void main() {
 
     await tester.tap(find.text('保存'));
     await tester.pump();
-    await settleAsync(tester);
+    // 环境变量逐项 setEnv 落盘 + 提示都是真实异步；有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () async {
+        final c = ChannelManager.instance.getChannelByKey('js_envedit');
+        if (c is! JsChannel) return false;
+        final env = await c.getAllEnv();
+        return env.length == 2 &&
+            env['PINGAN_USER'] == 'alice2' &&
+            env['TOKEN'] == 't1' &&
+            find.textContaining('环境变量已保存').evaluate().isNotEmpty;
+      },
+      reason: '保存后必须持久化两项环境变量并显示成功提示',
+    );
 
     final channel =
         ChannelManager.instance.getChannelByKey('js_envedit') as JsChannel;
@@ -378,7 +387,19 @@ void main() {
 
     await tester.tap(find.text('删除'));
     await tester.pump();
-    await settleAsync(tester);
+    // 注销 + 文件删除 + env 清空 + 提示均为真实异步；有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () async {
+        final c = ChannelManager.instance.getChannelByKey('js_del');
+        final env = await ConfigJsChannelEnvStore('js_del').load();
+        return c == null &&
+            !File('${tempDir.path}/channels/del.zip').existsSync() &&
+            env.isEmpty &&
+            find.textContaining('渠道包已删除').evaluate().isNotEmpty;
+      },
+      reason: '删除后必须注销渠道、删除文件、清空 env 并显示提示',
+    );
 
     // 注销 + 文件删除 + env 清空
     expect(ChannelManager.instance.getChannelByKey('js_del'), isNull);
