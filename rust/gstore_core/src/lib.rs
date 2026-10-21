@@ -1,5 +1,6 @@
 //! gstore_core — spike skeleton (channels/catalog/update land in the main migration plan).
 
+pub mod channel;
 pub mod db;
 pub mod download;
 pub mod dto;
@@ -8,6 +9,11 @@ pub mod event;
 pub mod flags;
 pub mod migration;
 
+pub use channel::{
+    validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
+    ChannelRecord, ChannelRegistry, ChannelStore, InMemoryChannelDriver, InMemoryChannelRegistry,
+    InMemoryChannelStore, PackIconSource,
+};
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
     ChannelState, DetailSection,
