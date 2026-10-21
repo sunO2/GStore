@@ -1,5 +1,7 @@
 //! Download task persistence helpers for gstore_core.
 
+pub mod port;
+
 use rusqlite::OptionalExtension;
 
 use crate::db::DbError;
@@ -8,7 +10,7 @@ use crate::db::DbError;
 pub const NEEDS_RESTART: &str = "needs_restart";
 
 /// Lightweight projection of a `download_task` row used by the download port.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DownloadTaskRow {
     pub id: i64,
     pub module_task_id: Option<String>,

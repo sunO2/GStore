@@ -7,6 +7,9 @@ use rusqlite::Connection;
 
 use crate::migration;
 
+/// Shared, mutex-guarded SQLite connection used by the core ports.
+pub type SharedConn = std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>;
+
 /// Error type for core database operations.
 #[derive(Debug)]
 pub struct DbError(pub String);
