@@ -10,6 +10,15 @@
 //! (`download::port::ModuleBridge`, `flags`), and every fallible operation
 //! returns the shared [`crate::error::Error`].
 
+/// Private sealing supertrait for [`ChannelDriver`].
+///
+/// The module is private, so downstream crates can name neither `Sealed` nor an
+/// implementation of it; therefore only this crate can implement
+/// [`ChannelDriver`]. The `compile_fail` doctest on the trait pins this.
+mod sealed {
+    pub trait Sealed {}
+}
+
 mod driver;
 mod fake;
 mod pack;

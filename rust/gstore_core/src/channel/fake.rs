@@ -129,9 +129,8 @@ impl ChannelStore for InMemoryChannelStore {
 
 /// In-memory [`ChannelDriver`] fake bound to one [`ChannelKey`].
 ///
-/// Every method validates the caller's key first, so cross-channel reads and
-/// writes fail with [`Error::InvalidArgument`] and never touch this driver's
-/// app map.
+/// The key is fixed by [`InMemoryChannelDriver::new`]; there is no setter and no
+/// data method accepts another key, so the fake cannot serve a foreign channel.
 #[derive(Debug)]
 pub struct InMemoryChannelDriver {
     key: ChannelKey,
@@ -143,8 +142,10 @@ pub struct InMemoryChannelDriver {
     cache_size: AtomicU64,
 }
 
+impl super::sealed::Sealed for InMemoryChannelDriver {}
+
 impl InMemoryChannelDriver {
-    /// Creates a driver owning `key` with the supplied metadata.
+    /// Creates a driver bound to `key` with the supplied metadata.
     pub fn new(key: ChannelKey, meta: ChannelMeta) -> Self {
         Self {
             key,
@@ -226,48 +227,28 @@ impl ChannelDriver for InMemoryChannelDriver {
         &self.meta
     }
 
-    fn initialize(&self, key: &ChannelKey) -> Result<(), Error> {
-        self.validate_key(key)?;
+    fn initialize(&self) -> Result<(), Error> {
         self.initialized.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    fn is_initialized(&self, key: &ChannelKey) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn is_initialized(&self) -> Result<bool, Error> {
         Ok(self.initialized.load(Ordering::SeqCst))
     }
 
-    fn check_available(&self, key: &ChannelKey) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn check_available(&self) -> Result<bool, Error> {
         Ok(self.initialized.load(Ordering::SeqCst))
     }
 
-    fn get_all_apps(
-        &self,
-        key: &ChannelKey,
-        _force_refresh: bool,
-    ) -> Result<Vec<AppSummary>, Error> {
-        self.validate_key(key)?;
+    fn get_all_apps(&self, _force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
         Ok(self.read_apps()?.values().cloned().collect())
     }
 
-    fn get_app_info(
-        &self,
-        key: &ChannelKey,
-        app_id: &str,
-        _force_refresh: bool,
-    ) -> Result<Option<AppSummary>, Error> {
-        self.validate_key(key)?;
-        Ok(self.read_apps()?.get(app_id).cloned())
+    fn get_app_info(&self, app_id: &str, _force_refresh: bool) -> Result<AppSummary, Error> {
+        self.require_app(app_id)
     }
 
-    fn get_app_detail(
-        &self,
-        key: &ChannelKey,
-        app_id: &str,
-        _force_refresh: bool,
-    ) -> Result<AppDetail, Error> {
-        self.validate_key(key)?;
+    fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
         let app = self.require_app(app_id)?;
         let AppSummary {
             app_id,
@@ -298,38 +279,28 @@ impl ChannelDriver for InMemoryChannelDriver {
         })
     }
 
-    fn supports_progressive_loading(&self, key: &ChannelKey) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn supports_progressive_loading(&self) -> Result<bool, Error> {
         Ok(true)
     }
 
-    fn fetch_downloads(
-        &self,
-        key: &ChannelKey,
-        app_id: &str,
-    ) -> Result<Vec<crate::dto::AppDownload>, Error> {
-        self.validate_key(key)?;
+    fn fetch_downloads(&self, app_id: &str) -> Result<Vec<crate::dto::AppDownload>, Error> {
         self.require_app(app_id)?;
         Ok(Vec::new())
     }
 
-    fn fetch_readme(&self, key: &ChannelKey, app_id: &str) -> Result<Option<String>, Error> {
-        self.validate_key(key)?;
+    fn fetch_readme(&self, app_id: &str) -> Result<Option<String>, Error> {
         Ok(self.require_app(app_id)?.readme)
     }
 
     fn fetch_statistics(
         &self,
-        key: &ChannelKey,
         app_id: &str,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
-        self.validate_key(key)?;
         Ok(self.require_app(app_id)?.extra)
     }
 
-    fn check_app_update(&self, key: &ChannelKey, app_id: &str) -> Result<AppUpdate, Error> {
-        self.validate_key(key)?;
-        let detail = self.get_app_detail(key, app_id, false)?;
+    fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
+        let detail = self.get_app_detail(app_id, false)?;
         let package_name = detail.package_name.clone().unwrap_or_default();
         Ok(AppUpdate {
             app_id: detail.app_id.clone(),
@@ -342,27 +313,19 @@ impl ChannelDriver for InMemoryChannelDriver {
         })
     }
 
-    fn add_app(&self, key: &ChannelKey, app: &AppSummary) -> Result<(), Error> {
-        self.validate_key(key)?;
+    fn add_app(&self, app: &AppSummary) -> Result<(), Error> {
         self.write_apps()?.insert(app.app_id.clone(), app.clone());
         Ok(())
     }
 
-    fn remove_app(&self, key: &ChannelKey, app_id: &str) -> Result<(), Error> {
-        self.validate_key(key)?;
+    fn remove_app(&self, app_id: &str) -> Result<(), Error> {
         self.write_apps()?
             .remove(app_id)
             .map(|_| ())
             .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))
     }
 
-    fn search_apps(
-        &self,
-        key: &ChannelKey,
-        keyword: &str,
-        _force_refresh: bool,
-    ) -> Result<Vec<AppSummary>, Error> {
-        self.validate_key(key)?;
+    fn search_apps(&self, keyword: &str, _force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
         let needle = keyword.to_lowercase();
         Ok(self
             .read_apps()?
@@ -377,11 +340,9 @@ impl ChannelDriver for InMemoryChannelDriver {
 
     fn search_by_category(
         &self,
-        key: &ChannelKey,
         category_id: &str,
         _force_refresh: bool,
     ) -> Result<Vec<AppSummary>, Error> {
-        self.validate_key(key)?;
         Ok(self
             .read_apps()?
             .values()
@@ -396,26 +357,15 @@ impl ChannelDriver for InMemoryChannelDriver {
             .collect())
     }
 
-    fn get_all_categories(
-        &self,
-        key: &ChannelKey,
-        _force_refresh: bool,
-    ) -> Result<Vec<ChannelCategory>, Error> {
-        self.validate_key(key)?;
+    fn get_all_categories(&self, _force_refresh: bool) -> Result<Vec<ChannelCategory>, Error> {
         Ok(self.read_categories()?.clone())
     }
 
-    fn check_update(&self, key: &ChannelKey) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn check_update(&self) -> Result<bool, Error> {
         Ok(false)
     }
 
-    fn do_update(
-        &self,
-        key: &ChannelKey,
-        progress: Option<&mut dyn FnMut(u64, u64)>,
-    ) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn do_update(&self, progress: Option<&mut dyn FnMut(u64, u64)>) -> Result<bool, Error> {
         let total = self.read_apps()?.len() as u64;
         if let Some(callback) = progress {
             callback(0, total);
@@ -424,28 +374,20 @@ impl ChannelDriver for InMemoryChannelDriver {
         Ok(true)
     }
 
-    fn get_config(
-        &self,
-        key: &ChannelKey,
-        _force_refresh: bool,
-    ) -> Result<Option<ChannelConfig>, Error> {
-        self.validate_key(key)?;
+    fn get_config(&self, _force_refresh: bool) -> Result<Option<ChannelConfig>, Error> {
         Ok(self.read_config()?.clone())
     }
 
-    fn clear_cache(&self, key: &ChannelKey) -> Result<(), Error> {
-        self.validate_key(key)?;
+    fn clear_cache(&self) -> Result<(), Error> {
         self.cache_size.store(0, Ordering::SeqCst);
         Ok(())
     }
 
-    fn get_cache_size(&self, key: &ChannelKey) -> Result<u64, Error> {
-        self.validate_key(key)?;
+    fn get_cache_size(&self) -> Result<u64, Error> {
         Ok(self.cache_size.load(Ordering::SeqCst))
     }
 
-    fn dispose(&self, key: &ChannelKey) -> Result<(), Error> {
-        self.validate_key(key)?;
+    fn dispose(&self) -> Result<(), Error> {
         self.initialized.store(false, Ordering::SeqCst);
         Ok(())
     }

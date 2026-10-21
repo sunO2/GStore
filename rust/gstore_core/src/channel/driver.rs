@@ -1,12 +1,17 @@
 //! Channel driver surface derived from Dart `IChannel`.
 //!
-//! Every data operation takes the owning [`ChannelKey`]. Implementations must
-//! call [`ChannelDriver::validate_key`] before touching channel-scoped state so a
-//! driver can never read or write another channel's apps. The trait is
-//! synchronous; the crate has no async runtime and no async traits.
+//! A driver is bound to exactly one [`ChannelKey`] at construction. Public data
+//! methods never receive a key, so a caller holding a handle for channel A has
+//! no parameter with which to address channel B. Routing by key lives in
+//! [`crate::channel::ChannelRegistry::driver`].
+//!
+//! The trait is synchronous and sealed: the crate has no async runtime, and
+//! downstream crates cannot implement the trait because its supertrait lives in
+//! the private `sealed` module.
 
 use serde::{Deserialize, Serialize};
 
+use super::sealed;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
 };
@@ -32,14 +37,23 @@ pub struct ChannelConfig {
     pub proxy: Option<String>,
 }
 
-/// Full driver surface for one channel implementation.
+/// Key-bound channel driver surface.
 ///
-/// Drivers are registered under exactly one [`ChannelKey`]. The key is passed to
-/// every operation rather than captured per call so routed callers can prove
-/// which channel they intended to reach; a mismatch is a typed
-/// [`Error::InvalidArgument`] before any read/write happens.
-pub trait ChannelDriver: Send + Sync {
-    /// Stable key this driver owns.
+/// Every data method operates on the driver's bound key. There is deliberately
+/// no method taking a foreign [`ChannelKey`]; callers obtain a handle via
+/// `ChannelRegistry::driver(&key)` and can only affect that channel.
+///
+/// The trait is sealed by `sealed::Sealed`. A downstream crate cannot name the
+/// private module, so it cannot implement this trait:
+///
+/// ```compile_fail
+/// // Fails: `gstore_core::channel::sealed` is private to the crate.
+/// use gstore_core::channel::sealed::Sealed;
+/// struct ForeignDriver;
+/// impl Sealed for ForeignDriver {}
+/// ```
+pub trait ChannelDriver: sealed::Sealed + Send + Sync {
+    /// Stable key bound at construction.
     fn key(&self) -> &ChannelKey;
 
     /// Metadata advertised by this driver.
@@ -50,56 +64,32 @@ pub trait ChannelDriver: Send + Sync {
         self.meta().kind
     }
 
-    /// Returns an error when `key` is not this driver's key.
-    fn validate_key(&self, key: &ChannelKey) -> Result<(), Error> {
-        if key == self.key() {
-            Ok(())
-        } else {
-            Err(Error::InvalidArgument(format!(
-                "channel key mismatch: driver '{}' received '{key}'",
-                self.key()
-            )))
-        }
-    }
-
     /// Initializes channel resources.
-    fn initialize(&self, key: &ChannelKey) -> Result<(), Error>;
+    fn initialize(&self) -> Result<(), Error>;
 
     /// Whether [`ChannelDriver::initialize`] completed.
-    fn is_initialized(&self, key: &ChannelKey) -> Result<bool, Error>;
+    fn is_initialized(&self) -> Result<bool, Error>;
 
     /// Whether the channel is currently usable.
-    fn check_available(&self, key: &ChannelKey) -> Result<bool, Error>;
+    fn check_available(&self) -> Result<bool, Error>;
 
-    /// Lists all channel-owned apps.
-    fn get_all_apps(&self, key: &ChannelKey, force_refresh: bool)
-        -> Result<Vec<AppSummary>, Error>;
+    /// Lists all apps owned by this driver's bound channel.
+    fn get_all_apps(&self, force_refresh: bool) -> Result<Vec<AppSummary>, Error>;
 
-    /// Reads one channel-owned app; `None` when it is not present.
-    fn get_app_info(
-        &self,
-        key: &ChannelKey,
-        app_id: &str,
-        force_refresh: bool,
-    ) -> Result<Option<AppSummary>, Error>;
+    /// Reads one app owned by this driver's bound channel; missing is
+    /// [`Error::NotFound`].
+    fn get_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error>;
 
     /// Reads one app's detail page payload.
-    fn get_app_detail(
-        &self,
-        key: &ChannelKey,
-        app_id: &str,
-        force_refresh: bool,
-    ) -> Result<AppDetail, Error>;
+    fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error>;
 
     /// Whether the detail page may load downloads/readme/statistics separately.
-    fn supports_progressive_loading(&self, key: &ChannelKey) -> Result<bool, Error> {
-        self.validate_key(key)?;
+    fn supports_progressive_loading(&self) -> Result<bool, Error> {
         Ok(false)
     }
 
     /// Progressive detail block: downloads only.
-    fn fetch_downloads(&self, key: &ChannelKey, app_id: &str) -> Result<Vec<AppDownload>, Error> {
-        self.validate_key(key)?;
+    fn fetch_downloads(&self, app_id: &str) -> Result<Vec<AppDownload>, Error> {
         let _ = app_id;
         Err(Error::Unsupported(
             "channel does not support progressive downloads".to_string(),
@@ -107,8 +97,7 @@ pub trait ChannelDriver: Send + Sync {
     }
 
     /// Progressive detail block: README only.
-    fn fetch_readme(&self, key: &ChannelKey, app_id: &str) -> Result<Option<String>, Error> {
-        self.validate_key(key)?;
+    fn fetch_readme(&self, app_id: &str) -> Result<Option<String>, Error> {
         let _ = app_id;
         Err(Error::Unsupported(
             "channel does not support progressive readme".to_string(),
@@ -118,10 +107,8 @@ pub trait ChannelDriver: Send + Sync {
     /// Progressive detail block: statistics/version/developer only.
     fn fetch_statistics(
         &self,
-        key: &ChannelKey,
         app_id: &str,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
-        self.validate_key(key)?;
         let _ = app_id;
         Err(Error::Unsupported(
             "channel does not support progressive statistics".to_string(),
@@ -129,66 +116,47 @@ pub trait ChannelDriver: Send + Sync {
     }
 
     /// Checks one app for an update.
-    fn check_app_update(&self, key: &ChannelKey, app_id: &str) -> Result<AppUpdate, Error>;
+    fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error>;
 
     /// Adds/saves an app into this channel.
-    fn add_app(&self, key: &ChannelKey, app: &AppSummary) -> Result<(), Error>;
+    fn add_app(&self, app: &AppSummary) -> Result<(), Error>;
 
     /// Normalizes an app id for this channel (default: unchanged).
-    fn canonical_app_id(&self, key: &ChannelKey, app: &AppSummary) -> Result<String, Error> {
-        self.validate_key(key)?;
+    fn canonical_app_id(&self, app: &AppSummary) -> Result<String, Error> {
         Ok(app.app_id.clone())
     }
 
     /// Removes an app from this channel.
-    fn remove_app(&self, key: &ChannelKey, app_id: &str) -> Result<(), Error>;
+    fn remove_app(&self, app_id: &str) -> Result<(), Error>;
 
     /// Searches apps by name/description.
-    fn search_apps(
-        &self,
-        key: &ChannelKey,
-        keyword: &str,
-        force_refresh: bool,
-    ) -> Result<Vec<AppSummary>, Error>;
+    fn search_apps(&self, keyword: &str, force_refresh: bool) -> Result<Vec<AppSummary>, Error>;
 
     /// Searches apps by category id.
     fn search_by_category(
         &self,
-        key: &ChannelKey,
         category_id: &str,
         force_refresh: bool,
     ) -> Result<Vec<AppSummary>, Error>;
 
     /// Lists all categories exposed by this channel.
-    fn get_all_categories(
-        &self,
-        key: &ChannelKey,
-        force_refresh: bool,
-    ) -> Result<Vec<ChannelCategory>, Error>;
+    fn get_all_categories(&self, force_refresh: bool) -> Result<Vec<ChannelCategory>, Error>;
 
     /// Whether a data update is available.
-    fn check_update(&self, key: &ChannelKey) -> Result<bool, Error>;
+    fn check_update(&self) -> Result<bool, Error>;
 
     /// Runs a data update, reporting `(current, total)` progress.
-    fn do_update(
-        &self,
-        key: &ChannelKey,
-        progress: Option<&mut dyn FnMut(u64, u64)>,
-    ) -> Result<bool, Error>;
+    fn do_update(&self, progress: Option<&mut dyn FnMut(u64, u64)>) -> Result<bool, Error>;
 
     /// Reads channel configuration.
-    fn get_config(
-        &self,
-        key: &ChannelKey,
-        force_refresh: bool,
-    ) -> Result<Option<ChannelConfig>, Error>;
+    fn get_config(&self, force_refresh: bool) -> Result<Option<ChannelConfig>, Error>;
 
     /// Clears channel caches.
-    fn clear_cache(&self, key: &ChannelKey) -> Result<(), Error>;
+    fn clear_cache(&self) -> Result<(), Error>;
 
     /// Current cache size in bytes.
-    fn get_cache_size(&self, key: &ChannelKey) -> Result<u64, Error>;
+    fn get_cache_size(&self) -> Result<u64, Error>;
 
     /// Releases channel resources.
-    fn dispose(&self, key: &ChannelKey) -> Result<(), Error>;
+    fn dispose(&self) -> Result<(), Error>;
 }

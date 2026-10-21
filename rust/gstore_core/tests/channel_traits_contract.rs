@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gstore_core::channel::{
     ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack, ChannelRecord, ChannelRegistry,
@@ -50,6 +51,13 @@ fn sample_app(app_id: &str) -> AppSummary {
         category: Some(vec!["tools".to_string()]),
         extra: Some(extra),
     }
+}
+
+fn sample_app_named(app_id: &str, name: &str) -> AppSummary {
+    let mut app = sample_app(app_id);
+    app.name = name.to_string();
+    app.des = format!("{name} description");
+    app
 }
 
 fn keys(records: &[ChannelRecord]) -> Vec<String> {
@@ -333,50 +341,121 @@ fn channel_traits_contract_malformed_input_typed_errors() {
 fn channel_traits_contract_isolation_cross_key_rejected() {
     let key_a = ChannelKey::new("js_alpha").expect("valid key");
     let key_b = ChannelKey::new("js_beta").expect("valid key");
+
+    // Both channels deliberately hold the SAME app id with different payloads.
     let driver_a =
-        InMemoryChannelDriver::new(key_a.clone(), meta(ChannelKind::JsLocal, "Alpha", true, 10));
+        InMemoryChannelDriver::new(key_a.clone(), meta(ChannelKind::JsLocal, "Alpha", true, 10))
+            .with_apps(vec![
+                sample_app_named("shared-id", "Alpha payload"),
+                sample_app_named("a-only", "Alpha only"),
+            ]);
     let driver_b =
-        InMemoryChannelDriver::new(key_b.clone(), meta(ChannelKind::JsLocal, "Beta", true, 20));
+        InMemoryChannelDriver::new(key_b.clone(), meta(ChannelKind::JsLocal, "Beta", true, 20))
+            .with_apps(vec![
+                sample_app_named("shared-id", "Beta payload"),
+                sample_app_named("b-only", "Beta only"),
+            ]);
 
-    let app = sample_app("shared-id");
-    driver_a.add_app(&key_a, &app).expect("owning key write");
-    assert_eq!(driver_a.get_all_apps(&key_a, false).unwrap().len(), 1);
-    assert!(driver_b.get_all_apps(&key_b, false).unwrap().is_empty());
-
-    let read_err = driver_a
-        .get_app_info(&key_b, "shared-id", false)
-        .expect_err("cross-channel read must fail");
-    assert_eq!(read_err.code(), "invalid_argument");
-
-    let write_err = driver_a
-        .add_app(&key_b, &app)
-        .expect_err("cross-channel write must fail");
-    assert_eq!(write_err.code(), "invalid_argument");
-
-    let remove_err = driver_a
-        .remove_app(&key_b, "shared-id")
-        .expect_err("cross-channel remove must fail");
-    assert_eq!(remove_err.code(), "invalid_argument");
-
-    // No bytes crossed keys: A still holds its app, B still holds none.
-    assert_eq!(driver_a.get_all_apps(&key_a, false).unwrap().len(), 1);
-    assert!(driver_b.get_all_apps(&key_b, false).unwrap().is_empty());
-
-    // Registry state is keyed as well: B cannot observe A's registration.
     let registry = ChannelRegistry::new(InMemoryChannelStore::new());
     registry
-        .register(ChannelRecord::new(
-            key_a.clone(),
-            meta(ChannelKind::JsLocal, "Alpha", true, 10),
-        ))
-        .expect("register alpha");
-    assert_eq!(registry.get(&key_b).expect("get beta"), None);
-    assert_eq!(registry.list().expect("list").len(), 1);
+        .register_driver(Arc::new(driver_a))
+        .expect("register alpha driver");
+    registry
+        .register_driver(Arc::new(driver_b))
+        .expect("register beta driver");
 
-    println!("cross-key read -> {read_err:?}");
-    println!("cross-key write -> {write_err:?}");
-    println!("cross-key remove -> {remove_err:?}");
-    println!("a_count=1 b_count=0 registry_scope=isolated");
+    let handle_a = registry.driver(&key_a).expect("driver a by key");
+    let handle_b = registry.driver(&key_b).expect("driver b by key");
+    assert_eq!(handle_a.key(), &key_a);
+    assert_eq!(handle_b.key(), &key_b);
+
+    // (a) Same app id, no bleed: each handle returns its own payload.
+    assert_eq!(
+        handle_a
+            .get_app_info("shared-id", false)
+            .expect("alpha shared")
+            .name,
+        "Alpha payload"
+    );
+    assert_eq!(
+        handle_b
+            .get_app_info("shared-id", false)
+            .expect("beta shared")
+            .name,
+        "Beta payload"
+    );
+    assert_eq!(handle_a.get_all_apps(false).unwrap().len(), 2);
+    assert_eq!(handle_b.get_all_apps(false).unwrap().len(), 2);
+
+    // (b) A cannot obtain B's unique app: typed NotFound, no key parameter.
+    let foreign_read = handle_a
+        .get_app_info("b-only", false)
+        .expect_err("owner A must not see B's unique app");
+    assert_eq!(foreign_read.code(), "not_found");
+    let foreign_detail = handle_a
+        .get_app_detail("b-only", false)
+        .expect_err("owner A must not read B's detail");
+    assert_eq!(foreign_detail.code(), "not_found");
+    let foreign_remove = handle_a
+        .remove_app("b-only")
+        .expect_err("owner A must not remove B's app");
+    assert_eq!(foreign_remove.code(), "not_found");
+
+    // Writes on A land only in A; B's same-id payload is unchanged.
+    handle_a
+        .add_app(&sample_app_named("shared-id", "Alpha overwritten"))
+        .expect("write alpha");
+    assert_eq!(
+        handle_a
+            .get_app_info("shared-id", false)
+            .expect("alpha after write")
+            .name,
+        "Alpha overwritten"
+    );
+    assert_eq!(
+        handle_b
+            .get_app_info("shared-id", false)
+            .expect("beta untouched")
+            .name,
+        "Beta payload"
+    );
+
+    // (c) Routing an unregistered key fails with typed NotFound.
+    let unregistered = ChannelKey::new("js_missing").expect("valid key");
+    let route_err = registry
+        .driver(&unregistered)
+        .err()
+        .expect("unregistered driver must be NotFound");
+    assert_eq!(route_err.code(), "not_found");
+
+    // Store-only registration exposes no driver handle.
+    let record_only = ChannelKey::new("js_record_only").expect("valid key");
+    registry
+        .register(ChannelRecord::new(
+            record_only.clone(),
+            meta(ChannelKind::JsLocal, "Record only", true, 30),
+        ))
+        .expect("register record only");
+    assert_eq!(
+        registry
+            .driver(&record_only)
+            .err()
+            .expect("record without driver")
+            .code(),
+        "not_found"
+    );
+
+    println!("a shared-id -> Alpha payload");
+    println!("b shared-id -> Beta payload");
+    println!("a cannot read b-only -> {foreign_read:?}");
+    println!("a cannot read b-only detail -> {foreign_detail:?}");
+    println!("a cannot remove b-only -> {foreign_remove:?}");
+    println!("registry driver(unregistered) -> {route_err:?}");
+    println!(
+        "handle_a.key={} handle_b.key={}",
+        handle_a.key(),
+        handle_b.key()
+    );
 }
 
 #[test]
@@ -397,88 +476,69 @@ fn channel_traits_contract_driver_surface_semantics() {
             .with_categories(vec![category.clone()])
             .with_config(Some(config));
 
-    driver.initialize(&key).expect("initialize");
-    assert!(driver.is_initialized(&key).expect("initialized"));
-    assert!(driver.check_available(&key).expect("available"));
+    driver.initialize().expect("initialize");
+    assert!(driver.is_initialized().expect("initialized"));
+    assert!(driver.check_available().expect("available"));
     assert_eq!(driver.key(), &key);
     assert_eq!(driver.kind(), ChannelKind::JsLocal);
     assert_eq!(driver.meta().name, "Alpha");
 
-    assert_eq!(driver.get_all_apps(&key, false).unwrap().len(), 2);
-    let info = driver
-        .get_app_info(&key, "app-1", false)
-        .unwrap()
-        .expect("app info");
+    assert_eq!(driver.get_all_apps(false).unwrap().len(), 2);
+    let info = driver.get_app_info("app-1", false).expect("app info");
     assert_eq!(info.name, "Demo app-1");
-    let detail = driver.get_app_detail(&key, "app-1", false).expect("detail");
+    let detail = driver.get_app_detail("app-1", false).expect("detail");
     assert_eq!(detail.app_id, "app-1");
     assert_eq!(detail.channel, ChannelKind::JsLocal);
 
-    assert!(driver.supports_progressive_loading(&key).unwrap());
-    assert!(driver.fetch_downloads(&key, "app-1").unwrap().is_empty());
+    assert!(driver.supports_progressive_loading().unwrap());
+    assert!(driver.fetch_downloads("app-1").unwrap().is_empty());
     assert_eq!(
-        driver.fetch_readme(&key, "app-1").unwrap().as_deref(),
+        driver.fetch_readme("app-1").unwrap().as_deref(),
         Some("# app-1")
     );
-    let stats = driver.fetch_statistics(&key, "app-1").unwrap();
+    let stats = driver.fetch_statistics("app-1").unwrap();
     assert_eq!(
         stats.as_ref().and_then(|map| map.get("stars")),
         Some(&json!(1))
     );
 
-    assert_eq!(driver.search_apps(&key, "DEMO", false).unwrap().len(), 2);
-    assert_eq!(
-        driver
-            .search_by_category(&key, "tools", false)
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        driver.get_all_categories(&key, false).unwrap(),
-        vec![category]
-    );
+    assert_eq!(driver.search_apps("DEMO", false).unwrap().len(), 2);
+    assert_eq!(driver.search_by_category("tools", false).unwrap().len(), 2);
+    assert_eq!(driver.get_all_categories(false).unwrap(), vec![category]);
 
-    assert!(!driver.check_update(&key).unwrap());
+    assert!(!driver.check_update().unwrap());
     let mut progress = Vec::new();
     assert!(driver
-        .do_update(
-            &key,
-            Some(&mut |current, total| {
-                progress.push((current, total));
-            })
-        )
+        .do_update(Some(&mut |current, total| {
+            progress.push((current, total));
+        }))
         .unwrap());
     assert_eq!(progress, vec![(0, 2), (2, 2)]);
 
     assert_eq!(
-        driver
-            .get_config(&key, false)
-            .unwrap()
-            .expect("config")
-            .version,
+        driver.get_config(false).unwrap().expect("config").version,
         "2026.10"
     );
-    assert_eq!(driver.get_cache_size(&key).unwrap(), 0);
-    driver.clear_cache(&key).expect("clear cache");
-    assert_eq!(
-        driver.canonical_app_id(&key, &info).unwrap(),
-        "app-1".to_string()
-    );
+    assert_eq!(driver.get_cache_size().unwrap(), 0);
+    driver.clear_cache().expect("clear cache");
+    assert_eq!(driver.canonical_app_id(&info).unwrap(), "app-1".to_string());
 
-    driver.remove_app(&key, "app-1").expect("remove");
-    assert!(driver.get_app_info(&key, "app-1", false).unwrap().is_none());
-    assert!(driver
-        .get_app_info(&key, "missing", false)
-        .unwrap()
-        .is_none());
+    driver.remove_app("app-1").expect("remove");
     assert_eq!(
-        driver.remove_app(&key, "missing").unwrap_err().code(),
+        driver.get_app_info("app-1", false).unwrap_err().code(),
+        "not_found"
+    );
+    assert_eq!(
+        driver.get_app_info("missing", false).unwrap_err().code(),
+        "not_found"
+    );
+    assert_eq!(
+        driver.remove_app("missing").unwrap_err().code(),
         "not_found"
     );
 
-    driver.dispose(&key).expect("dispose");
-    assert!(!driver.is_initialized(&key).unwrap());
+    driver.dispose().expect("dispose");
+    assert!(!driver.is_initialized().unwrap());
 
     println!(
         "driver surface ok: apps=2 categories=1 update_progress={:?}",

@@ -1,25 +1,35 @@
-//! Registry facade over [`ChannelStore`].
+//! Registry facade over [`ChannelStore`] and key-bound drivers.
 //!
 //! The registry applies the two observable `ChannelManager` rules that callers
-//! rely on: enabled filtering and priority ordering. Persistence is entirely
-//! delegated to the store, so an in-memory fake and the future SQLite store share
-//! the same call sites.
+//! rely on: enabled filtering and priority ordering. Persistence is delegated to
+//! the store. Driver routing is keyed: [`ChannelRegistry::driver`] returns the
+//! handle bound to the requested key, or a typed [`Error::NotFound`] for an
+//! unregistered key.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::dto::ChannelKey;
 use crate::error::Error;
 
+use super::driver::ChannelDriver;
 use super::store::{ChannelRecord, ChannelStore};
 
-/// Channel registry backed by a [`ChannelStore`].
-#[derive(Debug, Clone)]
+type DriverMap = BTreeMap<ChannelKey, Arc<dyn ChannelDriver>>;
+
+/// Channel registry backed by a [`ChannelStore`] plus registered drivers.
 pub struct ChannelRegistry<S> {
     store: S,
+    drivers: RwLock<DriverMap>,
 }
 
 impl<S: ChannelStore> ChannelRegistry<S> {
-    /// Wraps a store.
+    /// Wraps a store with an empty driver map.
     pub fn new(store: S) -> Self {
-        Self { store }
+        Self {
+            store,
+            drivers: RwLock::new(BTreeMap::new()),
+        }
     }
 
     /// Borrows the underlying store.
@@ -32,14 +42,41 @@ impl<S: ChannelStore> ChannelRegistry<S> {
         self.store
     }
 
-    /// Registers a channel record (idempotent for identical records).
+    /// Registers registry state without a driver (useful before drivers load).
     pub fn register(&self, record: ChannelRecord) -> Result<(), Error> {
         self.store.register(record)
     }
 
-    /// Unregisters a channel by key.
+    /// Registers a key-bound driver and its record in one call.
+    ///
+    /// The driver's own key and metadata define the record; callers cannot pass
+    /// a separate / foreign key.
+    pub fn register_driver(&self, driver: Arc<dyn ChannelDriver>) -> Result<(), Error> {
+        let record = ChannelRecord::new(driver.key().clone(), driver.meta().clone());
+        self.store.register(record)?;
+        self.write_drivers()?.insert(driver.key().clone(), driver);
+        Ok(())
+    }
+
+    /// Returns the driver handle bound to `key`.
+    ///
+    /// Unregistered keys return [`Error::NotFound`]; the returned handle exposes
+    /// no method that accepts another key.
+    pub fn driver(&self, key: &ChannelKey) -> Result<Arc<dyn ChannelDriver>, Error> {
+        if self.store.get(key)?.is_none() {
+            return Err(Error::NotFound(format!("channel not registered: {key}")));
+        }
+        self.read_drivers()?
+            .get(key)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("channel driver not registered: {key}")))
+    }
+
+    /// Unregisters a channel and drops its driver handle.
     pub fn unregister(&self, key: &ChannelKey) -> Result<(), Error> {
-        self.store.unregister(key)
+        self.store.unregister(key)?;
+        self.write_drivers()?.remove(key);
+        Ok(())
     }
 
     /// Returns a channel record by key.
@@ -75,5 +112,17 @@ impl<S: ChannelStore> ChannelRegistry<S> {
     /// Alias for [`ChannelRegistry::priority_order`] that names the filter.
     pub fn enabled(&self) -> Result<Vec<ChannelRecord>, Error> {
         self.store.priority_order()
+    }
+
+    fn read_drivers(&self) -> Result<RwLockReadGuard<'_, DriverMap>, Error> {
+        self.drivers
+            .read()
+            .map_err(|_| Error::Internal("channel registry driver lock poisoned".to_string()))
+    }
+
+    fn write_drivers(&self) -> Result<RwLockWriteGuard<'_, DriverMap>, Error> {
+        self.drivers
+            .write()
+            .map_err(|_| Error::Internal("channel registry driver lock poisoned".to_string()))
     }
 }
