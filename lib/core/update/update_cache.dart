@@ -4,6 +4,7 @@ library;
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
 
@@ -118,6 +119,7 @@ class UpdateCache {
     String appId,
     String fileName,
   ) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_keyPreferredApk);
