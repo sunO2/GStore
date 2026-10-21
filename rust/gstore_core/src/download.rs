@@ -2,6 +2,7 @@
 
 pub mod legacy;
 pub mod port;
+pub mod strategy;
 
 use rusqlite::OptionalExtension;
 
