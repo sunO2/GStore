@@ -12,6 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CRATES=(
   "gstore_contract"
+  "gstore_core"
   "gstore_mod_qr"
   "gstore_mod_analyzer"
   "gstore_mod_repo"

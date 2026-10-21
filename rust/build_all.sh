@@ -21,6 +21,7 @@ fi
 
 CRATES=(
   "gstore_contract"
+  "gstore_core"
   "gstore_host"
   "gstore_mod_qr"
   "gstore_mod_analyzer"
