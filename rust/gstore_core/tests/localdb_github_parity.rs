@@ -90,6 +90,7 @@ fn github_key() -> ChannelKey {
     ChannelKey::new("github").unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_app(
     db: &DbHandle,
     app_id: &str,
@@ -124,6 +125,7 @@ fn insert_app(
     .unwrap();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_channel_app(
     db: &DbHandle,
     channel: &str,
@@ -283,7 +285,7 @@ fn repo_json(full_name: &str, description: &str, html_url: &str, stars: i64) -> 
     json!({
         "id": 1,
         "full_name": full_name,
-        "name": full_name.split('/').last().unwrap_or(full_name),
+        "name": full_name.split('/').next_back().unwrap_or(full_name),
         "description": description,
         "html_url": html_url,
         "stargazers_count": stars,
@@ -1148,9 +1150,8 @@ fn localdb_github_parity_localdb_missing_table_is_typed_error() {
         "io",
         "a broken schema is typed, never a panic"
     );
-    assert_eq!(
-        driver.check_available().unwrap(),
-        false,
+    assert!(
+        !driver.check_available().unwrap(),
         "checkAvailable mirrors Dart's try/catch probe"
     );
 

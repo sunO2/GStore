@@ -14,6 +14,8 @@ use rusqlite::{Connection, ErrorCode};
 
 static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
 
+type ForeignKeyRow = (i64, i64, String, String, Option<String>, String, String);
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -211,7 +213,7 @@ fn dump_schema(conn: &Connection) -> String {
         let mut stmt = conn
             .prepare(&format!("PRAGMA foreign_key_list({})", quote_ident(&table)))
             .unwrap();
-        let mut fks: Vec<(i64, i64, String, String, Option<String>, String, String)> = stmt
+        let mut fks: Vec<ForeignKeyRow> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,

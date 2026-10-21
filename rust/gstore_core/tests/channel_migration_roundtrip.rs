@@ -339,7 +339,7 @@ fn channel_migration_roundtrip_env_sensitive_values_go_to_secret_port() {
 
     let report = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_channel_env_file(&file).unwrap()
     };
     println!(
@@ -398,7 +398,7 @@ fn channel_migration_roundtrip_env_sensitive_values_go_to_secret_port() {
     // Double import: same counts, no duplicate rows or secrets.
     let second = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_channel_env(&doc).unwrap()
     };
     let rows: i64 = core_db
@@ -416,7 +416,7 @@ fn channel_migration_roundtrip_env_sensitive_values_go_to_secret_port() {
     std::fs::write(&bad_json, b"{not json").unwrap();
     let err = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_channel_env_file(&bad_json).unwrap_err()
     };
     println!("malformed env -> {err}");
@@ -426,7 +426,7 @@ fn channel_migration_roundtrip_env_sensitive_values_go_to_secret_port() {
     let bad_shape = serde_json::json!({"version": 1, "channel_key": "js.bad", "env": []});
     let err = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_channel_env(&bad_shape).unwrap_err()
     };
     println!("malformed env shape -> {err}");
@@ -451,7 +451,7 @@ fn channel_migration_roundtrip_fdroid_sources_proxy_token_and_idempotency() {
 
     let first = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_fdroid_sources(&doc).unwrap()
     };
     println!(
@@ -483,7 +483,7 @@ fn channel_migration_roundtrip_fdroid_sources_proxy_token_and_idempotency() {
 
     let second = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_fdroid_sources(&doc).unwrap()
     };
     let pref_rows: i64 = core_db
@@ -503,7 +503,7 @@ fn channel_migration_roundtrip_fdroid_sources_proxy_token_and_idempotency() {
     let malformed = serde_json::json!({"version": 1, "sources": "not-a-list"});
     let err = {
         let conn = core_db.writer().unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_fdroid_sources(&malformed).unwrap_err()
     };
     println!("malformed fdroid -> {err}");
@@ -523,7 +523,7 @@ fn channel_migration_roundtrip_pack_import_is_idempotent() {
 
     let first = {
         let conn = Connection::open(core_db.path()).unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_pack_archive(&store, &zip_path).unwrap()
     };
     println!(
@@ -540,7 +540,7 @@ fn channel_migration_roundtrip_pack_import_is_idempotent() {
 
     let second = {
         let conn = Connection::open(core_db.path()).unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_pack_archive(&store, &zip_path).unwrap()
     };
     let (rows, stored_hash, installed_at): (i64, String, i64) = core_db
@@ -569,7 +569,7 @@ fn channel_migration_roundtrip_pack_import_is_idempotent() {
     std::fs::write(&corrupt, b"not a zip").unwrap();
     let err = {
         let conn = Connection::open(core_db.path()).unwrap();
-        let migrator = ChannelMigrator::new(&conn, &secrets, &root.path().join("backups"));
+        let migrator = ChannelMigrator::new(&conn, &secrets, root.path().join("backups"));
         migrator.import_pack_archive(&store, &corrupt).unwrap_err()
     };
     println!("corrupt pack -> {err}");

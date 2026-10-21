@@ -135,7 +135,7 @@ fn ports_contract_capability_gating_fails_closed_before_work() {
     }
     assert_eq!(host.calls("list_installed"), 0);
     assert_eq!(host.calls("secret_set"), 0);
-    assert_eq!(host.foreground_running(), false);
+    assert!(!host.foreground_running());
     assert!(
         host.notifications().is_empty(),
         "a denied notify must not enqueue a notification"
