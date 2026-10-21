@@ -5,26 +5,46 @@
 #   install -> launch -> process alive -> channel list -> search -> detail ->
 #   local pack -> env migration -> parity -> flags-off (core_writes empty).
 #
+# Deep channel probes assert the debug CoreSmoke fixtures, never mere table
+# existence:
+#   channel-list    channels.key='smoke_github'                    >= 1
+#   channel-search  channel_apps(smoke_github,'Smoke App')         >= 1
+#   channel-detail  app_id == 'smoke/app' + columns app_id/name exist
+#   local-pack      channel_packs.key='js_smoke'                   >= 1
+#   env-migration   channel_env.channel_key='js_smoke'             >= 1
+#   parity          PRAGMA user_version >= 1 and integrity_check = ok
+#   flags-off       core_writes rows                                == 0
+#
+# A zero/missing row or column is FAIL (exit 1), never SKIP and never PASS.
+# SKIP is reserved for genuinely unavailable probes (no adb/device, non-ARM64,
+# release APK not debuggable, DB not found, host sqlite3 missing).
+#
 # Deep channel probes use one of two adb-visible contracts:
 #   1. --instrumentation PKG/RUNNER
 #        adb shell am instrument -w -e check <name> <runner>
-#        The runner must print `OK (<check>)` on success.  This is the contract
-#        used by the channel E2E instrumentation (landed with Todo 13/14).
+#        The runner must print `OK (<check>)` on success.
 #   2. debug APK + `adb shell run-as` (fallback)
-#        Pulls the app's gstore_core.db and checks the Wave 0/1 schema/tables
-#        with the host sqlite3 binary.  Release APKs are not debuggable, so this
-#        path SKIPs cleanly unless a debug APK is installed.
+#        Pulls the app's gstore_core.db and checks the Wave 0/1 smoke rows with
+#        the host sqlite3 binary.
+#
+# Test without a phone:
+#   scripts/qa/device-smoke.sh --self-test
+#       builds one valid and several broken sqlite fixtures in a temp dir and
+#       asserts valid=PASS, broken=FAIL/exit 1.
+#   scripts/qa/device-smoke.sh --db PATH
+#       runs the same deep SQL checks against a local database file.
 #
 # Exit-code contract (a skipped check is never a pass):
-#   0  device present and every check ran and passed
-#   1  a check ran and failed
-#   3  SKIPPED: no adb, no device, non-ARM64 device, no APK, or deep probes
-#      genuinely unavailable (release build / instrumentation not provided)
+#   0  every check ran and passed
+#   1  a check ran and failed (including zero/missing smoke rows)
+#   3  SKIPPED: no adb, no device, non-ARM64 device, or deep probes genuinely
+#      unavailable (release build / instrumentation not provided)
 #   2  usage error
 #
 # Usage:
 #   scripts/qa/device-smoke.sh [--apk PATH] [--package PKG]
 #       [--instrumentation PKG/RUNNER] [--timeout SECONDS] [--no-install]
+#       [--db PATH | --self-test]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,9 +56,25 @@ APK=""
 INSTRUMENTATION=""
 TIMEOUT=120
 DO_INSTALL=1
+DB_PATH=""
+SELFTEST=0
+
+DEEP_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity flags-off"
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+usage: scripts/qa/device-smoke.sh [options]
+
+  --apk PATH                APK to install (default: search build outputs)
+  --package PKG             app package (default: com.suno2.gstore)
+  --instrumentation PKG/RUNNER
+                            use `am instrument` deep probes instead of sqlite
+  --timeout SECONDS         bound for each adb/sqlite call (default: 120)
+  --no-install              skip the install step
+  --db PATH                 run only the deep SQL checks against a local DB
+  --self-test               build valid/broken fixtures and assert PASS/FAIL
+  -h, --help                show this help
+EOF
 }
 
 while [ "$#" -gt 0 ]; do
@@ -48,10 +84,18 @@ while [ "$#" -gt 0 ]; do
     --instrumentation) INSTRUMENTATION="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --no-install) DO_INSTALL=0; shift ;;
+    --db) DB_PATH="$2"; shift 2 ;;
+    --self-test) SELFTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "$SELFTEST" -eq 1 ] && [ -n "$DB_PATH" ]; then
+  echo "ERROR: --self-test and --db are mutually exclusive" >&2
+  usage >&2
+  exit 2
+fi
 
 PASSED=0
 FAILED=0
@@ -89,6 +133,123 @@ find_apk() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# Deep SQL checks (shared by the device DB path, --db, and --self-test).
+# Every check prints the exact SQL and the value it got, then PASS/FAIL.
+# ---------------------------------------------------------------------------
+
+SQL_OUT=""
+SQL_RC=0
+
+sql_value() {
+  local db="$1" sql="$2"
+  printf 'SQL: %s\n' "$sql"
+  set +e
+  SQL_OUT="$(run_bounded sqlite3 "$db" "$sql" 2>&1)"
+  SQL_RC=$?
+  set -e
+  printf 'value: %s\n' "${SQL_OUT:-<empty>}"
+  printf 'sqlite_exit: %s\n' "$SQL_RC"
+}
+
+is_uint() { printf '%s' "$1" | grep -Eq '^[0-9]+$'; }
+
+db_check_one() {
+  local db="$1" check="$2"
+  local sql cols cols_rc version version_rc integrity integrity_rc
+
+  echo
+  echo "== probe (sqlite): $check =="
+  case "$check" in
+    channel-list)
+      sql="SELECT COUNT(*) FROM channels WHERE key='smoke_github';"
+      sql_value "$db" "$sql"
+      if [ "$SQL_RC" -eq 0 ] && is_uint "$SQL_OUT" && [ "$SQL_OUT" -ge 1 ]; then
+        pass "channel list (channels key=smoke_github rows=$SQL_OUT)"
+      else
+        fail "channel list (expected key=smoke_github rows>=1; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    channel-search)
+      sql="SELECT COUNT(*) FROM channel_apps WHERE channel_key='smoke_github' AND name='Smoke App';"
+      sql_value "$db" "$sql"
+      if [ "$SQL_RC" -eq 0 ] && is_uint "$SQL_OUT" && [ "$SQL_OUT" -ge 1 ]; then
+        pass "channel search (channel_apps smoke_github/'Smoke App' rows=$SQL_OUT)"
+      else
+        fail "channel search (expected smoke_github/'Smoke App' rows>=1; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    channel-detail)
+      sql="SELECT COUNT(*) FROM pragma_table_info('channel_apps') WHERE name IN ('app_id','name');"
+      sql_value "$db" "$sql"
+      cols="$SQL_OUT"
+      cols_rc="$SQL_RC"
+      sql="SELECT app_id FROM channel_apps WHERE channel_key='smoke_github' AND name='Smoke App';"
+      sql_value "$db" "$sql"
+      if [ "$cols_rc" -eq 0 ] && [ "$cols" = "2" ] && [ "$SQL_RC" -eq 0 ] && [ "$SQL_OUT" = "smoke/app" ]; then
+        pass "channel detail (app_id=smoke/app; app_id+name columns present)"
+      else
+        fail "channel detail (expected app_id/name columns and app_id=smoke/app; columns='${cols:-<empty>}' col_rc=$cols_rc app_id='${SQL_OUT:-<empty>}' rc=$SQL_RC)"
+      fi
+      ;;
+    local-pack)
+      sql="SELECT COUNT(*) FROM channel_packs WHERE key='js_smoke';"
+      sql_value "$db" "$sql"
+      if [ "$SQL_RC" -eq 0 ] && is_uint "$SQL_OUT" && [ "$SQL_OUT" -ge 1 ]; then
+        pass "local pack (channel_packs key=js_smoke rows=$SQL_OUT)"
+      else
+        fail "local pack (expected key=js_smoke rows>=1; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    env-migration)
+      sql="SELECT COUNT(*) FROM channel_env WHERE channel_key='js_smoke';"
+      sql_value "$db" "$sql"
+      if [ "$SQL_RC" -eq 0 ] && is_uint "$SQL_OUT" && [ "$SQL_OUT" -ge 1 ]; then
+        pass "env migration (channel_env channel_key=js_smoke rows=$SQL_OUT)"
+      else
+        fail "env migration (expected channel_key=js_smoke rows>=1; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    parity)
+      sql="PRAGMA user_version;"
+      sql_value "$db" "$sql"
+      version="$SQL_OUT"
+      version_rc="$SQL_RC"
+      sql="PRAGMA integrity_check;"
+      sql_value "$db" "$sql"
+      integrity="$SQL_OUT"
+      integrity_rc="$SQL_RC"
+      if [ "$version_rc" -eq 0 ] && is_uint "$version" && [ "$version" -ge 1 ] \
+        && [ "$integrity_rc" -eq 0 ] && [ "$integrity" = "ok" ]; then
+        pass "parity (user_version=$version, integrity=ok)"
+      else
+        fail "parity (expected user_version>=1 and integrity=ok; version='${version:-<empty>}' rc=$version_rc integrity='${integrity:-<empty>}' rc=$integrity_rc)"
+      fi
+      ;;
+    flags-off)
+      sql="SELECT COUNT(*) FROM core_writes;"
+      sql_value "$db" "$sql"
+      if [ "$SQL_RC" -eq 0 ] && [ "$SQL_OUT" = "0" ]; then
+        pass "flags-off (core_writes empty; legacy-write guard stays disabled)"
+      else
+        fail "flags-off (expected core_writes=0; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    *)
+      fail "unknown deep check: $check"
+      ;;
+  esac
+}
+
+# Runs all deep checks against one sqlite file. Returns 1 if any check failed.
+run_db_checks() {
+  local db="$1" check
+  for check in $DEEP_CHECKS; do
+    db_check_one "$db" "$check"
+  done
+  [ "$FAILED" -eq 0 ]
+}
+
 deep_check_instrumentation() {
   local check="$1" out rc
   echo
@@ -106,11 +267,17 @@ deep_check_instrumentation() {
 }
 
 deep_checks_db() {
-  local tmp db_path out
+  local tmp db_path pull_rc
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-device-smoke.XXXXXX")"
-  trap 'rm -rf "$tmp"' RETURN
+
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    skip "deep channel probes unavailable: host sqlite3 not installed"
+    return 0
+  fi
 
   if ! adb_cmd shell run-as "$PKG" true >/dev/null 2>&1; then
+    rm -rf "$tmp"
     skip "deep channel probes unavailable: $PKG is not debuggable (release APK); pass --instrumentation PKG/RUNNER"
     return 0
   fi
@@ -119,90 +286,231 @@ deep_checks_db() {
   db_path="$(adb_cmd shell run-as "$PKG" find . -name gstore_core.db 2>/dev/null | tr -d '\r' | head -n 1)"
   set -e
   if [ -z "$db_path" ]; then
+    rm -rf "$tmp"
     skip "deep channel probes unavailable: gstore_core.db not found under the app data dir"
     return 0
   fi
 
   set +e
   adb_cmd exec-out run-as "$PKG" cat "$db_path" > "$tmp/core.db" 2>/dev/null
-  local pull_rc=$?
+  pull_rc=$?
   set -e
   if [ "$pull_rc" -ne 0 ] || [ ! -s "$tmp/core.db" ]; then
+    rm -rf "$tmp"
     skip "deep channel probes unavailable: could not pull $db_path"
     return 0
   fi
 
-  if ! command -v sqlite3 >/dev/null 2>&1; then
-    skip "deep channel probes unavailable: host sqlite3 not installed"
-    return 0
-  fi
-
-  local check
-  for check in channel-list channel-search channel-detail local-pack env-migration parity flags-off; do
-    echo
-    echo "== probe (sqlite): $check =="
-    case "$check" in
-      channel-list)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM channels;" 2>&1)" || true
-        if printf '%s' "$out" | grep -Eq '^[0-9]+$'; then
-          pass "channel list (channels rows=$out)"
-        else
-          fail "channel list (channels table missing: $out)"
-        fi
-        ;;
-      channel-search)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM channel_apps;" 2>&1)" || true
-        if printf '%s' "$out" | grep -Eq '^[0-9]+$'; then
-          pass "channel search (channel_apps rows=$out)"
-        else
-          fail "channel search (channel_apps table missing: $out)"
-        fi
-        ;;
-      channel-detail)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM pragma_table_info('channel_apps') WHERE name IN ('app_id','name');" 2>&1)" || true
-        if [ "$out" = "2" ]; then
-          pass "channel detail (channel_apps app_id/name columns present)"
-        else
-          fail "channel detail (expected app_id+name columns, got: $out)"
-        fi
-        ;;
-      local-pack)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM channel_packs;" 2>&1)" || true
-        if printf '%s' "$out" | grep -Eq '^[0-9]+$'; then
-          pass "local pack (channel_packs rows=$out)"
-        else
-          fail "local pack (channel_packs table missing: $out)"
-        fi
-        ;;
-      env-migration)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM channel_env;" 2>&1)" || true
-        if printf '%s' "$out" | grep -Eq '^[0-9]+$'; then
-          pass "env migration (channel_env rows=$out)"
-        else
-          fail "env migration (channel_env table missing: $out)"
-        fi
-        ;;
-      parity)
-        local version integrity
-        version="$(sqlite3 "$tmp/core.db" "PRAGMA user_version;" 2>&1)" || true
-        integrity="$(sqlite3 "$tmp/core.db" "PRAGMA integrity_check;" 2>&1)" || true
-        if printf '%s' "$version" | grep -Eq '^[0-9]+$' && [ "$version" -ge 1 ] && [ "$integrity" = "ok" ]; then
-          pass "parity (schema version=$version, integrity=ok)"
-        else
-          fail "parity (schema version=$version, integrity=$integrity)"
-        fi
-        ;;
-      flags-off)
-        out="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM core_writes;" 2>&1)" || true
-        if [ "$out" = "0" ]; then
-          pass "flags-off (core_writes empty; legacy-write guard stays disabled)"
-        else
-          fail "flags-off (expected core_writes=0, got: $out)"
-        fi
-        ;;
-    esac
-  done
+  run_db_checks "$tmp/core.db" || true
+  rm -rf "$tmp"
 }
+
+# ---------------------------------------------------------------------------
+# Fixtures for --self-test / --db (no phone required).
+# ---------------------------------------------------------------------------
+
+make_valid_fixture() {
+  local db="$1"
+  rm -f "$db"
+  run_bounded sqlite3 "$db" <<'SQL'
+CREATE TABLE channels(
+    key TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    priority INTEGER NOT NULL DEFAULT 0,
+    support_offline INTEGER NOT NULL DEFAULT 0 CHECK(support_offline IN (0,1)),
+    last_update_time INTEGER,
+    version TEXT,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE channel_apps(
+    channel_key TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    user TEXT NOT NULL DEFAULT '',
+    repositories TEXT NOT NULL DEFAULT '',
+    apprepo TEXT,
+    icon TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT,
+    add_time INTEGER NOT NULL DEFAULT 0,
+    source_id TEXT,
+    extra TEXT,
+    PRIMARY KEY(channel_key, app_id)
+);
+CREATE TABLE channel_packs(
+    key TEXT NOT NULL PRIMARY KEY,
+    pack_hash TEXT NOT NULL,
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    installed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE channel_env(
+    channel_key TEXT NOT NULL PRIMARY KEY,
+    env_json TEXT NOT NULL,
+    imported_at INTEGER NOT NULL
+);
+CREATE TABLE core_writes(
+    domain TEXT NOT NULL PRIMARY KEY,
+    first_write_at INTEGER NOT NULL,
+    snapshot_id TEXT
+);
+INSERT INTO channels(key, kind, name, enabled, priority) VALUES
+    ('github',       'github',   'GitHub',       1, 10),
+    ('fdroid',       'fdroid',   'F-Droid',      1, 20),
+    ('vivo',         'vivo',     'Vivo',         1, 30),
+    ('coolapk',      'coolapk',  'Coolapk',      0, 40),
+    ('smoke_github', 'github',   'Smoke GitHub', 1,  1),
+    ('js_smoke',     'js_local', 'Smoke JS Pack',0,  0);
+INSERT INTO channel_apps(channel_key, app_id, name) VALUES
+    ('smoke_github', 'smoke/app', 'Smoke App');
+INSERT INTO channel_packs(key, pack_hash) VALUES
+    ('js_smoke', 'deadbeef');
+INSERT INTO channel_env(channel_key, env_json, imported_at) VALUES
+    ('js_smoke', '{"SMOKE":"1"}', 1);
+PRAGMA user_version = 1;
+SQL
+}
+
+# selftest_expect <label> <db> <pass|fail>
+selftest_expect() {
+  local label="$1" db="$2" want="$3"
+  local out rc verdict ok
+  set +e
+  out="$(
+    PASSED=0
+    FAILED=0
+    SKIPPED=0
+    run_db_checks "$db"
+  )" 2>&1
+  rc=$?
+  set -e
+  printf '%s\n' "$out"
+  if [ "$want" = "pass" ]; then
+    if [ "$rc" -eq 0 ]; then ok=1; verdict="PASS"; else ok=0; verdict="FAIL"; fi
+  else
+    if [ "$rc" -ne 0 ]; then ok=1; verdict="PASS"; else ok=0; verdict="FAIL"; fi
+  fi
+  if [ "$ok" -eq 1 ]; then
+    echo "SELFTEST PASS: $label (expected deep checks to $want, exit=$rc)"
+  else
+    echo "SELFTEST FAIL: $label (expected deep checks to $want, exit=$rc)"
+  fi
+  [ "$ok" -eq 1 ]
+}
+
+run_self_test() {
+  local tmp st_failed=0 broken_total=0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-device-smoke-selftest.XXXXXX")"
+  echo "== device-smoke self-test =="
+  echo "fixtures: $tmp"
+
+  make_valid_fixture "$tmp/valid.db"
+  selftest_expect "valid smoke DB" "$tmp/valid.db" pass || st_failed=1
+
+  make_valid_fixture "$tmp/missing-row.db"
+  run_bounded sqlite3 "$tmp/missing-row.db" \
+    "DELETE FROM channel_apps WHERE channel_key='smoke_github';"
+  broken_total=$((broken_total + 1))
+  selftest_expect "missing smoke row (table exists, row gone)" \
+    "$tmp/missing-row.db" fail || st_failed=1
+
+  make_valid_fixture "$tmp/renamed-table.db"
+  run_bounded sqlite3 "$tmp/renamed-table.db" \
+    "ALTER TABLE channel_packs RENAME TO channel_packs_renamed;"
+  broken_total=$((broken_total + 1))
+  selftest_expect "renamed channel_packs table" "$tmp/renamed-table.db" fail || st_failed=1
+
+  make_valid_fixture "$tmp/missing-column.db"
+  run_bounded sqlite3 "$tmp/missing-column.db" \
+    "ALTER TABLE channel_apps RENAME COLUMN name TO label;"
+  broken_total=$((broken_total + 1))
+  selftest_expect "missing channel_apps.name column" "$tmp/missing-column.db" fail || st_failed=1
+
+  make_valid_fixture "$tmp/null-app-id.db"
+  run_bounded sqlite3 "$tmp/null-app-id.db" <<'SQL'
+ALTER TABLE channel_apps RENAME TO channel_apps_old;
+CREATE TABLE channel_apps(
+    channel_key TEXT,
+    app_id TEXT,
+    name TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO channel_apps(channel_key, app_id, name) VALUES
+    ('smoke_github', NULL, 'Smoke App');
+DROP TABLE channel_apps_old;
+SQL
+  broken_total=$((broken_total + 1))
+  selftest_expect "NULL app_id row" "$tmp/null-app-id.db" fail || st_failed=1
+
+  make_valid_fixture "$tmp/stale-schema.db"
+  run_bounded sqlite3 "$tmp/stale-schema.db" "PRAGMA user_version = 0;"
+  broken_total=$((broken_total + 1))
+  selftest_expect "stale schema (user_version=0)" "$tmp/stale-schema.db" fail || st_failed=1
+
+  make_valid_fixture "$tmp/dirty-writes.db"
+  run_bounded sqlite3 "$tmp/dirty-writes.db" \
+    "INSERT INTO core_writes(domain, first_write_at) VALUES('apps', 1);"
+  broken_total=$((broken_total + 1))
+  selftest_expect "dirty core_writes row" "$tmp/dirty-writes.db" fail || st_failed=1
+
+  printf 'this is not a sqlite database\n' > "$tmp/corrupt.db"
+  broken_total=$((broken_total + 1))
+  selftest_expect "corrupt database file" "$tmp/corrupt.db" fail || st_failed=1
+
+  echo
+  echo "== self-test summary =="
+  rm -rf "$tmp"
+  if [ "$st_failed" -ne 0 ]; then
+    echo "RESULT: FAIL"
+    return 1
+  fi
+  echo "RESULT: PASS (valid fixture passed; $broken_total broken fixtures failed)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Local modes: no adb involved.
+# ---------------------------------------------------------------------------
+
+if [ "$SELFTEST" -eq 1 ]; then
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "ERROR: --self-test requires host sqlite3" >&2
+    exit 1
+  fi
+  if run_self_test; then
+    exit 0
+  fi
+  exit 1
+fi
+
+if [ -n "$DB_PATH" ]; then
+  echo "== device smoke (local DB) =="
+  echo "db: $DB_PATH"
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "ERROR: --db requires host sqlite3" >&2
+    exit 1
+  fi
+  if [ ! -f "$DB_PATH" ]; then
+    echo "FAIL: database not found: $DB_PATH" >&2
+    echo "RESULT: FAIL"
+    exit 1
+  fi
+  PASSED=0
+  FAILED=0
+  SKIPPED=0
+  run_db_checks "$DB_PATH" || true
+  echo
+  echo "== summary =="
+  echo "passed=$PASSED failed=$FAILED skipped=$SKIPPED"
+  if [ "$FAILED" -gt 0 ]; then
+    echo "RESULT: FAIL"
+    exit 1
+  fi
+  echo "RESULT: PASS"
+  exit 0
+fi
 
 echo "== device smoke =="
 echo "package: $PKG"
@@ -308,7 +616,7 @@ else
   fi
 
   if [ -n "$INSTRUMENTATION" ]; then
-    for check in channel-list channel-search channel-detail local-pack env-migration parity flags-off; do
+    for check in $DEEP_CHECKS; do
       deep_check_instrumentation "$check"
     done
   else
