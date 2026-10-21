@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
+import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart';
 
 /// Real-native FRB smoke test for the spike [CoreApi] handle.
@@ -18,6 +19,8 @@ void main() {
   late CoreApi api;
 
   setUpAll(() async {
+    // 本文件是真实原生 FRB 冒烟测试：解除全局测试配置的「原生桥不可用」默认。
+    RustBridge.debugForceUnavailable = false;
     root = await Directory.systemTemp.createTemp('gstore_core_api_dart_');
     dataDir = '${root.path}/data';
     filesDir = '${root.path}/files';

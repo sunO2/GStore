@@ -133,6 +133,24 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// 有界轮询真实异步直到 [ready] 成立。
+  ///
+  /// 全量测试并发时 QuickJS FFI + 文件 IO 可能远超固定 900ms；固定等待会让
+  /// 「导入完成」断言在慢机上偶发失败。这里只延长**等待**，不改变任何断言。
+  Future<void> settleUntil(
+    WidgetTester tester,
+    bool Function() ready, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!ready() && DateTime.now().isBefore(deadline)) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+  }
+
   /// 打开导入 BottomSheet（db8fa14 起：环境变量区改由 requiredEnvVars 引导，
   /// 选文件后按需出现，不再有可展开 section）
   Future<void> openImportDialog(WidgetTester tester) async {
@@ -173,7 +191,10 @@ void main() {
     final base = fileName.toLowerCase().endsWith('.zip')
         ? fileName.substring(0, fileName.length - 4)
         : fileName;
-    return 'js_$base';
+    final key = 'js_$base';
+    await settleUntil(
+        tester, () => ChannelManager.instance.getChannelByKey(key) != null);
+    return key;
   }
 
   testWidgets('① 导入对话框显示「从文件选择」按钮，注入 filePicker 选择 .zip 并导入',
