@@ -10,6 +10,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 # 模块契约层（独立 crate，宿主与模块 .so 共享）
 gstore_contract = { path = "../gstore_contract" }
+# Rust 核心层（spike：CoreApi 宿主门面）
+gstore_core = { path = "../gstore_core" }
+# CoreApi 持有核心库连接（与 gstore_core 同版本；仅宿主内部使用，不进 FRB 签名）
+rusqlite = { version = "0.32", features = ["bundled"] }
 # 动态加载模块 .so（dlopen/dlsym）
 libloading = "0.8"
 # JNI：Kotlin ProxyVpnService ↔ 宿主（service 引用缓存 + VpnService.protect）。

@@ -324,3 +324,271 @@ impl HostInspector {
     }
 }
 
+use gstore_core::{db as core_db, migration as core_migration};
+use rusqlite::OptionalExtension;
+
+const CORE_E_NOT_INITIALIZED: &str =
+    "CORE_E_NOT_INITIALIZED: CoreApi.init() has not been called";
+
+struct CorePaths {
+    data_dir: String,
+    files_dir: String,
+    cache_dir: String,
+}
+
+/// 核心库宿主门面（spike）：初始化、迁移目录、快照导出/导入与写入标记查询。
+///
+/// `rusqlite::Connection` 只作为私有字段存在；对外签名全部是 FRB 可直接映射的
+/// `String` / `i32` / `u64` / 普通数据类。
+#[frb(opaque)]
+pub struct CoreApi {
+    paths: std::sync::Mutex<Option<CorePaths>>,
+    db: std::sync::Mutex<Option<rusqlite::Connection>>,
+}
+
+pub struct CoreInitResult {
+    pub schema_version: i32,
+    pub db_path: String,
+    pub data_dir: String,
+    pub files_dir: String,
+    pub cache_dir: String,
+}
+
+pub struct CoreWritesMarker {
+    pub domain: String,
+    pub first_write_at: i64,
+    pub snapshot_id: Option<String>,
+}
+
+impl CoreApi {
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<CoreApi, String> {
+        for dir in [&data_dir, &files_dir, &cache_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("CORE_E_INIT: create dir {dir}: {e}"))?;
+        }
+        let conn = core_db::open(std::path::Path::new(&data_dir))
+            .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
+        Ok(CoreApi {
+            paths: std::sync::Mutex::new(Some(CorePaths {
+                data_dir,
+                files_dir,
+                cache_dir,
+            })),
+            db: std::sync::Mutex::new(Some(conn)),
+        })
+    }
+
+    pub fn migrate_paths(&self) -> Result<CoreInitResult, String> {
+        let paths = self
+            .paths
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: paths lock poisoned"))?;
+        let paths = paths
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+
+        let migration_dir =
+            core_migration::migration_dir(std::path::Path::new(&paths.files_dir));
+        std::fs::create_dir_all(&migration_dir).map_err(|e| {
+            format!(
+                "CORE_E_MIGRATE: create {}: {e}",
+                migration_dir.display()
+            )
+        })?;
+
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        let schema_version: i32 = db
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(|e| format!("CORE_E_MIGRATE: read user_version: {e}"))?;
+
+        Ok(CoreInitResult {
+            schema_version,
+            db_path: core_db::core_db_path(std::path::Path::new(&paths.data_dir))
+                .to_string_lossy()
+                .into_owned(),
+            data_dir: paths.data_dir.clone(),
+            files_dir: paths.files_dir.clone(),
+            cache_dir: paths.cache_dir.clone(),
+        })
+    }
+
+    pub fn import_file(&self, path_or_fd: String) -> Result<u64, String> {
+        let meta = std::fs::metadata(std::path::Path::new(&path_or_fd))
+            .map_err(|_| format!("CORE_E_IMPORT_NOT_FOUND: {path_or_fd}"))?;
+        if !meta.is_file() {
+            return Err(format!("CORE_E_IMPORT_NOT_FOUND: {path_or_fd}"));
+        }
+        Ok(meta.len())
+    }
+
+    pub fn export_snapshot(&self, path: String) -> Result<u64, String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+
+        let target = std::path::Path::new(&path);
+        if target.exists() {
+            std::fs::remove_file(target)
+                .map_err(|e| format!("CORE_E_EXPORT: remove existing {path}: {e}"))?;
+        }
+        db.execute("VACUUM INTO ?1", rusqlite::params![&path])
+            .map_err(|e| format!("CORE_E_EXPORT: vacuum into {path}: {e}"))?;
+        let size = std::fs::metadata(target)
+            .map_err(|e| format!("CORE_E_EXPORT: stat {path}: {e}"))?
+            .len();
+        Ok(size)
+    }
+
+    pub fn import_snapshot(&self, path: String) -> Result<i32, String> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| format!("CORE_E_IMPORT_SNAPSHOT: open {path}: {e}"))?;
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(|e| format!("CORE_E_IMPORT_SNAPSHOT: read user_version: {e}"))?;
+        for table in ["core_writes", "download_task"] {
+            let found: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| {
+                    format!("CORE_E_IMPORT_SNAPSHOT: inspect sqlite_master: {e}")
+                })?;
+            if found.is_none() {
+                return Err(format!(
+                    "CORE_E_IMPORT_SNAPSHOT: missing table {table}"
+                ));
+            }
+        }
+        Ok(version)
+    }
+
+    pub fn core_writes(&self, domain: String) -> Result<Option<CoreWritesMarker>, String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        db.query_row(
+            "SELECT domain, first_write_at, snapshot_id FROM core_writes WHERE domain=?1",
+            [&domain],
+            |row| {
+                Ok(CoreWritesMarker {
+                    domain: row.get(0)?,
+                    first_write_at: row.get(1)?,
+                    snapshot_id: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| format!("CORE_E_WRITES: query {domain}: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod core_api_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture_root() -> PathBuf {
+        std::env::temp_dir().join(format!("gstore_core_api_test_{}", std::process::id()))
+    }
+
+    #[test]
+    fn core_api_contract() {
+        let root = fixture_root();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+
+        let init = api.migrate_paths().expect("migrate_paths");
+        assert_eq!(init.schema_version, 1);
+        assert!(
+            std::path::Path::new(&init.db_path).exists(),
+            "db file missing: {}",
+            init.db_path
+        );
+        assert_eq!(
+            init.db_path,
+            data_dir
+                .join("gstore_core.db")
+                .to_string_lossy()
+                .into_owned()
+        );
+
+        let migration_dir = files_dir.join("migration");
+        assert!(
+            migration_dir.is_dir(),
+            "migration dir missing: {}",
+            migration_dir.display()
+        );
+
+        assert!(api
+            .core_writes("channel".to_string())
+            .expect("core_writes")
+            .is_none());
+
+        let sample = root.join("a.txt");
+        let content = b"hello gstore core";
+        std::fs::write(&sample, content).unwrap();
+        let len = api
+            .import_file(sample.to_string_lossy().into_owned())
+            .expect("import_file");
+        assert_eq!(len, content.len() as u64);
+
+        let snapshot = root.join("snap.db");
+        let size = api
+            .export_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("export_snapshot");
+        assert!(size > 0, "snapshot size must be positive");
+        assert!(snapshot.is_file(), "snapshot file missing");
+
+        let version = api
+            .import_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("import_snapshot");
+        assert_eq!(version, 1);
+
+        let missing = root.join("does-not-exist.txt");
+        let err = api
+            .import_file(missing.to_string_lossy().into_owned())
+            .unwrap_err();
+        assert!(
+            err.contains("CORE_E_IMPORT_NOT_FOUND"),
+            "unexpected error: {err}"
+        );
+
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
