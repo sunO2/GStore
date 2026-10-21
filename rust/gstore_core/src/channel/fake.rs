@@ -77,6 +77,18 @@ impl ChannelStore for InMemoryChannelStore {
         Ok(())
     }
 
+    fn insert(&self, record: ChannelRecord) -> Result<(), Error> {
+        let mut records = self.write()?;
+        if records.contains_key(&record.key) {
+            return Err(Error::Conflict(format!(
+                "channel already registered: {}",
+                record.key
+            )));
+        }
+        records.insert(record.key.clone(), record);
+        Ok(())
+    }
+
     fn unregister(&self, key: &ChannelKey) -> Result<(), Error> {
         let mut records = self.write()?;
         records

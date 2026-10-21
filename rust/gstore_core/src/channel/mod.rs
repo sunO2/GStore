@@ -2,9 +2,10 @@
 //!
 //! This module is intentionally local-only: packs carry plain JSON metadata and
 //! there is no signature, trust root, verification, or consent surface. Pack
-//! loading from zip bytes lands in Todo 9; SQLite-backed registry persistence
-//! lands in Todo 8. Until then callers can use [`ChannelRegistry`] with the
-//! in-memory fakes, or the [`InMemoryChannelDriver`] directly.
+//! loading from zip bytes lands in Todo 9. Registry persistence is SQLite-backed
+//! in production via
+//! [`SqliteChannelStore`]; the in-memory fakes remain for tests and for callers
+//! that intentionally need ephemeral state.
 //!
 //! All traits are synchronous, matching the crate's existing port conventions
 //! (`download::port::ModuleBridge`, `flags`), and every fallible operation
@@ -23,13 +24,21 @@ mod driver;
 mod fake;
 mod pack;
 mod registry;
+mod sqlite_store;
 mod store;
 
 pub use driver::{ChannelCategory, ChannelConfig, ChannelDriver};
 pub use fake::{InMemoryChannelDriver, InMemoryChannelStore};
 pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
 pub use registry::ChannelRegistry;
+pub use sqlite_store::SqliteChannelStore;
 pub use store::{ChannelRecord, ChannelStore};
 
+/// [`ChannelRegistry`] backed by the persistent [`SqliteChannelStore`].
+pub type SqliteChannelRegistry = ChannelRegistry<SqliteChannelStore>;
+
 /// [`ChannelRegistry`] backed by the in-memory [`ChannelStore`] fake.
+///
+/// Test-only: production wiring should use [`SqliteChannelRegistry`] /
+/// [`ChannelRegistry::open_db`].
 pub type InMemoryChannelRegistry = ChannelRegistry<InMemoryChannelStore>;

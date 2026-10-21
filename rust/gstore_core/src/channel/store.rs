@@ -44,8 +44,10 @@ impl ChannelRecord {
 /// Persistence contract for registry state.
 ///
 /// Semantics mirrored from `ChannelManager`:
-/// - `register` is idempotent for an identical record, but a different record
-///   under the same key is a [`Error::Conflict`].
+/// - `register` is idempotent for an identical record; a different immutable
+///   identity (the kind) under the same key is a [`Error::Conflict`].
+/// - `insert`/`create` reject any existing key with [`Error::Conflict`], even
+///   when the payload is identical.
 /// - `unregister`/`enable`/`disable`/`set_priority` return
 ///   [`Error::NotFound`] for unknown keys.
 /// - `list` is deterministic by key.
@@ -54,6 +56,15 @@ impl ChannelRecord {
 pub trait ChannelStore: Send + Sync {
     /// Registers or idempotently re-registers a channel record.
     fn register(&self, record: ChannelRecord) -> Result<(), Error>;
+
+    /// Strictly creates a channel record, rejecting any existing key with
+    /// [`Error::Conflict`] even when the payload is identical.
+    fn insert(&self, record: ChannelRecord) -> Result<(), Error>;
+
+    /// Alias for [`ChannelStore::insert`].
+    fn create(&self, record: ChannelRecord) -> Result<(), Error> {
+        self.insert(record)
+    }
 
     /// Removes a registered channel.
     fn unregister(&self, key: &ChannelKey) -> Result<(), Error>;

@@ -7,12 +7,15 @@
 //! unregistered key.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crate::db::DbHandle;
 use crate::dto::ChannelKey;
 use crate::error::Error;
 
 use super::driver::ChannelDriver;
+use super::sqlite_store::SqliteChannelStore;
 use super::store::{ChannelRecord, ChannelStore};
 
 type DriverMap = BTreeMap<ChannelKey, Arc<dyn ChannelDriver>>;
@@ -45,6 +48,16 @@ impl<S: ChannelStore> ChannelRegistry<S> {
     /// Registers registry state without a driver (useful before drivers load).
     pub fn register(&self, record: ChannelRecord) -> Result<(), Error> {
         self.store.register(record)
+    }
+
+    /// Strictly inserts a record, rejecting any existing key.
+    pub fn insert(&self, record: ChannelRecord) -> Result<(), Error> {
+        self.store.insert(record)
+    }
+
+    /// Alias for [`ChannelRegistry::insert`].
+    pub fn create(&self, record: ChannelRecord) -> Result<(), Error> {
+        self.store.create(record)
     }
 
     /// Registers a key-bound driver and its record in one call.
@@ -124,5 +137,19 @@ impl<S: ChannelStore> ChannelRegistry<S> {
         self.drivers
             .write()
             .map_err(|_| Error::Internal("channel registry driver lock poisoned".to_string()))
+    }
+}
+
+impl ChannelRegistry<SqliteChannelStore> {
+    /// Opens (or creates) a persistent registry backed by the core database in
+    /// `data_dir`. This is the production constructor; the in-memory store is
+    /// for tests only.
+    pub fn open_db(data_dir: &Path) -> Result<Self, Error> {
+        SqliteChannelStore::open(data_dir).map(Self::new)
+    }
+
+    /// Wraps an already-open core database in a persistent registry.
+    pub fn from_db(db: DbHandle) -> Self {
+        Self::new(SqliteChannelStore::new(db))
     }
 }
