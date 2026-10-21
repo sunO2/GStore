@@ -230,35 +230,50 @@ only to prove the port completes a local transfer end-to-end.`
 
 ## 5. Parity
 
-命令与结果：
+Wave 1 Todo 14 supersedes the spike's pure-Dart mapping.  The current gate runs
+the **real Floor DAO + `LocalDbChannel`** against real SQLite and the **real
+`LocalDbDriver`** against the same seed:
 
 ```bash
-bash scripts/qa/parity.sh
+bash scripts/qa/parity.sh --channel
 # exit 0
-# parity OK: getAllApps=3 searchApps=2 getAppInfoMissing=None
+# parity OK: getAllApps=17 searchApps=2 getAppInfoMissing=None
 ```
 
-- `12-parity.txt`：Rust `gstore_core_parity` 与 Dart `dump_dart_parity_test` 的 JSON 归一化后
-  完全一致；正常化器打印 `getAllApps=3 searchApps=2 getAppInfoMissing=None`。
-- 注入漂移负向证明：
+- Seed: `scripts/qa/gen_parity_fixture.py` derives
+  `test/fixtures/parity/localdb.{sql,db}` from `assets/app/db/apps.db`
+  (`apps` ORDER BY appId, `category` ORDER BY id, latest `config` row).  It is
+  rebuilt on every run and is byte-identical across runs.
+- Coverage: `getAllApps`, `searchApps` (FTS5 `"word"*` + LIKE fallback),
+  `searchByCategory`, `getAppInfo`, `getAppDetail`, plus empty search and
+  unknown app/category inputs.
+- Dart side opens the seed through the generated Floor database
+  (`$FloorAppInfoDatabase`) after installing the sqflite FFI factory on
+  `libsqlite3.so.0`; metadata lookups are pinned to 404, matching the Rust
+  driver running without a metadata port.
+- Injected drift still fails:
 
 ```bash
-bash scripts/qa/parity.sh --inject-field-diff
+bash scripts/qa/parity.sh --channel --inject-field-diff
 # injected drift: rust getAllApps[0].name += " (drift)"
-# diff ... -"Demo Alpha" / +"Demo Alpha (drift)"
+# first differing field: $.getAllApps[0].name
+#   dart: "LX Music"
+#   rust: "LX Music (drift)"
 # exit=1
 ```
 
-证据：`12-parity-fail.txt`（exit 1，非零）。
+Evidence: `target/test-evidence/14-gate1.txt` (clean, twice) and
+`target/test-evidence/14-parity-fail.txt` (exit 1, actual field diff).
 
-**范围限制（必须诚实记录）**
+**Remaining honest scope limits**
 
-1. `searchApps` 只镜像 DAO 的 **LIKE 回退**查询（`WHERE name LIKE '%demo%' OR des LIKE '%demo%'`）；
-   **未覆盖 FTS5**（`rust/gstore_core/src/bin/gstore_core_parity.rs` 头注释明确）。
-2. 下载 parity 不是字节级 parity，而是**状态映射** parity（status/字段映射）；真实传输在模块内。
-3. 本机 Dart 侧无法打开 SQLite：环境缺 `libsqlite3.so`（基线 125 个失败的主因之一，
-   `01-flutter-test.txt` 中 85 处 `libsqlite3`）；因此 Dart fixture 走纯 Dart 数据路径，不做真实
-   SQLite 查询对比。真实 Dart channel parity 留给主计划（§9-9）。
+1. Metadata overrides are exercised as "not in metadata" (404); production
+   network metadata is not part of the parity seed.
+2. Download parity is status-mapping parity, not byte-level transfer parity;
+   real transport lives in the module.
+3. `getAppDetail` compares the SQLite-backed semantic fields; the Dart proxy's
+   UI render payload (`proxy`/`repoName`/`apiData` in `extra`) has no Rust
+   `AppDetail` counterpart and is not compared.
 
 ---
 

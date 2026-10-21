@@ -34,6 +34,33 @@ def normalize(node: Any) -> Any:
     return node
 
 
+def first_difference(left: Any, right: Any, path: str = "$") -> tuple[str, Any, Any] | None:
+    """Return the first path whose value differs (after normalization)."""
+    if type(left) is not type(right):
+        return path, left, right
+    if isinstance(left, dict):
+        for key in sorted(set(left) | set(right)):
+            if key not in left:
+                return f"{path}.{key}", "<missing>", right[key]
+            if key not in right:
+                return f"{path}.{key}", left[key], "<missing>"
+            found = first_difference(left[key], right[key], f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(left, list):
+        if len(left) != len(right):
+            return f"{path}.length", len(left), len(right)
+        for index, (left_item, right_item) in enumerate(zip(left, right)):
+            found = first_difference(left_item, right_item, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    if left != right:
+        return path, left, right
+    return None
+
+
 def render(document: Any) -> list[str]:
     return json.dumps(
         normalize(document), indent=2, sort_keys=True, ensure_ascii=False
@@ -65,6 +92,12 @@ def main() -> int:
         )
         return 0
 
+    difference = first_difference(normalize(dart_doc), normalize(rust_doc))
+    if difference is not None:
+        path, dart_value, rust_value = difference
+        print(f"first differing field: {path}")
+        print(f"  dart: {json.dumps(dart_value, ensure_ascii=False, sort_keys=True)}")
+        print(f"  rust: {json.dumps(rust_value, ensure_ascii=False, sort_keys=True)}")
     diff = difflib.unified_diff(
         dart_lines,
         rust_lines,
