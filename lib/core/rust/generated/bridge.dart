@@ -18,6 +18,8 @@ abstract class CoreApi implements RustOpaqueInterface {
 
   Future<BigInt> importFile({required String pathOrFd});
 
+  Future<int> importMigrationFile({required String kind, required String path});
+
   Future<int> importSnapshot({required String path});
 
   static Future<CoreApi> init(

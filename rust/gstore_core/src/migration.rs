@@ -16,6 +16,11 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 pub const CORE_SCHEMA_VERSION: i32 = 1;
 
 /// Applies the core schema idempotently and stamps the schema version.
+///
+/// Spike note: the ordered Dart→Rust handoff tables (`channel_env`,
+/// `update_prefs`) are folded into `user_version = 1` instead of a separate
+/// v2 migration, because the spike core database is always freshly created.
+/// A production core will split them into a numbered migration step.
 pub fn apply_core_schema(conn: &rusqlite::Connection) -> Result<(), DbError> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS core_writes(
@@ -53,6 +58,16 @@ pub fn apply_core_schema(conn: &rusqlite::Connection) -> Result<(), DbError> {
             created_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS channel_env(
+            channel_key TEXT PRIMARY KEY,
+            env_json TEXT NOT NULL,
+            imported_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS update_prefs(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            imported_at INTEGER NOT NULL
+        );
         PRAGMA user_version = {CORE_SCHEMA_VERSION};"
     ))
     .map_err(|e| DbError(format!("apply core schema: {e}")))?;
@@ -61,6 +76,138 @@ pub fn apply_core_schema(conn: &rusqlite::Connection) -> Result<(), DbError> {
 
 /// Domains that, once written by the Rust core, block legacy Dart writes.
 pub const CORE_WRITES_DOMAINS: [&str; 3] = ["channel", "update", "download"];
+
+/// Maximum supported version of the Dart→Rust migration document format.
+pub const MIGRATION_DOC_VERSION: i64 = 1;
+
+/// Imports one Dart-produced migration document into the core schema.
+///
+/// Returns the number of rows written. `kind` selects the target table:
+/// `"channel_env"` (a single upsert) or `"update_prefs"` (one upsert per key).
+pub fn import_migration_document(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    doc: &serde_json::Value,
+) -> Result<usize, DbError> {
+    let version = doc.get("version").and_then(serde_json::Value::as_i64);
+    if version != Some(MIGRATION_DOC_VERSION) {
+        return Err(DbError(format!(
+            "CORE_E_MIGRATION_VERSION: expected {MIGRATION_DOC_VERSION}, got {}",
+            doc.get("version").map_or_else(|| "missing".to_string(), ToString::to_string)
+        )));
+    }
+
+    match kind {
+        "channel_env" => import_channel_env(conn, doc),
+        "update_prefs" => import_update_prefs(conn, doc),
+        other => Err(DbError(format!(
+            "CORE_E_MIGRATION_KIND: unknown migration kind {other}"
+        ))),
+    }
+}
+
+fn import_channel_env(
+    conn: &rusqlite::Connection,
+    doc: &serde_json::Value,
+) -> Result<usize, DbError> {
+    let channel_key = doc
+        .get("channel_key")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            DbError("CORE_E_MIGRATION_SHAPE: channel_key must be a string".to_string())
+        })?;
+    let env = doc
+        .get("env")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| DbError("CORE_E_MIGRATION_SHAPE: env must be an object".to_string()))?;
+    let env_json = serde_json::to_string(env)
+        .map_err(|e| DbError(format!("CORE_E_MIGRATION_SHAPE: encode env: {e}")))?;
+    conn.execute(
+        "INSERT INTO channel_env(channel_key, env_json, imported_at) \
+         VALUES (?1, ?2, strftime('%s','now')) \
+         ON CONFLICT(channel_key) DO UPDATE SET \
+             env_json = excluded.env_json, imported_at = excluded.imported_at",
+        rusqlite::params![channel_key, env_json],
+    )
+    .map_err(|e| DbError(format!("CORE_E_MIGRATION_WRITE: channel_env {channel_key}: {e}")))?;
+    Ok(1)
+}
+
+fn import_update_prefs(
+    conn: &rusqlite::Connection,
+    doc: &serde_json::Value,
+) -> Result<usize, DbError> {
+    let prefs = doc
+        .get("prefs")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| DbError("CORE_E_MIGRATION_SHAPE: prefs must be an object".to_string()))?;
+    let prefs = prefs
+        .as_object()
+        .ok_or_else(|| DbError("CORE_E_MIGRATION_SHAPE: prefs must be an object".to_string()))?;
+    let mut written = 0usize;
+    for (key, value) in prefs {
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        conn.execute(
+            "INSERT INTO update_prefs(key, value, imported_at) \
+             VALUES (?1, ?2, strftime('%s','now')) \
+             ON CONFLICT(key) DO UPDATE SET \
+                 value = excluded.value, imported_at = excluded.imported_at",
+            rusqlite::params![key, text],
+        )
+        .map_err(|e| DbError(format!("CORE_E_MIGRATION_WRITE: update_prefs {key}: {e}")))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Reads a migration document from `path` and imports it.
+pub fn import_migration_file(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    path: &Path,
+) -> Result<usize, DbError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        DbError(format!(
+            "CORE_E_MIGRATION_READ: read {}: {e}",
+            path.display()
+        ))
+    })?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        DbError(format!(
+            "CORE_E_MIGRATION_JSON: parse {}: {e}",
+            path.display()
+        ))
+    })?;
+    import_migration_document(conn, kind, &doc)
+}
+
+/// Returns how many `channel_env` rows exist for `channel_key`.
+pub fn channel_env_count(
+    conn: &rusqlite::Connection,
+    channel_key: &str,
+) -> Result<i64, DbError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM channel_env WHERE channel_key=?1",
+        [channel_key],
+        |row| row.get(0),
+    )
+    .map_err(|e| DbError(format!("read channel_env count {channel_key}: {e}")))
+}
+
+/// Returns the stored `update_prefs` value for `key`, if present.
+pub fn update_pref(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, DbError> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT value FROM update_prefs WHERE key=?1",
+        [key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| DbError(format!("read update_pref {key}: {e}")))
+}
 
 /// Marker recording the first core write for a domain.
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +332,96 @@ mod tests {
         );
 
         ensure_legacy_write_allowed(&conn, "update").expect("other domains stay writable");
+    }
+
+    #[test]
+    fn migration_handoff_roundtrip() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&conn).unwrap();
+
+        let channel = serde_json::json!({
+            "version": 1,
+            "channel_key": "js.test",
+            "env": {"user": "u", "pass": "p"}
+        });
+        assert_eq!(
+            import_migration_document(&conn, "channel_env", &channel).unwrap(),
+            1
+        );
+        assert_eq!(channel_env_count(&conn, "js.test").unwrap(), 1);
+
+        let channel_update = serde_json::json!({
+            "version": 1,
+            "channel_key": "js.test",
+            "env": {"user": "u2"}
+        });
+        assert_eq!(
+            import_migration_document(&conn, "channel_env", &channel_update).unwrap(),
+            1
+        );
+        assert_eq!(
+            channel_env_count(&conn, "js.test").unwrap(),
+            1,
+            "re-import must upsert, not duplicate"
+        );
+        let env_json: String = conn
+            .query_row(
+                "SELECT env_json FROM channel_env WHERE channel_key='js.test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(env_json, r#"{"user":"u2"}"#);
+        assert!(
+            !env_json.contains("\"pass\""),
+            "stale env fields must be replaced, got {env_json}"
+        );
+
+        let prefs = serde_json::json!({
+            "version": 1,
+            "prefs": {
+                "update_last_checked_at": "123",
+                "update_preferred_apk": "{\"a\":\"b\"}"
+            }
+        });
+        assert_eq!(
+            import_migration_document(&conn, "update_prefs", &prefs).unwrap(),
+            2
+        );
+        assert_eq!(
+            update_pref(&conn, "update_last_checked_at").unwrap(),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            update_pref(&conn, "update_preferred_apk").unwrap(),
+            Some(r#"{"a":"b"}"#.to_string())
+        );
+        assert_eq!(
+            import_migration_document(&conn, "update_prefs", &prefs).unwrap(),
+            2
+        );
+        let pref_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM update_prefs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pref_rows, 2, "re-import must upsert prefs");
+
+        let bad_version = serde_json::json!({"version": 2, "channel_key": "x", "env": {}});
+        let err = import_migration_document(&conn, "channel_env", &bad_version)
+            .expect_err("version 2 must be rejected");
+        assert!(
+            err.0.contains("CORE_E_MIGRATION_VERSION"),
+            "unexpected error: {}",
+            err.0
+        );
+
+        let unknown_kind = serde_json::json!({"version": 1});
+        let err = import_migration_document(&conn, "nope", &unknown_kind)
+            .expect_err("unknown kind must be rejected");
+        assert!(
+            err.0.contains("CORE_E_MIGRATION_KIND"),
+            "unexpected error: {}",
+            err.0
+        );
     }
 
     #[test]

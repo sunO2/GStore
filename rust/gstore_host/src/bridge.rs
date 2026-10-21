@@ -486,6 +486,19 @@ impl CoreApi {
         Ok(version)
     }
 
+    pub fn import_migration_file(&self, kind: String, path: String) -> Result<u32, String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        core_migration::import_migration_file(db, &kind, std::path::Path::new(&path))
+            .map(|written| written as u32)
+            .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {}", e.0))
+    }
+
     pub fn core_writes(&self, domain: String) -> Result<Option<CoreWritesMarker>, String> {
         let db = self
             .db
@@ -591,6 +604,27 @@ mod core_api_tests {
             .import_snapshot(snapshot.to_string_lossy().into_owned())
             .expect("import_snapshot");
         assert_eq!(version, 1);
+
+        let migration_doc = root.join("migration_channel.json");
+        std::fs::write(
+            &migration_doc,
+            br#"{"version":1,"channel_key":"js.test","env":{"a":"b"}}"#,
+        )
+        .unwrap();
+        let imported = api
+            .import_migration_file(
+                "channel_env".to_string(),
+                migration_doc.to_string_lossy().into_owned(),
+            )
+            .expect("import_migration_file");
+        assert_eq!(imported, 1);
+        let reimported = api
+            .import_migration_file(
+                "channel_env".to_string(),
+                migration_doc.to_string_lossy().into_owned(),
+            )
+            .expect("import_migration_file again");
+        assert_eq!(reimported, 1, "migration import must be idempotent");
 
         let missing = root.join("does-not-exist.txt");
         let err = api
