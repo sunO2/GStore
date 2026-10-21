@@ -444,6 +444,10 @@ codegen 漂移而失败（不属于环境基线），该漂移已在本 worktree
 8. **flags-off 的覆盖面**：3 个 Dart 测试 + grep 证明默认关闭，但没有设备级「打开 flag 后旧路径
    拒绝写入」的真机验证；`LegacyWriteGuard` 目前只在测试 seam 下被验证。
 9. **版本/发布**：本 spike 未改 `pubspec.yaml`、未 bump 版本；诊断 APK 仅供构建证据，不可当发布物。
+10. **真机启动/安装 smoke 未执行**：本机无可用 Android 设备；仅有的 arm64 AVD 无法在 x86_64 host 上启动
+    （`Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64 host`），可启动的 x86_64 AVD
+    与 arm64-only APK 的 ABI 不匹配。G5 由 worktree release build + flags-off 测试 + 无删除证明覆盖；
+    真机首次启动仍需在 arm64 设备/CI 上补验（证据：`target/spike/F3.md`）。
 
 ---
 
