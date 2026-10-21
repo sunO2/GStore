@@ -10,51 +10,25 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CoreApi>>
+abstract class CoreApi implements RustOpaqueInterface {
+  Future<CoreWritesMarker?> coreWrites({required String domain});
 
-/// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
-/// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
-/// gimli 符号化器在 Android dlopen 场景二次崩溃为 SIGSEGV（真机崩溃放大器）。
-/// 模块 register 时已安装自己的静默 hook；此处安装宿主副本的，双保险。
-Future<void> installHostPanicHook() =>
-    RustLib.instance.api.crateBridgeInstallHostPanicHook();
+  Future<BigInt> exportSnapshot({required String path});
 
-/// 统一特权 shell 执行（Rust facade）：经 JNI 调 Kotlin `ShizukuExecBridge.exec`。
-/// 无 Shizuku/未初始化 → `null`；返回值用 `Option<String>` 以避免 FRB 对
-/// `Result` 错误类型的约束。
-Future<String?> shizukuExec({required String command}) =>
-    RustLib.instance.api.crateBridgeShizukuExec(command: command);
+  Future<BigInt> importFile({required String pathOrFd});
 
-/// Shizuku 是否可用（`pingBinder() && checkSelfPermission()==GRANTED`）。
-Future<bool> shizukuAvailable() =>
-    RustLib.instance.api.crateBridgeShizukuAvailable();
+  Future<int> importSnapshot({required String path});
 
-/// 免权限电池 JSON（Rust → JNI → Kotlin `BatteryChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> batteryReadJson() =>
-    RustLib.instance.api.crateBridgeBatteryReadJson();
+  static Future<CoreApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeCoreApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
-/// 屏幕是否点亮（Rust → JNI → Kotlin `BatteryChannel.isInteractive`）。
-/// 未初始化 / 调用失败 → `null`。
-Future<bool?> batteryPowerInteractive() =>
-    RustLib.instance.api.crateBridgeBatteryPowerInteractive();
-
-/// 批量设备状态 JSON（Rust → JNI → Kotlin `DeviceStateChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> deviceStateReadJson() =>
-    RustLib.instance.api.crateBridgeDeviceStateReadJson();
-
-/// 前台无障碍服务缓存 JSON（Rust → JNI →
-/// Kotlin `ForegroundAccessibilityService.readJson`）。
-/// 未初始化 / 服务未启用 / 调用失败 → `null`；Dart 侧据此决定是否跳过
-/// `dumpsys activity activities`。
-Future<String?> foregroundReadJson() =>
-    RustLib.instance.api.crateBridgeForegroundReadJson();
-
-/// 本应用帧指标摘要 JSON（Rust → JNI → Kotlin `FrameMetricsCollector.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> frameMetricsReadJson() =>
-    RustLib.instance.api.crateBridgeFrameMetricsReadJson();
+  Future<CoreInitResult> migratePaths();
+}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
 abstract class EventBridge implements RustOpaqueInterface {
@@ -114,10 +88,6 @@ abstract class LogBridge implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ModuleHandle>>
 abstract class ModuleHandle implements RustOpaqueInterface {
-  BigInt get id;
-
-  set id(BigInt id);
-
   /// 信封级调用：Dart 侧传 EnvelopeRequest 编码字节，宿主解包→路由→封包返回
   Future<Uint8List> callEnvelope({required List<int> requestBytes});
 
@@ -176,4 +146,64 @@ abstract class TaskBridge implements RustOpaqueInterface {
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
+}
+
+class CoreInitResult {
+  final int schemaVersion;
+  final String dbPath;
+  final String dataDir;
+  final String filesDir;
+  final String cacheDir;
+
+  const CoreInitResult({
+    required this.schemaVersion,
+    required this.dbPath,
+    required this.dataDir,
+    required this.filesDir,
+    required this.cacheDir,
+  });
+
+  @override
+  int get hashCode =>
+      schemaVersion.hashCode ^
+      dbPath.hashCode ^
+      dataDir.hashCode ^
+      filesDir.hashCode ^
+      cacheDir.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CoreInitResult &&
+          runtimeType == other.runtimeType &&
+          schemaVersion == other.schemaVersion &&
+          dbPath == other.dbPath &&
+          dataDir == other.dataDir &&
+          filesDir == other.filesDir &&
+          cacheDir == other.cacheDir;
+}
+
+class CoreWritesMarker {
+  final String domain;
+  final PlatformInt64 firstWriteAt;
+  final String? snapshotId;
+
+  const CoreWritesMarker({
+    required this.domain,
+    required this.firstWriteAt,
+    this.snapshotId,
+  });
+
+  @override
+  int get hashCode =>
+      domain.hashCode ^ firstWriteAt.hashCode ^ snapshotId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CoreWritesMarker &&
+          runtimeType == other.runtimeType &&
+          domain == other.domain &&
+          firstWriteAt == other.firstWriteAt &&
+          snapshotId == other.snapshotId;
 }
