@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
@@ -47,7 +47,7 @@ use crate::db::DbHandle;
 use crate::dto::ChannelKey;
 use crate::error::Error;
 
-use super::pack::{ChannelPack, PackIconSource};
+use super::pack::{validate_channel_key, ChannelPack, PackIconSource};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
@@ -98,6 +98,8 @@ pub enum PackError {
     TooLarge(String),
     /// The zip file name cannot produce a valid legacy channel key.
     InvalidKey(String),
+    /// No installed pack exists for the requested key.
+    NotFound(String),
     /// Filesystem failure; the temp directory and any partial install are gone.
     Io(String),
     /// SQLite failure; the previous pack and row are untouched.
@@ -118,6 +120,7 @@ impl PackError {
             Self::InvalidMeta(_) => "pack_invalid_meta",
             Self::TooLarge(_) => "pack_too_large",
             Self::InvalidKey(_) => "pack_invalid_key",
+            Self::NotFound(_) => "pack_not_found",
             Self::Io(_) => "io",
             Self::Db(_) => "db",
             Self::Internal(_) => "internal",
@@ -135,6 +138,7 @@ impl PackError {
             | Self::InvalidMeta(message)
             | Self::TooLarge(message)
             | Self::InvalidKey(message)
+            | Self::NotFound(message)
             | Self::Io(message)
             | Self::Db(message)
             | Self::Internal(message) => message,
@@ -288,6 +292,143 @@ impl PackStore {
             dir: target,
             pack: inspected.pack,
         })
+    }
+
+    /// Reads the currently installed pack row for `key`.
+    ///
+    /// Returns [`PackError::NotFound`] when no row exists.
+    pub fn installed_pack(
+        &self,
+        key: &ChannelKey,
+    ) -> Result<(String, i64, PathBuf), PackError> {
+        validate_channel_key(key).map_err(|error| {
+            PackError::InvalidKey(error.message().to_string())
+        })?;
+        let conn = self
+            .db
+            .reader()
+            .map_err(|error| PackError::Db(error.to_string()))?;
+        let row = conn
+            .query_row(
+                "SELECT pack_hash, installed_at FROM channel_packs WHERE key=?1",
+                [key.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| PackError::Db(error.to_string()))?;
+        let Some((pack_hash, installed_at)) = row else {
+            return Err(PackError::NotFound(format!(
+                "pack not installed: {key}"
+            )));
+        };
+        let dir = self.root.join(key.as_str()).join(&pack_hash);
+        if !dir.is_dir() {
+            return Err(PackError::NotFound(format!(
+                "pack files missing: {key} ({})",
+                dir.display()
+            )));
+        }
+        Ok((pack_hash, installed_at, dir))
+    }
+
+    /// Exports an installed pack as a legacy flat zip at `dest`.
+    ///
+    /// The archive contains exactly the versioned install directory contents
+    /// (`entry.js`, optional `detail.js`/`meta.json`, and `icons/...`). The
+    /// export is written to a sibling temp file and renamed into place, so a
+    /// failed export never leaves a partial destination. Returns the number of
+    /// bytes written.
+    pub fn export_pack(
+        &self,
+        key: &ChannelKey,
+        dest: impl AsRef<Path>,
+    ) -> Result<u64, PackError> {
+        let (_hash, _installed_at, dir) = self.installed_pack(key)?;
+        let dest = dest.as_ref();
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                PackError::Io(format!("create export dir {}: {error}", parent.display()))
+            })?;
+        }
+        let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temp = dest.with_file_name(format!(
+            ".tmp-export-{}-{n}.zip",
+            std::process::id()
+        ));
+        let result = (|| -> Result<u64, PackError> {
+            let file = File::create(&temp).map_err(|error| {
+                PackError::Io(format!("create export {}: {error}", temp.display()))
+            })?;
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for entry in collect_pack_files(&dir)? {
+                let name = entry
+                    .strip_prefix(&dir)
+                    .map_err(|_| {
+                        PackError::Io("export entry escaped pack root".to_string())
+                    })?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes = fs::read(&entry).map_err(|error| {
+                    PackError::Io(format!("read export entry {}: {error}", entry.display()))
+                })?;
+                writer.start_file(name, options).map_err(|error| {
+                    PackError::Io(format!("zip entry {}: {error}", entry.display()))
+                })?;
+                writer.write_all(&bytes).map_err(|error| {
+                    PackError::Io(format!("zip write {}: {error}", entry.display()))
+                })?;
+            }
+            let file = writer
+                .finish()
+                .map_err(|error| PackError::Io(format!("finish export zip: {error}")))?;
+            file.sync_all().map_err(|error| {
+                PackError::Io(format!("fsync export {}: {error}", temp.display()))
+            })?;
+            drop(file);
+            fs::rename(&temp, dest).map_err(|error| {
+                PackError::Io(format!(
+                    "rename export {} -> {}: {error}",
+                    temp.display(),
+                    dest.display()
+                ))
+            })?;
+            Ok(fs::metadata(dest)
+                .map_err(|error| PackError::Io(format!("stat export: {error}")))?
+                .len())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    }
+
+    /// Removes an installed pack (row first, then version directories).
+    ///
+    /// Returns [`PackError::NotFound`] when no pack is installed for `key`.
+    pub fn remove_pack(&self, key: &ChannelKey) -> Result<(), PackError> {
+        self.installed_pack(key)?;
+        let mut conn = self
+            .db
+            .writer()
+            .map_err(|error| PackError::Db(error.to_string()))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| PackError::Db(error.to_string()))?;
+        tx.execute("DELETE FROM channel_packs WHERE key=?1", [key.as_str()])
+            .map_err(|error| PackError::Db(error.to_string()))?;
+        tx.commit().map_err(|error| PackError::Db(error.to_string()))?;
+        let key_dir = self.root.join(key.as_str());
+        if key_dir.exists() {
+            fs::remove_dir_all(&key_dir).map_err(|error| {
+                PackError::Io(format!(
+                    "remove pack dir {}: {error}",
+                    key_dir.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     fn upsert_row(
@@ -556,6 +697,32 @@ impl Drop for TempInstall {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
+}
+
+fn collect_pack_files(dir: &Path) -> Result<Vec<PathBuf>, PackError> {
+    let mut files = Vec::new();
+    collect_pack_files_into(dir, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_pack_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), PackError> {
+    let entries = fs::read_dir(dir)
+        .map_err(|error| PackError::Io(format!("read pack dir {}: {error}", dir.display())))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| PackError::Io(format!("read pack dir entry: {error}")))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| PackError::Io(format!("stat pack entry: {error}")))?;
+        if file_type.is_dir() {
+            collect_pack_files_into(&path, files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn legacy_key_from_path(path: &Path) -> Result<ChannelKey, PackError> {

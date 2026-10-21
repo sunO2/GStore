@@ -1127,3 +1127,1465 @@ mod core_api_tests {
     }
 }
 
+
+
+// ===========================================================================
+// ChannelApi (Todo 13)
+// ===========================================================================
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use gstore_core::channel::{
+    validate_channel_key, ChannelCategory, ChannelDriver, ChannelRegistry,
+    FdroidDriver, GitHubDriver, InstalledPack, LocalDbDriver, PackError, PackStore,
+    SqliteChannelStore, VivoDriver,
+};
+use gstore_core::db::DbHandle;
+use gstore_core::dto::{
+    AppDetail, AppDownload, AppSummary, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
+};
+use gstore_core::ports::{
+    validate_secret_key, CachedMetadataPort, CoreConfig, FileSecretPort, FileSecretStore,
+    HttpOptions, HttpPort, MetadataPort, PackageMetadata, RepoPort,
+};
+use gstore_core::Error as CoreError;
+use gstore_core::channel_migration::is_sensitive_key;
+
+fn core_err(error: CoreError) -> String {
+    format!("{}: {}", error.code(), error.message())
+}
+
+fn pack_err(error: PackError) -> String {
+    format!("{}: {}", error.code(), error.message())
+}
+
+fn invalid_arg(message: impl Into<String>) -> String {
+    core_err(CoreError::InvalidArgument(message.into()))
+}
+
+/// One registered channel exposed to Dart.
+#[derive(Debug, Clone)]
+pub struct ChannelEntry {
+    /// Stable key (`local_db`, `github`, `js_pingan`, ...).
+    pub key: String,
+    /// Implementation kind code.
+    pub kind: String,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub priority: i32,
+    pub support_offline: bool,
+    pub last_update_time: Option<i64>,
+    pub version: Option<String>,
+}
+
+impl From<gstore_core::channel::ChannelRecord> for ChannelEntry {
+    fn from(record: gstore_core::channel::ChannelRecord) -> Self {
+        Self {
+            key: record.key.as_str().to_string(),
+            kind: record.kind().as_code().to_string(),
+            name: record.meta.name,
+            description: record.meta.description,
+            enabled: record.meta.enabled,
+            priority: record.meta.priority,
+            support_offline: record.meta.support_offline,
+            last_update_time: record.meta.last_update_time,
+            version: record.meta.version,
+        }
+    }
+}
+
+/// Input accepted by [`ChannelApi::register`].
+#[derive(Debug, Clone)]
+pub struct ChannelRegistration {
+    pub key: String,
+    pub kind: String,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub priority: i32,
+    pub support_offline: bool,
+    pub version: Option<String>,
+}
+
+/// One app summary crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct ChannelAppInfo {
+    pub app_id: String,
+    pub package_name: Option<String>,
+    pub name: String,
+    pub user: String,
+    pub repositories: String,
+    pub icon: String,
+    pub des: String,
+    pub readme: Option<String>,
+    pub category: Vec<String>,
+    pub extra_json: Option<String>,
+}
+
+impl ChannelAppInfo {
+    fn from_summary(app: AppSummary) -> Self {
+        Self {
+            app_id: app.app_id,
+            package_name: app.package_name,
+            name: app.name,
+            user: app.user,
+            repositories: app.repositories,
+            icon: app.icon,
+            des: app.des,
+            readme: app.readme,
+            category: app.category.unwrap_or_default(),
+            extra_json: app.extra.map(|extra| serde_json::Value::Object(extra).to_string()),
+        }
+    }
+
+    fn into_summary(self) -> Result<AppSummary, String> {
+        let extra = match self.extra_json {
+            Some(raw) if !raw.trim().is_empty() => {
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?;
+                Some(value.as_object().cloned().ok_or_else(|| {
+                    core_err(CoreError::Serialization(
+                        "extra_json must be a JSON object".to_string(),
+                    ))
+                })?)
+            }
+            _ => None,
+        };
+        Ok(AppSummary {
+            app_id: self.app_id,
+            package_name: self.package_name,
+            name: self.name,
+            user: self.user,
+            repositories: self.repositories,
+            icon: self.icon,
+            des: self.des,
+            readme: self.readme,
+            category: if self.category.is_empty() {
+                None
+            } else {
+                Some(self.category)
+            },
+            extra,
+        })
+    }
+}
+
+/// One download candidate in an app detail payload.
+#[derive(Debug, Clone)]
+pub struct ChannelAppDownloadInfo {
+    pub url: String,
+    pub name: String,
+    pub size: Option<i64>,
+    pub download_count: Option<i64>,
+    pub version: Option<String>,
+    pub version_code: Option<i64>,
+    pub published_at: Option<i64>,
+    pub platform: Option<String>,
+    pub hash: Option<String>,
+    pub hash_type: Option<String>,
+    pub downloadable: bool,
+    pub note: Option<String>,
+    pub extra_json: Option<String>,
+}
+
+impl From<AppDownload> for ChannelAppDownloadInfo {
+    fn from(download: AppDownload) -> Self {
+        Self {
+            url: download.url,
+            name: download.name,
+            size: download.size,
+            download_count: download.download_count,
+            version: download.version,
+            version_code: download.version_code,
+            published_at: download.published_at,
+            platform: download.platform,
+            hash: download.hash,
+            hash_type: download.hash_type,
+            downloadable: download.downloadable,
+            note: download.note,
+            extra_json: download.extra.map(|extra| serde_json::Value::Object(extra).to_string()),
+        }
+    }
+}
+
+/// Full app detail crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct ChannelAppDetailInfo {
+    pub app_id: String,
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub developer: Option<String>,
+    pub package_name: Option<String>,
+    pub project_url: Option<String>,
+    pub channel: String,
+    pub sections: Vec<String>,
+    pub downloads: Vec<ChannelAppDownloadInfo>,
+    pub extra_json: String,
+}
+
+fn section_code(section: DetailSection) -> &'static str {
+    match section {
+        DetailSection::Version => "version",
+        DetailSection::Statistics => "statistics",
+        DetailSection::Screenshots => "screenshots",
+        DetailSection::Readme => "readme",
+        DetailSection::Downloads => "downloads",
+        DetailSection::Rating => "rating",
+        DetailSection::Developer => "developer",
+        DetailSection::Changelog => "changelog",
+        DetailSection::Permissions => "permissions",
+    }
+}
+
+impl From<AppDetail> for ChannelAppDetailInfo {
+    fn from(detail: AppDetail) -> Self {
+        Self {
+            app_id: detail.app_id,
+            name: detail.name,
+            icon: detail.icon,
+            description: detail.description,
+            version: detail.version,
+            developer: detail.developer,
+            package_name: detail.package_name,
+            project_url: detail.project_url,
+            channel: detail.channel.as_code().to_string(),
+            sections: detail
+                .sections
+                .into_iter()
+                .map(|section| section_code(section).to_string())
+                .collect(),
+            downloads: detail
+                .downloads
+                .into_iter()
+                .map(ChannelAppDownloadInfo::from)
+                .collect(),
+            extra_json: serde_json::Value::Object(detail.extra).to_string(),
+        }
+    }
+}
+
+/// One channel category.
+#[derive(Debug, Clone)]
+pub struct ChannelCategoryInfo {
+    pub id: String,
+    pub description: String,
+    pub icon: String,
+}
+
+impl From<ChannelCategory> for ChannelCategoryInfo {
+    fn from(category: ChannelCategory) -> Self {
+        Self {
+            id: category.id,
+            description: category.description,
+            icon: category.icon,
+        }
+    }
+}
+
+/// Channel `app_config` row.
+#[derive(Debug, Clone)]
+pub struct ChannelConfigInfo {
+    pub version: String,
+    pub proxy: Option<String>,
+}
+
+/// One imported local pack.
+#[derive(Debug, Clone)]
+pub struct ChannelPackInfo {
+    pub key: String,
+    pub pack_hash: String,
+    pub installed_at: i64,
+    pub dir: String,
+}
+
+impl From<InstalledPack> for ChannelPackInfo {
+    fn from(pack: InstalledPack) -> Self {
+        Self {
+            key: pack.key.as_str().to_string(),
+            pack_hash: pack.pack_hash,
+            installed_at: pack.installed_at,
+            dir: pack.dir.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+/// Host `MetadataPort`: reads the GStore metadata repository fallback.
+struct HttpMetadataPort {
+    http: Arc<dyn HttpPort>,
+}
+
+impl HttpMetadataPort {
+    fn new(http: Arc<dyn HttpPort>) -> Self {
+        Self { http }
+    }
+}
+
+impl MetadataPort for HttpMetadataPort {
+    fn fetch(&self, owner: &str, repo: &str) -> Result<Option<PackageMetadata>, CoreError> {
+        if owner.trim().is_empty() || repo.trim().is_empty() {
+            return Err(CoreError::InvalidArgument(
+                "owner and repo must not be empty".to_string(),
+            ));
+        }
+        let url = format!(
+            "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/{owner}@{repo}/info.json"
+        );
+        let options = HttpOptions::new()
+            .with_header("User-Agent", "GStore-App/1.0")
+            .with_timeout(std::time::Duration::from_secs(8));
+        let response = match self.http.get(&url, &options) {
+            Ok(response) => response,
+            // Dart MetadataRepository treats transport failures as a miss.
+            Err(_) => return Ok(None),
+        };
+        if response.status != 200 || response.body.is_empty() {
+            return Ok(None);
+        }
+        let value: serde_json::Value = match serde_json::from_slice(&response.body) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let Some(object) = value.as_object() else {
+            return Ok(None);
+        };
+        let package_name = object
+            .get("packageName")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        let app_name = object
+            .get("appName")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let icon_url = object
+            .get("icon")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|icon| {
+                format!("https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/{icon}")
+            })
+            .or_else(|| {
+                Some(format!(
+                    "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/{owner}@{repo}/icon.png"
+                ))
+            });
+        Ok(Some(PackageMetadata {
+            package_name,
+            app_name,
+            icon_url,
+        }))
+    }
+}
+
+/// Host `RepoPort` adapter over the optional `gstore_mod_repo` module.
+///
+/// The module is mounted by Dart; until it is, every operation is a typed
+/// [`CoreError::Unsupported`] instead of a panic. The instance is created lazily
+/// on first use so ChannelApi init never performs module I/O.
+struct HostRepoPort {
+    db_path: PathBuf,
+    data_dir: PathBuf,
+    port: std::sync::Mutex<Option<crate::repo_port::ModuleRepoPort<crate::repo_port::ModuleManagerBridge>>>,
+}
+
+impl HostRepoPort {
+    fn new(data_dir: impl AsRef<Path>) -> Self {
+        let data_dir = data_dir.as_ref().to_path_buf();
+        Self {
+            db_path: data_dir.join("repo.db"),
+            data_dir,
+            port: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn with_port<T>(
+        &self,
+        f: impl FnOnce(&crate::repo_port::ModuleRepoPort<crate::repo_port::ModuleManagerBridge>) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let mut guard = self
+            .port
+            .lock()
+            .map_err(|_| CoreError::Internal("repo port lock poisoned".to_string()))?;
+        if guard.is_none() {
+            let manager = crate::manager::ModuleManager::global();
+            let module_id = manager.module_id_by_name("repo").ok_or_else(|| {
+                CoreError::Unsupported(
+                    "repo module is not mounted (F-Droid operations unavailable until it is)".to_string(),
+                )
+            })?;
+            let config = serde_json::json!({
+                "db_path": self.db_path.to_string_lossy(),
+                "data_dir": self.data_dir.to_string_lossy(),
+            });
+            let bytes = serde_json::to_vec(&config)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?;
+            let instance = manager
+                .call_create(module_id, &bytes)
+                .map_err(|error| CoreError::Internal(format!("repo module create: {error}")))?;
+            *guard = Some(crate::repo_port::ModuleRepoPort::new(
+                crate::repo_port::ModuleManagerBridge::new(module_id, instance),
+                self.db_path.clone(),
+            ));
+        }
+        let port = guard.as_ref().ok_or_else(|| {
+            CoreError::Internal("repo port was not initialized".to_string())
+        })?;
+        f(port)
+    }
+}
+
+impl RepoPort for HostRepoPort {
+    fn download_repo(
+        &self,
+        source: &str,
+    ) -> Result<gstore_core::ports::RepoMeta, CoreError> {
+        self.with_port(|port| port.download_repo(source))
+    }
+
+    fn get_app_count(&self, source: &str) -> Result<u64, CoreError> {
+        self.with_port(|port| port.get_app_count(source))
+    }
+
+    fn search_apps(
+        &self,
+        source: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<gstore_core::ports::RepoApp>, CoreError> {
+        self.with_port(|port| port.search_apps(source, query, limit))
+    }
+
+    fn get_repo_meta(
+        &self,
+        source: &str,
+    ) -> Result<Option<gstore_core::ports::RepoMeta>, CoreError> {
+        self.with_port(|port| port.get_repo_meta(source))
+    }
+
+    fn clear_apps(&self, source: &str) -> Result<(), CoreError> {
+        self.with_port(|port| port.clear_apps(source))
+    }
+
+    fn get_one_app(
+        &self,
+        source: &str,
+        package_name: &str,
+    ) -> Result<Option<gstore_core::ports::RepoApp>, CoreError> {
+        self.with_port(|port| port.get_one_app(source, package_name))
+    }
+
+    fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+}
+
+struct ChannelApiInner {
+    db: DbHandle,
+    registry: Arc<ChannelRegistry<SqliteChannelStore>>,
+    pack: PackStore,
+    secrets: FileSecretStore,
+    config: CoreConfig,
+    http: Arc<dyn HttpPort>,
+    metadata: Arc<dyn MetadataPort>,
+    repo: Arc<dyn RepoPort>,
+}
+
+/// FRB-facing channel facade. The old Dart `ChannelManager` remains
+/// authoritative while `CoreFlags.channels == false`; this API is opt-in.
+#[frb(opaque)]
+pub struct ChannelApi {
+    inner: Arc<ChannelApiInner>,
+}
+
+fn default_meta(key: &str) -> Option<ChannelMeta> {
+    let meta = |kind, name: &str, description: &str, priority, support_offline| ChannelMeta {
+        kind,
+        name: name.to_string(),
+        description: description.to_string(),
+        enabled: true,
+        priority,
+        support_offline,
+        last_update_time: None,
+        version: None,
+    };
+    match key {
+        "local_db" => Some(meta(
+            ChannelKind::LocalDb,
+            "LocalDB",
+            "本地数据库渠道",
+            1,
+            true,
+        )),
+        "github" => Some(meta(ChannelKind::Github, "GitHubAPI", "GitHub API 渠道", 2, false)),
+        "vivo" => Some(meta(ChannelKind::Vivo, "vivo", "vivo 应用市场", 4, false)),
+        "fdroid" => Some(meta(
+            ChannelKind::Fdroid,
+            "F-Droid",
+            "F-Droid 开源应用市场",
+            5,
+            false,
+        )),
+        _ => None,
+    }
+}
+
+impl ChannelApi {
+    /// Initializes the facade with the same directory shape as `CoreApi`.
+    ///
+    /// Safe to call more than once against the same directories: registry rows
+    /// and drivers are re-registered idempotently. No feature flag is armed.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<ChannelApi, String> {
+        let http: Arc<dyn HttpPort> = Arc::new(crate::http_port::ReqwestHttpPort::new());
+        let metadata: Arc<dyn MetadataPort> =
+            Arc::new(CachedMetadataPort::new(HttpMetadataPort::new(http.clone())));
+        let repo: Arc<dyn RepoPort> = Arc::new(HostRepoPort::new(&data_dir));
+        Self::init_inner(data_dir, files_dir, cache_dir, http, metadata, repo)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn init_with_ports(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        http: Arc<dyn HttpPort>,
+        metadata: Arc<dyn MetadataPort>,
+        repo: Arc<dyn RepoPort>,
+    ) -> Result<ChannelApi, String> {
+        Self::init_inner(data_dir, files_dir, cache_dir, http, metadata, repo)
+    }
+
+    fn init_inner(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        http: Arc<dyn HttpPort>,
+        metadata: Arc<dyn MetadataPort>,
+        repo: Arc<dyn RepoPort>,
+    ) -> Result<ChannelApi, String> {
+        for dir in [&data_dir, &files_dir, &cache_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("io: create dir {dir}: {error}"))?;
+        }
+        let data_path = Path::new(&data_dir);
+        let files_path = Path::new(&files_dir);
+        let db = DbHandle::open(data_path).map_err(|error| core_err(CoreError::Io(error.0)))?;
+        let secrets = FileSecretStore::new(files_path.join("secrets"));
+        let token = secrets
+            .get("core_config.github_token")
+            .map_err(core_err)?;
+        let config = CoreConfig::new(None, token).map_err(core_err)?;
+        let registry = Arc::new(ChannelRegistry::new(SqliteChannelStore::new(db.clone())));
+        let pack = PackStore::new(files_path.join("channel_packs"), db.clone());
+        let api = ChannelApi {
+            inner: Arc::new(ChannelApiInner {
+                db,
+                registry,
+                pack,
+                secrets,
+                config,
+                http,
+                metadata,
+                repo,
+            }),
+        };
+        api.seed_builtin_records()?;
+        api.bind_registry_drivers()?;
+        Ok(api)
+    }
+
+    fn seed_builtin_records(&self) -> Result<(), String> {
+        for key in ["local_db", "github", "vivo", "fdroid"] {
+            let channel_key = ChannelKey::new(key).map_err(core_err)?;
+            if self
+                .inner
+                .registry
+                .get(&channel_key)
+                .map_err(core_err)?
+                .is_none()
+            {
+                let meta = default_meta(key).expect("built-in metadata");
+                self.inner
+                    .registry
+                    .register(gstore_core::channel::ChannelRecord::new(channel_key, meta))
+                    .map_err(core_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn driver_for(
+        &self,
+        record: &gstore_core::channel::ChannelRecord,
+    ) -> Result<Option<Arc<dyn ChannelDriver>>, String> {
+        let key = record.key.clone();
+        let meta = record.meta.clone();
+        let driver: Option<Arc<dyn ChannelDriver>> = match record.kind() {
+            ChannelKind::LocalDb => Some(Arc::new(
+                LocalDbDriver::new(key, meta.clone(), self.inner.db.clone())
+                    .with_metadata(self.inner.metadata.clone()),
+            )),
+            ChannelKind::Github => Some(Arc::new(GitHubDriver::new(
+                key,
+                meta,
+                self.inner.db.clone(),
+                self.inner.config.clone(),
+                self.inner.http.clone(),
+                self.inner.metadata.clone(),
+            ))),
+            ChannelKind::Vivo => Some(Arc::new(VivoDriver::new(
+                key,
+                meta,
+                self.inner.db.clone(),
+                self.inner.config.clone(),
+                self.inner.http.clone(),
+            ))),
+            ChannelKind::Fdroid => Some(Arc::new(FdroidDriver::new(
+                key,
+                meta,
+                self.inner.db.clone(),
+                self.inner.config.clone(),
+                self.inner.repo.clone(),
+            ))),
+            ChannelKind::Http | ChannelKind::Custom | ChannelKind::JsLocal => None,
+        };
+        Ok(driver)
+    }
+
+    fn bind_registry_drivers(&self) -> Result<(), String> {
+        for record in self.inner.registry.list().map_err(core_err)? {
+            if let Some(driver) = self.driver_for(&record)? {
+                self.inner
+                    .registry
+                    .register_driver(driver)
+                    .map_err(core_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn channel_key(&self, key: &str) -> Result<ChannelKey, String> {
+        ChannelKey::new(key).map_err(core_err)
+    }
+
+    fn require_channel(&self, key: &str) -> Result<ChannelKey, String> {
+        let key = self.channel_key(key)?;
+        if self
+            .inner
+            .registry
+            .get(&key)
+            .map_err(core_err)?
+            .is_none()
+        {
+            return Err(core_err(CoreError::NotFound(format!(
+                "channel not registered: {key}"
+            ))));
+        }
+        Ok(key)
+    }
+
+    fn record(&self, key: &str) -> Result<ChannelEntry, String> {
+        let key = self.require_channel(key)?;
+        self.inner
+            .registry
+            .get(&key)
+            .map_err(core_err)?
+            .map(ChannelEntry::from)
+            .ok_or_else(|| {
+                core_err(CoreError::NotFound(format!(
+                    "channel not registered: {key}"
+                )))
+            })
+    }
+
+    fn driver(&self, key: &str) -> Result<Arc<dyn ChannelDriver>, String> {
+        let key = self.require_channel(key)?;
+        self.inner.registry.driver(&key).map_err(core_err)
+    }
+
+    /// Lists every registered channel in deterministic key order.
+    pub fn list(&self) -> Result<Vec<ChannelEntry>, String> {
+        self.inner
+            .registry
+            .list()
+            .map_err(core_err)
+            .map(|records| records.into_iter().map(ChannelEntry::from).collect())
+    }
+
+    /// Reads one registered channel.
+    pub fn get(&self, key: String) -> Result<ChannelEntry, String> {
+        self.record(&key)
+    }
+
+    /// Registers (or idempotently re-registers) a channel and binds a real
+    /// built-in driver when the kind maps to one.
+    pub fn register(&self, registration: ChannelRegistration) -> Result<ChannelEntry, String> {
+        let key = ChannelKey::new(registration.key.clone()).map_err(core_err)?;
+        validate_channel_key(&key).map_err(core_err)?;
+        let kind = ChannelKind::from_code(&registration.kind).map_err(core_err)?;
+        let meta = ChannelMeta {
+            kind,
+            name: registration.name,
+            description: registration.description,
+            enabled: registration.enabled,
+            priority: registration.priority,
+            support_offline: registration.support_offline,
+            last_update_time: None,
+            version: registration.version,
+        };
+        let record = gstore_core::channel::ChannelRecord::new(key.clone(), meta.clone());
+        match kind {
+            ChannelKind::LocalDb
+            | ChannelKind::Github
+            | ChannelKind::Vivo
+            | ChannelKind::Fdroid => {
+                let driver = self
+                    .driver_for(&record)?
+                    .expect("built-in kind has a driver");
+                self.inner
+                    .registry
+                    .register_driver(driver)
+                    .map_err(core_err)?;
+            }
+            ChannelKind::Http | ChannelKind::Custom | ChannelKind::JsLocal => {
+                self.inner.registry.register(record).map_err(core_err)?;
+            }
+        }
+        self.record(key.as_str())
+    }
+
+    /// Removes a channel registration and its driver binding.
+    pub fn unregister(&self, key: String) -> Result<(), String> {
+        let key = self.require_channel(&key)?;
+        self.inner.registry.unregister(&key).map_err(core_err)
+    }
+
+    /// Enables a registered channel.
+    pub fn enable(&self, key: String) -> Result<ChannelEntry, String> {
+        let key = self.require_channel(&key)?;
+        self.inner.registry.enable(&key).map_err(core_err)?;
+        self.record(key.as_str())
+    }
+
+    /// Disables a registered channel without removing it.
+    pub fn disable(&self, key: String) -> Result<ChannelEntry, String> {
+        let key = self.require_channel(&key)?;
+        self.inner.registry.disable(&key).map_err(core_err)?;
+        self.record(key.as_str())
+    }
+
+    /// Imports a legacy flat pack from `zip_path`.
+    pub fn import_pack(&self, path: String) -> Result<ChannelPackInfo, String> {
+        if path.trim().is_empty() {
+            return Err(invalid_arg("pack path must not be empty"));
+        }
+        self.inner
+            .pack
+            .import_pack(&path)
+            .map(ChannelPackInfo::from)
+            .map_err(pack_err)
+    }
+
+    /// Exports an installed pack as a flat zip at `path`; returns bytes written.
+    pub fn export_pack(&self, key: String, path: String) -> Result<u64, String> {
+        if path.trim().is_empty() {
+            return Err(invalid_arg("export path must not be empty"));
+        }
+        let key = self.channel_key(&key)?;
+        self.inner.pack.export_pack(&key, &path).map_err(pack_err)
+    }
+
+    /// Removes an installed pack (row plus version directories).
+    pub fn remove_pack(&self, key: String) -> Result<bool, String> {
+        let key = self.channel_key(&key)?;
+        self.inner
+            .pack
+            .remove_pack(&key)
+            .map(|()| true)
+            .map_err(pack_err)
+    }
+
+    fn secret_key(&self, key: &ChannelKey, name: &str) -> String {
+        format!("channel.{}.{}", key.as_str(), name)
+    }
+
+    fn read_plain_env(&self, key: &ChannelKey) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let conn = self.inner.db.reader().map_err(|error| core_err(CoreError::Io(error.0)))?;
+        let raw: Option<String> = rusqlite::OptionalExtension::optional(
+            conn.query_row(
+                "SELECT env_json FROM channel_env WHERE channel_key=?1",
+                [key.as_str()],
+                |row| row.get(0),
+            ),
+        )
+        .map_err(|error| core_err(CoreError::Io(error.to_string())))?;
+        match raw {
+            None => Ok(serde_json::Map::new()),
+            Some(raw) if raw.trim().is_empty() => Ok(serde_json::Map::new()),
+            Some(raw) => {
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    core_err(CoreError::Serialization(format!(
+                        "channel env is not valid JSON: {error}"
+                    )))
+                })?;
+                value.as_object().cloned().ok_or_else(|| {
+                    core_err(CoreError::Serialization(
+                        "channel env must be a JSON object".to_string(),
+                    ))
+                })
+            }
+        }
+    }
+
+    fn write_plain_env(
+        &self,
+        key: &ChannelKey,
+        env: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let json = serde_json::Value::Object(env.clone()).to_string();
+        self.inner
+            .db
+            .with_writer(|conn| {
+                conn.execute(
+                    "INSERT INTO channel_env(channel_key, env_json, imported_at) \
+                     VALUES (?1, ?2, strftime('%s','now')) \
+                     ON CONFLICT(channel_key) DO UPDATE SET \
+                         env_json = excluded.env_json, imported_at = excluded.imported_at",
+                    rusqlite::params![key.as_str(), json],
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+                Ok(())
+            })
+            .map_err(|error| core_err(CoreError::Io(error.0)))
+    }
+
+    fn validate_env_name(&self, name: &str) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err(invalid_arg("env name must not be empty"));
+        }
+        validate_secret_key(name).map_err(core_err)
+    }
+
+    /// Reads one env value. Sensitive names come from the secret port; other
+    /// names come from the plaintext `channel_env` row.
+    pub fn env_get(&self, key: String, name: String) -> Result<Option<String>, String> {
+        let key = self.require_channel(&key)?;
+        self.validate_env_name(&name)?;
+        if is_sensitive_key(&name) {
+            let secret = self
+                .inner
+                .secrets
+                .get(&self.secret_key(&key, &name))
+                .map_err(core_err)?;
+            if secret.is_some() {
+                return Ok(secret);
+            }
+        }
+        let env = self.read_plain_env(&key)?;
+        Ok(env.get(&name).and_then(|value| match value {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Null => None,
+            other => Some(other.to_string()),
+        }))
+    }
+
+    /// Writes one env value, routing sensitive names to the secret port.
+    pub fn env_set(&self, key: String, name: String, value: String) -> Result<(), String> {
+        let key = self.require_channel(&key)?;
+        self.validate_env_name(&name)?;
+        let mut env = self.read_plain_env(&key)?;
+        if is_sensitive_key(&name) {
+            env.remove(&name);
+            self.write_plain_env(&key, &env)?;
+            self.inner
+                .secrets
+                .set(&self.secret_key(&key, &name), &value)
+                .map_err(core_err)?;
+        } else {
+            env.insert(name.clone(), serde_json::Value::String(value));
+            self.write_plain_env(&key, &env)?;
+            self.inner
+                .secrets
+                .remove(&self.secret_key(&key, &name))
+                .map_err(core_err)?;
+        }
+        Ok(())
+    }
+
+    /// Removes one env value from both the plaintext row and the secret port.
+    pub fn env_remove(&self, key: String, name: String) -> Result<bool, String> {
+        let key = self.require_channel(&key)?;
+        self.validate_env_name(&name)?;
+        let mut env = self.read_plain_env(&key)?;
+        let plain_removed = env.remove(&name).is_some();
+        if plain_removed {
+            self.write_plain_env(&key, &env)?;
+        }
+        let secret_removed = self
+            .inner
+            .secrets
+            .remove(&self.secret_key(&key, &name))
+            .map_err(core_err)?;
+        Ok(plain_removed || secret_removed)
+    }
+
+    /// Runs the channel's update loop (`do_update`).
+    pub fn refresh(&self, key: String) -> Result<bool, String> {
+        self.driver(&key)?
+            .do_update(None)
+            .map_err(core_err)
+    }
+
+    /// Searches one channel by keyword.
+    pub fn search(
+        &self,
+        key: String,
+        keyword: String,
+        force_refresh: bool,
+    ) -> Result<Vec<ChannelAppInfo>, String> {
+        self.driver(&key)?
+            .search_apps(&keyword, force_refresh)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(ChannelAppInfo::from_summary).collect())
+    }
+
+    /// Reads one app summary.
+    pub fn get_app_info(
+        &self,
+        key: String,
+        app_id: String,
+        force_refresh: bool,
+    ) -> Result<ChannelAppInfo, String> {
+        self.driver(&key)?
+            .get_app_info(&app_id, force_refresh)
+            .map_err(core_err)
+            .map(ChannelAppInfo::from_summary)
+    }
+
+    /// Reads one app detail page.
+    pub fn get_app_detail(
+        &self,
+        key: String,
+        app_id: String,
+        force_refresh: bool,
+    ) -> Result<ChannelAppDetailInfo, String> {
+        self.driver(&key)?
+            .get_app_detail(&app_id, force_refresh)
+            .map_err(core_err)
+            .map(ChannelAppDetailInfo::from)
+    }
+
+    /// Adds/saves an app through the channel driver.
+    pub fn add_app(&self, key: String, app: ChannelAppInfo) -> Result<(), String> {
+        let app = app.into_summary()?;
+        self.driver(&key)?.add_app(&app).map_err(core_err)
+    }
+
+    /// Removes an app from the channel.
+    pub fn remove_app(&self, key: String, app_id: String) -> Result<(), String> {
+        self.driver(&key)?
+            .remove_app(&app_id)
+            .map_err(core_err)
+    }
+
+    /// Searches one channel by category id.
+    pub fn search_by_category(
+        &self,
+        key: String,
+        category_id: String,
+        force_refresh: bool,
+    ) -> Result<Vec<ChannelAppInfo>, String> {
+        self.driver(&key)?
+            .search_by_category(&category_id, force_refresh)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(ChannelAppInfo::from_summary).collect())
+    }
+
+    /// Lists the channel's categories.
+    pub fn get_all_categories(
+        &self,
+        key: String,
+        force_refresh: bool,
+    ) -> Result<Vec<ChannelCategoryInfo>, String> {
+        self.driver(&key)?
+            .get_all_categories(force_refresh)
+            .map_err(core_err)
+            .map(|categories| categories.into_iter().map(ChannelCategoryInfo::from).collect())
+    }
+
+    /// Returns the driver's canonical app id.
+    pub fn canonical_app_id(
+        &self,
+        key: String,
+        app: ChannelAppInfo,
+    ) -> Result<String, String> {
+        let app = app.into_summary()?;
+        self.driver(&key)?
+            .canonical_app_id(&app)
+            .map_err(core_err)
+    }
+
+    /// Reads the channel configuration row.
+    pub fn get_config(
+        &self,
+        key: String,
+        force_refresh: bool,
+    ) -> Result<Option<ChannelConfigInfo>, String> {
+        self.driver(&key)?
+            .get_config(force_refresh)
+            .map_err(core_err)
+            .map(|config| {
+                config.map(|config| ChannelConfigInfo {
+                    version: config.version,
+                    proxy: config.proxy,
+                })
+            })
+    }
+}
+
+#[cfg(test)]
+mod channel_api_tests {
+    use super::*;
+    use gstore_core::ports::fake::{FakeHttpPort, FakeMetadataPort, FakeRepoPort};
+    use gstore_core::ports::{HttpPort, MetadataPort, PackageMetadata, RepoPort};
+    use std::io::Write as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "gstore_channel_api_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    struct Harness {
+        root: PathBuf,
+        api: ChannelApi,
+        http: FakeHttpPort,
+        metadata: FakeMetadataPort,
+        repo: FakeRepoPort,
+    }
+
+    fn harness(tag: &str) -> Harness {
+        let root = temp_root(tag);
+        let http = FakeHttpPort::new();
+        let metadata = FakeMetadataPort::new();
+        metadata.set(
+            "owner",
+            "repo",
+            Some(PackageMetadata {
+                package_name: Some("com.example.owner".to_string()),
+                app_name: Some("Owner App".to_string()),
+                icon_url: Some("https://example.test/icon.png".to_string()),
+            }),
+        );
+        let repo = FakeRepoPort::new(root.join("repo.db"));
+        let api = ChannelApi::init_with_ports(
+            root.join("data").to_string_lossy().into_owned(),
+            root.join("files").to_string_lossy().into_owned(),
+            root.join("cache").to_string_lossy().into_owned(),
+            Arc::new(http.clone()) as Arc<dyn HttpPort>,
+            Arc::new(metadata.clone()) as Arc<dyn MetadataPort>,
+            Arc::new(repo.clone()) as Arc<dyn RepoPort>,
+        )
+        .expect("ChannelApi::init_with_ports");
+        Harness {
+            root,
+            api,
+            http,
+            metadata,
+            repo,
+        }
+    }
+
+    fn seed_localdb(api: &ChannelApi) {
+        api.inner
+            .db
+            .with_writer(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO apps(appId,name,user,repositories,icon,des,readme,category,extra) \
+                     VALUES('com.example.alpha','Alpha Browser','','','','Fast alpha','readme','Tools', \
+                            '{\"packageName\":\"com.example.alpha\"}'); \
+                     INSERT INTO categories(id,description,icon) VALUES('Tools','工具','tool.png'); \
+                     INSERT INTO app_config(version,proxy) VALUES('2026.1',NULL);",
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+                Ok(())
+            })
+            .expect("seed localdb");
+    }
+
+    fn write_pack(path: &Path) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("entry.js", options).unwrap();
+        writer.write_all(b"module.exports = function () { return {}; };").unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn app_input() -> ChannelAppInfo {
+        ChannelAppInfo {
+            app_id: "owner/repo".to_string(),
+            package_name: None,
+            name: "Owner Repo".to_string(),
+            user: "owner".to_string(),
+            repositories: "repo".to_string(),
+            icon: String::new(),
+            des: "description".to_string(),
+            readme: None,
+            category: vec!["Tools".to_string()],
+            extra_json: None,
+        }
+    }
+
+    #[test]
+    fn channel_api_contract() {
+        let started = Instant::now();
+        let harness = harness("contract");
+        let api = &harness.api;
+
+        // Init is idempotent and does not arm any flag.
+        gstore_core::flags::reset_flags();
+        let before_flags = gstore_core::flags::flags();
+        let second = ChannelApi::init_with_ports(
+            harness.root.join("data").to_string_lossy().into_owned(),
+            harness.root.join("files").to_string_lossy().into_owned(),
+            harness.root.join("cache").to_string_lossy().into_owned(),
+            Arc::new(harness.http.clone()) as Arc<dyn HttpPort>,
+            Arc::new(harness.metadata.clone()) as Arc<dyn MetadataPort>,
+            Arc::new(harness.repo.clone()) as Arc<dyn RepoPort>,
+        )
+        .expect("second init");
+        assert_eq!(second.list().unwrap().len(), 4);
+        assert_eq!(gstore_core::flags::flags(), before_flags);
+        assert!(!gstore_core::flags::flags().channels);
+
+        seed_localdb(api);
+
+        // list/get
+        let entries = api.list().expect("list");
+        assert_eq!(entries.len(), 4, "built-in channels: {entries:?}");
+        assert!(entries.iter().any(|entry| entry.key == "local_db"));
+        assert!(entries.iter().any(|entry| entry.key == "github"));
+        assert!(entries.iter().any(|entry| entry.key == "vivo"));
+        assert!(entries.iter().any(|entry| entry.key == "fdroid"));
+        let local = api.get("local_db".to_string()).expect("get local_db");
+        assert_eq!(local.kind, "local_db");
+        assert!(local.support_offline);
+
+        // register / re-register idempotence
+        let registration = ChannelRegistration {
+            key: "js_contract".to_string(),
+            kind: "custom".to_string(),
+            name: "Contract".to_string(),
+            description: "contract channel".to_string(),
+            enabled: true,
+            priority: 9,
+            support_offline: false,
+            version: Some("1".to_string()),
+        };
+        let registered = api.register(registration.clone()).expect("register");
+        assert_eq!(registered.key, "js_contract");
+        let registered_again = api.register(registration).expect("re-register");
+        assert_eq!(registered_again.priority, 9);
+        assert_eq!(api.list().unwrap().len(), 5);
+
+        // enable / disable
+        let disabled = api.disable("js_contract".to_string()).expect("disable");
+        assert!(!disabled.enabled);
+        let enabled = api.enable("js_contract".to_string()).expect("enable");
+        assert!(enabled.enabled);
+
+        // env: plaintext stays out of the channel_env row, secrets use the port.
+        api.env_set(
+            "local_db".to_string(),
+            "USER".to_string(),
+            "alice".to_string(),
+        )
+        .expect("env_set USER");
+        assert_eq!(
+            api.env_get("local_db".to_string(), "USER".to_string())
+                .expect("env_get USER"),
+            Some("alice".to_string())
+        );
+        api.env_set(
+            "local_db".to_string(),
+            "PASSWORD".to_string(),
+            "p@ss".to_string(),
+        )
+        .expect("env_set PASSWORD");
+        let env_row: String = api
+            .inner
+            .db
+            .with_reader(|conn| {
+                conn.query_row(
+                    "SELECT env_json FROM channel_env WHERE channel_key='local_db'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))
+            })
+            .expect("read env row");
+        println!("channel_api_contract: plaintext env row = {env_row}");
+        assert!(!env_row.contains("p@ss"));
+        assert!(!env_row.contains("PASSWORD"));
+        let secret = std::fs::read_to_string(harness.root.join("files/secrets/channel.local_db.PASSWORD"))
+            .expect("secret file");
+        assert_eq!(secret, "p@ss");
+        assert_eq!(
+            api.env_get("local_db".to_string(), "PASSWORD".to_string())
+                .expect("env_get PASSWORD"),
+            Some("p@ss".to_string())
+        );
+        assert!(api
+            .env_remove("local_db".to_string(), "USER".to_string())
+            .expect("env_remove USER"));
+        assert!(!api
+            .env_remove("local_db".to_string(), "USER".to_string())
+            .expect("env_remove USER twice"));
+        assert_eq!(
+            api.env_get("local_db".to_string(), "USER".to_string())
+                .expect("env_get removed"),
+            None
+        );
+
+        // search / info / detail / categories / config / canonical id
+        let hits = api
+            .search("local_db".to_string(), "Alpha".to_string(), false)
+            .expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].app_id, "com.example.alpha");
+        assert_eq!(hits[0].package_name.as_deref(), Some("com.example.alpha"));
+        let info = api
+            .get_app_info(
+                "local_db".to_string(),
+                "com.example.alpha".to_string(),
+                false,
+            )
+            .expect("get_app_info");
+        assert_eq!(info.name, "Alpha Browser");
+        let detail = api
+            .get_app_detail(
+                "local_db".to_string(),
+                "com.example.alpha".to_string(),
+                false,
+            )
+            .expect("get_app_detail");
+        assert_eq!(detail.app_id, "com.example.alpha");
+        let missing_app = api
+            .get_app_info("local_db".to_string(), "missing.app".to_string(), false)
+            .expect_err("missing app must be typed");
+        println!("channel_api_contract: missing app error = {missing_app}");
+        assert!(missing_app.starts_with("not_found:"), "{missing_app}");
+        let missing_detail = api
+            .get_app_detail("local_db".to_string(), "missing.app".to_string(), false)
+            .expect_err("missing detail app must be typed");
+        assert!(missing_detail.starts_with("not_found:"), "{missing_detail}");
+        let no_driver_config = api
+            .get_config("js_contract".to_string(), false)
+            .expect_err("registered channel without a driver must be typed");
+        println!("channel_api_contract: no-driver config error = {no_driver_config}");
+        assert!(no_driver_config.starts_with("not_found:"), "{no_driver_config}");
+        assert_eq!(
+            api.search_by_category(
+                "local_db".to_string(),
+                "Tools".to_string(),
+                false
+            )
+            .expect("search_by_category")
+            .len(),
+            1
+        );
+        let categories = api
+            .get_all_categories("local_db".to_string(), false)
+            .expect("get_all_categories");
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0].id, "Tools");
+        let config = api
+            .get_config("local_db".to_string(), false)
+            .expect("get_config")
+            .expect("localdb config");
+        assert_eq!(config.version, "2026.1");
+        assert_eq!(
+            api.canonical_app_id("local_db".to_string(), app_input())
+                .expect("canonical_app_id"),
+            "owner/repo"
+        );
+
+        // add/remove on the GitHub driver (metadata is injected, no network).
+        api.add_app("github".to_string(), app_input())
+            .expect("add_app");
+        let stored = api
+            .get_app_info("github".to_string(), "owner/repo".to_string(), false)
+            .expect("stored github app");
+        assert_eq!(stored.package_name.as_deref(), Some("com.example.owner"));
+        let github_canonical = api
+            .canonical_app_id("github".to_string(), app_input())
+            .expect("github canonical");
+        assert_eq!(github_canonical, "com.example.owner");
+        api.remove_app("github".to_string(), "owner/repo".to_string())
+            .expect("remove_app");
+        let row_count: i64 = api
+            .inner
+            .db
+            .with_reader(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM channel_apps WHERE channel_key='github' AND app_id='owner/repo'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))
+            })
+            .expect("count channel_apps");
+        assert_eq!(row_count, 0);
+        assert!(harness.http.calls().is_empty(), "contract test must not touch the network");
+
+        // refresh calls the driver update (GitHub is live data).
+        assert!(api.refresh("github".to_string()).expect("refresh"));
+
+        // packs: import twice is idempotent, export round-trips, remove is typed.
+        let pack = harness.root.join("alpha.zip");
+        write_pack(&pack);
+        let first = api
+            .import_pack(pack.to_string_lossy().into_owned())
+            .expect("import_pack");
+        assert_eq!(first.key, "js_alpha");
+        assert_eq!(first.pack_hash.len(), 64);
+        let second_pack = api
+            .import_pack(pack.to_string_lossy().into_owned())
+            .expect("import_pack twice");
+        assert_eq!(second_pack.pack_hash, first.pack_hash);
+        let pack_rows: i64 = api
+            .inner
+            .db
+            .with_reader(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM channel_packs WHERE key='js_alpha'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))
+            })
+            .expect("count packs");
+        assert_eq!(pack_rows, 1);
+        let exported = harness.root.join("alpha-export.zip");
+        let bytes = api
+            .export_pack(
+                "js_alpha".to_string(),
+                exported.to_string_lossy().into_owned(),
+            )
+            .expect("export_pack");
+        assert!(bytes > 0);
+        assert!(exported.is_file());
+        assert!(api.remove_pack("js_alpha".to_string()).expect("remove_pack"));
+        let err = api
+            .remove_pack("js_alpha".to_string())
+            .expect_err("second remove must fail");
+        println!("channel_api_contract: second remove error = {err}");
+        assert!(err.starts_with("pack_not_found:"), "{err}");
+        let err = api
+            .export_pack(
+                "js_alpha".to_string(),
+                harness.root.join("missing.zip").to_string_lossy().into_owned(),
+            )
+            .expect_err("export removed pack must fail");
+        println!("channel_api_contract: export removed pack error = {err}");
+        assert!(err.starts_with("pack_not_found:"), "{err}");
+
+        // Successful unregister removes both row and driver binding.
+        api.unregister("js_contract".to_string())
+            .expect("unregister js_contract");
+        let unregistered = api.get("js_contract".to_string()).unwrap_err();
+        assert!(unregistered.starts_with("not_found:"), "{unregistered}");
+
+        // Missing channel -> typed not found (never null / panic).
+        for err in [
+            api.get("missing".to_string()).unwrap_err(),
+            api.search("missing".to_string(), "x".to_string(), false).unwrap_err(),
+            api.get_app_info("missing".to_string(), "x".to_string(), false).unwrap_err(),
+            api.get_app_detail("missing".to_string(), "x".to_string(), false).unwrap_err(),
+            api.refresh("missing".to_string()).unwrap_err(),
+            api.env_get("missing".to_string(), "USER".to_string()).unwrap_err(),
+            api.get_config("missing".to_string(), false).unwrap_err(),
+            api.enable("missing".to_string()).unwrap_err(),
+            api.disable("missing".to_string()).unwrap_err(),
+            api.unregister("missing".to_string()).unwrap_err(),
+        ] {
+            println!("channel_api_contract: missing channel error = {err}");
+            assert!(err.starts_with("not_found:"), "expected not_found, got {err}");
+        }
+
+        // Malformed input is typed, not a panic.
+        assert!(api
+            .get(String::new())
+            .unwrap_err()
+            .starts_with("invalid_argument:"));
+        let bad_kind = ChannelRegistration {
+            key: "js_bad_kind".to_string(),
+            kind: "not_a_kind".to_string(),
+            name: "Bad".to_string(),
+            description: String::new(),
+            enabled: true,
+            priority: 0,
+            support_offline: false,
+            version: None,
+        };
+        assert!(api
+            .register(bad_kind)
+            .unwrap_err()
+            .starts_with("invalid_argument:"));
+        assert!(api
+            .env_set(
+                "local_db".to_string(),
+                String::new(),
+                "x".to_string()
+            )
+            .unwrap_err()
+            .starts_with("invalid_argument:"));
+        let missing_pack = harness.root.join("nope.zip");
+        let pack_err = api
+            .import_pack(missing_pack.to_string_lossy().into_owned())
+            .unwrap_err();
+        println!("channel_api_contract: missing pack error = {pack_err}");
+        assert!(!pack_err.is_empty());
+        let mut bad_app = app_input();
+        bad_app.extra_json = Some("not json".to_string());
+        let bad_extra = api
+            .add_app("github".to_string(), bad_app)
+            .unwrap_err();
+        println!("channel_api_contract: bad extra error = {bad_extra}");
+        assert!(bad_extra.starts_with("serialization:"), "{bad_extra}");
+
+        // The test never touched the network and never armed core_writes.
+        assert!(harness.http.calls().is_empty());
+        assert!(api
+            .inner
+            .db
+            .with_reader(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM core_writes", [], |row| row.get::<_, i64>(0))
+                    .map_err(|error| gstore_core::db::DbError(error.to_string()))
+            })
+            .expect("core_writes count")
+            == 0);
+
+        println!(
+            "channel_api_contract: PASS duration_ms={}",
+            started.elapsed().as_millis()
+        );
+        drop(harness);
+    }
+}

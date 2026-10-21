@@ -10,8 +10,9 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CorePaths`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `driver_for`, `driver`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `pack_err`, `read_plain_env`, `record`, `require_channel`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `with_port`, `write_plain_env`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -57,6 +58,100 @@ Future<String?> foregroundReadJson() =>
 Future<String?> frameMetricsReadJson() =>
     RustLib.instance.api.crateBridgeFrameMetricsReadJson();
 
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ChannelApi>>
+abstract class ChannelApi implements RustOpaqueInterface {
+  /// Adds/saves an app through the channel driver.
+  Future<void> addApp({required String key, required ChannelAppInfo app});
+
+  /// Returns the driver's canonical app id.
+  Future<String> canonicalAppId(
+      {required String key, required ChannelAppInfo app});
+
+  /// Disables a registered channel without removing it.
+  Future<ChannelEntry> disable({required String key});
+
+  /// Enables a registered channel.
+  Future<ChannelEntry> enable({required String key});
+
+  /// Reads one env value. Sensitive names come from the secret port; other
+  /// names come from the plaintext `channel_env` row.
+  Future<String?> envGet({required String key, required String name});
+
+  /// Removes one env value from both the plaintext row and the secret port.
+  Future<bool> envRemove({required String key, required String name});
+
+  /// Writes one env value, routing sensitive names to the secret port.
+  Future<void> envSet(
+      {required String key, required String name, required String value});
+
+  /// Exports an installed pack as a flat zip at `path`; returns bytes written.
+  Future<BigInt> exportPack({required String key, required String path});
+
+  /// Reads one registered channel.
+  Future<ChannelEntry> get_({required String key});
+
+  /// Lists the channel's categories.
+  Future<List<ChannelCategoryInfo>> getAllCategories(
+      {required String key, required bool forceRefresh});
+
+  /// Reads one app detail page.
+  Future<ChannelAppDetailInfo> getAppDetail(
+      {required String key, required String appId, required bool forceRefresh});
+
+  /// Reads one app summary.
+  Future<ChannelAppInfo> getAppInfo(
+      {required String key, required String appId, required bool forceRefresh});
+
+  /// Reads the channel configuration row.
+  Future<ChannelConfigInfo?> getConfig(
+      {required String key, required bool forceRefresh});
+
+  /// Imports a legacy flat pack from `zip_path`.
+  Future<ChannelPackInfo> importPack({required String path});
+
+  /// Initializes the facade with the same directory shape as `CoreApi`.
+  ///
+  /// Safe to call more than once against the same directories: registry rows
+  /// and drivers are re-registered idempotently. No feature flag is armed.
+  static Future<ChannelApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeChannelApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Lists every registered channel in deterministic key order.
+  Future<List<ChannelEntry>> list();
+
+  /// Runs the channel's update loop (`do_update`).
+  Future<bool> refresh({required String key});
+
+  /// Registers (or idempotently re-registers) a channel and binds a real
+  /// built-in driver when the kind maps to one.
+  Future<ChannelEntry> register({required ChannelRegistration registration});
+
+  /// Removes an app from the channel.
+  Future<void> removeApp({required String key, required String appId});
+
+  /// Removes an installed pack (row plus version directories).
+  Future<bool> removePack({required String key});
+
+  /// Searches one channel by keyword.
+  Future<List<ChannelAppInfo>> search(
+      {required String key,
+      required String keyword,
+      required bool forceRefresh});
+
+  /// Searches one channel by category id.
+  Future<List<ChannelAppInfo>> searchByCategory(
+      {required String key,
+      required String categoryId,
+      required bool forceRefresh});
+
+  /// Removes a channel registration and its driver binding.
+  Future<void> unregister({required String key});
+}
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CoreApi>>
 abstract class CoreApi implements RustOpaqueInterface {
   Future<CoreWritesMarker?> coreWrites({required String domain});
@@ -65,6 +160,13 @@ abstract class CoreApi implements RustOpaqueInterface {
 
   Future<BigInt> importFile({required String pathOrFd});
 
+  /// Imports one Dart-exported migration artifact.
+  ///
+  /// Faces for `channel_db`, `channel_env`, `fdroid_sources`, and `pack` route
+  /// through [`gstore_core::channel_migration`]; `update_prefs` keeps the
+  /// original JSON-document path. The old source files are never moved or
+  /// deleted by this method (only successfully imported env/fdroid documents
+  /// are removed).
   Future<int> importMigrationFile({required String kind, required String path});
 
   Future<int> importSnapshot({required String path});
@@ -215,6 +317,373 @@ abstract class TaskBridge implements RustOpaqueInterface {
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
+}
+
+/// Full app detail crossing the FRB boundary.
+class ChannelAppDetailInfo {
+  final String appId;
+  final String name;
+  final String icon;
+  final String description;
+  final String? version;
+  final String? developer;
+  final String? packageName;
+  final String? projectUrl;
+  final String channel;
+  final List<String> sections;
+  final List<ChannelAppDownloadInfo> downloads;
+  final String extraJson;
+
+  const ChannelAppDetailInfo({
+    required this.appId,
+    required this.name,
+    required this.icon,
+    required this.description,
+    this.version,
+    this.developer,
+    this.packageName,
+    this.projectUrl,
+    required this.channel,
+    required this.sections,
+    required this.downloads,
+    required this.extraJson,
+  });
+
+  @override
+  int get hashCode =>
+      appId.hashCode ^
+      name.hashCode ^
+      icon.hashCode ^
+      description.hashCode ^
+      version.hashCode ^
+      developer.hashCode ^
+      packageName.hashCode ^
+      projectUrl.hashCode ^
+      channel.hashCode ^
+      sections.hashCode ^
+      downloads.hashCode ^
+      extraJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelAppDetailInfo &&
+          runtimeType == other.runtimeType &&
+          appId == other.appId &&
+          name == other.name &&
+          icon == other.icon &&
+          description == other.description &&
+          version == other.version &&
+          developer == other.developer &&
+          packageName == other.packageName &&
+          projectUrl == other.projectUrl &&
+          channel == other.channel &&
+          sections == other.sections &&
+          downloads == other.downloads &&
+          extraJson == other.extraJson;
+}
+
+/// One download candidate in an app detail payload.
+class ChannelAppDownloadInfo {
+  final String url;
+  final String name;
+  final PlatformInt64? size;
+  final PlatformInt64? downloadCount;
+  final String? version;
+  final PlatformInt64? versionCode;
+  final PlatformInt64? publishedAt;
+  final String? platform;
+  final String? hash;
+  final String? hashType;
+  final bool downloadable;
+  final String? note;
+  final String? extraJson;
+
+  const ChannelAppDownloadInfo({
+    required this.url,
+    required this.name,
+    this.size,
+    this.downloadCount,
+    this.version,
+    this.versionCode,
+    this.publishedAt,
+    this.platform,
+    this.hash,
+    this.hashType,
+    required this.downloadable,
+    this.note,
+    this.extraJson,
+  });
+
+  @override
+  int get hashCode =>
+      url.hashCode ^
+      name.hashCode ^
+      size.hashCode ^
+      downloadCount.hashCode ^
+      version.hashCode ^
+      versionCode.hashCode ^
+      publishedAt.hashCode ^
+      platform.hashCode ^
+      hash.hashCode ^
+      hashType.hashCode ^
+      downloadable.hashCode ^
+      note.hashCode ^
+      extraJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelAppDownloadInfo &&
+          runtimeType == other.runtimeType &&
+          url == other.url &&
+          name == other.name &&
+          size == other.size &&
+          downloadCount == other.downloadCount &&
+          version == other.version &&
+          versionCode == other.versionCode &&
+          publishedAt == other.publishedAt &&
+          platform == other.platform &&
+          hash == other.hash &&
+          hashType == other.hashType &&
+          downloadable == other.downloadable &&
+          note == other.note &&
+          extraJson == other.extraJson;
+}
+
+/// One app summary crossing the FRB boundary.
+class ChannelAppInfo {
+  final String appId;
+  final String? packageName;
+  final String name;
+  final String user;
+  final String repositories;
+  final String icon;
+  final String des;
+  final String? readme;
+  final List<String> category;
+  final String? extraJson;
+
+  const ChannelAppInfo({
+    required this.appId,
+    this.packageName,
+    required this.name,
+    required this.user,
+    required this.repositories,
+    required this.icon,
+    required this.des,
+    this.readme,
+    required this.category,
+    this.extraJson,
+  });
+
+  @override
+  int get hashCode =>
+      appId.hashCode ^
+      packageName.hashCode ^
+      name.hashCode ^
+      user.hashCode ^
+      repositories.hashCode ^
+      icon.hashCode ^
+      des.hashCode ^
+      readme.hashCode ^
+      category.hashCode ^
+      extraJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelAppInfo &&
+          runtimeType == other.runtimeType &&
+          appId == other.appId &&
+          packageName == other.packageName &&
+          name == other.name &&
+          user == other.user &&
+          repositories == other.repositories &&
+          icon == other.icon &&
+          des == other.des &&
+          readme == other.readme &&
+          category == other.category &&
+          extraJson == other.extraJson;
+}
+
+/// One channel category.
+class ChannelCategoryInfo {
+  final String id;
+  final String description;
+  final String icon;
+
+  const ChannelCategoryInfo({
+    required this.id,
+    required this.description,
+    required this.icon,
+  });
+
+  @override
+  int get hashCode => id.hashCode ^ description.hashCode ^ icon.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelCategoryInfo &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          description == other.description &&
+          icon == other.icon;
+}
+
+/// Channel `app_config` row.
+class ChannelConfigInfo {
+  final String version;
+  final String? proxy;
+
+  const ChannelConfigInfo({
+    required this.version,
+    this.proxy,
+  });
+
+  @override
+  int get hashCode => version.hashCode ^ proxy.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelConfigInfo &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          proxy == other.proxy;
+}
+
+/// One registered channel exposed to Dart.
+class ChannelEntry {
+  /// Stable key (`local_db`, `github`, `js_pingan`, ...).
+  final String key;
+
+  /// Implementation kind code.
+  final String kind;
+  final String name;
+  final String description;
+  final bool enabled;
+  final int priority;
+  final bool supportOffline;
+  final PlatformInt64? lastUpdateTime;
+  final String? version;
+
+  const ChannelEntry({
+    required this.key,
+    required this.kind,
+    required this.name,
+    required this.description,
+    required this.enabled,
+    required this.priority,
+    required this.supportOffline,
+    this.lastUpdateTime,
+    this.version,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      kind.hashCode ^
+      name.hashCode ^
+      description.hashCode ^
+      enabled.hashCode ^
+      priority.hashCode ^
+      supportOffline.hashCode ^
+      lastUpdateTime.hashCode ^
+      version.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelEntry &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          kind == other.kind &&
+          name == other.name &&
+          description == other.description &&
+          enabled == other.enabled &&
+          priority == other.priority &&
+          supportOffline == other.supportOffline &&
+          lastUpdateTime == other.lastUpdateTime &&
+          version == other.version;
+}
+
+/// One imported local pack.
+class ChannelPackInfo {
+  final String key;
+  final String packHash;
+  final PlatformInt64 installedAt;
+  final String dir;
+
+  const ChannelPackInfo({
+    required this.key,
+    required this.packHash,
+    required this.installedAt,
+    required this.dir,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^ packHash.hashCode ^ installedAt.hashCode ^ dir.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelPackInfo &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          packHash == other.packHash &&
+          installedAt == other.installedAt &&
+          dir == other.dir;
+}
+
+/// Input accepted by [`ChannelApi::register`].
+class ChannelRegistration {
+  final String key;
+  final String kind;
+  final String name;
+  final String description;
+  final bool enabled;
+  final int priority;
+  final bool supportOffline;
+  final String? version;
+
+  const ChannelRegistration({
+    required this.key,
+    required this.kind,
+    required this.name,
+    required this.description,
+    required this.enabled,
+    required this.priority,
+    required this.supportOffline,
+    this.version,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      kind.hashCode ^
+      name.hashCode ^
+      description.hashCode ^
+      enabled.hashCode ^
+      priority.hashCode ^
+      supportOffline.hashCode ^
+      version.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelRegistration &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          kind == other.kind &&
+          name == other.name &&
+          description == other.description &&
+          enabled == other.enabled &&
+          priority == other.priority &&
+          supportOffline == other.supportOffline &&
+          version == other.version;
 }
 
 class CoreInitResult {

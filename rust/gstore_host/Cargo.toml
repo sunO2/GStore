@@ -30,6 +30,7 @@ flutter_rust_bridge = "=2.11.1"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"], default-features = false }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [lints.rust]
 # `frb_expand` is emitted by flutter_rust_bridge's `#[frb]` proc-macro into

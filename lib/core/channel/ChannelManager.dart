@@ -1,9 +1,14 @@
+import 'dart:convert';
+
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
 /// 动态渠道（脚本化渠道）轻接口：拥有唯一字符串 key 的渠道。
@@ -149,9 +154,8 @@ class ChannelManager {
   /// 检查渠道可用性（并行化提升性能）
   Future<List<ChannelType>> checkAvailableChannels() async {
     // 筛选出启用的渠道
-    final enabledEntries = _channels.entries
-        .where((entry) => entry.value.info.enabled)
-        .toList();
+    final enabledEntries =
+        _channels.entries.where((entry) => entry.value.info.enabled).toList();
 
     if (enabledEntries.isEmpty) {
       return [];
@@ -175,13 +179,43 @@ class ChannelManager {
   }
 
   /// 检查单个渠道可用性（带错误处理）
-  Future<bool> _checkChannelWithFallback(MapEntry<ChannelType, IChannel> entry) async {
+  Future<bool> _checkChannelWithFallback(
+      MapEntry<ChannelType, IChannel> entry) async {
     try {
       return await entry.value.checkAvailable();
     } catch (e) {
       appLog.error('ChannelManager: 检查渠道 ${entry.key.code} 失败 - $e');
       return false;
     }
+  }
+
+  // ==================== Rust 门面桥接（Todo 13） ====================
+
+  /// Rust 门面渠道键：内置渠道即 `ChannelType.code`。
+  String _rustChannelKey(ChannelType? from) {
+    return (from ?? _defaultChannelType).code;
+  }
+
+  /// Rust `ChannelAppInfo` → Dart `AppSummary`（extra 仍是 JSON 对象）。
+  AppSummary _toAppSummary(rust.ChannelAppInfo info) {
+    Map<String, dynamic>? extra;
+    final rawExtra = info.extraJson;
+    if (rawExtra != null && rawExtra.trim().isNotEmpty) {
+      final decoded = jsonDecode(rawExtra);
+      if (decoded is Map<String, dynamic>) extra = decoded;
+    }
+    return AppSummary(
+      appId: info.appId,
+      packageName: info.packageName,
+      name: info.name,
+      user: info.user,
+      repositories: info.repositories,
+      icon: info.icon,
+      des: info.des,
+      readme: info.readme,
+      category: info.category.isEmpty ? null : info.category,
+      extra: extra,
+    );
   }
 
   // ==================== 查询方法（指定渠道） ====================
@@ -207,6 +241,22 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final info = await RustChannelFacade.instance.getAppInfo(
+          key: _rustChannelKey(from),
+          appId: appId,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: _toAppSummary(info),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -223,6 +273,22 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final apps = await RustChannelFacade.instance.search(
+          key: _rustChannelKey(from),
+          keyword: keyword,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: apps.map(_toAppSummary).toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -239,6 +305,22 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final apps = await RustChannelFacade.instance.searchByCategory(
+          key: _rustChannelKey(from),
+          categoryId: categoryId,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: apps.map(_toAppSummary).toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -254,6 +336,27 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final categories = await RustChannelFacade.instance.getAllCategories(
+          key: _rustChannelKey(from),
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: categories
+              .map((category) => db.AppCategory(
+                    category.id,
+                    category.description,
+                    category.icon,
+                  ))
+              .toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -301,7 +404,8 @@ class ChannelManager {
 
     for (var channel in channels) {
       try {
-        var result = await channel.getAppInfo(appId, forceRefresh: forceRefresh);
+        var result =
+            await channel.getAppInfo(appId, forceRefresh: forceRefresh);
         if (result.success) {
           return result;
         }
@@ -336,6 +440,16 @@ class ChannelManager {
     ChannelType? from,
     Function(int current, int total)? onProgress,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final updated = await RustChannelFacade.instance
+            .refresh(key: _rustChannelKey(from));
+        return ChannelResult.success(data: updated, from: fromType);
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -391,13 +505,14 @@ class ChannelManager {
       enabledChannels
           .where((channel) => !channel.isInitialized)
           .map((channel) async {
-            try {
-              await channel.initialize();
-              appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
-            } catch (e) {
-              appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
-            }
-          }),
+        try {
+          await channel.initialize();
+          appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
+        } catch (e) {
+          appLog
+              .error('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
+        }
+      }),
     );
   }
 
