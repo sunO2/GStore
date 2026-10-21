@@ -360,6 +360,91 @@ pub struct CoreWritesMarker {
     pub snapshot_id: Option<String>,
 }
 
+/// Rust-owned feature flag snapshot (FRB data class).
+///
+/// Field names mirror `gstore_core::flags::Flags`; the values always come from
+/// the core's process-global state.
+pub struct Flags {
+    pub channels: bool,
+    pub catalog: bool,
+    pub update: bool,
+    pub download: bool,
+    pub install: bool,
+    pub js_channel: bool,
+    pub core_writes: bool,
+}
+
+impl From<gstore_core::flags::Flags> for Flags {
+    fn from(flags: gstore_core::flags::Flags) -> Self {
+        Self {
+            channels: flags.channels,
+            catalog: flags.catalog,
+            update: flags.update,
+            download: flags.download,
+            install: flags.install,
+            js_channel: flags.js_channel,
+            core_writes: flags.core_writes,
+        }
+    }
+}
+
+/// Partial flag update accepted by [`FlagsApi::set`] (FRB data class).
+///
+/// `None` leaves a flag unchanged. `Some(true)` for `core_writes` is rejected
+/// by the core in Wave 0/1.
+pub struct FlagsPatch {
+    pub channels: Option<bool>,
+    pub catalog: Option<bool>,
+    pub update: Option<bool>,
+    pub download: Option<bool>,
+    pub install: Option<bool>,
+    pub js_channel: Option<bool>,
+    pub core_writes: Option<bool>,
+}
+
+impl From<FlagsPatch> for gstore_core::flags::FlagsPatch {
+    fn from(patch: FlagsPatch) -> Self {
+        Self {
+            channels: patch.channels,
+            catalog: patch.catalog,
+            update: patch.update,
+            download: patch.download,
+            install: patch.install,
+            js_channel: patch.js_channel,
+            core_writes: patch.core_writes,
+        }
+    }
+}
+
+/// Feature-flag facade for Flutter. The Rust core remains authoritative; the
+/// Dart `CoreFlags` class is a read-only mirror of [`FlagsApi::get`].
+#[frb(opaque)]
+pub struct FlagsApi;
+
+impl FlagsApi {
+    /// Creates the facade (generated as `FlagsApi.init()` in Dart).
+    pub fn init() -> FlagsApi {
+        FlagsApi
+    }
+
+    /// Returns the current Rust-owned snapshot.
+    pub fn get(&self) -> Flags {
+        Flags::from(gstore_core::flags::flags())
+    }
+
+    /// Applies a partial update and returns the resulting snapshot.
+    pub fn set(&self, patch: FlagsPatch) -> Result<Flags, String> {
+        gstore_core::flags::set_flags(patch.into())
+            .map(Flags::from)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Resets every flag to `false` and returns the resulting snapshot.
+    pub fn reset(&self) -> Flags {
+        Flags::from(gstore_core::flags::reset_flags())
+    }
+}
+
 impl CoreApi {
     pub fn init(
         data_dir: String,

@@ -2,17 +2,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  _FakeFlagsBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsSnapshot flags) async {
+    snapshot = flags;
+  }
+}
+
+Future<void> _useCoreWrites(bool value) async {
+  CoreFlags.installBackend(
+    _FakeFlagsBackend(CoreFlagsSnapshot(coreWrites: value)),
+  );
+  await CoreFlags.refresh();
+}
+
 Future<void> fakeLegacyWrite() async {
   await LegacyWriteGuard.assertAllowed('channel');
 }
 
 void main() {
-  setUp(() {
-    CoreFlags.coreWrites = true;
+  setUp(() async {
+    await _useCoreWrites(true);
   });
 
   tearDown(() {
-    CoreFlags.coreWrites = false;
+    CoreFlags.resetBackend();
     LegacyWriteGuard.probeOverride = null;
   });
 
@@ -37,7 +58,7 @@ void main() {
   });
 
   test('flags off keeps the old path authoritative', () async {
-    CoreFlags.coreWrites = false;
+    await _useCoreWrites(false);
     LegacyWriteGuard.probeOverride = (domain) async => true;
 
     await LegacyWriteGuard.assertAllowed('channel');

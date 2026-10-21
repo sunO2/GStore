@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CorePaths`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `from`, `from`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -91,6 +91,22 @@ abstract class EventBridge implements RustOpaqueInterface {
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<EventBridge> newInstance() =>
       RustLib.instance.api.crateBridgeEventBridgeNew();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FlagsApi>>
+abstract class FlagsApi implements RustOpaqueInterface {
+  /// Returns the current Rust-owned snapshot.
+  Future<Flags> get_();
+
+  /// Creates the facade (generated as `FlagsApi.init()` in Dart).
+  static Future<FlagsApi> init() =>
+      RustLib.instance.api.crateBridgeFlagsApiInit();
+
+  /// Resets every flag to `false` and returns the resulting snapshot.
+  Future<Flags> reset();
+
+  /// Applies a partial update and returns the resulting snapshot.
+  Future<Flags> set_({required FlagsPatch patch});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<HostInspector>>
@@ -259,4 +275,98 @@ class CoreWritesMarker {
           domain == other.domain &&
           firstWriteAt == other.firstWriteAt &&
           snapshotId == other.snapshotId;
+}
+
+/// Rust-owned feature flag snapshot (FRB data class).
+///
+/// Field names mirror `gstore_core::flags::Flags`; the values always come from
+/// the core's process-global state.
+class Flags {
+  final bool channels;
+  final bool catalog;
+  final bool update;
+  final bool download;
+  final bool install;
+  final bool jsChannel;
+  final bool coreWrites;
+
+  const Flags({
+    required this.channels,
+    required this.catalog,
+    required this.update,
+    required this.download,
+    required this.install,
+    required this.jsChannel,
+    required this.coreWrites,
+  });
+
+  @override
+  int get hashCode =>
+      channels.hashCode ^
+      catalog.hashCode ^
+      update.hashCode ^
+      download.hashCode ^
+      install.hashCode ^
+      jsChannel.hashCode ^
+      coreWrites.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Flags &&
+          runtimeType == other.runtimeType &&
+          channels == other.channels &&
+          catalog == other.catalog &&
+          update == other.update &&
+          download == other.download &&
+          install == other.install &&
+          jsChannel == other.jsChannel &&
+          coreWrites == other.coreWrites;
+}
+
+/// Partial flag update accepted by [`FlagsApi::set`] (FRB data class).
+///
+/// `None` leaves a flag unchanged. `Some(true)` for `core_writes` is rejected
+/// by the core in Wave 0/1.
+class FlagsPatch {
+  final bool? channels;
+  final bool? catalog;
+  final bool? update;
+  final bool? download;
+  final bool? install;
+  final bool? jsChannel;
+  final bool? coreWrites;
+
+  const FlagsPatch({
+    this.channels,
+    this.catalog,
+    this.update,
+    this.download,
+    this.install,
+    this.jsChannel,
+    this.coreWrites,
+  });
+
+  @override
+  int get hashCode =>
+      channels.hashCode ^
+      catalog.hashCode ^
+      update.hashCode ^
+      download.hashCode ^
+      install.hashCode ^
+      jsChannel.hashCode ^
+      coreWrites.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FlagsPatch &&
+          runtimeType == other.runtimeType &&
+          channels == other.channels &&
+          catalog == other.catalog &&
+          update == other.update &&
+          download == other.download &&
+          install == other.install &&
+          jsChannel == other.jsChannel &&
+          coreWrites == other.coreWrites;
 }

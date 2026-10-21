@@ -19,6 +19,27 @@ class _RecordingApi implements CoreDownloadApi {
   }
 }
 
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  _FakeFlagsBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsSnapshot flags) async {
+    snapshot = flags;
+  }
+}
+
+Future<void> _useDownloadFlag(bool value) async {
+  CoreFlags.installBackend(
+    _FakeFlagsBackend(CoreFlagsSnapshot(download: value)),
+  );
+  await CoreFlags.refresh();
+}
+
 List<Map<String, dynamic>> _loadFixture() {
   final file = File('test/fixtures/download_path_cases.json');
   expect(file.existsSync(), isTrue,
@@ -29,9 +50,7 @@ List<Map<String, dynamic>> _loadFixture() {
 }
 
 void main() {
-  tearDown(() {
-    CoreFlags.download = false;
-  });
+  tearDown(CoreFlags.resetBackend);
 
   group('resolveSavePath parity with Rust fixture', () {
     test('every shared case resolves to the exact expected string', () async {
@@ -154,7 +173,7 @@ void main() {
   group('CoreFlags.download gating', () {
     test('flag off: startIfEnabled returns null and never calls the api',
         () async {
-      CoreFlags.download = false;
+      await _useDownloadFlag(false);
       final api = _RecordingApi();
       final req = await CoreDownloadBuilder.build(
         appId: 'a',
@@ -173,7 +192,7 @@ void main() {
 
     test('flag on: returns api id and calls exactly once with built request',
         () async {
-      CoreFlags.download = true;
+      await _useDownloadFlag(true);
       final api = _RecordingApi();
       final req = await CoreDownloadBuilder.build(
         appId: 'a',

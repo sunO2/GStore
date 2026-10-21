@@ -2,4 +2,16 @@
 
 pub mod db;
 pub mod download;
+pub mod dto;
+pub mod error;
+pub mod event;
+pub mod flags;
 pub mod migration;
+
+pub use dto::{
+    AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
+    ChannelState, DetailSection,
+};
+pub use error::Error;
+pub use event::{CoreEvent, ScriptUiField};
+pub use flags::{flags, reset_flags, set_flags, Flags, FlagsApi, FlagsPatch};
