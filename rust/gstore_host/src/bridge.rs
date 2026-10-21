@@ -567,7 +567,54 @@ impl CoreApi {
         Ok(version)
     }
 
+    /// Imports one Dart-exported migration artifact.
+    ///
+    /// Faces for `channel_db`, `channel_env`, `fdroid_sources`, and `pack` route
+    /// through [`gstore_core::channel_migration`]; `update_prefs` keeps the
+    /// original JSON-document path. The old source files are never moved or
+    /// deleted by this method (only successfully imported env/fdroid documents
+    /// are removed).
     pub fn import_migration_file(&self, kind: String, path: String) -> Result<u32, String> {
+        let paths = {
+            let guard = self
+                .paths
+                .lock()
+                .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: paths lock poisoned"))?;
+            let paths = guard
+                .as_ref()
+                .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+            (paths.data_dir.clone(), paths.files_dir.clone())
+        };
+        let path_ref = std::path::Path::new(&path);
+        let migration_dir =
+            core_migration::migration_dir(std::path::Path::new(&paths.1));
+
+        if kind == "pack" {
+            let db = core_db::DbHandle::open(std::path::Path::new(&paths.0))
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: channel db: {}", e.0))?;
+            // The pack path is read-only w.r.t. its migrator connection; the
+            // PackStore owns the single writer mutex.
+            let conn = rusqlite::Connection::open(db.path())
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: open db: {e}"))?;
+            let secrets = gstore_core::ports::FileSecretStore::new(
+                std::path::Path::new(&paths.1).join("secrets"),
+            );
+            let backup_dir = migration_dir.join("backups");
+            let migrator = gstore_core::channel_migration::ChannelMigrator::new(
+                &conn,
+                &secrets,
+                backup_dir,
+            );
+            let store = gstore_core::channel::PackStore::new(
+                std::path::Path::new(&paths.1).join("channel_packs"),
+                db,
+            );
+            return migrator
+                .import_pack_archive(&store, path_ref)
+                .map(|report| report.packs as u32)
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"));
+        }
+
         let db = self
             .db
             .lock()
@@ -575,9 +622,64 @@ impl CoreApi {
         let db = db
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
-        core_migration::import_migration_file(db, &kind, std::path::Path::new(&path))
-            .map(|written| written as u32)
-            .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {}", e.0))
+
+        match kind.as_str() {
+            "channel_db" => {
+                let secrets = gstore_core::ports::FileSecretStore::new(
+                    std::path::Path::new(&paths.1).join("secrets"),
+                );
+                let migrator = gstore_core::channel_migration::ChannelMigrator::new(
+                    db,
+                    &secrets,
+                    migration_dir.join("backups"),
+                );
+                migrator
+                    .import_channel_db(path_ref)
+                    .map(|report| report.rows_imported as u32)
+                    .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"))
+            }
+            "channel_env" => {
+                let secrets = gstore_core::ports::FileSecretStore::new(
+                    std::path::Path::new(&paths.1).join("secrets"),
+                );
+                let migrator = gstore_core::channel_migration::ChannelMigrator::new(
+                    db,
+                    &secrets,
+                    migration_dir.join("backups"),
+                );
+                let report = migrator
+                    .import_channel_env_path(path_ref)
+                    .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"))?;
+                // Only managed export documents are deleted; an arbitrary
+                // caller-supplied path is left in place.
+                if path_ref.starts_with(&migration_dir) {
+                    std::fs::remove_file(path_ref).map_err(|e| {
+                        format!(
+                            "CORE_E_IMPORT_MIGRATION: delete {}: {e}",
+                            path_ref.display()
+                        )
+                    })?;
+                }
+                Ok(report.rows as u32)
+            }
+            "fdroid_sources" => {
+                let secrets = gstore_core::ports::FileSecretStore::new(
+                    std::path::Path::new(&paths.1).join("secrets"),
+                );
+                let migrator = gstore_core::channel_migration::ChannelMigrator::new(
+                    db,
+                    &secrets,
+                    migration_dir.join("backups"),
+                );
+                migrator
+                    .import_fdroid_sources_file(path_ref)
+                    .map(|report| report.sources as u32)
+                    .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"))
+            }
+            _ => core_migration::import_migration_file(db, &kind, path_ref)
+                .map(|written| written as u32)
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {}", e.0)),
+        }
     }
 
     pub fn core_writes(&self, domain: String) -> Result<Option<CoreWritesMarker>, String> {
@@ -902,6 +1004,124 @@ mod core_api_tests {
             }
         }
 
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn channel_migration_bridge_kinds() {
+        let root = temp_root("channel12");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+        let init = api.migrate_paths().expect("migrate_paths");
+
+        // channel_db: mapped twice without duplication, source retained, backup.
+        let old_db = root.join("channel_apps.db");
+        {
+            let conn = rusqlite::Connection::open(&old_db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE channel_added_app(
+                     appId TEXT NOT NULL, name TEXT NOT NULL, user TEXT NOT NULL,
+                     repositories TEXT NOT NULL, apprepo TEXT, icon TEXT NOT NULL,
+                     description TEXT NOT NULL, category TEXT, addTime INTEGER NOT NULL,
+                     channelCode TEXT NOT NULL, extra TEXT, sourceId TEXT,
+                     PRIMARY KEY(channelCode, appId));
+                 INSERT INTO channel_added_app VALUES
+                     ('a','A','u','r',NULL,'i','d',NULL,1,'github',NULL,NULL),
+                     ('b','B','u','r',NULL,'i','d',NULL,2,'fdroid',NULL,'official');
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&old_db).unwrap();
+        for run in 1..=2 {
+            let rows = api
+                .import_migration_file(
+                    "channel_db".to_string(),
+                    old_db.to_string_lossy().into_owned(),
+                )
+                .expect("import channel_db");
+            println!("channel_db run {run}: rows={rows}");
+            assert_eq!(rows, 2);
+        }
+        assert!(old_db.is_file(), "legacy DB must survive");
+        assert_eq!(std::fs::read(&old_db).unwrap(), before, "legacy DB mutated");
+        let live = rusqlite::Connection::open(&init.db_path).unwrap();
+        let rows: i64 = live
+            .query_row("SELECT COUNT(*) FROM channel_apps", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "re-import must not duplicate channel rows");
+        let backups = std::fs::read_dir(files_dir.join("migration").join("backups"))
+            .expect("backup dir")
+            .count();
+        println!("channel_db backups = {backups}");
+        assert!(backups >= 1);
+
+        // channel_env: sensitive value reaches FileSecretPort only; doc deleted.
+        let env_path = files_dir.join("migration").join("channel_env.js.bridge.json");
+        std::fs::write(
+            &env_path,
+            br#"{"version":1,"channel_key":"js.bridge","env":{"USER":"alice","PASSWORD":"p@ss"}}"#,
+        )
+        .unwrap();
+        let env_rows = api
+            .import_migration_file(
+                "channel_env".to_string(),
+                env_path.to_string_lossy().into_owned(),
+            )
+            .expect("import channel_env");
+        println!("channel_env rows={env_rows} doc_exists={}", env_path.exists());
+        assert_eq!(env_rows, 1);
+        assert!(!env_path.exists(), "managed env doc must be deleted");
+        let env_json: String = live
+            .query_row(
+                "SELECT env_json FROM channel_env WHERE channel_key='js.bridge'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        println!("bridge plaintext env = {env_json}");
+        assert!(!env_json.contains("p@ss"));
+        assert!(!env_json.contains("PASSWORD"));
+        let secret = std::fs::read_to_string(
+            files_dir.join("secrets").join("channel.js.bridge.PASSWORD"),
+        )
+        .expect("secret file");
+        assert_eq!(secret, "p@ss");
+
+        // fdroid_sources: persisted, doc deleted.
+        let fdroid_path = files_dir.join("migration").join("fdroid_sources.json");
+        std::fs::write(
+            &fdroid_path,
+            br#"{"version":1,"sources":[{"id":"official","name":"Official","repoUrl":"https://f-droid.org/repo"}],"last_source_id":"official"}"#,
+        )
+        .unwrap();
+        let sources = api
+            .import_migration_file(
+                "fdroid_sources".to_string(),
+                fdroid_path.to_string_lossy().into_owned(),
+            )
+            .expect("import fdroid_sources");
+        println!("fdroid sources={sources} doc_exists={}", fdroid_path.exists());
+        assert_eq!(sources, 1);
+        assert!(!fdroid_path.exists());
+        let last: String = live
+            .query_row(
+                "SELECT value FROM update_prefs WHERE key='last_source_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(last, "official");
+
+        drop(live);
         drop(api);
         std::fs::remove_dir_all(&root).unwrap();
     }
