@@ -4,6 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# `--channel` selects the channel parity suite (the only suite today).  It is a
+# harness selector, not a normalizer flag, so consume it here and pass every
+# other argument (e.g. --inject-field-diff) through unchanged.
+CHANNEL=0
+NORMALIZER_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --channel) CHANNEL=1 ;;
+    *) NORMALIZER_ARGS+=("$arg") ;;
+  esac
+done
+if [[ "$CHANNEL" -eq 1 ]]; then
+  echo "channel parity suite selected"
+fi
+
 FIXTURE_DIR="test/fixtures/parity"
 DB="$FIXTURE_DIR/localdb.db"
 SQL="$FIXTURE_DIR/localdb.sql"
@@ -32,4 +47,4 @@ cat "$RUST_JSON"
 echo
 echo "== normalizer =="
 python3 scripts/qa/parity_normalize.py \
-  --dart "$DART_JSON" --rust "$RUST_JSON" "$@"
+  --dart "$DART_JSON" --rust "$RUST_JSON" ${NORMALIZER_ARGS[@]+"${NORMALIZER_ARGS[@]}"}

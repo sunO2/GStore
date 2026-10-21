@@ -1,0 +1,328 @@
+name: wave01-qa
+
+# Baseline-aware QA for the Wave 0/1 Rust core + Android channel branch.
+# Path filters keep this off unrelated UI/catalog/download work.
+
+on:
+  push:
+    branches:
+      - main
+      - wave01/rust-core-channels
+      - 'wave01/**'
+    paths:
+      - 'rust/gstore_contract/**'
+      - 'rust/gstore_core/**'
+      - 'rust/gstore_host/**'
+      - 'rust/test-fixtures/**'
+      - 'test/c_abi/**'
+      - 'test/parity/**'
+      - 'test/fixtures/parity/**'
+      - 'test/core_api_test.dart'
+      - 'test/core_flags_test.dart'
+      - 'test/migration_handoff_test.dart'
+      - 'test/channel_api_test.dart'
+      - 'test/channel_migration_test.dart'
+      - 'lib/core/**'
+      - 'scripts/qa/**'
+      - 'scripts/dev/check_c_abi.sh'
+      - 'scripts/dev/generate_c_header.sh'
+      - 'docs/qa-baseline.json'
+      - 'rust/gstore_host/frb_config.yaml'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'android/app/build.gradle'
+      - 'android/app/build.gradle.kts'
+      - 'android/build.gradle'
+      - 'android/build.gradle.kts'
+      - 'android/gradle.properties'
+      - '.github/workflows/wave01-qa.yml'
+  pull_request:
+    paths:
+      - 'rust/gstore_contract/**'
+      - 'rust/gstore_core/**'
+      - 'rust/gstore_host/**'
+      - 'rust/test-fixtures/**'
+      - 'test/c_abi/**'
+      - 'test/parity/**'
+      - 'test/fixtures/parity/**'
+      - 'test/core_api_test.dart'
+      - 'test/core_flags_test.dart'
+      - 'test/migration_handoff_test.dart'
+      - 'test/channel_api_test.dart'
+      - 'test/channel_migration_test.dart'
+      - 'lib/core/**'
+      - 'scripts/qa/**'
+      - 'scripts/dev/check_c_abi.sh'
+      - 'scripts/dev/generate_c_header.sh'
+      - 'docs/qa-baseline.json'
+      - 'rust/gstore_host/frb_config.yaml'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'android/app/build.gradle'
+      - 'android/app/build.gradle.kts'
+      - 'android/build.gradle'
+      - 'android/build.gradle.kts'
+      - 'android/gradle.properties'
+      - '.github/workflows/wave01-qa.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: wave01-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  FLUTTER_VERSION: '3.44.8'
+
+jobs:
+  linux-qa:
+    name: Linux baseline (dart + rust + C ABI + plan audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install host QA dependencies (sqlite/ripgrep; NO libclang)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libsqlite3-dev sqlite3 ripgrep cmake ninja-build
+          # Deliberately NOT installed: libclang. gstore_mod_proxy must stay
+          # ENV-BLOCKED in the baseline job (see docs/qa-baseline.json).
+
+      - name: Cache Flutter pub
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-wave01-pub-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wave01-pub-
+            ${{ runner.os }}-pub-
+
+      - name: Cache cargo registry and crate targets
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/gstore_contract/target
+            rust/gstore_core/target
+            rust/gstore_host/target
+            rust/gstore_mod_analyzer/target
+            rust/gstore_mod_repo/target
+            rust/gstore_mod_qr/target
+          key: ${{ runner.os }}-wave01-cargo-${{ hashFiles('rust/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wave01-cargo-
+
+      - name: Cache QA CLIs (cbindgen)
+        id: qa-cli-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cbindgen
+          key: ${{ runner.os }}-wave01-cbindgen-0.29.2
+
+      - name: Install cbindgen
+        if: steps.qa-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cbindgen --version 0.29.2
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: Dart analyze (baseline findings are tolerated; rc 0/2 only)
+        run: |
+          set +e
+          dart analyze lib/
+          rc=$?
+          set -e
+          echo "dart analyze exit=$rc"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            exit "$rc"
+          fi
+
+      - name: Rust contract tests
+        run: cargo test --manifest-path rust/gstore_contract/Cargo.toml
+
+      - name: Rust core tests
+        run: cargo test --manifest-path rust/gstore_core/Cargo.toml
+
+      # The host suite dlopens qr/analyzer/repo modules.  Build those fixtures
+      # so the integration tests actually run instead of being skipped.
+      - name: Build host-test fixture modules (qr/analyzer/repo)
+        run: |
+          cargo build --manifest-path rust/gstore_mod_analyzer/Cargo.toml
+          cargo build --manifest-path rust/gstore_mod_repo/Cargo.toml
+          cargo build --manifest-path rust/gstore_mod_qr/Cargo.toml
+
+      - name: Rust host tests
+        run: cargo test --manifest-path rust/gstore_host/Cargo.toml
+
+      - name: C ABI drift + consumer
+        run: bash scripts/dev/check_c_abi.sh
+
+      - name: Baseline-aware quality gate (dart + clippy, no libclang)
+        env:
+          # Never install libclang.  Point bindgen at a non-existent path so
+          # gstore_mod_proxy stays ENV-BLOCKED even if the runner image happens
+          # to ship libclang; the baseline captured it as unavailable.
+          LIBCLANG_PATH: /nonexistent/libclang
+        run: bash scripts/qa/f2-quality.sh
+
+      - name: Plan audit self-test (fixtures only, no real plan needed)
+        run: bash scripts/qa/f1-plan-audit.sh --self-test
+
+  frb-regen:
+    name: FRB regeneration diff gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Flutter pub
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-wave01-pub-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wave01-pub-
+
+      - name: Cache FRB codegen binary
+        id: frb-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/flutter_rust_bridge_codegen
+          key: ${{ runner.os }}-frb-codegen-2.11.1
+
+      - name: Install flutter_rust_bridge_codegen 2.11.1
+        if: steps.frb-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked flutter_rust_bridge_codegen --version 2.11.1
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # NO fixed wire count: the generated files must match the source exactly.
+      - name: Regenerate and fail on diff
+        env:
+          FRB_DEBUG_SKIP_SANITY_CHECK_CLASS_NAME_DUPLICATES: '1'
+        run: |
+          set -euo pipefail
+          cd rust/gstore_host
+          flutter_rust_bridge_codegen generate --config-file frb_config.yaml
+          cd "$GITHUB_WORKSPACE"
+          git diff --exit-code
+          generated_status="$(git status --porcelain --untracked-files=all -- \
+            lib/core/rust/generated rust/gstore_host/src/frb_generated.rs)"
+          if [ -n "$generated_status" ]; then
+            echo "ERROR: FRB regeneration produced untracked/untracked changes:" >&2
+            echo "$generated_status" >&2
+            exit 1
+          fi
+          echo "FRB regeneration diff gate: OK (no drift)"
+
+  android-arm64:
+    name: Android arm64 release (host .so + APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Set up Rust toolchain (arm64 Android target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26c
+
+      - name: Cache Flutter pub
+        uses: actions/cache@v6
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-wave01-pub-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wave01-pub-
+
+      - name: Cache cargo registry and host target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/gstore_host/target
+          key: ${{ runner.os }}-wave01-android-arm64-${{ hashFiles('rust/gstore_host/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-wave01-android-arm64-
+
+      - name: Build gstore_host .so for arm64 (NDK)
+        env:
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
+          LINKER="$TOOLCHAIN/bin/aarch64-linux-android21-clang"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
+          export CC_aarch64_linux_android="$LINKER"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          cargo build --manifest-path rust/gstore_host/Cargo.toml \
+            --release --target aarch64-linux-android
+          SO="rust/gstore_host/target/aarch64-linux-android/release/libgstore_host.so"
+          test -s "$SO"
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp "$SO" android/app/src/main/jniLibs/arm64-v8a/libgstore_host.so
+          ls -l android/app/src/main/jniLibs/arm64-v8a/libgstore_host.so
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: Build release APK (arm64)
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: APK budget gate
+        run: bash scripts/qa/apk-budget.sh --apk build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload APK artifact (CI-only; not committed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstore-wave01-arm64-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 7

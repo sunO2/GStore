@@ -15,6 +15,13 @@
    "gstore_mod_repo": 101
   }
  },
+ "apk_budget": {
+  "arm64_release_bytes": 92274688,
+  "measured_reference_bytes": 81821125,
+  "measured_at": "2026-10-21",
+  "source": "flutter build apk --release --target-platform android-arm64 (full module build, GStore main worktree)",
+  "note": "88 MiB budget (~12.8% headroom over the 81,821,125-byte reference). Raise only with a recorded release reason; apk-budget.sh fails on regression."
+ },
  "dart": [
   {
    "file": "lib/compent/markdown_widget.dart",
