@@ -84,6 +84,7 @@ pub struct ModuleDownloadPort<B: ModuleBridge> {
     bridge: B,
     conn: SharedConn,
     db_path: PathBuf,
+    module_db_path: Option<PathBuf>,
 }
 
 impl<B: ModuleBridge> ModuleDownloadPort<B> {
@@ -92,7 +93,18 @@ impl<B: ModuleBridge> ModuleDownloadPort<B> {
             bridge,
             conn,
             db_path,
+            module_db_path: None,
         }
+    }
+
+    /// Records where the download module keeps its own database.
+    ///
+    /// When the path is set and the file is missing, reconciliation treats every
+    /// non-terminal row as `needs_restart` instead of asking a module that has
+    /// provably lost its state.
+    pub fn with_module_db_path(mut self, path: PathBuf) -> Self {
+        self.module_db_path = Some(path);
+        self
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, PortError> {
@@ -147,6 +159,29 @@ impl<B: ModuleBridge> ModuleDownloadPort<B> {
         .map_err(|e| PortError::Db(format!("mark task {id} needs_restart: {e}")))?;
         Ok(())
     }
+
+    fn reconcile_without_module_db(&self) -> Result<ReconcileReport, PortError> {
+        let rows = self.list()?;
+        let mut report = ReconcileReport {
+            checked: rows.len(),
+            needs_restart: Vec::new(),
+        };
+        let conn = self.lock()?;
+        for row in rows {
+            if matches!(row.status.as_str(), "completed" | "cancelled" | "removed") {
+                continue;
+            }
+            conn.execute(
+                "UPDATE download_task SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![NEEDS_RESTART, now_secs(), row.id],
+            )
+            .map_err(|e| PortError::Db(format!("mark row {} needs_restart: {e}", row.id)))?;
+            report
+                .needs_restart
+                .push(row.module_task_id.unwrap_or_else(|| row.id.to_string()));
+        }
+        Ok(report)
+    }
 }
 
 impl<B: ModuleBridge> DownloadPort for ModuleDownloadPort<B> {
@@ -159,7 +194,9 @@ impl<B: ModuleBridge> DownloadPort for ModuleDownloadPort<B> {
         let value = self.module_call("download.start", payload)?;
         let id = field_i64(&value, &["id"])
             .ok_or_else(|| PortError::Module("download.start response missing id".to_string()))?;
-        self.upsert(&TaskRecord::from_request(req, id.to_string(), "running"))?;
+        let status = field_i64(&value, &["status"])
+            .map_or_else(|| "running".to_string(), |s| status_label(s).to_string());
+        self.upsert(&TaskRecord::from_request(req, id.to_string(), &status))?;
         Ok(id)
     }
 
@@ -171,11 +208,10 @@ impl<B: ModuleBridge> DownloadPort for ModuleDownloadPort<B> {
     fn get(&self, module_task_id: &str) -> Result<DownloadTaskRow, PortError> {
         {
             let conn = self.lock()?;
-            match crate::download::load_task(&conn, module_task_id)
+            if let Some(row) = crate::download::load_task(&conn, module_task_id)
                 .map_err(|e| PortError::Db(e.to_string()))?
             {
-                Some(row) => return Ok(row),
-                None => {}
+                return Ok(row);
             }
         }
         let Some(value) = self.module_get(module_task_id)? else {
@@ -223,6 +259,11 @@ impl<B: ModuleBridge> DownloadPort for ModuleDownloadPort<B> {
     }
 
     fn reconcile(&self) -> Result<ReconcileReport, PortError> {
+        if let Some(path) = &self.module_db_path {
+            if !path.exists() {
+                return self.reconcile_without_module_db();
+            }
+        }
         let mut report = ReconcileReport::default();
         for row in self.list()? {
             let Some(id) = row.module_task_id else {
@@ -279,7 +320,7 @@ fn field_i64(value: &Value, names: &[&str]) -> Option<i64> {
 
 fn status_label(code: i64) -> &'static str {
     match code {
-        0 | 1 | 2 => "running",
+        0..=2 => "running",
         3 => "paused",
         4 => "completed",
         5 => "failed",
@@ -485,31 +526,13 @@ fn existing_row_id(conn: &Connection, column: &str, value: &str) -> Result<Optio
 
 fn query_rows(conn: &Connection) -> Result<Vec<DownloadTaskRow>, PortError> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, module_task_id, dedup_key, app_id, app_name, version, file_name,
-                    kind, status, bytes_done, total, speed_bps, eta_sec, last_started_at
-             FROM download_task ORDER BY id",
-        )
+        .prepare(&format!(
+            "SELECT {} FROM download_task ORDER BY id",
+            crate::download::ROW_COLUMNS
+        ))
         .map_err(|e| PortError::Db(format!("prepare list: {e}")))?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok(DownloadTaskRow {
-                id: row.get(0)?,
-                module_task_id: row.get(1)?,
-                dedup_key: row.get(2)?,
-                app_id: row.get(3)?,
-                app_name: row.get(4)?,
-                version: row.get(5)?,
-                file_name: row.get(6)?,
-                kind: row.get(7)?,
-                status: row.get(8)?,
-                bytes_done: row.get(9)?,
-                total: row.get(10)?,
-                speed_bps: row.get(11)?,
-                eta_sec: row.get(12)?,
-                last_started_at: row.get(13)?,
-            })
-        })
+        .query_map([], crate::download::row_from_sql)
         .map_err(|e| PortError::Db(format!("query list: {e}")))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| PortError::Db(format!("read list: {e}")))
@@ -594,6 +617,10 @@ mod tests {
     }
 
     fn port(bridge: FakeBridge) -> (ModuleDownloadPort<FakeBridge>, SharedConn) {
+        port_with(bridge)
+    }
+
+    fn port_with<B: ModuleBridge>(bridge: B) -> (ModuleDownloadPort<B>, SharedConn) {
         let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         crate::migration::apply_core_schema(&conn.lock().unwrap()).unwrap();
         let port = ModuleDownloadPort::new(bridge, conn.clone(), PathBuf::from("/tmp/core.db"));
@@ -674,5 +701,204 @@ mod tests {
         assert_eq!(rows[0].status, NEEDS_RESTART);
         assert_eq!(port.watch_all().unwrap(), rows);
         assert_eq!(port.db_path(), Path::new("/tmp/core.db"));
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "gstore_core_port_{}_{}_{}",
+                std::process::id(),
+                tag,
+                n
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingBridge {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ModuleBridge for CountingBridge {
+        fn call(&self, method: &str, _payload: &[u8]) -> Result<Vec<u8>, String> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(format!("bridge must not be called for {method}"))
+        }
+    }
+
+    #[test]
+    fn download_legacy_and_reconcile_missing_module_db() {
+        let dir = TempDir::new("missing_module");
+        let bridge = CountingBridge::default();
+        let calls = bridge.calls.clone();
+        let (port, conn) = port_with(bridge);
+        {
+            let guard = conn.lock().unwrap();
+            guard
+                .execute(
+                    "INSERT INTO download_task
+                     (module_task_id, dedup_key, app_id, version, file_name, status, created_at, updated_at)
+                     VALUES ('7', 'dedup:7', 'com.example.app', '1.0.0', 'app.apk', 'running', 1, 1)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let missing = dir.path().join("module-db-does-not-exist.db");
+        let port = port.with_module_db_path(missing);
+        let report = port.reconcile().unwrap();
+        println!("missing module db reconcile -> {report:?}");
+        println!("bridge calls -> {}", calls.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(report.needs_restart, vec!["7".to_string()]);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a missing module db must be handled without the bridge"
+        );
+        let rows = port.snapshot().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, NEEDS_RESTART);
+        assert!(
+            rows.iter().all(|row| row.status != "running"),
+            "no stale running row may survive a lost module db"
+        );
+    }
+
+    /// This test double performs the real HTTP GET only to prove the port
+    /// completes a local transfer end-to-end. Production byte transfer stays in
+    /// `gstore_mod_download`; the bridge here is a test fixture, not a port
+    /// responsibility.
+    #[test]
+    fn download_legacy_and_reconcile_local_http_completes() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let dir = TempDir::new("local_http");
+        let dest = dir.path().join("payload.bin");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+        });
+
+        struct HttpBridge {
+            dest: PathBuf,
+        }
+
+        impl ModuleBridge for HttpBridge {
+            fn call(&self, method: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+                if method != "download.start" {
+                    return Err(format!("unexpected method {method}"));
+                }
+                let body: Value =
+                    serde_json::from_slice(payload).map_err(|e| format!("bad payload: {e}"))?;
+                let url = body["url"].as_str().ok_or("missing url")?;
+                let (host_port, path) = split_http_url(url)?;
+
+                let mut stream = TcpStream::connect(&host_port).map_err(|e| e.to_string())?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .map_err(|e| e.to_string())?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .map_err(|e| e.to_string())?;
+                write!(
+                    stream,
+                    "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
+                )
+                .map_err(|e| e.to_string())?;
+                stream.flush().map_err(|e| e.to_string())?;
+
+                let mut response = Vec::new();
+                stream
+                    .read_to_end(&mut response)
+                    .map_err(|e| e.to_string())?;
+                let split = response
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .ok_or("response has no header terminator")?
+                    + 4;
+                std::fs::write(&self.dest, &response[split..]).map_err(|e| e.to_string())?;
+
+                Ok(serde_json::json!({
+                    "id": 7,
+                    "status": 4,
+                    "received": 5,
+                    "total": 5,
+                    "filePath": self.dest.to_string_lossy(),
+                })
+                .to_string()
+                .into_bytes())
+            }
+        }
+
+        fn split_http_url(url: &str) -> Result<(String, String), String> {
+            let rest = url
+                .strip_prefix("http://")
+                .ok_or_else(|| format!("only http:// fixtures are supported: {url}"))?;
+            Ok(match rest.split_once('/') {
+                Some((host, path)) => (host.to_string(), format!("/{path}")),
+                None => (rest.to_string(), "/".to_string()),
+            })
+        }
+
+        let url = format!("http://{addr}/payload.bin");
+        let dest_text = dest.to_string_lossy().to_string();
+        let (port, _conn) = port_with(HttpBridge {
+            dest: dest.clone(),
+        });
+        let mut request = request();
+        request.url = url;
+        request.dest_path = dest_text;
+        request.dedup_key = "http:local".to_string();
+
+        let id = port.start(&request).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(id, 7);
+        let rows = port.snapshot().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "completed");
+        assert_eq!(rows[0].dest_path.as_deref(), Some(request.dest_path.as_str()));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello");
     }
 }
