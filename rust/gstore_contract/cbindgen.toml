@@ -1,0 +1,30 @@
+# cbindgen 配置：从 rust/gstore_contract/src/abi.rs 生成 C 头文件
+#
+# 只导出模块/宿主跨 C ABI 边界共享的类型与常量，名字保持无前缀
+# （cbindgen 默认即不添加前缀，勿引入 prefix 配置）。
+#
+# 生成入口：scripts/dev/generate_c_header.sh
+# 漂移校验：scripts/dev/check_c_abi.sh
+language = "c"
+include_guard = "GSTORE_PLATFORM_H"
+usize_is_size_t = true
+
+# 生成文件不手改；只允许通过 cbindgen 重新生成。
+autogen_warning = "/* 警告：本文件由 cbindgen 自动生成，请勿手动编辑。\n * 源：rust/gstore_contract/src/abi.rs\n * 重新生成：scripts/dev/generate_c_header.sh */"
+
+[export]
+# 常量不受 include 白名单约束（cbindgen 会导出全部可解析常量），
+# 因此用 exclude 去掉不属于 C ABI 契约的 PROTOCOL_VERSION（envelope.rs）。
+exclude = ["PROTOCOL_VERSION"]
+include = [
+    "GStorePlatformApiV1",
+    "ByteBuf",
+    "GStorePlatformError",
+    "GStoreModuleEntry",
+    "GStoreModuleApi",
+    "PLATFORM_CAP_.*",
+    "ABI_ERR_.*",
+    "ABI_OK",
+    "GSTORE_MODULE_ABI_VERSION",
+    "MIN_HOST_ABI",
+]
