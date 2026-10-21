@@ -4395,6 +4395,12 @@
    "code": "unnecessary_import",
    "message": "The import of 'package:gstore/core/webdav/webdav_config.dart' is unnecessary because all of the used elements are also provided by the import of 'package:gstore/core/core.dart'.",
    "severity": "INFO"
+  },
+  {
+   "file": "lib/core/rust/CoreApiFacade.dart",
+   "code": "file_names",
+   "message": "The file name 'CoreApiFacade.dart' isn't a lower_case_with_underscores identifier.",
+   "severity": "INFO"
   }
  ],
  "clippy": {

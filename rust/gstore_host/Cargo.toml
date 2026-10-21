@@ -29,6 +29,12 @@ flutter_rust_bridge = "=2.11.1"
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"], default-features = false }
 
+[lints.rust]
+# `frb_expand` is emitted by flutter_rust_bridge's `#[frb]` proc-macro into
+# this crate; declare it as an expected cfg so check-cfg does not flag the
+# macro expansion.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }
+
 [profile.release]
 opt-level = "z"
 lto = true

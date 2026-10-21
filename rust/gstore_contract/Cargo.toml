@@ -21,3 +21,9 @@ rand_core = { version = "0.6", features = ["std"] }
 [build-dependencies]
 prost-build = "0.14.4"
 protoc-bin-vendored = "3.2.0"
+
+[lints.rust]
+# `dynamic-pb` is a deliberately optional cfg gate for the OUT_DIR-generated
+# prost module in src/lib.rs. Declare it as an expected feature value so
+# rustc's check-cfg does not flag it while the backing feature is opt-in.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("dynamic-pb"))'] }
