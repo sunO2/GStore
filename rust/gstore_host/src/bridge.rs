@@ -372,6 +372,10 @@ impl CoreApi {
         }
         let conn = core_db::open(std::path::Path::new(&data_dir))
             .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
+        for domain in core_migration::CORE_WRITES_DOMAINS {
+            core_migration::mark_core_write(&conn, domain, Some("spike-init"))
+                .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
+        }
         Ok(CoreApi {
             paths: std::sync::Mutex::new(Some(CorePaths {
                 data_dir,
@@ -490,19 +494,15 @@ impl CoreApi {
         let db = db
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
-        db.query_row(
-            "SELECT domain, first_write_at, snapshot_id FROM core_writes WHERE domain=?1",
-            [&domain],
-            |row| {
-                Ok(CoreWritesMarker {
-                    domain: row.get(0)?,
-                    first_write_at: row.get(1)?,
-                    snapshot_id: row.get(2)?,
+        core_migration::core_write_marker(db, &domain)
+            .map(|marker| {
+                marker.map(|m| CoreWritesMarker {
+                    domain: m.domain,
+                    first_write_at: m.first_write_at,
+                    snapshot_id: m.snapshot_id,
                 })
-            },
-        )
-        .optional()
-        .map_err(|e| format!("CORE_E_WRITES: query {domain}: {e}"))
+            })
+            .map_err(|e| format!("CORE_E_WRITES: query {domain}: {}", e.0))
     }
 }
 
@@ -553,9 +553,23 @@ mod core_api_tests {
             migration_dir.display()
         );
 
-        assert!(api
+        let channel = api
             .core_writes("channel".to_string())
-            .expect("core_writes")
+            .expect("core_writes channel")
+            .expect("init must mark channel");
+        assert!(channel.first_write_at > 0, "channel first_write_at must be > 0");
+        assert_eq!(channel.snapshot_id, Some("spike-init".to_string()));
+        for domain in ["update", "download"] {
+            let marker = api
+                .core_writes(domain.to_string())
+                .expect("core_writes")
+                .unwrap_or_else(|| panic!("init must mark {domain}"));
+            assert!(marker.first_write_at > 0, "{domain} first_write_at must be > 0");
+            assert_eq!(marker.snapshot_id, Some("spike-init".to_string()));
+        }
+        assert!(api
+            .core_writes("other".to_string())
+            .expect("core_writes other")
             .is_none());
 
         let sample = root.join("a.txt");

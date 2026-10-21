@@ -75,7 +75,11 @@ void main() {
     );
   });
 
-  test('no core_writes marker yet', () async {
-    expect(await api.coreWrites(domain: 'channel'), isNull);
+  test('init writes core_writes markers before mutation', () async {
+    final marker = await api.coreWrites(domain: 'channel');
+
+    expect(marker, isNotNull);
+    expect(marker!.firstWriteAt > 0, isTrue);
+    expect(marker.snapshotId, 'spike-init');
   });
 }
