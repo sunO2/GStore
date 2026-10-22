@@ -61,6 +61,11 @@ class ChannelMigrationResult {
 }
 
 /// Static-only ordered migration handoff.
+///
+/// Wave 2 keeps the entry point caller-injected: the production bootstrap does
+/// not call [start] yet, and every core flag (including `coreWrites`) stays
+/// false, so the legacy Dart writers remain authoritative. Wiring the handoff
+/// into startup is a later plan todo.
 class MigrationHandoff {
   MigrationHandoff._();
 
