@@ -1,5 +1,6 @@
-//! Wave 2 Todo 10 contract: FRB catalog/added-apps/update facades over a real
-//! core database, including the `catalog.changed` forwarding point.
+//! Wave 4 Todo 3 contract: update judgement reads the core-maintained
+//! inventory and platform facts (no platform host), plus the catalog/added-apps
+//! facades over a real core database and the `catalog.changed` forwarding point.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -14,9 +15,6 @@ use gstore_core::channel::{ChannelDriver, InMemoryChannelDriver};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
     AppDetail, AppDownload, AppUpdate, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
-};
-use gstore_core::ports::{
-    CapabilitySet, DeviceInfo, FakePlatformHost, InstalledApp, PlatformHost,
 };
 use gstore_core::update::service::{ChannelResolver, UpdateService};
 use gstore_host::bridge::{AddedAppsApi, CatalogApi, UpdateApi};
@@ -99,11 +97,16 @@ fn serve_once(body: Vec<u8>) -> (String, JoinHandle<()>) {
 }
 
 #[test]
-fn catalog_update_api() {
+fn catalog_and_added_apps_contract() {
     catalog_contract();
     added_apps_contract();
+    println!("catalog_and_added_apps_contract: PASS");
+}
+
+#[test]
+fn update_uses_inventory() {
     update_contract();
-    println!("catalog_update_api: PASS");
+    println!("update_uses_inventory: PASS");
 }
 
 fn catalog_contract() {
@@ -368,17 +371,6 @@ fn app_update(app_id: &str, package: &str) -> AppUpdate {
     }
 }
 
-fn installed(package: &str, version: &str) -> InstalledApp {
-    InstalledApp {
-        package_name: package.to_string(),
-        app_name: package.to_string(),
-        version_name: version.to_string(),
-        version_code: 1,
-        icon: None,
-        system: false,
-    }
-}
-
 fn resolver(drivers: Vec<Arc<dyn ChannelDriver>>) -> ChannelResolver {
     let map: std::collections::BTreeMap<String, Arc<dyn ChannelDriver>> = drivers
         .into_iter()
@@ -387,23 +379,52 @@ fn resolver(drivers: Vec<Arc<dyn ChannelDriver>>) -> ChannelResolver {
     Arc::new(move |code: &str| map.get(code).cloned())
 }
 
-fn platform(version: &str) -> Arc<FakePlatformHost> {
-    let device = DeviceInfo {
-        manufacturer: "Example".to_string(),
-        model: "Fake Phone".to_string(),
-        device: "fake".to_string(),
-        android_version: "15".to_string(),
-        sdk_int: 35,
-        abis: vec!["arm64-v8a".to_string()],
-    };
-    Arc::new(
-        FakePlatformHost::new(CapabilitySet::all())
-            .with_device(device)
-            .with_installed(vec![
-                installed("com.example.one", version),
-                installed("com.example.two", "1.0.0"),
-            ]),
-    )
+/// Seeds the core-maintained facts + inventory rows the update service reads.
+///
+/// This is the parity fixture that replaces the deleted `FakePlatformHost`:
+/// the frontend would push exactly these rows through `pushPlatformFacts` /
+/// `pushInventory`; the update judgement must not care who wrote them.
+fn seed_facts_and_inventory(db: &DbHandle, one_version: &str) {
+    let facts = serde_json::json!({
+        "source_id": "android",
+        "os": "android",
+        "arch": "aarch64",
+        "abis": ["arm64-v8a"],
+        "sdk": 35,
+        "device": { "model": "Fake Phone", "manufacturer": "Example" },
+        "paths": { "data": "/data", "files": "/files", "cache": "/cache" },
+        "crypto_key": null,
+        "captured_at": 10_000,
+    });
+    db.with_writer(|conn| {
+        conn.execute(
+            "INSERT INTO platform_facts(id, json, source_id, captured_at) \
+             VALUES (1, ?1, 'android', 10000)",
+            [facts.to_string()],
+        )
+        .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        conn.execute(
+            "INSERT INTO inventory_source(source_id, seq, captured_at) \
+             VALUES ('android', 1, 10000)",
+            [],
+        )
+        .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        for (package, version) in [
+            ("com.example.one", one_version),
+            ("com.example.two", "1.0.0"),
+        ] {
+            conn.execute(
+                "INSERT INTO installed_app(\
+                     source_id, package_name, app_name, version_name, version_code, \
+                     is_system, target_sdk, min_sdk, abis_json, captured_at\
+                 ) VALUES ('android', ?1, ?1, ?2, 1, 0, 35, 24, '[\"arm64-v8a\"]', 10000)",
+                rusqlite::params![package, version],
+            )
+            .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        }
+        Ok(())
+    })
+    .expect("seed facts and inventory");
 }
 
 fn update_contract() {
@@ -412,6 +433,7 @@ fn update_contract() {
     let added = AddedAppsService::new(db.clone());
     added.add("gh", "app.one", None).expect("add app.one");
     added.add("gh", "app.two", None).expect("add app.two");
+    seed_facts_and_inventory(&db, "1.0.0");
 
     let key = ChannelKey::new("gh").unwrap();
     let driver: Arc<dyn ChannelDriver> = Arc::new(
@@ -419,13 +441,7 @@ fn update_contract() {
             .with_updates(vec![app_update("app.one", "com.example.one")]),
     );
     let resolver = resolver(vec![driver]);
-    let simulated_platform: Arc<dyn PlatformHost> = platform("1.0.0");
-    let service = UpdateService::with_clock(
-        db.clone(),
-        resolver.clone(),
-        simulated_platform.clone(),
-        Arc::new(|| 10_000_i64),
-    );
+    let service = UpdateService::with_clock(db.clone(), resolver.clone(), Arc::new(|| 10_000_i64));
     let api = UpdateApi::from_service_for_test(service);
 
     let report = api.check(true).expect("check");
@@ -471,15 +487,21 @@ fn update_contract() {
     // Original installed version is older -> mark_updated keeps the entry.
     assert!(!api.mark_updated("app.one".to_string()).expect("mark keeps"));
 
-    // Now the device reports the new version -> the cache entry is dropped.
-    let upgraded = UpdateService::with_clock(
-        db.clone(),
-        resolver,
-        platform("2.0.0"),
-        Arc::new(|| 20_000_i64),
-    );
+    // Now the device pushes the new version into the inventory -> the cache
+    // entry is dropped.
+    db.with_writer(|conn| {
+        conn.execute(
+            "UPDATE installed_app SET version_name = '2.0.0' \
+             WHERE source_id = 'android' AND package_name = 'com.example.one'",
+            [],
+        )
+        .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        Ok(())
+    })
+    .expect("upgrade inventory");
+    let upgraded = UpdateService::with_clock(db.clone(), resolver, Arc::new(|| 20_000_i64));
     let api = UpdateApi::from_service_for_test(upgraded);
-    // The cache survives across services; the upgraded host lets mark drop it.
+    // The cache survives across services; the upgraded inventory lets mark drop it.
     assert!(api.has_update("app.one".to_string()).unwrap());
     assert!(api.mark_updated("app.one".to_string()).expect("mark drops"));
     assert_eq!(api.count().expect("count after mark"), 0);

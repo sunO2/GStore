@@ -19,20 +19,21 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
+#[cfg(target_os = "android")]
+use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use jni::objects::{GlobalRef, JObject, JObjectArray, JString, JValue};
-use jni::{JNIEnv, JavaVM, NativeMethod};
+use jni::JNIEnv;
+#[cfg(target_os = "android")]
+use jni::JavaVM;
 
 /// protect 回调返回值：0 = 已保护 / 无需保护（无 VPN 时放行），非 0 = 失败。
 /// 与 Todo 3 的 `socket_protect_stub`（返回 0）约定一致，模块据此把非 0 当错误。
 const PROTECT_OK: c_int = 0;
 const PROTECT_ERR: c_int = -1;
-
-/// 进程内唯一的 `JavaVM`（首次 `nativeSetService` 时缓存；重启服务不复用旧 VM）。
-static JVM: OnceLock<JavaVM> = OnceLock::new();
 
 /// 当前 `VpnService` 实例的全局引用（`nativeClear` 置空）。`GlobalRef` 保证对象
 /// 不被 GC，跨线程安全。
@@ -56,7 +57,7 @@ extern "C" fn vpn_protect_fd(fd: c_int) -> c_int {
     if fd < 0 {
         return PROTECT_ERR;
     }
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return PROTECT_OK;
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -95,18 +96,12 @@ extern "C" fn vpn_protect_fd(fd: c_int) -> c_int {
 
 /// 缓存 service 引用并安装真实 protect 实现（`nativeSetService` 的实体）。
 pub(crate) fn install_service(env: &JNIEnv, service: &JObject) -> Result<(), String> {
-    if service.is_null() {
-        return Err("service 引用为 null".to_string());
-    }
-    let jvm = env
-        .get_java_vm()
-        .map_err(|e| format!("get_java_vm 失败: {e}"))?;
+    crate::jvm::init_vm(env, service)?;
     let global = env
         .new_global_ref(service)
         .map_err(|e| format!("new_global_ref 失败: {e}"))?;
 
     // VM 进程内恒定：已缓存则忽略（重启服务只替换 GlobalRef，不换 VM）。
-    let _ = JVM.set(jvm);
     {
         let mut slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(global);
@@ -340,7 +335,7 @@ fn set_uid_status_for_tests(f: UidStatusFn) {
 /// 探测真实 JNI 通道状态：无 VM → `NoVm`；无服务 → `NoService`；服务类上无
 /// `queryOwnerUid` → `MethodMissing`；否则 `Available`。绝不 panic。
 fn platform_uid_status() -> UidChannelStatus {
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return UidChannelStatus::NoVm;
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -497,7 +492,7 @@ fn set_owner_uid_fn_for_tests(f: OwnerUidFn) {
 /// 返回值一律 `None`（不 panic、不重试）。
 fn query_owner_uid_jni(q: &UidQueryHost) -> Option<u32> {
     let protocol = protocol_number(&q.protocol)?;
-    let jvm = JVM.get()?;
+    let jvm = crate::jvm::platform_jvm()?;
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
     let service = slot.as_ref()?;
     let mut env = jvm.attach_current_thread().ok()?;
@@ -595,7 +590,7 @@ pub(crate) fn invalidate_package_cache() {
 /// 调用 Kotlin `packagesForUid`。任何失败（无 VM / 无服务 / 方法缺失 / 异常）
 /// → 空列表，绝不 panic。
 fn jni_packages_for_uid(uid: u32) -> Vec<String> {
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return Vec::new();
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -657,285 +652,15 @@ fn guard_jni<F: FnOnce()>(export: &str, body: F) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PlatformHost JNI skeleton（Todo 6）
-// ---------------------------------------------------------------------------
-//
-// The platform host captures the VM + application context once and exposes a
-// `RegisterNatives` table for `com.suno2.gstore.PlatformHostBridge`. The Kotlin
-// class is intentionally optional in this wave: if it is absent, registration
-// is a no-op and the existing direct JNI exports remain unchanged. Kotlin may
-// also call the direct export below, which installs the same table itself.
-//
-// Android-only pieces are cfg-gated (`JNI_OnLoad`), so the Linux test host and
-// the C ABI regression keep compiling exactly as before.
-
-const PLATFORM_BRIDGE_CLASS: &str = "com/suno2/gstore/PlatformHostBridge";
-const PLATFORM_INIT_CONTEXT: &str = "nativeInitContext";
-const PLATFORM_INIT_CONTEXT_SIG: &str = "(Landroid/content/Context;)V";
-const PLATFORM_INVALIDATE_INVENTORY: &str = "nativeInvalidateInventory";
-const PLATFORM_INVALIDATE_INVENTORY_SIG: &str = "()V";
-
-const INSTALLER_BRIDGE_CLASS: &str = "com/suno2/gstore/InstallerBridge";
-const INSTALLER_ON_RESULT: &str = "nativeOnInstallResult";
-const INSTALLER_ON_RESULT_SIG: &str =
-    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
-
-/// `applicationContext` captured for PlatformHost operations (set once).
-static PLATFORM_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
-
-/// Set once after a successful `RegisterNatives`; repeated installs are no-ops.
-static PLATFORM_BRIDGE_INSTALLED: AtomicBool = AtomicBool::new(false);
-
-/// Set once after the installer native table is registered.
-static INSTALLER_NATIVES_INSTALLED: AtomicBool = AtomicBool::new(false);
-
-/// Cached `JavaVM` for PlatformHost (falls back to the battery bridge's cache).
-pub fn platform_jvm() -> Option<&'static JavaVM> {
-    JVM.get().or_else(|| crate::battery_bridge::jvm())
-}
-
-/// Cached application context for PlatformHost (falls back to the battery bridge
-/// cache, which Kotlin initializes on the app thread).
-pub fn platform_context() -> Option<&'static GlobalRef> {
-    PLATFORM_CONTEXT
-        .get()
-        .or_else(|| crate::battery_bridge::context())
-}
-
-/// Caches the VM + application context exactly once, then installs natives.
-///
-/// Idempotent: a second call only retries `RegisterNatives` if the first attempt
-/// failed (for example because the optional Kotlin class was not loaded yet).
-pub(crate) fn install_platform_context(
-    env: &mut JNIEnv,
-    context: &JObject,
-) -> Result<(), String> {
-    if context.is_null() {
-        return Err("PlatformHostBridge: context 引用为 null".to_string());
-    }
-    let jvm = env
-        .get_java_vm()
-        .map_err(|error| format!("PlatformHostBridge: get_java_vm 失败: {error}"))?;
-    let _ = JVM.set(jvm);
-    if PLATFORM_CONTEXT.get().is_none() {
-        let global = env
-            .new_global_ref(context)
-            .map_err(|error| format!("PlatformHostBridge: context GlobalRef 失败: {error}"))?;
-        let _ = PLATFORM_CONTEXT.set(global);
-    }
-    crate::log_bridge::push_host_log(
-        1,
-        format!(
-            "PlatformHostBridge: applicationContext 缓存完成（vm={} context={}）",
-            platform_jvm().is_some(),
-            platform_context().is_some()
-        ),
-    );
-    crate::platform_host::init_class(env);
-    crate::notification_host::init_class(env);
-    let _ = install_platform_natives(env);
-    if !install_installer_natives(env) {
-        crate::log_bridge::push_host_log(
-            2,
-            "InstallerBridge: native 表未注册（类未加载或注册失败）".to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// Registers the PlatformHost native table. Idempotent and non-fatal when the
-/// optional Kotlin bridge class is absent.
-pub(crate) fn install_platform_natives(env: &mut JNIEnv) -> bool {
-    if PLATFORM_BRIDGE_INSTALLED.load(Ordering::SeqCst) {
-        return true;
-    }
-    let class = match env.find_class(PLATFORM_BRIDGE_CLASS) {
-        Ok(class) => class,
-        Err(_) => {
-            let _ = env.exception_clear();
-            crate::log_bridge::push_host_log(
-                2,
-                format!("PlatformHostBridge: 类未加载，跳过 RegisterNatives: {PLATFORM_BRIDGE_CLASS}"),
-            );
-            return false;
-        }
-    };
-    let methods = [
-        NativeMethod {
-            name: PLATFORM_INIT_CONTEXT.into(),
-            sig: PLATFORM_INIT_CONTEXT_SIG.into(),
-            fn_ptr: Java_com_suno2_gstore_PlatformHostBridge_nativeInitContext as *const ()
-                as *mut c_void,
-        },
-        NativeMethod {
-            name: PLATFORM_INVALIDATE_INVENTORY.into(),
-            sig: PLATFORM_INVALIDATE_INVENTORY_SIG.into(),
-            fn_ptr: Java_com_suno2_gstore_PlatformHostBridge_nativeInvalidateInventory as *const ()
-                as *mut c_void,
-        },
-    ];
-    match env.register_native_methods(&class, &methods) {
-        Ok(()) => {
-            PLATFORM_BRIDGE_INSTALLED.store(true, Ordering::SeqCst);
-            crate::log_bridge::push_host_log(
-                1,
-                "PlatformHostBridge: RegisterNatives 成功（幂等）".to_string(),
-            );
-            true
-        }
-        Err(error) => {
-            let _ = env.exception_clear();
-            crate::log_bridge::push_host_log(
-                3,
-                format!("PlatformHostBridge: RegisterNatives 失败: {error}"),
-            );
-            false
-        }
-    }
-}
-
-/// Kotlin: `PlatformHostBridge.nativeInitContext(context: Context)`.
-///
-/// Direct export + `RegisterNatives` target. Safe to call repeatedly.
-#[no_mangle]
-pub extern "system" fn Java_com_suno2_gstore_PlatformHostBridge_nativeInitContext(
-    mut env: JNIEnv,
-    _class: JObject,
-    context: JObject,
-) {
-    guard_jni("PlatformHostBridge.nativeInitContext", || {
-        if let Err(error) = install_platform_context(&mut env, &context) {
-            crate::log_bridge::push_host_log(3, error);
-        }
-    });
-}
-
-/// Kotlin: `PlatformHostBridge.nativeInvalidateInventory()`.
-#[no_mangle]
-pub extern "system" fn Java_com_suno2_gstore_PlatformHostBridge_nativeInvalidateInventory(
-    _env: JNIEnv,
-    _class: JObject,
-) {
-    guard_jni("PlatformHostBridge.nativeInvalidateInventory", || {
-        crate::platform_host::invalidate_cache();
-    });
-}
-
-/// Registers the installer native table for `com.suno2.gstore.InstallerBridge`.
-///
-/// Idempotent and non-fatal when the Kotlin class is absent. Capturing the class
-/// here (app thread) lets later Rust threads call it without resolving the app
-/// class loader again.
-pub(crate) fn install_installer_natives(env: &mut JNIEnv) -> bool {
-    if INSTALLER_NATIVES_INSTALLED.load(Ordering::SeqCst) {
-        return true;
-    }
-    let class = match env.find_class(INSTALLER_BRIDGE_CLASS) {
-        Ok(class) => class,
-        Err(_) => {
-            let _ = env.exception_clear();
-            crate::log_bridge::push_host_log(
-                2,
-                format!("InstallerBridge: 类未加载，跳过 RegisterNatives: {INSTALLER_BRIDGE_CLASS}"),
-            );
-            return false;
-        }
-    };
-    if crate::installer_host::cache_installer_class(env, &class).is_none() {
-        crate::log_bridge::push_host_log(
-            3,
-            "InstallerBridge: 类 GlobalRef 缓存失败（后续调用将重试 find_class）".to_string(),
-        );
-    }
-    let methods = [NativeMethod {
-        name: INSTALLER_ON_RESULT.into(),
-        sig: INSTALLER_ON_RESULT_SIG.into(),
-        fn_ptr: Java_com_suno2_gstore_InstallerBridge_nativeOnInstallResult as *const ()
-            as *mut c_void,
-    }];
-    match env.register_native_methods(&class, &methods) {
-        Ok(()) => {
-            INSTALLER_NATIVES_INSTALLED.store(true, Ordering::SeqCst);
-            crate::log_bridge::push_host_log(
-                1,
-                "InstallerBridge: RegisterNatives 成功（幂等）".to_string(),
-            );
-            true
-        }
-        Err(error) => {
-            let _ = env.exception_clear();
-            crate::log_bridge::push_host_log(
-                3,
-                format!("InstallerBridge: RegisterNatives 失败: {error}"),
-            );
-            false
-        }
-    }
-}
-
-fn optional_jstring(env: &mut JNIEnv, value: JObject) -> Option<String> {
-    if value.is_null() {
-        return None;
-    }
-    let text: JString = value.into();
-    env.get_string(&text).ok().map(Into::into)
-}
-
-/// Kotlin: `InstallerBridge.nativeOnInstallResult(sessionId, status, package,
-/// version, error)`. Direct export + `RegisterNatives` target.
-#[no_mangle]
-pub extern "system" fn Java_com_suno2_gstore_InstallerBridge_nativeOnInstallResult(
-    mut env: JNIEnv,
-    _class: JObject,
-    session_id: JObject,
-    status: JObject,
-    package_name: JObject,
-    version_name: JObject,
-    error: JObject,
-) {
-    guard_jni("InstallerBridge.nativeOnInstallResult", || {
-        let session = optional_jstring(&mut env, session_id);
-        let status = optional_jstring(&mut env, status);
-        let (Some(session), Some(status)) = (session, status) else {
-            crate::log_bridge::push_host_log(
-                3,
-                "InstallerBridge.nativeOnInstallResult: 缺少 session/status".to_string(),
-            );
-            return;
-        };
-        let package_name = optional_jstring(&mut env, package_name);
-        let version_name = optional_jstring(&mut env, version_name);
-        let error = optional_jstring(&mut env, error);
-        crate::installer_host::record_install_result(
-            &session,
-            &status,
-            package_name.as_deref(),
-            version_name.as_deref(),
-            error.as_deref(),
-        );
-    });
-}
-
-/// Android `JNI_OnLoad`: capture the VM once and opportunistically register the
-/// platform table. Never aborts startup when the optional class is missing.
+/// Android `JNI_OnLoad`: capture the process VM once for the allowlisted
+/// packet-plane seams. No native table registration remains.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jni::sys::jint {
-    let _ = JVM.set(vm);
-    if let Some(jvm) = JVM.get() {
-        if let Ok(mut env) = jvm.attach_current_thread() {
-            let _ = install_platform_natives(&mut env);
-            if !install_installer_natives(&mut env) {
-                crate::log_bridge::push_host_log(
-                    2,
-                    "InstallerBridge: JNI_OnLoad 注册跳过（类尚未加载）".to_string(),
-                );
-            }
-        }
-    }
+    crate::jvm::set_vm(vm);
     jni::sys::JNI_VERSION_1_6
 }
+
 
 /// Kotlin: `nativeSetService(service: VpnService)`（静态方法）。
 #[no_mangle]

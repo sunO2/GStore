@@ -1,6 +1,5 @@
 // Flutter FFI Bridge - 暴露给 Dart 的接口
 use flutter_rust_bridge::frb;
-use super::models::*;
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -27,50 +26,6 @@ pub fn install_host_panic_hook() {
             crate::log_bridge::push_host_log(3, line);
         }));
     });
-}
-
-/// 统一特权 shell 执行（Rust facade）：经 JNI 调 Kotlin `ShizukuExecBridge.exec`。
-/// 无 Shizuku/未初始化 → `null`；返回值用 `Option<String>` 以避免 FRB 对
-/// `Result` 错误类型的约束。
-pub fn shizuku_exec(command: String) -> Option<String> {
-    crate::shizuku_bridge::exec(&command)
-}
-
-/// Shizuku 是否可用（`pingBinder() && checkSelfPermission()==GRANTED`）。
-pub fn shizuku_available() -> bool {
-    crate::shizuku_bridge::is_available()
-}
-
-/// 免权限电池 JSON（Rust → JNI → Kotlin `BatteryChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-pub fn battery_read_json() -> Option<String> {
-    crate::battery_bridge::read_json()
-}
-
-/// 屏幕是否点亮（Rust → JNI → Kotlin `BatteryChannel.isInteractive`）。
-/// 未初始化 / 调用失败 → `null`。
-pub fn battery_power_interactive() -> Option<bool> {
-    crate::battery_bridge::is_interactive()
-}
-
-/// 批量设备状态 JSON（Rust → JNI → Kotlin `DeviceStateChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-pub fn device_state_read_json() -> Option<String> {
-    crate::device_state_bridge::read_json()
-}
-
-/// 前台无障碍服务缓存 JSON（Rust → JNI →
-/// Kotlin `ForegroundAccessibilityService.readJson`）。
-/// 未初始化 / 服务未启用 / 调用失败 → `null`；Dart 侧据此决定是否跳过
-/// `dumpsys activity activities`。
-pub fn foreground_read_json() -> Option<String> {
-    crate::battery_bridge::foreground_read_json()
-}
-
-/// 本应用帧指标摘要 JSON（Rust → JNI → Kotlin `FrameMetricsCollector.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-pub fn frame_metrics_read_json() -> Option<String> {
-    crate::frame_metrics_bridge::read_json()
 }
 
 /// 日志消息数据类（架构文档 6.8；普通数据类，跨模块 re-export 可被 FRB 跟随）
@@ -330,6 +285,213 @@ use rusqlite::OptionalExtension;
 const CORE_E_NOT_INITIALIZED: &str =
     "CORE_E_NOT_INITIALIZED: CoreApi.init() has not been called";
 
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Device identity crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct DeviceFactsDto {
+    pub model: String,
+    pub manufacturer: String,
+}
+
+/// Storage paths the frontend resolved for the core.
+#[derive(Debug, Clone)]
+pub struct CorePathsDto {
+    pub data: String,
+    pub files: String,
+    pub cache: String,
+}
+
+/// Platform facts pushed by the frontend.
+#[derive(Debug, Clone)]
+pub struct PlatformFactsDto {
+    pub source_id: String,
+    pub os: String,
+    pub arch: String,
+    pub abis: Vec<String>,
+    pub sdk: i32,
+    pub device: DeviceFactsDto,
+    pub paths: CorePathsDto,
+    pub crypto_key: Option<Vec<u8>>,
+    pub captured_at: i64,
+}
+
+impl From<PlatformFactsDto> for gstore_core::facts::PlatformFacts {
+    fn from(facts: PlatformFactsDto) -> Self {
+        Self {
+            source_id: facts.source_id,
+            os: facts.os,
+            arch: facts.arch,
+            abis: facts.abis,
+            sdk: facts.sdk,
+            device: gstore_core::facts::DeviceFacts {
+                model: facts.device.model,
+                manufacturer: facts.device.manufacturer,
+            },
+            paths: gstore_core::facts::CorePaths {
+                data: facts.paths.data,
+                files: facts.paths.files,
+                cache: facts.paths.cache,
+            },
+            crypto_key: facts.crypto_key,
+            captured_at: facts.captured_at,
+        }
+    }
+}
+
+/// One installed application in an inventory snapshot.
+#[derive(Debug, Clone)]
+pub struct InstalledAppDto {
+    pub package_name: String,
+    pub app_name: Option<String>,
+    pub version_name: String,
+    pub version_code: i64,
+    pub signature_sha256: Option<String>,
+    pub source_dir: Option<String>,
+    pub installer: Option<String>,
+    pub is_system: bool,
+    pub target_sdk: i32,
+    pub min_sdk: i32,
+    pub abis: Vec<String>,
+}
+
+impl From<InstalledAppDto> for gstore_core::facts::InstalledApp {
+    fn from(app: InstalledAppDto) -> Self {
+        Self {
+            package_name: app.package_name,
+            app_name: app.app_name,
+            version_name: app.version_name,
+            version_code: app.version_code,
+            signature_sha256: app.signature_sha256,
+            source_dir: app.source_dir,
+            installer: app.installer,
+            is_system: app.is_system,
+            target_sdk: app.target_sdk,
+            min_sdk: app.min_sdk,
+            abis: app.abis,
+        }
+    }
+}
+
+/// Full installed-app set pushed by the frontend.
+#[derive(Debug, Clone)]
+pub struct InventorySnapshotDto {
+    pub source_id: String,
+    pub seq: i64,
+    pub captured_at: i64,
+    pub apps: Vec<InstalledAppDto>,
+}
+
+impl From<InventorySnapshotDto> for gstore_core::facts::InventorySnapshot {
+    fn from(snapshot: InventorySnapshotDto) -> Self {
+        Self {
+            source_id: snapshot.source_id,
+            seq: snapshot.seq,
+            captured_at: snapshot.captured_at,
+            apps: snapshot.apps.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Result of one inventory push.
+#[derive(Debug, Clone)]
+pub struct InventoryPushResultDto {
+    pub accepted: bool,
+    pub reason: Option<String>,
+}
+
+/// Current inventory source status.
+#[derive(Debug, Clone)]
+pub struct InventoryStatusDto {
+    pub source_id: String,
+    pub seq: Option<i64>,
+    pub captured_at: Option<i64>,
+    pub count: u32,
+    pub stale: bool,
+}
+
+/// Frontend install policy (mirrors `gstore_core::facts::InstallRules`).
+#[derive(Debug, Clone)]
+pub struct InstallRulesDto {
+    pub version: i64,
+    pub install_enabled: bool,
+    pub abi_priority: Vec<String>,
+    pub allow_downgrade: bool,
+    pub allow_unknown_sources: bool,
+    pub signature_policy: String,
+    pub silent_install: bool,
+    pub timeout_secs: i64,
+}
+
+impl From<gstore_core::facts::InstallRules> for InstallRulesDto {
+    fn from(rules: gstore_core::facts::InstallRules) -> Self {
+        Self {
+            version: rules.version,
+            install_enabled: rules.install_enabled,
+            abi_priority: rules.abi_priority,
+            allow_downgrade: rules.allow_downgrade,
+            allow_unknown_sources: rules.allow_unknown_sources,
+            signature_policy: rules.signature_policy,
+            silent_install: rules.silent_install,
+            timeout_secs: rules.timeout_secs,
+        }
+    }
+}
+
+impl From<InstallRulesDto> for gstore_core::facts::InstallRules {
+    fn from(rules: InstallRulesDto) -> Self {
+        Self {
+            version: rules.version,
+            install_enabled: rules.install_enabled,
+            abi_priority: rules.abi_priority,
+            allow_downgrade: rules.allow_downgrade,
+            allow_unknown_sources: rules.allow_unknown_sources,
+            signature_policy: rules.signature_policy,
+            silent_install: rules.silent_install,
+            timeout_secs: rules.timeout_secs,
+        }
+    }
+}
+
+/// Frontend update policy (mirrors `gstore_core::facts::UpdateRules`).
+#[derive(Debug, Clone)]
+pub struct UpdateRulesDto {
+    pub version: i64,
+    pub channel_priority: Vec<String>,
+    pub allow_prerelease: bool,
+    pub signature_policy: String,
+    pub max_inventory_age_secs: i64,
+}
+
+impl From<gstore_core::facts::UpdateRules> for UpdateRulesDto {
+    fn from(rules: gstore_core::facts::UpdateRules) -> Self {
+        Self {
+            version: rules.version,
+            channel_priority: rules.channel_priority,
+            allow_prerelease: rules.allow_prerelease,
+            signature_policy: rules.signature_policy,
+            max_inventory_age_secs: rules.max_inventory_age_secs,
+        }
+    }
+}
+
+impl From<UpdateRulesDto> for gstore_core::facts::UpdateRules {
+    fn from(rules: UpdateRulesDto) -> Self {
+        Self {
+            version: rules.version,
+            channel_priority: rules.channel_priority,
+            allow_prerelease: rules.allow_prerelease,
+            signature_policy: rules.signature_policy,
+            max_inventory_age_secs: rules.max_inventory_age_secs,
+        }
+    }
+}
+
 struct CorePaths {
     data_dir: String,
     files_dir: String,
@@ -345,6 +507,9 @@ pub struct CoreApi {
     paths: std::sync::Mutex<Option<CorePaths>>,
     db: std::sync::Mutex<Option<gstore_core::db::SharedConn>>,
     download: crate::download_host::HostDownloadPort,
+    facts: gstore_core::facts::FactStore,
+    inventory: gstore_core::inventory::InventoryStore,
+    rules: gstore_core::rules::RuleStore,
 }
 
 pub struct CoreInitResult {
@@ -456,10 +621,8 @@ impl CoreApi {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("CORE_E_INIT: create dir {dir}: {e}"))?;
         }
-        let conn = core_db::open(std::path::Path::new(&data_dir))
-            .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
-        let shared: gstore_core::db::SharedConn =
-            std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let handle = open_core_db(&data_dir).map_err(|error| format!("CORE_E_INIT: {error}"))?;
+        let shared = handle.shared_writer();
         let download = crate::download_host::HostDownloadPort::new(
             shared.clone(),
             core_db::core_db_path(std::path::Path::new(&data_dir)),
@@ -474,6 +637,9 @@ impl CoreApi {
             })),
             db: std::sync::Mutex::new(Some(shared)),
             download,
+            facts: gstore_core::facts::FactStore::new(handle.clone()),
+            inventory: gstore_core::inventory::InventoryStore::new(handle.clone()),
+            rules: gstore_core::rules::RuleStore::new(handle),
         };
         if let Err(error) = api.download.reconcile() {
             crate::log_bridge::push_host_log(
@@ -738,6 +904,123 @@ impl CoreApi {
                 })
             })
             .map_err(|e| format!("CORE_E_WRITES: query {domain}: {}", e.0))
+    }
+
+    /// Stores the latest frontend-pushed platform facts.
+    pub fn push_platform_facts(&self, facts: PlatformFactsDto) -> Result<(), String> {
+        self.facts
+            .put(&facts.into())
+            .map_err(|error| format!("CORE_E_FACTS: {error}"))
+    }
+
+    /// Applies one inventory snapshot under the core stale-seq policy.
+    pub fn push_inventory(
+        &self,
+        snapshot: InventorySnapshotDto,
+    ) -> Result<InventoryPushResultDto, String> {
+        let result = self
+            .inventory
+            .push(&snapshot.into())
+            .map_err(|error| format!("CORE_E_INVENTORY: {error}"))?;
+        Ok(InventoryPushResultDto {
+            accepted: result.accepted,
+            reason: result.reason,
+        })
+    }
+
+    /// Reports the stored inventory sequence, capture time, size, and staleness.
+    pub fn inventory_status(&self) -> Result<InventoryStatusDto, String> {
+        let source_id = self
+            .facts
+            .get()
+            .map_err(|error| format!("CORE_E_FACTS: {error}"))?
+            .map(|facts| facts.source_id)
+            .unwrap_or_else(|| "android".to_string());
+        let rules = self
+            .rules
+            .effective_update()
+            .map_err(|error| format!("CORE_E_RULES: {error}"))?;
+        let stale = self
+            .inventory
+            .is_stale(&source_id, rules.max_inventory_age_secs, now_millis())
+            .map_err(|error| format!("CORE_E_INVENTORY: {error}"))?;
+        let seq = self
+            .inventory
+            .source_seq(&source_id)
+            .map_err(|error| format!("CORE_E_INVENTORY: {error}"))?;
+
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        let conn = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let captured_at: Option<i64> = conn
+            .query_row(
+                "SELECT captured_at FROM inventory_source WHERE source_id=?1",
+                [&source_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("CORE_E_INVENTORY: {error}"))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM installed_app WHERE source_id=?1",
+                [&source_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("CORE_E_INVENTORY: {error}"))?;
+
+        Ok(InventoryStatusDto {
+            source_id,
+            seq,
+            captured_at,
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+            stale,
+        })
+    }
+
+    /// Returns the stored install rules or the pinned defaults.
+    pub fn get_install_rules(&self) -> Result<InstallRulesDto, String> {
+        self.rules
+            .get_install()
+            .map(Into::into)
+            .map_err(|error| format!("CORE_E_RULES: {error}"))
+    }
+
+    /// Persists install rules after validation.
+    pub fn set_install_rules(&self, rules: InstallRulesDto) -> Result<(), String> {
+        self.rules
+            .set_install(&rules.into())
+            .map_err(|error| format!("CORE_E_RULES: {error}"))
+    }
+
+    /// Returns the stored update rules or the pinned defaults.
+    pub fn get_update_rules(&self) -> Result<UpdateRulesDto, String> {
+        self.rules
+            .get_update()
+            .map(Into::into)
+            .map_err(|error| format!("CORE_E_RULES: {error}"))
+    }
+
+    /// Persists update rules after validation.
+    pub fn set_update_rules(&self, rules: UpdateRulesDto) -> Result<(), String> {
+        self.rules
+            .set_update(&rules.into())
+            .map_err(|error| format!("CORE_E_RULES: {error}"))
+    }
+
+    /// Drains queued core events (`inventory.changed`, ...) as JSON strings.
+    pub fn take_events(&self) -> Result<Vec<String>, String> {
+        self.inventory
+            .take_events()
+            .into_iter()
+            .map(|event| event.to_json().map_err(core_err))
+            .collect()
     }
 }
 
@@ -2246,7 +2529,6 @@ impl ChannelApi {
 use gstore_core::added::apps::{AddedApp, AddedAppsService};
 use gstore_core::catalog::refresh::{catalog_changed_event, refresh_catalog};
 use gstore_core::catalog::service::CatalogService;
-use gstore_core::ports::PlatformHost;
 use gstore_core::update::service::{UpdateCheckReport, UpdateService};
 
 fn open_core_db(data_dir: &str) -> Result<DbHandle, String> {
@@ -2630,8 +2912,8 @@ pub struct UpdateApi {
 }
 
 impl UpdateApi {
-    /// Opens the core database, binds channel drivers, and wires the Android
-    /// platform host.
+    /// Opens the core database and binds the channel drivers. Update
+    /// judgement reads the core-maintained inventory and facts.
     pub fn init(
         data_dir: String,
         files_dir: String,
@@ -2641,11 +2923,8 @@ impl UpdateApi {
         let db = open_core_db(&data_dir)?;
         let channel_api = ChannelApi::init(data_dir, files_dir, cache_dir)?;
         let resolver = channel_api.resolver();
-        let platform: Arc<dyn PlatformHost> = Arc::new(
-            crate::platform_host::AndroidPlatformHost::new(),
-        );
         Ok(Self {
-            service: UpdateService::new(db, resolver, platform),
+            service: UpdateService::new(db, resolver),
         })
     }
 
@@ -3079,14 +3358,12 @@ impl DownloadApi {
 // InstallApi (Wave 3 Todo 6)
 // ===========================================================================
 
-use gstore_core::event::CoreEvent;
-use gstore_core::install::service::{
-    InstallAttempt, InstallReconcileReport, InstallRecord, InstallService,
-};
-use gstore_core::ports::installer::InstallerPort as CoreInstallerPort;
+use gstore_core::install::service::{InstallRecord, InstallService};
 
 const CORE_E_INSTALL_NOT_FOUND: &str = "CORE_E_INSTALL_NOT_FOUND";
 const CORE_E_INSTALL_INVALID_ARG: &str = "CORE_E_INSTALL_INVALID_ARG";
+const CORE_E_INSTALL_STATUS: &str = "CORE_E_INSTALL_STATUS";
+const CORE_E_INSTALL_SESSION: &str = "CORE_E_INSTALL_SESSION";
 const CORE_E_INSTALL_CONFLICT: &str = "CORE_E_INSTALL_CONFLICT";
 const CORE_E_INSTALL_UNSUPPORTED: &str = "CORE_E_INSTALL_UNSUPPORTED";
 const CORE_E_INSTALL_DB: &str = "CORE_E_INSTALL_DB";
@@ -3094,7 +3371,13 @@ const CORE_E_INSTALL_INTERNAL: &str = "CORE_E_INSTALL_INTERNAL";
 
 fn install_err(error: CoreError) -> String {
     match error {
-        CoreError::NotFound(message) => format!("{CORE_E_INSTALL_NOT_FOUND}: {message}"),
+        CoreError::NotFound(message) => {
+            if message.contains(CORE_E_INSTALL_SESSION) {
+                format!("{CORE_E_INSTALL_SESSION}: {message}")
+            } else {
+                format!("{CORE_E_INSTALL_NOT_FOUND}: {message}")
+            }
+        }
         CoreError::InvalidArgument(message) => {
             format!("{CORE_E_INSTALL_INVALID_ARG}: {message}")
         }
@@ -3157,72 +3440,128 @@ impl From<InstallRecord> for InstallRecordDto {
     }
 }
 
-/// Result of one install attempt (record plus optional event JSON).
+/// Download variant selected by the core.
 #[derive(Debug, Clone)]
-pub struct InstallAttemptDto {
+pub struct VariantChoiceDto {
+    pub abi: String,
+    pub url: String,
+    pub fallback_chain: Vec<String>,
+}
+
+impl From<gstore_core::facts::VariantChoice> for VariantChoiceDto {
+    fn from(variant: gstore_core::facts::VariantChoice) -> Self {
+        Self {
+            abi: variant.abi,
+            url: variant.url,
+            fallback_chain: variant.fallback_chain,
+        }
+    }
+}
+
+/// Durable install request the frontend must execute.
+#[derive(Debug, Clone)]
+pub struct InstallRequestDto {
+    pub module_task_id: String,
+    pub session_id: String,
+    pub package_name: String,
+    pub version_name: String,
+    pub apk_path: String,
+    pub method: String,
+    pub variant: VariantChoiceDto,
+}
+
+impl From<gstore_core::facts::InstallRequest> for InstallRequestDto {
+    fn from(request: gstore_core::facts::InstallRequest) -> Self {
+        Self {
+            module_task_id: request.module_task_id,
+            session_id: request.session_id,
+            package_name: request.package_name,
+            version_name: request.version_name,
+            apk_path: request.apk_path,
+            method: request.method,
+            variant: request.variant.into(),
+        }
+    }
+}
+
+/// Result of [`InstallApi::install`]: a settled record and/or a request.
+#[derive(Debug, Clone)]
+pub struct InstallStartDto {
     pub record: InstallRecordDto,
-    pub event_json: Option<String>,
+    pub request: Option<InstallRequestDto>,
 }
 
-fn event_json(event: Option<CoreEvent>) -> Result<Option<String>, String> {
-    event
-        .map(|event| event.to_json().map_err(install_err))
-        .transpose()
+impl From<gstore_core::facts::InstallStart> for InstallStartDto {
+    fn from(start: gstore_core::facts::InstallStart) -> Self {
+        Self {
+            record: start.record.into(),
+            request: start.request.map(Into::into),
+        }
+    }
 }
 
-fn attempt_dto(attempt: InstallAttempt) -> Result<InstallAttemptDto, String> {
-    Ok(InstallAttemptDto {
-        record: InstallRecordDto::from(attempt.record),
-        event_json: event_json(attempt.event)?,
-    })
-}
-
-/// Summary of one install reconciliation sweep.
+/// Terminal report sent back by the frontend installer.
 #[derive(Debug, Clone)]
-pub struct InstallReconcileDto {
-    pub checked: u32,
-    pub resolved: u32,
-    pub still_pending: u32,
-    pub errors: Vec<String>,
-    pub events: Vec<String>,
+pub struct InstallReportDto {
+    pub session_id: String,
+    /// `installed` | `failed` | `denied` | `timeout` (normalized host-side).
+    pub status: String,
+    pub method: String,
+    pub installed_version: Option<String>,
+    pub error: Option<String>,
+    pub reported_at: i64,
 }
 
-fn install_count(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
+/// Acknowledgement of one install report.
+#[derive(Debug, Clone)]
+pub struct InstallResultAckDto {
+    pub session_id: String,
+    pub status: String,
+    pub changed: bool,
 }
 
-fn reconcile_dto(
-    report: InstallReconcileReport,
-    events: Vec<CoreEvent>,
-) -> Result<InstallReconcileDto, String> {
-    Ok(InstallReconcileDto {
-        checked: install_count(report.checked),
-        resolved: install_count(report.resolved),
-        still_pending: install_count(report.still_pending),
-        errors: report.errors,
-        events: events
-            .into_iter()
-            .map(|event| event.to_json().map_err(install_err))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
+impl From<gstore_core::facts::InstallResultAck> for InstallResultAckDto {
+    fn from(ack: gstore_core::facts::InstallResultAck) -> Self {
+        Self {
+            session_id: ack.session_id,
+            status: ack.status,
+            changed: ack.changed,
+        }
+    }
+}
+
+fn parse_report_status(raw: &str) -> Result<gstore_core::facts::InstallReportStatus, String> {
+    use gstore_core::facts::InstallReportStatus;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "installed" => Ok(InstallReportStatus::Installed),
+        "failed" => Ok(InstallReportStatus::Failed),
+        "denied" => Ok(InstallReportStatus::Denied),
+        "timeout" => Ok(InstallReportStatus::Timeout),
+        other => Err(format!(
+            "{CORE_E_INSTALL_STATUS}: unsupported report status '{other}' \
+             (expected installed|failed|denied|timeout)"
+        )),
+    }
 }
 
 /// FRB facade over the durable core [`InstallService`].
 ///
-/// Install state lives on `download_task`; `install`/`maybe_install_after_download`
-/// are idempotent and `on_result` rejects duplicate terminal callbacks without
-/// emitting a second event. Errors use stable `CORE_E_INSTALL_*` prefixes.
+/// The core owns the install state machine on `download_task`. Dart calls
+/// [`InstallApi::install`] to obtain an [`InstallRequestDto`] (or a settled
+/// record), executes it, then calls [`InstallApi::report_result`]. The timeout
+/// sweep is read-driven: it runs inside `install`, `pendingRequests`, and init —
+/// never on a background thread.
 #[frb(opaque)]
 pub struct InstallApi {
     service: Arc<InstallService>,
 }
 
 impl InstallApi {
-    /// Opens the core database, wires the Android installer port, and runs one
-    /// best-effort reconciliation sweep.
+    /// Opens the core database, binds the durable install service, and runs one
+    /// read-driven timeout sweep.
     ///
-    /// The sweep is never fatal: failures are logged and initialization still
-    /// succeeds, so a transient installer/device problem cannot disable install.
+    /// The sweep is never fatal; a failure is logged and initialization still
+    /// succeeds.
     pub fn init(
         data_dir: String,
         files_dir: String,
@@ -3230,64 +3569,17 @@ impl InstallApi {
     ) -> Result<InstallApi, String> {
         prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
         let db = open_core_db(&data_dir)?;
-        let installer: Arc<dyn CoreInstallerPort> = Arc::new(
-            crate::installer_host::AndroidInstallerPort::new(
-                crate::installer_host::JniInstallerBridge::new(),
+        let service = Arc::new(InstallService::new(db.shared_writer()));
+        match service.sweep_timeouts(now_millis()) {
+            Ok(events) if !events.is_empty() => crate::log_bridge::push_host_log(
+                2,
+                format!("install sweep at init: {} expired", events.len()),
             ),
-        );
-        let service = Arc::new(InstallService::new(db.shared_writer(), installer));
-        match service.reconcile() {
-            Ok((report, events)) => {
-                if !events.is_empty() {
-                    crate::log_bridge::push_host_log(
-                        2,
-                        format!(
-                            "install reconcile at init: checked={} resolved={} events={}",
-                            report.checked,
-                            report.resolved,
-                            events.len()
-                        ),
-                    );
-                }
-            }
+            Ok(_) => {}
             Err(error) => crate::log_bridge::push_host_log(
                 2,
-                format!("install reconcile at init (non-fatal): {error}"),
+                format!("install sweep at init (non-fatal): {error}"),
             ),
-        }
-        let pump_service = Arc::clone(&service);
-        let spawned = std::thread::Builder::new()
-            .name("gstore-install-reconcile".to_string())
-            .spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                match pump_service.reconcile() {
-                    Ok((report, events)) => {
-                        if !events.is_empty() || !report.errors.is_empty() {
-                            crate::log_bridge::push_host_log(
-                                2,
-                                format!(
-                                    "install reconcile pump: checked={} resolved={} pending={} \
-                                     events={} errors={:?}",
-                                    report.checked,
-                                    report.resolved,
-                                    report.still_pending,
-                                    events.len(),
-                                    report.errors
-                                ),
-                            );
-                        }
-                    }
-                    Err(error) => crate::log_bridge::push_host_log(
-                        2,
-                        format!("install reconcile pump failed (non-fatal): {error}"),
-                    ),
-                }
-            });
-        if let Err(error) = spawned {
-            crate::log_bridge::push_host_log(
-                2,
-                format!("install reconcile pump thread failed to start: {error}"),
-            );
         }
         Ok(Self { service })
     }
@@ -3318,75 +3610,66 @@ impl InstallApi {
     }
 
     /// Starts (or observes) an install for `module_task_id`.
-    pub fn install(&self, module_task_id: String) -> Result<InstallAttemptDto, String> {
+    ///
+    /// Exactly one of `record.status == "installed"` or `request.is_some()` is
+    /// true.
+    pub fn install(&self, module_task_id: String) -> Result<InstallStartDto, String> {
         self.service
             .install(&module_task_id)
+            .map(InstallStartDto::from)
             .map_err(install_err)
-            .and_then(attempt_dto)
     }
 
-    /// Installs once after a completed download when the row requested it.
-    pub fn maybe_install_after_download(
+    /// Lists every still-pending install request after sweeping expired rows.
+    ///
+    /// Dart re-derives the auto-install path from this list, so a process
+    /// restart never loses a request.
+    pub fn pending_requests(&self) -> Result<Vec<InstallStartDto>, String> {
+        self.service
+            .sweep_timeouts(now_millis())
+            .map_err(install_err)?;
+        self.service
+            .pending_requests()
+            .map(|starts| starts.into_iter().map(InstallStartDto::from).collect())
+            .map_err(install_err)
+    }
+
+    /// Applies an installer result and returns the durable acknowledgement.
+    ///
+    /// A duplicate terminal report is accepted idempotently with
+    /// `changed: false`. Bad report statuses fail with `CORE_E_INSTALL_STATUS`;
+    /// an unknown session fails with `CORE_E_INSTALL_SESSION`.
+    pub fn report_result(
         &self,
-        module_task_id: String,
-    ) -> Result<Option<InstallAttemptDto>, String> {
+        report: InstallReportDto,
+    ) -> Result<InstallResultAckDto, String> {
+        let status = parse_report_status(&report.status)?;
+        let report = gstore_core::facts::InstallReport {
+            session_id: report.session_id,
+            status,
+            method: report.method,
+            installed_version: report.installed_version,
+            error: report.error,
+            reported_at: report.reported_at,
+        };
         self.service
-            .maybe_install_after_download(&module_task_id)
-            .map_err(install_err)?
-            .map(attempt_dto)
-            .transpose()
-    }
-
-    /// Uninstalls `package_name` through the installer port.
-    pub fn uninstall(&self, package_name: String) -> Result<(), String> {
-        self.service.uninstall(&package_name).map_err(install_err)
-    }
-
-    /// Launches `package_name` through the installer port.
-    pub fn launch(&self, package_name: String) -> Result<(), String> {
-        self.service.launch(&package_name).map_err(install_err)
-    }
-
-    /// Whether the host installer can install packages.
-    pub fn can_install(&self) -> bool {
-        self.service.can_install()
-    }
-
-    /// Lists every row currently pending reconciliation.
-    pub fn list_pending(&self) -> Result<Vec<InstallRecordDto>, String> {
-        self.service
-            .list_pending()
+            .on_result(report)
+            .map(InstallResultAckDto::from)
             .map_err(install_err)
-            .map(|records| records.into_iter().map(InstallRecordDto::from).collect())
     }
 
-    /// Applies an asynchronous installer result and returns its event JSON
-    /// (`None` for a duplicate/non-pending callback).
-    pub fn on_result(
-        &self,
-        session_id: String,
-        status: String,
-        package_name: Option<String>,
-        version_name: Option<String>,
-        error: Option<String>,
-    ) -> Result<Option<String>, String> {
+    /// Drains queued install events (`install.requested` / `install.unknown`)
+    /// as JSON strings.
+    ///
+    /// Dart polls this after `install` and `pendingRequests`; when a completed
+    /// download has `install_after_download=1`, an `install.requested` entry
+    /// carries the request to execute.
+    pub fn take_events(&self) -> Result<Vec<String>, String> {
         self.service
-            .on_result(
-                &session_id,
-                &status,
-                package_name.as_deref(),
-                version_name.as_deref(),
-                error.as_deref(),
-            )
-            .map_err(install_err)
-            .and_then(event_json)
-    }
-
-    /// Reconciles every pending install session and returns the sweep report
-    /// together with every event JSON it produced.
-    pub fn reconcile(&self) -> Result<InstallReconcileDto, String> {
-        let (report, events) = self.service.reconcile().map_err(install_err)?;
-        reconcile_dto(report, events)
+            .take_events()
+            .into_iter()
+            .map(|event| event.to_json().map_err(install_err))
+            .collect()
     }
 }
 

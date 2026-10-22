@@ -10,9 +10,9 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attempt_dto`, `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `event_json`, `from_summary`, `import_err`, `init_inner`, `install_count`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `reconcile_dto`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
@@ -22,54 +22,21 @@ import 'task_bridge.dart';
 Future<void> installHostPanicHook() =>
     RustLib.instance.api.crateBridgeInstallHostPanicHook();
 
-/// 统一特权 shell 执行（Rust facade）：经 JNI 调 Kotlin `ShizukuExecBridge.exec`。
-/// 无 Shizuku/未初始化 → `null`；返回值用 `Option<String>` 以避免 FRB 对
-/// `Result` 错误类型的约束。
-Future<String?> shizukuExec({required String command}) =>
-    RustLib.instance.api.crateBridgeShizukuExec(command: command);
-
-/// Shizuku 是否可用（`pingBinder() && checkSelfPermission()==GRANTED`）。
-Future<bool> shizukuAvailable() =>
-    RustLib.instance.api.crateBridgeShizukuAvailable();
-
-/// 免权限电池 JSON（Rust → JNI → Kotlin `BatteryChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> batteryReadJson() =>
-    RustLib.instance.api.crateBridgeBatteryReadJson();
-
-/// 屏幕是否点亮（Rust → JNI → Kotlin `BatteryChannel.isInteractive`）。
-/// 未初始化 / 调用失败 → `null`。
-Future<bool?> batteryPowerInteractive() =>
-    RustLib.instance.api.crateBridgeBatteryPowerInteractive();
-
-/// 批量设备状态 JSON（Rust → JNI → Kotlin `DeviceStateChannel.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> deviceStateReadJson() =>
-    RustLib.instance.api.crateBridgeDeviceStateReadJson();
-
-/// 前台无障碍服务缓存 JSON（Rust → JNI →
-/// Kotlin `ForegroundAccessibilityService.readJson`）。
-/// 未初始化 / 服务未启用 / 调用失败 → `null`；Dart 侧据此决定是否跳过
-/// `dumpsys activity activities`。
-Future<String?> foregroundReadJson() =>
-    RustLib.instance.api.crateBridgeForegroundReadJson();
-
-/// 本应用帧指标摘要 JSON（Rust → JNI → Kotlin `FrameMetricsCollector.readJson`）。
-/// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
-Future<String?> frameMetricsReadJson() =>
-    RustLib.instance.api.crateBridgeFrameMetricsReadJson();
-
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>
 abstract class AddedAppsApi implements RustOpaqueInterface {
   /// Adds or refreshes one `(channel, app_id)` row.
-  Future<AddedAppEntry> add(
-      {required String channel,
-      required String appId,
-      PlatformInt64? sortOrder});
+  Future<AddedAppEntry> add({
+    required String channel,
+    required String appId,
+    PlatformInt64? sortOrder,
+  });
 
   /// Adds one tag (idempotent, trimmed; empty is a no-op).
-  Future<void> addTag(
-      {required String channel, required String appId, required String tag});
+  Future<void> addTag({
+    required String channel,
+    required String appId,
+    required String tag,
+  });
 
   /// Deletes every added row across all channels.
   Future<int> clearAll();
@@ -84,12 +51,15 @@ abstract class AddedAppsApi implements RustOpaqueInterface {
   Future<AddedAppEntry?> get_({required String channel, required String appId});
 
   /// Opens the core database and binds the added-apps service.
-  static Future<AddedAppsApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeAddedAppsApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  static Future<AddedAppsApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeAddedAppsApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   /// Whether `(channel, app_id)` is in `added_apps`.
   Future<bool> isAdded({required String channel, required String appId});
@@ -104,26 +74,32 @@ abstract class AddedAppsApi implements RustOpaqueInterface {
   Future<bool> remove({required String channel, required String appId});
 
   /// Removes one tag; absent tags are a no-op.
-  Future<void> removeTag(
-      {required String channel, required String appId, required String tag});
+  Future<void> removeTag({
+    required String channel,
+    required String appId,
+    required String tag,
+  });
 
   /// Renames an app id inside one channel.
-  Future<bool> rename(
-      {required String channel,
-      required String oldAppId,
-      required String newAppId});
+  Future<bool> rename({
+    required String channel,
+    required String oldAppId,
+    required String newAppId,
+  });
 
   /// Sets one row's sort weight.
-  Future<void> setOrder(
-      {required String channel,
-      required String appId,
-      required PlatformInt64 sortOrder});
+  Future<void> setOrder({
+    required String channel,
+    required String appId,
+    required PlatformInt64 sortOrder,
+  });
 
   /// Replaces all tags for one app.
-  Future<void> setTags(
-      {required String channel,
-      required String appId,
-      required List<String> tags});
+  Future<void> setTags({
+    required String channel,
+    required String appId,
+    required List<String> tags,
+  });
 
   /// Returns one app's tags, earliest first.
   Future<List<String>> tags({required String channel, required String appId});
@@ -155,12 +131,15 @@ abstract class CatalogApi implements RustOpaqueInterface {
   /// Opens the core database and binds the local catalog service.
   ///
   /// Safe to call more than once against the same directories.
-  static Future<CatalogApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeCatalogApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  static Future<CatalogApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeCatalogApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   /// Lists every imported app in `rowid` order.
   Future<List<ChannelAppInfo>> list();
@@ -185,8 +164,10 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<void> addApp({required String key, required ChannelAppInfo app});
 
   /// Returns the driver's canonical app id.
-  Future<String> canonicalAppId(
-      {required String key, required ChannelAppInfo app});
+  Future<String> canonicalAppId({
+    required String key,
+    required ChannelAppInfo app,
+  });
 
   /// Disables a registered channel without removing it.
   Future<ChannelEntry> disable({required String key});
@@ -202,8 +183,11 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<bool> envRemove({required String key, required String name});
 
   /// Writes one env value, routing sensitive names to the secret port.
-  Future<void> envSet(
-      {required String key, required String name, required String value});
+  Future<void> envSet({
+    required String key,
+    required String name,
+    required String value,
+  });
 
   /// Exports an installed pack as a flat zip at `path`; returns bytes written.
   Future<BigInt> exportPack({required String key, required String path});
@@ -212,20 +196,30 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<ChannelEntry> get_({required String key});
 
   /// Lists the channel's categories.
-  Future<List<ChannelCategoryInfo>> getAllCategories(
-      {required String key, required bool forceRefresh});
+  Future<List<ChannelCategoryInfo>> getAllCategories({
+    required String key,
+    required bool forceRefresh,
+  });
 
   /// Reads one app detail page.
-  Future<ChannelAppDetailInfo> getAppDetail(
-      {required String key, required String appId, required bool forceRefresh});
+  Future<ChannelAppDetailInfo> getAppDetail({
+    required String key,
+    required String appId,
+    required bool forceRefresh,
+  });
 
   /// Reads one app summary.
-  Future<ChannelAppInfo> getAppInfo(
-      {required String key, required String appId, required bool forceRefresh});
+  Future<ChannelAppInfo> getAppInfo({
+    required String key,
+    required String appId,
+    required bool forceRefresh,
+  });
 
   /// Reads the channel configuration row.
-  Future<ChannelConfigInfo?> getConfig(
-      {required String key, required bool forceRefresh});
+  Future<ChannelConfigInfo?> getConfig({
+    required String key,
+    required bool forceRefresh,
+  });
 
   /// Imports a legacy flat pack from `zip_path`.
   Future<ChannelPackInfo> importPack({required String path});
@@ -234,12 +228,15 @@ abstract class ChannelApi implements RustOpaqueInterface {
   ///
   /// Safe to call more than once against the same directories: registry rows
   /// and drivers are re-registered idempotently. No feature flag is armed.
-  static Future<ChannelApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeChannelApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  static Future<ChannelApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeChannelApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   /// Lists every registered channel in deterministic key order.
   Future<List<ChannelEntry>> list();
@@ -258,16 +255,18 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<bool> removePack({required String key});
 
   /// Searches one channel by keyword.
-  Future<List<ChannelAppInfo>> search(
-      {required String key,
-      required String keyword,
-      required bool forceRefresh});
+  Future<List<ChannelAppInfo>> search({
+    required String key,
+    required String keyword,
+    required bool forceRefresh,
+  });
 
   /// Searches one channel by category id.
-  Future<List<ChannelAppInfo>> searchByCategory(
-      {required String key,
-      required String categoryId,
-      required bool forceRefresh});
+  Future<List<ChannelAppInfo>> searchByCategory({
+    required String key,
+    required String categoryId,
+    required bool forceRefresh,
+  });
 
   /// Removes a channel registration and its driver binding.
   Future<void> unregister({required String key});
@@ -278,6 +277,12 @@ abstract class CoreApi implements RustOpaqueInterface {
   Future<CoreWritesMarker?> coreWrites({required String domain});
 
   Future<BigInt> exportSnapshot({required String path});
+
+  /// Returns the stored install rules or the pinned defaults.
+  Future<InstallRulesDto> getInstallRules();
+
+  /// Returns the stored update rules or the pinned defaults.
+  Future<UpdateRulesDto> getUpdateRules();
 
   Future<BigInt> importFile({required String pathOrFd});
 
@@ -292,14 +297,37 @@ abstract class CoreApi implements RustOpaqueInterface {
 
   Future<int> importSnapshot({required String path});
 
-  static Future<CoreApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeCoreApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  static Future<CoreApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeCoreApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
+
+  /// Reports the stored inventory sequence, capture time, size, and staleness.
+  Future<InventoryStatusDto> inventoryStatus();
 
   Future<CoreInitResult> migratePaths();
+
+  /// Applies one inventory snapshot under the core stale-seq policy.
+  Future<InventoryPushResultDto> pushInventory({
+    required InventorySnapshotDto snapshot,
+  });
+
+  /// Stores the latest frontend-pushed platform facts.
+  Future<void> pushPlatformFacts({required PlatformFactsDto facts});
+
+  /// Persists install rules after validation.
+  Future<void> setInstallRules({required InstallRulesDto rules});
+
+  /// Persists update rules after validation.
+  Future<void> setUpdateRules({required UpdateRulesDto rules});
+
+  /// Drains queued core events (`inventory.changed`, ...) as JSON strings.
+  Future<List<String>> takeEvents();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<DownloadApi>>
@@ -313,19 +341,24 @@ abstract class DownloadApi implements RustOpaqueInterface {
   /// Missing databases are skipped and reported, never fatal. The core row
   /// always wins over a duplicate legacy row (`dedup_key`), so this is safe
   /// to call once per process before the first core-owned download.
-  Future<DownloadImportReportDto> importLegacy(
-      {required String floorDbPath, required String moduleDbPath});
+  Future<DownloadImportReportDto> importLegacy({
+    required String floorDbPath,
+    required String moduleDbPath,
+  });
 
   /// Opens the core database and binds the download port.
   ///
   /// The one reconcile sweep is best-effort: a missing module is logged and
   /// never fails initialization.
-  static Future<DownloadApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeDownloadApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  static Future<DownloadApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeDownloadApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   Future<List<DownloadTaskDto>> list();
 
@@ -401,54 +434,52 @@ abstract class HostInspector implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstallApi>>
 abstract class InstallApi implements RustOpaqueInterface {
-  /// Whether the host installer can install packages.
-  Future<bool> canInstall();
-
   /// Reads the durable install record for `module_task_id`.
   ///
   /// Returns `None` when no `download_task` row exists for the id.
   Future<InstallRecordDto?> get_({required String moduleTaskId});
 
-  /// Opens the core database, wires the Android installer port, and runs one
-  /// best-effort reconciliation sweep.
+  /// Opens the core database, binds the durable install service, and runs one
+  /// read-driven timeout sweep.
   ///
-  /// The sweep is never fatal: failures are logged and initialization still
-  /// succeeds, so a transient installer/device problem cannot disable install.
-  static Future<InstallApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeInstallApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  /// The sweep is never fatal; a failure is logged and initialization still
+  /// succeeds.
+  static Future<InstallApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeInstallApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   /// Starts (or observes) an install for `module_task_id`.
-  Future<InstallAttemptDto> install({required String moduleTaskId});
+  ///
+  /// Exactly one of `record.status == "installed"` or `request.is_some()` is
+  /// true.
+  Future<InstallStartDto> install({required String moduleTaskId});
 
-  /// Launches `package_name` through the installer port.
-  Future<void> launch({required String packageName});
+  /// Lists every still-pending install request after sweeping expired rows.
+  ///
+  /// Dart re-derives the auto-install path from this list, so a process
+  /// restart never loses a request.
+  Future<List<InstallStartDto>> pendingRequests();
 
-  /// Lists every row currently pending reconciliation.
-  Future<List<InstallRecordDto>> listPending();
+  /// Applies an installer result and returns the durable acknowledgement.
+  ///
+  /// A duplicate terminal report is accepted idempotently with
+  /// `changed: false`. Bad report statuses fail with `CORE_E_INSTALL_STATUS`;
+  /// an unknown session fails with `CORE_E_INSTALL_SESSION`.
+  Future<InstallResultAckDto> reportResult({required InstallReportDto report});
 
-  /// Installs once after a completed download when the row requested it.
-  Future<InstallAttemptDto?> maybeInstallAfterDownload(
-      {required String moduleTaskId});
-
-  /// Applies an asynchronous installer result and returns its event JSON
-  /// (`None` for a duplicate/non-pending callback).
-  Future<String?> onResult(
-      {required String sessionId,
-      required String status,
-      String? packageName,
-      String? versionName,
-      String? error});
-
-  /// Reconciles every pending install session and returns the sweep report
-  /// together with every event JSON it produced.
-  Future<InstallReconcileDto> reconcile();
-
-  /// Uninstalls `package_name` through the installer port.
-  Future<void> uninstall({required String packageName});
+  /// Drains queued install events (`install.requested` / `install.unknown`)
+  /// as JSON strings.
+  ///
+  /// Dart polls this after `install` and `pendingRequests`; when a completed
+  /// download has `install_after_download=1`, an `install.requested` entry
+  /// carries the request to execute.
+  Future<List<String>> takeEvents();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstanceHandle>>
@@ -457,7 +488,6 @@ abstract class InstanceHandle implements RustOpaqueInterface {
   Future<Uint8List> call({required String method, required List<int> payload});
 
   /// 显式释放实例（幂等）
-  @override
   Future<void> dispose();
 
   /// 实例句柄的字符串形式（信封 instance 字段用；Dart 侧拼 EnvelopeRequest 路由）
@@ -484,12 +514,16 @@ abstract class ModuleHandle implements RustOpaqueInterface {
   Future<Uint8List> callEnvelope({required List<int> requestBytes});
 
   /// 带超时的信封级调用（毫秒；0 = 不超时）。超时后尽力 cancel 并返回 504 信封。
-  Future<Uint8List> callEnvelopeTimed(
-      {required List<int> requestBytes, required BigInt timeoutMs});
+  Future<Uint8List> callEnvelopeTimed({
+    required List<int> requestBytes,
+    required BigInt timeoutMs,
+  });
 
   /// 模块级静态调用（不创建实例）
-  Future<Uint8List> callStatic(
-      {required String method, required List<int> payload});
+  Future<Uint8List> callStatic({
+    required String method,
+    required List<int> payload,
+  });
 
   /// 取消某次在途调用（按 request_id 路由到模块 cancel；模块未实现则无操作）
   Future<void> cancelCall({required String requestId});
@@ -498,7 +532,6 @@ abstract class ModuleHandle implements RustOpaqueInterface {
   Future<InstanceHandle> createInstance({required List<int> config});
 
   /// 释放模块引用（refcount-1；归零时回收模块状态）
-  @override
   Future<void> dispose();
 
   /// 是否已加载
@@ -530,11 +563,12 @@ abstract class TaskBridge implements RustOpaqueInterface {
   Future<int> runningCount();
 
   /// 启动长任务：**立即返回** task_id，工作在宿主自有线程执行（不占 FRB 任务池）
-  Future<String> start(
-      {required String module,
-      BigInt? instance,
-      required String method,
-      required List<int> payload});
+  Future<String> start({
+    required String module,
+    BigInt? instance,
+    required String method,
+    required List<int> payload,
+  });
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
@@ -558,14 +592,17 @@ abstract class UpdateApi implements RustOpaqueInterface {
   /// Whether the cache contains `app_id`.
   Future<bool> hasUpdate({required String appId});
 
-  /// Opens the core database, binds channel drivers, and wires the Android
-  /// platform host.
-  static Future<UpdateApi> init(
-          {required String dataDir,
-          required String filesDir,
-          required String cacheDir}) =>
-      RustLib.instance.api.crateBridgeUpdateApiInit(
-          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+  /// Opens the core database and binds the channel drivers. Update
+  /// judgement reads the core-maintained inventory and facts.
+  static Future<UpdateApi> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) => RustLib.instance.api.crateBridgeUpdateApiInit(
+    dataDir: dataDir,
+    filesDir: filesDir,
+    cacheDir: cacheDir,
+  );
 
   /// Returns the cached updatable apps as a JSON array.
   Future<String> list();
@@ -622,10 +659,7 @@ class CatalogPage {
   final List<ChannelAppInfo> apps;
   final PlatformInt64 total;
 
-  const CatalogPage({
-    required this.apps,
-    required this.total,
-  });
+  const CatalogPage({required this.apps, required this.total});
 
   @override
   int get hashCode => apps.hashCode ^ total.hashCode;
@@ -903,10 +937,7 @@ class ChannelConfigInfo {
   final String version;
   final String? proxy;
 
-  const ChannelConfigInfo({
-    required this.version,
-    this.proxy,
-  });
+  const ChannelConfigInfo({required this.version, this.proxy});
 
   @override
   int get hashCode => version.hashCode ^ proxy.hashCode;
@@ -1087,6 +1118,31 @@ class CoreInitResult {
           cacheDir == other.cacheDir;
 }
 
+/// Storage paths the frontend resolved for the core.
+class CorePathsDto {
+  final String data;
+  final String files;
+  final String cache;
+
+  const CorePathsDto({
+    required this.data,
+    required this.files,
+    required this.cache,
+  });
+
+  @override
+  int get hashCode => data.hashCode ^ files.hashCode ^ cache.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CorePathsDto &&
+          runtimeType == other.runtimeType &&
+          data == other.data &&
+          files == other.files &&
+          cache == other.cache;
+}
+
 class CoreWritesMarker {
   final String domain;
   final PlatformInt64 firstWriteAt;
@@ -1110,6 +1166,25 @@ class CoreWritesMarker {
           domain == other.domain &&
           firstWriteAt == other.firstWriteAt &&
           snapshotId == other.snapshotId;
+}
+
+/// Device identity crossing the FRB boundary.
+class DeviceFactsDto {
+  final String model;
+  final String manufacturer;
+
+  const DeviceFactsDto({required this.model, required this.manufacturer});
+
+  @override
+  int get hashCode => model.hashCode ^ manufacturer.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DeviceFactsDto &&
+          runtimeType == other.runtimeType &&
+          model == other.model &&
+          manufacturer == other.manufacturer;
 }
 
 /// One-shot import outcome for both legacy sources.
@@ -1429,64 +1504,6 @@ class FlagsPatch {
           coreWrites == other.coreWrites;
 }
 
-/// Result of one install attempt (record plus optional event JSON).
-class InstallAttemptDto {
-  final InstallRecordDto record;
-  final String? eventJson;
-
-  const InstallAttemptDto({
-    required this.record,
-    this.eventJson,
-  });
-
-  @override
-  int get hashCode => record.hashCode ^ eventJson.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is InstallAttemptDto &&
-          runtimeType == other.runtimeType &&
-          record == other.record &&
-          eventJson == other.eventJson;
-}
-
-/// Summary of one install reconciliation sweep.
-class InstallReconcileDto {
-  final int checked;
-  final int resolved;
-  final int stillPending;
-  final List<String> errors;
-  final List<String> events;
-
-  const InstallReconcileDto({
-    required this.checked,
-    required this.resolved,
-    required this.stillPending,
-    required this.errors,
-    required this.events,
-  });
-
-  @override
-  int get hashCode =>
-      checked.hashCode ^
-      resolved.hashCode ^
-      stillPending.hashCode ^
-      errors.hashCode ^
-      events.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is InstallReconcileDto &&
-          runtimeType == other.runtimeType &&
-          checked == other.checked &&
-          resolved == other.resolved &&
-          stillPending == other.stillPending &&
-          errors == other.errors &&
-          events == other.events;
-}
-
 /// One `download_task` install projection crossing the FRB boundary.
 class InstallRecordDto {
   final String moduleTaskId;
@@ -1539,6 +1556,328 @@ class InstallRecordDto {
           installAfterDownload == other.installAfterDownload;
 }
 
+/// Terminal report sent back by the frontend installer.
+class InstallReportDto {
+  final String sessionId;
+
+  /// `installed` | `failed` | `denied` | `timeout` (normalized host-side).
+  final String status;
+  final String method;
+  final String? installedVersion;
+  final String? error;
+  final PlatformInt64 reportedAt;
+
+  const InstallReportDto({
+    required this.sessionId,
+    required this.status,
+    required this.method,
+    this.installedVersion,
+    this.error,
+    required this.reportedAt,
+  });
+
+  @override
+  int get hashCode =>
+      sessionId.hashCode ^
+      status.hashCode ^
+      method.hashCode ^
+      installedVersion.hashCode ^
+      error.hashCode ^
+      reportedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallReportDto &&
+          runtimeType == other.runtimeType &&
+          sessionId == other.sessionId &&
+          status == other.status &&
+          method == other.method &&
+          installedVersion == other.installedVersion &&
+          error == other.error &&
+          reportedAt == other.reportedAt;
+}
+
+/// Durable install request the frontend must execute.
+class InstallRequestDto {
+  final String moduleTaskId;
+  final String sessionId;
+  final String packageName;
+  final String versionName;
+  final String apkPath;
+  final String method;
+  final VariantChoiceDto variant;
+
+  const InstallRequestDto({
+    required this.moduleTaskId,
+    required this.sessionId,
+    required this.packageName,
+    required this.versionName,
+    required this.apkPath,
+    required this.method,
+    required this.variant,
+  });
+
+  @override
+  int get hashCode =>
+      moduleTaskId.hashCode ^
+      sessionId.hashCode ^
+      packageName.hashCode ^
+      versionName.hashCode ^
+      apkPath.hashCode ^
+      method.hashCode ^
+      variant.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallRequestDto &&
+          runtimeType == other.runtimeType &&
+          moduleTaskId == other.moduleTaskId &&
+          sessionId == other.sessionId &&
+          packageName == other.packageName &&
+          versionName == other.versionName &&
+          apkPath == other.apkPath &&
+          method == other.method &&
+          variant == other.variant;
+}
+
+/// Acknowledgement of one install report.
+class InstallResultAckDto {
+  final String sessionId;
+  final String status;
+  final bool changed;
+
+  const InstallResultAckDto({
+    required this.sessionId,
+    required this.status,
+    required this.changed,
+  });
+
+  @override
+  int get hashCode => sessionId.hashCode ^ status.hashCode ^ changed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallResultAckDto &&
+          runtimeType == other.runtimeType &&
+          sessionId == other.sessionId &&
+          status == other.status &&
+          changed == other.changed;
+}
+
+/// Frontend install policy (mirrors `gstore_core::facts::InstallRules`).
+class InstallRulesDto {
+  final PlatformInt64 version;
+  final bool installEnabled;
+  final List<String> abiPriority;
+  final bool allowDowngrade;
+  final bool allowUnknownSources;
+  final String signaturePolicy;
+  final bool silentInstall;
+  final PlatformInt64 timeoutSecs;
+
+  const InstallRulesDto({
+    required this.version,
+    required this.installEnabled,
+    required this.abiPriority,
+    required this.allowDowngrade,
+    required this.allowUnknownSources,
+    required this.signaturePolicy,
+    required this.silentInstall,
+    required this.timeoutSecs,
+  });
+
+  @override
+  int get hashCode =>
+      version.hashCode ^
+      installEnabled.hashCode ^
+      abiPriority.hashCode ^
+      allowDowngrade.hashCode ^
+      allowUnknownSources.hashCode ^
+      signaturePolicy.hashCode ^
+      silentInstall.hashCode ^
+      timeoutSecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallRulesDto &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          installEnabled == other.installEnabled &&
+          abiPriority == other.abiPriority &&
+          allowDowngrade == other.allowDowngrade &&
+          allowUnknownSources == other.allowUnknownSources &&
+          signaturePolicy == other.signaturePolicy &&
+          silentInstall == other.silentInstall &&
+          timeoutSecs == other.timeoutSecs;
+}
+
+/// Result of [`InstallApi::install`]: a settled record and/or a request.
+class InstallStartDto {
+  final InstallRecordDto record;
+  final InstallRequestDto? request;
+
+  const InstallStartDto({required this.record, this.request});
+
+  @override
+  int get hashCode => record.hashCode ^ request.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallStartDto &&
+          runtimeType == other.runtimeType &&
+          record == other.record &&
+          request == other.request;
+}
+
+/// One installed application in an inventory snapshot.
+class InstalledAppDto {
+  final String packageName;
+  final String? appName;
+  final String versionName;
+  final PlatformInt64 versionCode;
+  final String? signatureSha256;
+  final String? sourceDir;
+  final String? installer;
+  final bool isSystem;
+  final int targetSdk;
+  final int minSdk;
+  final List<String> abis;
+
+  const InstalledAppDto({
+    required this.packageName,
+    this.appName,
+    required this.versionName,
+    required this.versionCode,
+    this.signatureSha256,
+    this.sourceDir,
+    this.installer,
+    required this.isSystem,
+    required this.targetSdk,
+    required this.minSdk,
+    required this.abis,
+  });
+
+  @override
+  int get hashCode =>
+      packageName.hashCode ^
+      appName.hashCode ^
+      versionName.hashCode ^
+      versionCode.hashCode ^
+      signatureSha256.hashCode ^
+      sourceDir.hashCode ^
+      installer.hashCode ^
+      isSystem.hashCode ^
+      targetSdk.hashCode ^
+      minSdk.hashCode ^
+      abis.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstalledAppDto &&
+          runtimeType == other.runtimeType &&
+          packageName == other.packageName &&
+          appName == other.appName &&
+          versionName == other.versionName &&
+          versionCode == other.versionCode &&
+          signatureSha256 == other.signatureSha256 &&
+          sourceDir == other.sourceDir &&
+          installer == other.installer &&
+          isSystem == other.isSystem &&
+          targetSdk == other.targetSdk &&
+          minSdk == other.minSdk &&
+          abis == other.abis;
+}
+
+/// Result of one inventory push.
+class InventoryPushResultDto {
+  final bool accepted;
+  final String? reason;
+
+  const InventoryPushResultDto({required this.accepted, this.reason});
+
+  @override
+  int get hashCode => accepted.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InventoryPushResultDto &&
+          runtimeType == other.runtimeType &&
+          accepted == other.accepted &&
+          reason == other.reason;
+}
+
+/// Full installed-app set pushed by the frontend.
+class InventorySnapshotDto {
+  final String sourceId;
+  final PlatformInt64 seq;
+  final PlatformInt64 capturedAt;
+  final List<InstalledAppDto> apps;
+
+  const InventorySnapshotDto({
+    required this.sourceId,
+    required this.seq,
+    required this.capturedAt,
+    required this.apps,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^ seq.hashCode ^ capturedAt.hashCode ^ apps.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InventorySnapshotDto &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          seq == other.seq &&
+          capturedAt == other.capturedAt &&
+          apps == other.apps;
+}
+
+/// Current inventory source status.
+class InventoryStatusDto {
+  final String sourceId;
+  final PlatformInt64? seq;
+  final PlatformInt64? capturedAt;
+  final int count;
+  final bool stale;
+
+  const InventoryStatusDto({
+    required this.sourceId,
+    this.seq,
+    this.capturedAt,
+    required this.count,
+    required this.stale,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^
+      seq.hashCode ^
+      capturedAt.hashCode ^
+      count.hashCode ^
+      stale.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InventoryStatusDto &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          seq == other.seq &&
+          capturedAt == other.capturedAt &&
+          count == other.count &&
+          stale == other.stale;
+}
+
 /// Counters for one legacy source crossing the FRB boundary.
 class MigrationCountsDto {
   final PlatformInt64 inserted;
@@ -1564,15 +1903,64 @@ class MigrationCountsDto {
           skipped == other.skipped;
 }
 
+/// Platform facts pushed by the frontend.
+class PlatformFactsDto {
+  final String sourceId;
+  final String os;
+  final String arch;
+  final List<String> abis;
+  final int sdk;
+  final DeviceFactsDto device;
+  final CorePathsDto paths;
+  final Uint8List? cryptoKey;
+  final PlatformInt64 capturedAt;
+
+  const PlatformFactsDto({
+    required this.sourceId,
+    required this.os,
+    required this.arch,
+    required this.abis,
+    required this.sdk,
+    required this.device,
+    required this.paths,
+    this.cryptoKey,
+    required this.capturedAt,
+  });
+
+  @override
+  int get hashCode =>
+      sourceId.hashCode ^
+      os.hashCode ^
+      arch.hashCode ^
+      abis.hashCode ^
+      sdk.hashCode ^
+      device.hashCode ^
+      paths.hashCode ^
+      cryptoKey.hashCode ^
+      capturedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlatformFactsDto &&
+          runtimeType == other.runtimeType &&
+          sourceId == other.sourceId &&
+          os == other.os &&
+          arch == other.arch &&
+          abis == other.abis &&
+          sdk == other.sdk &&
+          device == other.device &&
+          paths == other.paths &&
+          cryptoKey == other.cryptoKey &&
+          capturedAt == other.capturedAt;
+}
+
 /// One `"{channel}:{app_id}"` tag bucket.
 class TagGroup {
   final String key;
   final List<String> tags;
 
-  const TagGroup({
-    required this.key,
-    required this.tags,
-  });
+  const TagGroup({required this.key, required this.tags});
 
   @override
   int get hashCode => key.hashCode ^ tags.hashCode;
@@ -1630,4 +2018,65 @@ class UpdateReport {
           updatesJson == other.updatesJson &&
           skippedJson == other.skippedJson &&
           eventsJson == other.eventsJson;
+}
+
+/// Frontend update policy (mirrors `gstore_core::facts::UpdateRules`).
+class UpdateRulesDto {
+  final PlatformInt64 version;
+  final List<String> channelPriority;
+  final bool allowPrerelease;
+  final String signaturePolicy;
+  final PlatformInt64 maxInventoryAgeSecs;
+
+  const UpdateRulesDto({
+    required this.version,
+    required this.channelPriority,
+    required this.allowPrerelease,
+    required this.signaturePolicy,
+    required this.maxInventoryAgeSecs,
+  });
+
+  @override
+  int get hashCode =>
+      version.hashCode ^
+      channelPriority.hashCode ^
+      allowPrerelease.hashCode ^
+      signaturePolicy.hashCode ^
+      maxInventoryAgeSecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UpdateRulesDto &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          channelPriority == other.channelPriority &&
+          allowPrerelease == other.allowPrerelease &&
+          signaturePolicy == other.signaturePolicy &&
+          maxInventoryAgeSecs == other.maxInventoryAgeSecs;
+}
+
+/// Download variant selected by the core.
+class VariantChoiceDto {
+  final String abi;
+  final String url;
+  final List<String> fallbackChain;
+
+  const VariantChoiceDto({
+    required this.abi,
+    required this.url,
+    required this.fallbackChain,
+  });
+
+  @override
+  int get hashCode => abi.hashCode ^ url.hashCode ^ fallbackChain.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VariantChoiceDto &&
+          runtimeType == other.runtimeType &&
+          abi == other.abi &&
+          url == other.url &&
+          fallbackChain == other.fallbackChain;
 }
