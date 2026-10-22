@@ -58,7 +58,10 @@ class _ThrowingInstallManager implements InstallManager {
   int installCalls = 0;
 
   @override
-  Future<(bool, InstallMethod)> installApk(String filePath) async {
+  Future<(bool, InstallMethod)> installApk(
+    String filePath, {
+    bool moduleInstall = false,
+  }) async {
     installCalls++;
     throw StateError('installApk boom: $filePath');
   }

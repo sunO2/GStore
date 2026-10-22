@@ -241,6 +241,49 @@ fn download_install_api_installs_completed_row() {
 }
 
 #[test]
+fn download_install_api_get_returns_durable_record() {
+    let dir = TempDir::new("get");
+    let apk = dir.path().join("app.apk");
+    std::fs::write(&apk, b"PK\x03\x04fake apk").expect("write apk");
+    let dest = apk.to_string_lossy().into_owned();
+    let api = seeded_api(
+        FakeInstaller::enabled(installed("com.example.one", "1.2.3")),
+        &dest,
+    );
+
+    let before = api
+        .get("task-1".to_string())
+        .expect("get before install")
+        .expect("seeded row");
+    assert_eq!(before.status, "none");
+
+    let attempt = api.install("task-1".to_string()).expect("install");
+    assert_eq!(attempt.record.status, "installed");
+
+    let record = api
+        .get("task-1".to_string())
+        .expect("get after install")
+        .expect("durable row");
+    println!("download_install_api get record: {record:?}");
+    assert_eq!(record.module_task_id, "task-1");
+    assert_eq!(record.status, "installed");
+    assert_eq!(record.installed_version.as_deref(), Some("1.2.3"));
+    assert!(record.installed_at.is_some());
+
+    assert!(
+        api.get("missing-task".to_string())
+            .expect("missing get")
+            .is_none(),
+        "an unknown task returns None, not an error"
+    );
+    assert!(
+        api.get("   ".to_string())
+            .expect_err("blank id")
+            .starts_with("CORE_E_INSTALL_INVALID_ARG")
+    );
+}
+
+#[test]
 fn download_install_api_on_result_dedupes() {
     let dir = TempDir::new("dedupe");
     let apk = dir.path().join("app.apk");

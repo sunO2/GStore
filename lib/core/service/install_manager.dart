@@ -72,6 +72,24 @@ class InstallManager implements IInstallService {
   @visibleForTesting
   static InstallFacade? installFacadeForTest;
 
+  /// 核心安装已返回非终态时的轮询间隔与上限（可被测试缩短）。
+  @visibleForTesting
+  static Duration installPollInterval = const Duration(milliseconds: 500);
+  @visibleForTesting
+  static Duration installPollTimeout = const Duration(seconds: 180);
+
+  static const String _installNoCoreTask = 'CORE_E_INSTALL_NO_CORE_TASK';
+  static const Set<String> _terminalInstallStatuses = <String>{
+    'installed',
+    'failed',
+    'denied',
+    'timeout',
+    'unknown',
+  };
+
+  final Map<String, Timer> _installPollers = <String, Timer>{};
+  bool _installRecoveryDone = false;
+
   /// Shizuku 是否已运行（Binder 连接）
   bool _binderRunning = false;
 
@@ -115,9 +133,12 @@ class InstallManager implements IInstallService {
   /// 重置单例（仅测试使用）
   @visibleForTesting
   static void resetForTest() {
+    _instance?._cancelInstallPollers();
     _instance = null;
     _commandRunner = rustShizukuRunner;
     installFacadeForTest = null;
+    installPollInterval = const Duration(milliseconds: 500);
+    installPollTimeout = const Duration(seconds: 180);
   }
 
   /// 当前是否视为 Android 平台
@@ -236,8 +257,18 @@ class InstallManager implements IInstallService {
     if (!CoreFlags.install) {
       return installApk(filePath);
     }
+    await DownloadFacade.instance.importLegacyOnce();
+    return _installCoreTask(moduleTaskId, filePath);
+  }
+
+  Future<(bool, InstallMethod)> _installCoreTask(
+    String moduleTaskId,
+    String filePath,
+  ) async {
     try {
+      await _ensureInstallRecovered();
       final attempt = await _installFacade.install(moduleTaskId);
+      _maybeStartInstallPoller(moduleTaskId, attempt.record.status);
       return (
         attempt.record.isInstalled,
         _mapInstallMethod(attempt.record.method),
@@ -251,8 +282,75 @@ class InstallManager implements IInstallService {
     }
   }
 
+  /// Recovers installs left pending by a previous process exactly once before
+  /// the first core install attempt.
+  Future<void> _ensureInstallRecovered() async {
+    if (_installRecoveryDone) return;
+    _installRecoveryDone = true;
+    try {
+      await _installFacade.reconcile();
+    } catch (e) {
+      appLog.error('InstallManager: 启动安装恢复失败（忽略） - $e');
+    }
+  }
+
+  void _maybeStartInstallPoller(String moduleTaskId, String status) {
+    if (status != 'pending' || _installPollers.containsKey(moduleTaskId)) {
+      return;
+    }
+    final intervalMs = installPollInterval.inMilliseconds;
+    final maxTicks = intervalMs <= 0
+        ? 0
+        : installPollTimeout.inMilliseconds ~/ intervalMs;
+    var ticks = 0;
+    late final Timer timer;
+    timer = Timer.periodic(installPollInterval, (t) {
+      ticks++;
+      if (ticks > maxTicks) {
+        t.cancel();
+        _installPollers.remove(moduleTaskId);
+        appLog.error('InstallManager: 核心安装结果轮询超时', data: {
+          'moduleTaskId': moduleTaskId,
+        });
+        return;
+      }
+      unawaited(_pollInstallOnce(moduleTaskId, t));
+    });
+    _installPollers[moduleTaskId] = timer;
+  }
+
+  Future<void> _pollInstallOnce(String moduleTaskId, Timer timer) async {
+    try {
+      await _installFacade.reconcile();
+      final record = await _installFacade.get(moduleTaskId);
+      final status = record?.status;
+      if (status == null || !_terminalInstallStatuses.contains(status)) {
+        return;
+      }
+      timer.cancel();
+      _installPollers.remove(moduleTaskId);
+      appLog.info('InstallManager: 核心安装结束', data: {
+        'moduleTaskId': moduleTaskId,
+        'status': status,
+        'error': record?.error,
+      });
+    } catch (e) {
+      appLog.error('InstallManager: 核心安装结果轮询失败 - $e', data: {
+        'moduleTaskId': moduleTaskId,
+      });
+    }
+  }
+
+  void _cancelInstallPollers() {
+    for (final timer in _installPollers.values) {
+      timer.cancel();
+    }
+    _installPollers.clear();
+  }
+
   Future<String?> _findCoreTaskId(String filePath) async {
     try {
+      await DownloadFacade.instance.importLegacyOnce();
       for (final dto in await DownloadFacade.instance.list()) {
         if (dto.destPath == filePath) {
           return dto.moduleTaskId ?? dto.id.toString();
@@ -267,30 +365,33 @@ class InstallManager implements IInstallService {
   }
 
   /// 安装 APK
-  /// 优先使用 Shizuku 静默安装（可用时），否则回退系统安装
-  /// 返回 (是否成功, 使用的安装方式)
-  Future<(bool, InstallMethod)> installApk(String filePath) async {
+  /// `CoreFlags.install` 开启时只走核心安装；未命中且显式标记为模块 APK 时
+  /// 才保留旧安装路径。返回 (是否成功, 使用的安装方式)
+  Future<(bool, InstallMethod)> installApk(
+    String filePath, {
+    bool moduleInstall = false,
+  }) async {
     if (CoreFlags.install) {
       final coreTaskId = await _findCoreTaskId(filePath);
       if (coreTaskId != null) {
-        try {
-          final attempt = await _installFacade.install(coreTaskId);
-          return (
-            attempt.record.isInstalled,
-            _mapInstallMethod(attempt.record.method),
-          );
-        } catch (e) {
-          appLog.error('InstallManager: 核心安装失败 - $e', data: {
-            'moduleTaskId': coreTaskId,
-            'filePath': filePath,
-          });
-          return (false, InstallMethod.system);
-        }
+        return _installCoreTask(coreTaskId, filePath);
+      }
+      if (!moduleInstall) {
+        appLog.error(
+          'InstallManager: $_installNoCoreTask 未找到核心下载任务，拒绝回退旧安装路径',
+          data: {'filePath': filePath},
+        );
+        return (false, InstallMethod.system);
       }
       appLog.info(
-        'InstallManager: APK 不在内核下载任务中（模块安装，超出核心应用安装范围），保留旧安装路径: $filePath',
+        'InstallManager: 模块 APK 不在内核下载任务中，使用模块安装路径: $filePath',
       );
     }
+    return _legacyInstallApk(filePath);
+  }
+
+  /// 旧 Shizuku/系统安装路径；仅 flag 关闭或显式模块 APK 时使用。
+  Future<(bool, InstallMethod)> _legacyInstallApk(String filePath) async {
     if (!_isAndroid || !filePath.endsWith('.apk')) {
       return (false, _preferredMethod);
     }

@@ -3210,7 +3210,7 @@ fn reconcile_dto(
 /// emitting a second event. Errors use stable `CORE_E_INSTALL_*` prefixes.
 #[frb(opaque)]
 pub struct InstallApi {
-    service: InstallService,
+    service: Arc<InstallService>,
 }
 
 impl InstallApi {
@@ -3231,7 +3231,7 @@ impl InstallApi {
                 crate::installer_host::JniInstallerBridge::new(),
             ),
         );
-        let service = InstallService::new(db.shared_writer(), installer);
+        let service = Arc::new(InstallService::new(db.shared_writer(), installer));
         match service.reconcile() {
             Ok((report, events)) => {
                 if !events.is_empty() {
@@ -3251,6 +3251,40 @@ impl InstallApi {
                 format!("install reconcile at init (non-fatal): {error}"),
             ),
         }
+        let pump_service = Arc::clone(&service);
+        let spawned = std::thread::Builder::new()
+            .name("gstore-install-reconcile".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                match pump_service.reconcile() {
+                    Ok((report, events)) => {
+                        if !events.is_empty() || !report.errors.is_empty() {
+                            crate::log_bridge::push_host_log(
+                                2,
+                                format!(
+                                    "install reconcile pump: checked={} resolved={} pending={} \
+                                     events={} errors={:?}",
+                                    report.checked,
+                                    report.resolved,
+                                    report.still_pending,
+                                    events.len(),
+                                    report.errors
+                                ),
+                            );
+                        }
+                    }
+                    Err(error) => crate::log_bridge::push_host_log(
+                        2,
+                        format!("install reconcile pump failed (non-fatal): {error}"),
+                    ),
+                }
+            });
+        if let Err(error) = spawned {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("install reconcile pump thread failed to start: {error}"),
+            );
+        }
         Ok(Self { service })
     }
 
@@ -3258,7 +3292,25 @@ impl InstallApi {
     #[frb(ignore)]
     #[doc(hidden)]
     pub fn from_service_for_test(service: InstallService) -> InstallApi {
-        Self { service }
+        Self {
+            service: Arc::new(service),
+        }
+    }
+
+    /// Reads the durable install record for `module_task_id`.
+    ///
+    /// Returns `None` when no `download_task` row exists for the id.
+    pub fn get(&self, module_task_id: String) -> Result<Option<InstallRecordDto>, String> {
+        if module_task_id.trim().is_empty() {
+            return Err(format!(
+                "{CORE_E_INSTALL_INVALID_ARG}: module_task_id must not be empty"
+            ));
+        }
+        match self.service.get(&module_task_id) {
+            Ok(record) => Ok(Some(InstallRecordDto::from(record))),
+            Err(CoreError::NotFound(_)) => Ok(None),
+            Err(error) => Err(install_err(error)),
+        }
     }
 
     /// Starts (or observes) an install for `module_task_id`.

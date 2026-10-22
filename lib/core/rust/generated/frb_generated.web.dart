@@ -352,6 +352,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   InstallAttemptDto dco_decode_box_autoadd_install_attempt_dto(dynamic raw);
 
   @protected
+  InstallRecordDto dco_decode_box_autoadd_install_record_dto(dynamic raw);
+
+  @protected
   MigrationCountsDto dco_decode_box_autoadd_migration_counts_dto(dynamic raw);
 
   @protected
@@ -504,6 +507,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   InstallAttemptDto? dco_decode_opt_box_autoadd_install_attempt_dto(
       dynamic raw);
+
+  @protected
+  InstallRecordDto? dco_decode_opt_box_autoadd_install_record_dto(dynamic raw);
 
   @protected
   MigrationCountsDto? dco_decode_opt_box_autoadd_migration_counts_dto(
@@ -825,6 +831,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  InstallRecordDto sse_decode_box_autoadd_install_record_dto(
+      SseDeserializer deserializer);
+
+  @protected
   MigrationCountsDto sse_decode_box_autoadd_migration_counts_dto(
       SseDeserializer deserializer);
 
@@ -998,6 +1008,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   InstallAttemptDto? sse_decode_opt_box_autoadd_install_attempt_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  InstallRecordDto? sse_decode_opt_box_autoadd_install_record_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -1323,6 +1337,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       InstallAttemptDto self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_install_record_dto(
+      InstallRecordDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_migration_counts_dto(
       MigrationCountsDto self, SseSerializer serializer);
 
@@ -1506,6 +1524,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_install_attempt_dto(
       InstallAttemptDto? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_install_record_dto(
+      InstallRecordDto? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_migration_counts_dto(

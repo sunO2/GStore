@@ -404,6 +404,11 @@ abstract class InstallApi implements RustOpaqueInterface {
   /// Whether the host installer can install packages.
   Future<bool> canInstall();
 
+  /// Reads the durable install record for `module_task_id`.
+  ///
+  /// Returns `None` when no `download_task` row exists for the id.
+  Future<InstallRecordDto?> get_({required String moduleTaskId});
+
   /// Opens the core database, wires the Android installer port, and runs one
   /// best-effort reconciliation sweep.
   ///

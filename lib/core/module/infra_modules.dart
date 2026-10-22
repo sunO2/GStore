@@ -140,7 +140,7 @@ class DbModule extends AppModule {
           repository: DownloadRepository(),
           onApkReady: (filePath) {
             final m = manager.get<InstallManager>();
-            if (m != null) m.installApk(filePath);
+            if (m != null) m.installApk(filePath, moduleInstall: true);
           },
         ));
 

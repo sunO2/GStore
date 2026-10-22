@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
+// fake_async 是 flutter_test 的传递依赖（未直接列入 pubspec，故忽略该 lint）。
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
@@ -48,6 +51,7 @@ rust.DownloadTaskDto _dto({
   int updatedAt = 200,
   String? segmentsJson,
   String? headersJson,
+  String destPath = '/tmp/example.apk',
 }) =>
     rust.DownloadTaskDto(
       id: id,
@@ -61,7 +65,7 @@ rust.DownloadTaskDto _dto({
       resourceId: 'com.example.app',
       resourceVersion: '1.2.3',
       url: 'https://example.test/example.apk',
-      destPath: '/tmp/example.apk',
+      destPath: destPath,
       status: status,
       bytesDone: 10,
       total: 100,
@@ -198,6 +202,12 @@ class _FakeInstallBackend implements InstallBackend {
   }
 
   @override
+  Future<InstallRecord?> get(String moduleTaskId) async {
+    calls.add('get:$moduleTaskId');
+    return record;
+  }
+
+  @override
   Future<void> uninstall(String packageName) async =>
       calls.add('uninstall:$packageName');
 
@@ -236,6 +246,51 @@ class _FakeInstallBackend implements InstallBackend {
   }
 }
 
+/// Pending on install, then terminal on the second `get`.
+class _PollingInstallBackend extends _FakeInstallBackend {
+  static const InstallRecord _pending = InstallRecord(
+    moduleTaskId: '7',
+    appId: 'com.example.app',
+    status: 'pending',
+    method: 'package_installer',
+  );
+  static const InstallRecord _installed = InstallRecord(
+    moduleTaskId: '7',
+    appId: 'com.example.app',
+    status: 'installed',
+    method: 'package_installer',
+  );
+
+  int getCalls = 0;
+  int reconcileCalls = 0;
+
+  @override
+  Future<InstallAttempt> install(String moduleTaskId) async {
+    calls.add('install:$moduleTaskId');
+    return const InstallAttempt(record: _pending);
+  }
+
+  @override
+  Future<InstallReconcile> reconcile() async {
+    reconcileCalls++;
+    calls.add('reconcile');
+    return const InstallReconcile(
+      checked: 1,
+      resolved: 0,
+      stillPending: 1,
+      errors: <String>[],
+      events: <String>[],
+    );
+  }
+
+  @override
+  Future<InstallRecord?> get(String moduleTaskId) async {
+    getCalls++;
+    calls.add('get:$moduleTaskId');
+    return getCalls >= 2 ? _installed : _pending;
+  }
+}
+
 class _RecordingInstallManager implements InstallManager {
   int installTaskCalls = 0;
   int installApkCalls = 0;
@@ -252,7 +307,10 @@ class _RecordingInstallManager implements InstallManager {
   }
 
   @override
-  Future<(bool, InstallMethod)> installApk(String filePath) async {
+  Future<(bool, InstallMethod)> installApk(
+    String filePath, {
+    bool moduleInstall = false,
+  }) async {
     installApkCalls++;
     return (true, InstallMethod.system);
   }
@@ -374,6 +432,7 @@ void main() {
       expect(result, (true, InstallMethod.shizuku));
       expect(uninstalled, isTrue);
       expect(install.calls, <String>[
+        'reconcile',
         'install:task-1',
         'uninstall:com.example.app',
       ]);
@@ -399,8 +458,131 @@ void main() {
 
       expect(result.$1, isTrue);
       expect(downloads.calls, contains('list'));
-      expect(install.calls, <String>['install:7']);
+      expect(install.calls, <String>['reconcile', 'install:7']);
       expect(commands, 0);
+    });
+
+    test('missing core task never falls back to Shizuku/AppInstaller', () async {
+      await _setFlags(install: true);
+      final install = _FakeInstallBackend();
+      InstallFacade.installBackendForTest(install);
+      final downloads = _FakeDownloadBackend();
+      downloads.task = _dto(destPath: '/tmp/somewhere-else.apk');
+      DownloadFacade.backendOverride = downloads;
+      var commands = 0;
+      InstallManager.commandRunnerForTest = (_) async {
+        commands++;
+        return 'Success';
+      };
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result = await manager.installApk('/tmp/example.apk');
+
+      expect(result, (false, InstallMethod.system));
+      expect(commands, 0, reason: 'flag-on app install has no legacy fallback');
+      expect(install.calls, isEmpty);
+      debugPrint('flag-on missing core task result=$result commands=$commands');
+    });
+
+    test('explicit module APK keeps the module legacy path', () async {
+      await _setFlags(install: true);
+      final install = _FakeInstallBackend();
+      InstallFacade.installBackendForTest(install);
+      final downloads = _FakeDownloadBackend();
+      downloads.task = _dto(destPath: '/tmp/somewhere-else.apk');
+      DownloadFacade.backendOverride = downloads;
+      var commands = 0;
+      InstallManager.commandRunnerForTest = (_) async {
+        commands++;
+        return 'Success';
+      };
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result =
+          await manager.installApk(apk.path, moduleInstall: true);
+
+      expect(result, (true, InstallMethod.shizuku));
+      expect(commands, 1);
+      expect(install.calls, isEmpty);
+      debugPrint('module APK result=$result commands=$commands');
+    });
+
+    test('installApk imports legacy before the first core list', () async {
+      await _setFlags(install: true);
+      final install = _FakeInstallBackend();
+      InstallFacade.installBackendForTest(install);
+      final downloads = _LegacyRecordingDownloadBackend();
+      DownloadFacade.backendOverride = downloads;
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      await manager.installApk('/tmp/example.apk');
+
+      expect(downloads.events.take(2), <String>['import', 'list']);
+      expect(downloads.importCalls, 1);
+      debugPrint('install import order: ${downloads.events}');
+    });
+
+    test('pending core install pumps reconcile+get until terminal', () async {
+      await _setFlags(install: true);
+      final install = _PollingInstallBackend();
+      InstallFacade.installBackendForTest(install);
+      DownloadFacade.backendOverride = _FakeDownloadBackend();
+      InstallManager.installPollInterval = const Duration(milliseconds: 10);
+      InstallManager.installPollTimeout = const Duration(seconds: 1);
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      late (bool, InstallMethod) result;
+      fakeAsync((async) {
+        manager.installApk('/tmp/example.apk').then((value) => result = value);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 100));
+      });
+
+      expect(result, (false, InstallMethod.packageInstaller));
+      expect(install.getCalls, 2, reason: 'pending then terminal ends the pump');
+      expect(install.reconcileCalls, 3,
+          reason: 'one recovery sweep plus one sweep per poll');
+      expect(
+        install.calls.where((call) => call.startsWith('get:')),
+        <String>['get:7', 'get:7'],
+      );
+      debugPrint('install pump calls: ${install.calls}');
+    });
+
+    test('terminal core record starts no poller', () async {
+      await _setFlags(install: true);
+      final install = _FakeInstallBackend();
+      InstallFacade.installBackendForTest(install);
+      DownloadFacade.backendOverride = _FakeDownloadBackend();
+      InstallManager.installPollInterval = const Duration(milliseconds: 10);
+      InstallManager.installPollTimeout = const Duration(seconds: 1);
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      late (bool, InstallMethod) result;
+      fakeAsync((async) {
+        manager.installApk('/tmp/example.apk').then((value) => result = value);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 100));
+      });
+
+      expect(result, (true, InstallMethod.shizuku));
+      expect(install.calls.where((call) => call.startsWith('get:')), isEmpty);
+      expect(
+        install.calls.where((call) => call == 'reconcile'),
+        hasLength(1),
+        reason: 'only the pre-install recovery sweep runs',
+      );
+      debugPrint('terminal install calls: ${install.calls}');
     });
   });
 

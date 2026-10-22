@@ -97,6 +97,8 @@ abstract class InstallBackend {
 
   Future<InstallAttempt?> maybeInstallAfterDownload(String moduleTaskId);
 
+  Future<InstallRecord?> get(String moduleTaskId);
+
   Future<void> uninstall(String packageName);
 
   Future<void> launch(String packageName);
@@ -176,6 +178,11 @@ class FrbInstallBackend implements InstallBackend {
       ).then((dto) => dto == null ? null : InstallAttempt.fromRust(dto));
 
   @override
+  Future<InstallRecord?> get(String moduleTaskId) => _call(
+        (api) => api.get_(moduleTaskId: moduleTaskId),
+      ).then((dto) => dto == null ? null : InstallRecord.fromRust(dto));
+
+  @override
   Future<void> uninstall(String packageName) =>
       _call((api) => api.uninstall(packageName: packageName));
 
@@ -250,6 +257,9 @@ class InstallFacade {
 
   Future<InstallAttempt?> maybeInstallAfterDownload(String moduleTaskId) =>
       _target.maybeInstallAfterDownload(moduleTaskId);
+
+  Future<InstallRecord?> get(String moduleTaskId) =>
+      _target.get(moduleTaskId);
 
   Future<void> uninstall(String packageName) => _target.uninstall(packageName);
 
