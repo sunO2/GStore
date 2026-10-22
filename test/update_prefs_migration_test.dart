@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/migration/migration_handoff.dart';
@@ -264,7 +265,7 @@ void main() {
           .map((FileSystemEntity entity) => entity.uri.pathSegments.last)
           .toList()
         ..sort();
-      print('leftover migration files after retry: $leftover');
+      debugPrint('leftover migration files after retry: $leftover');
       expect(leftover, isEmpty);
     });
   });
@@ -434,7 +435,7 @@ void main() {
           ];
         }).toList();
 
-        print('sqlite3 update_prefs rows: $rows');
+        debugPrint('sqlite3 update_prefs rows: $rows');
         expect(rows, <List<String>>[
           <String>['update_check_logs_v1', _nativePrefs['update_check_logs_v1']!],
           <String>[

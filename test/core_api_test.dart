@@ -42,10 +42,10 @@ void main() {
     }
   });
 
-  test('init and migratePaths return schema v1', () async {
+  test('init and migratePaths return schema v2', () async {
     final result = await api.migratePaths();
 
-    expect(result.schemaVersion, 1);
+    expect(result.schemaVersion, 2);
     expect(result.dbPath, '$dataDir/gstore_core.db');
     expect(result.dbPath.endsWith('gstore_core.db'), isTrue);
     expect(File(result.dbPath).existsSync(), isTrue);
@@ -65,7 +65,7 @@ void main() {
     expect(snapshotBytes > BigInt.zero, isTrue);
     expect(File(snap).existsSync(), isTrue);
 
-    expect(await api.importSnapshot(path: snap), 1);
+    expect(await api.importSnapshot(path: snap), 2);
   });
 
   test('missing import path is a typed stable error', () async {
@@ -122,7 +122,7 @@ void main() {
 
     final snap = '${root.path}/markers.db';
     await api.exportSnapshot(path: snap);
-    expect(await api.importSnapshot(path: snap), 1);
+    expect(await api.importSnapshot(path: snap), 2);
 
     for (final domain in domains) {
       expect(await api.coreWrites(domain: domain), isNull,
