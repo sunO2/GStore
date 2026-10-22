@@ -1,10 +1,8 @@
 # Android Wave 2 — evidence index
 
 - **Branch:** `wave02/rust-core-catalog` in worktree `GStore-wave02`
-- **Wave 2 code range:** `9d5b41f3..e631ff4f` = **17** commits
-- **Closeout HEAD:** current branch HEAD carries closeout commits (`6906005f`,
-  `e631ff4f`, `9b0b4129`, `26982727`) on top of the code range; that framing is
-  intentionally unchanged.
+- **Wave 2 code range:** `9d5b41f3..e631ff4f` = **17** commits, ending at the record commit `e631ff4f`; `6906005f` is inside that range.
+- **Closeout series:** six closeout commits, docs/scripts only, follow the range end `e631ff4f`: `9b0b4129`, `26982727`, `beb8f76e`, `9e1757ed`, `2abeb5fa`, `7a7cb9ab` (series `9b0b4129..7a7cb9ab`). Commits after `7a7cb9ab`, if any, are audit-only documentation corrections; they do not change the Wave 2 code range, product code, or the evidence results above.
 - **Date:** 2026-10-22
 
 ## How to read this index
@@ -53,7 +51,7 @@ No hash is invented here. If an evidence file is missing, the cell says
 | Closeout 74 | `bash -n` plus deterministic `package-inventory.sh --check-logcat` matrices | 0 / 3 / 0 (see notes) | `target/test-evidence/74-inventory-script-fix.txt` | `75c179213c236efff6618fdae0987060dcde0117be328a9cab111d666a2eb82d` | Same log also supports row 5: syntactic pass, init-only DEFERRED (3), positive control PASS (0). |
 | Closeout 75 | `for f in docs/wave02-final/F1.md F2.md F3.md; do test -s "$f"; done`; `grep -n "PASS\|BLOCKED\|DEFERRED" docs/wave02-final/*.md`; report content checks | 0 | `target/test-evidence/75-f1f2f3-reports.txt` | `fd87d5e5f5799c010dbd880a4594823746aa7992f8a155bfdf1566e5bd9aa226` | F1/F2/F3 reports exist and are non-empty (8171 / 7331 / 5044 bytes). Reports live at `docs/wave02-final/`. |
 | Closeout 76 | `flutter build apk --release --target-platform android-arm64` (plus independent rerun) | 0 | `target/test-evidence/76-release-apk-closeout.txt` | `fb961a61a755d018fb8d0915af9d40ec2f2811cece7695c0579996cf545851d9` | 150572442 bytes; sha256 `0cad05e1...`; sha1 `0e214f...`; rerun reproduced the sha256 in 26s. |
-| 72-gate2-closeout | `bash scripts/qa/parity.sh --catalog`; `bash scripts/qa/f2-quality.sh`; `cargo test --manifest-path rust/gstore_host/Cargo.toml`; `flutter build apk --release --target-platform android-arm64`; scope guard (`git diff 9d5b41f3..HEAD -- lib/core/core_flags.dart rust/gstore_core/src/flags.rs \| wc -l`; `grep '^version:' pubspec.yaml`; `git diff --diff-filter=DR --name-only 9d5b41f3..HEAD`) | 0 / 0 / 0 / 0 / 0 / 0 / 0 | `target/test-evidence/72-gate2-closeout.txt` | `bbac40436173d5598b9f0e5dda8729c979019b97b30e1e2a7241e3cbd24f9406` | Gate 2 final re-check at HEAD `2abeb5fa`: parity `getAllApps=17 searchApps=2 getAppInfoMissing=None`; f2-quality `NEW findings (0)`; host 84+1+2+0 = 87 passed / 0 failed / 0 ignored; release `✓ Built` sha256 `0cad05e1...`; scope guard clean. Final status **PASS**; **Todo 8 DEFERRED / BLOCKED (owner deferred; contract/device split) — NOT part of this PASS**. |
+| 72-gate2-closeout | `bash scripts/qa/parity.sh --catalog`; `bash scripts/qa/f2-quality.sh`; `cargo test --manifest-path rust/gstore_host/Cargo.toml`; `flutter build apk --release --target-platform android-arm64`; scope guard (`git diff 9d5b41f3..HEAD -- lib/core/core_flags.dart rust/gstore_core/src/flags.rs \| wc -l`; `grep '^version:' pubspec.yaml`; `git diff --diff-filter=DR --name-only 9d5b41f3..HEAD`) | 0 / 0 / 0 / 0 / 0 / 0 / 0 | `target/test-evidence/72-gate2-closeout.txt` | `bbac40436173d5598b9f0e5dda8729c979019b97b30e1e2a7241e3cbd24f9406` | Gate 2 final re-check at HEAD `2abeb5fa`: parity `getAllApps=17 searchApps=2 getAppInfoMissing=None`; f2-quality `NEW findings (0)`; host 84+1+2+0 = 87 passed / 0 failed / 0 ignored; release `✓ Built` sha256 `0cad05e1...`; scope guard clean. Final status **PASS**; **Todo 8 DEFERRED / BLOCKED (owner deferred; contract/device split) — NOT part of this PASS**. (evidence run at 2abeb5fa; final docs-only commit 7a7cb9ab) |
 
 ## Status summary
 

@@ -10,9 +10,14 @@
 - **Closeout fix commit:**
   `6906005fb7ff32826a0e54c199afc0142f35eae0`
   (`fix(test): align host bridge schema expectations with V2`, `Plan-Todo: 11`)
-- **Final HEAD (closeout record):**
+- **Wave 2 range end / record commit:**
   `e631ff4f8b29c4fd52f5cf00a1b4ab5756a30773`
   (`docs(catalog): record Wave 2 closeout fix hash`, `Plan-Todo: 11`)
+- **Closeout series (docs/scripts only, after the range end, ending at `7a7cb9ab`):**
+  `9b0b4129`, `26982727`, `beb8f76e`, `9e1757ed`, `2abeb5fa`, `7a7cb9ab`
+  (`7a7cb9ab24b60cfa179977fd909e8911f7bb9b1c` — `test(catalog): close Wave 2 with explicit residuals`, `Plan-Todo: 7`).
+  Any later commits are audit-only documentation corrections and do not change
+  product code or measured results.
 - **Commit count `9d5b41f3..e631ff4f`:** **17** (14 feature/fix + Gate closeout
   doc + the schema-alignment fix + the closeout record)
 - **Date:** 2026-10-22
@@ -48,7 +53,7 @@
 | `9b8e6caf` | 7 fix | fix(core): harden update cache timestamp arithmetic |
 | `507837d9` | 9 | feat(core): migrate update prefs via handoff |
 | `9fa7e514` | 8 | feat(android): add package inventory bridge |
-| `1a55f535` | 3/5/6 fix | fix(test): align core api expectations with V2 schema |
+| `1a55f535` | 9 fix | fix(test): align core api expectations with V2 schema |
 | `3c59e5dc` | 10 | feat(catalog): expose catalog/added/update APIs behind flags |
 | `12ca93e7` | 11 | test(catalog): close Wave 2 Gate |
 | `6906005f` | 11 fix | fix(test): align host bridge schema expectations with V2 |
@@ -142,7 +147,7 @@ Todo 8 nor the on-device instrumentation is reported as a pass.
 ## Closeout re-check (Gate 2)
 
 - **Date:** 2026-10-22
-- **Worktree / HEAD:** `GStore-wave02`, branch `wave02/rust-core-catalog`, HEAD `2abeb5fa`
+- **Worktree / Evidence HEAD:** `GStore-wave02`, branch `wave02/rust-core-catalog`, HEAD `2abeb5fa`; the final closeout commit is `7a7cb9ab` (docs-only, after the evidence run)
 - **Commands and exit codes:**
   - `bash scripts/qa/parity.sh --catalog` — exit 0
   - `bash scripts/qa/f2-quality.sh` — exit 0
