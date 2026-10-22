@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/download_facade.dart';
@@ -136,6 +137,39 @@ class _FakeDownloadBackend implements DownloadBackend {
   }
 }
 
+/// Fake backend that also exposes the legacy-import capability, recording the
+/// exact order of import vs. core reads/mutations.
+class _LegacyRecordingDownloadBackend extends _FakeDownloadBackend
+    implements DownloadLegacyImport {
+  final List<String> events = <String>[];
+  int importCalls = 0;
+
+  @override
+  Future<void> importLegacyOnce(
+      {String? floorDbPath, String? moduleDbPath}) async {
+    importCalls++;
+    events.add('import');
+  }
+
+  @override
+  Future<List<rust.DownloadTaskDto>> list() async {
+    events.add('list');
+    return super.list();
+  }
+
+  @override
+  Future<rust.DownloadTaskDto?> get(String moduleTaskId) async {
+    events.add('get');
+    return super.get(moduleTaskId);
+  }
+
+  @override
+  Future<void> pause(String moduleTaskId) async {
+    events.add('pause');
+    return super.pause(moduleTaskId);
+  }
+}
+
 class _FakeInstallBackend implements InstallBackend {
   final List<String> calls = <String>[];
   InstallRecord record = const InstallRecord(
@@ -268,6 +302,7 @@ void main() {
     InstallManager.resetForTest();
     InstallFacade.resetForTest();
     DownloadFacade.backendOverride = null;
+    RustDownloadService.instance.resetCoreReadyForTest();
     temp = Directory.systemTemp.createTempSync('gstore_install_api_');
     apk = File('${temp.path}/app.apk')..writeAsBytesSync(<int>[0x50, 0x4B]);
   });
@@ -277,6 +312,7 @@ void main() {
     InstallManager.resetForTest();
     InstallFacade.resetForTest();
     DownloadFacade.backendOverride = null;
+    RustDownloadService.instance.resetCoreReadyForTest();
     CoreFlags.resetBackend();
   });
 
@@ -396,6 +432,53 @@ void main() {
           'get:7',
         ],
       );
+    });
+  });
+
+  group('legacy import gates every core read', () {
+    test('import resolves before list/get/pause and is memoized', () async {
+      await _setFlags(download: true);
+      final backend = _LegacyRecordingDownloadBackend();
+      DownloadFacade.backendOverride = backend;
+      final service = RustDownloadService.instance;
+
+      final tasks = await service.listTasks();
+      expect(tasks, hasLength(1));
+      expect(backend.events, <String>['import', 'list'],
+          reason: 'the import must resolve before the core list read');
+      expect(backend.importCalls, 1);
+      debugPrint('legacy gate after listTasks: ${backend.events} '
+          '(imports=${backend.importCalls})');
+
+      await service.pause(7);
+      expect(backend.events, <String>['import', 'list', 'pause'],
+          reason: 'the import must resolve before a core mutation');
+      expect(backend.importCalls, 1,
+          reason: 'the import gate is memoized across flag-on calls');
+      debugPrint('legacy gate after pause: ${backend.events} '
+          '(imports=${backend.importCalls})');
+
+      final fetched = await service.getTask(7);
+      expect(fetched?.id, 7);
+      expect(backend.events, <String>['import', 'list', 'pause', 'get']);
+      expect(backend.importCalls, 1);
+      debugPrint('legacy gate after getTask: ${backend.events} '
+          '(imports=${backend.importCalls})');
+
+      // Flag-off legacy streams are lazy and must not touch the core backend
+      // or re-run the import.
+      await _setFlags(download: false);
+      backend.events.clear();
+      final legacyStream = service.watchAll();
+      expect(legacyStream, isA<Stream<DownloadTask>>());
+      final legacyWatch = service.watch(7);
+      expect(legacyWatch, isA<Stream<DownloadTask>>());
+      expect(backend.events, isEmpty,
+          reason: 'flag-off must make zero core calls');
+      expect(backend.importCalls, 1,
+          reason: 'flag-off must not trigger another import');
+      debugPrint('legacy gate flag-off: core_calls=${backend.events} '
+          '(imports=${backend.importCalls})');
     });
   });
 

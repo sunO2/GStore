@@ -78,6 +78,32 @@ class RustDownloadService implements IDownloadService {
     }
   }
 
+  /// Memoized one-shot legacy import gate.
+  ///
+  /// Every flag-on entry point (start, read, watch, pause/resume/...) must wait
+  /// for this before touching the core database, otherwise a fresh core DB
+  /// looks empty until the first download is started.
+  Future<void>? _coreReady;
+
+  Future<void> _ensureCoreReady() =>
+      _coreReady ??= _importLegacyBeforeCoreRead();
+
+  Future<void> _importLegacyBeforeCoreRead() async {
+    try {
+      await DownloadFacade.instance.importLegacyOnce();
+    } catch (error) {
+      // The import is best-effort by contract: it must never block a download.
+      debugPrint(
+          'RustDownloadService: legacy import failed (non-fatal) - $error');
+    }
+  }
+
+  /// Test seam: forces the next flag-on path to run the import gate again.
+  @visibleForTesting
+  void resetCoreReadyForTest() {
+    _coreReady = null;
+  }
+
   /// 统一调用：JSON 入参 → JSON 出参
   Future<Object?> _invoke(String method, Map<String, Object?> payload) async {
     final inst = await _ensureInstance();
@@ -208,10 +234,9 @@ class RustDownloadService implements IDownloadService {
     String? saveFileName,
     bool installAfterDownload = false,
   }) async {
-    // One-shot legacy import before the first core-owned operation. It is
-    // memoized per process and must never block the download (failures are
-    // logged inside the facade). Flag-off paths never reach this method.
-    await DownloadFacade.instance.importLegacyOnce();
+    // Legacy import must resolve before any core read/start. The gate is
+    // memoized and non-fatal; flag-off paths never reach this method.
+    await _ensureCoreReady();
 
     // An absolute save path short-circuits directory resolution; otherwise the
     // builder falls back to the app documents dir exactly like DownloadPaths.
@@ -354,8 +379,14 @@ class RustDownloadService implements IDownloadService {
     required bool isEnabled,
     required Future<void> Function() core,
     required Future<void> Function() legacy,
-  }) =>
-      isEnabled ? core() : legacy();
+  }) async {
+    if (!isEnabled) {
+      await legacy();
+      return;
+    }
+    await _ensureCoreReady();
+    await core();
+  }
 
   Future<void> _op(String method, int id) async {
     // 诊断：确认按钮实际走到了哪个模块方法
@@ -367,6 +398,7 @@ class RustDownloadService implements IDownloadService {
   @override
   Future<DownloadTask?> getTask(int id) async {
     if (CoreFlags.download) {
+      await _ensureCoreReady();
       final dto = await DownloadFacade.instance.get(id.toString());
       return dto == null ? null : toDownloadTask(dto);
     }
@@ -379,6 +411,7 @@ class RustDownloadService implements IDownloadService {
   Future<List<DownloadTask>> listTasks(
       {List<DownloadStatusEnum>? statuses}) async {
     if (CoreFlags.download) {
+      await _ensureCoreReady();
       final tasks = (await DownloadFacade.instance.list())
           .map(toDownloadTask)
           .toList(growable: false);
@@ -406,12 +439,16 @@ class RustDownloadService implements IDownloadService {
   /// 进度事件只带变化字段，所以要按 taskId 维护一份"全量基底"再合并，
   /// 否则消费方拿到的任务会缺 url / 路径 / 应用名。
   @override
-  Stream<DownloadTask> watchAll() {
+  Stream<DownloadTask> watchAll() async* {
     if (CoreFlags.download) {
-      return DownloadFacade.instance.watchAll().map(toDownloadTask);
+      // Import resolves before the core stream is created, so reconnecting to
+      // an in-progress legacy task does not emit an empty first snapshot.
+      await _ensureCoreReady();
+      yield* DownloadFacade.instance.watchAll().map(toDownloadTask);
+      return;
     }
     final bases = <int, DownloadTask>{};
-    return RustModuleManager.instance.moduleEvents
+    yield* RustModuleManager.instance.moduleEvents
         .where((e) => e.eventType == _evProgress || e.eventType == _evDone)
         .map(_decodeEvent)
         .where((m) => m != null)
@@ -436,6 +473,7 @@ class RustDownloadService implements IDownloadService {
   @override
   Stream<DownloadTask> watch(int id) async* {
     if (CoreFlags.download) {
+      await _ensureCoreReady();
       final dto = await DownloadFacade.instance.get(id.toString());
       if (dto != null) yield toDownloadTask(dto);
       await for (final next in DownloadFacade.instance.watchAll()) {
