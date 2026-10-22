@@ -45,6 +45,7 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 | 8 | `target/test-evidence/87-gate3.txt` | 12826 | `5104e6622b84e2fdd3e7dbe96b498492bce982120f0418ba63235cfdb9c78339` |
 | 8 | `target/test-evidence/87-gate3-fail.txt` | 3815 | `9bd145b49b024d1f6171aba5fcc1393c03edd543f53945f1cbd56b5b76634f93` |
 | Final-wave | `target/test-evidence/88-final-wave-fix.txt` | 7391 | `2f7727e391a6ca8be11231575a5cbab411529be2aff9115b2e69b209adf0fcb0` |
+| Docs-3 | `target/test-evidence/89-gate3-correction.txt` | 4399 | `4228cee5311e6dcae058d65b486ba9afe57edd3ea215957f906d81b23d8d69f3` |
 
 ## Gate 3 (Todo 8) mapping
 
@@ -73,6 +74,16 @@ full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
   legacy fallback (`CORE_E_INSTALL_NO_CORE_TASK`), import-before-list order,
   module-refresh proof for `DownloadApi.list`, 500 ms install pump and bounded
   Dart pending poller proof, plus the exact command exits above.
+- `89-gate3-correction.txt`: tracked explanation for the stale hash at
+  `87-gate3.txt:240` (GATE 3 SUMMARY item 7). It records that line 240, line
+  144, and line 253 still show the pre-rebuild APK sha256
+  `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382`
+  (**superseded**) and that the appended `RELEASE REBUILD (final HEAD)` block is
+  the current record (`0bab385b...`, 150589102 bytes, mtime 2026-10-22 22:40:57
+  +0800). `87-gate3.txt` was not modified: it stays at 12826 bytes / sha256
+  `5104e662...` before and after the note. `89-gate3-correction.txt` is
+  local-only (under gitignored `target/`); this table row is the tracked
+  pointer to it.
 
 ## Release rebuild (final HEAD)
 
