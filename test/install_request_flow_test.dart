@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/core_flags.dart';
@@ -447,59 +448,130 @@ void main() {
   });
 
   group('apk import path materialisation', () {
-    test('absolute paths and file:// URIs resolve without touching the cache',
-        () async {
-      final service = ApkSourceService.instance;
+    const channel = MethodChannel('gstore/apk_source');
+    late List<MethodCall> calls;
+    late List<String> imported;
 
-      expect(await service.resolveImportPath(apk.path), apk.path);
+    void installHandler(Future<Object?> Function(MethodCall call)? handler) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, handler);
+    }
+
+    setUp(() {
+      calls = <MethodCall>[];
+      imported = <String>[];
+      ApkSourceService.instance
+        ..debugSetMaterializeUriResolver(null)
+        ..debugSetCoreImporter((String pathOrFd) async {
+          imported.add(pathOrFd);
+          return BigInt.from(7);
+        });
+    });
+
+    tearDown(() {
+      installHandler(null);
+      ApkSourceService.instance
+        ..debugSetMaterializeUriResolver(null)
+        ..debugSetCoreImporter(null);
+    });
+
+    test('content:// is materialised by gstore/apk_source and imported verbatim',
+        () async {
+      const cachePath =
+          '/data/user/0/com.suno2.gstore/cache/imports/ab12cd34.apk';
+      installHandler((call) async {
+        calls.add(call);
+        expect(call.method, 'materializeUri');
+        expect(call.arguments, 'content://media/external/file/42');
+        return cachePath;
+      });
+
+      final handle = await ApkSourceService.instance
+          .importApk('content://media/external/file/42');
+
+      expect(handle, BigInt.from(7));
+      expect(calls, hasLength(1), reason: 'one channel call, no N+1');
       expect(
-        await service.resolveImportPath('file://${apk.path}'),
-        apk.path,
+        imported,
+        <String>[cachePath],
+        reason: 'the materialised path is what importFile(pathOrFd:) receives',
       );
     });
 
-    test('content:// without a resolver is a typed BLOCKED error', () async {
-      final service = ApkSourceService.instance
-        ..debugSetContentUriReader(null);
+    test('a failure envelope becomes a typed exception with the exact code',
+        () async {
+      installHandler((call) async {
+        calls.add(call);
+        return jsonEncode(<String, Object?>{
+          'ok': false,
+          'code': 'CORE_E_APK_URI_UNREADABLE',
+          'message': 'content provider permission denied',
+        });
+      });
 
       await expectLater(
-        () => service.resolveImportPath('content://media/app/1'),
+        () => ApkSourceService.instance
+            .importApk('content://media/external/file/42'),
         throwsA(
           isA<ApkSourceException>()
-              .having((e) => e.code, 'code', ApkSourceService.uriBlockedCode),
+              .having((e) => e.code, 'code', 'CORE_E_APK_URI_UNREADABLE')
+              .having((e) => e.message, 'message', contains('permission')),
         ),
       );
+      expect(calls, hasLength(1));
+      expect(imported, isEmpty, reason: 'no importFile on a failed materialise');
     });
 
-    test('content:// materialises into the cache dir when a reader is injected',
-        () async {
-      final service = ApkSourceService.instance
-        ..debugSetContentUriReader((uri) async => <int>[0x50, 0x4B])
-        ..debugSetCacheDir(temp.path);
-
-      final path = await service.resolveImportPath(
-        'content://media/external/file/42',
-      );
-
-      expect(path, endsWith('.apk'));
-      expect(File(path).existsSync(), isTrue);
-      expect(File(path).readAsBytesSync(), <int>[0x50, 0x4B]);
-      File(path).deleteSync();
-    });
-
-    test('malformed / relative addresses are typed errors, never crashes',
-        () async {
-      final service = ApkSourceService.instance;
+    test('a COPY_FAILED envelope keeps its exact code too', () async {
+      installHandler((call) async => jsonEncode(<String, Object?>{
+            'ok': false,
+            'code': 'CORE_E_APK_URI_COPY_FAILED',
+            'message': 'cannot create cache dir',
+          }));
 
       await expectLater(
-        () => service.resolveImportPath('   '),
+        () => ApkSourceService.instance
+            .importApk('content://media/external/file/43'),
         throwsA(
           isA<ApkSourceException>()
-              .having((e) => e.code, 'code', ApkSourceService.pathInvalidCode),
+              .having((e) => e.code, 'code', ApkSourceService.uriCopyFailedCode),
+        ),
+      );
+      expect(imported, isEmpty);
+    });
+
+    test('an absolute path is still sent once and passes through unchanged',
+        () async {
+      installHandler((call) async {
+        calls.add(call);
+        return call.arguments as String;
+      });
+
+      final handle = await ApkSourceService.instance.importApk(apk.path);
+
+      expect(handle, BigInt.from(7));
+      expect(calls, hasLength(1), reason: 'one call per import');
+      expect(calls.single.method, 'materializeUri');
+      expect(calls.single.arguments, apk.path);
+      expect(imported, <String>[apk.path]);
+    });
+
+    test('empty / file:// / relative are typed errors with no importFile call',
+        () async {
+      installHandler((call) async {
+        calls.add(call);
+        return null;
+      });
+
+      await expectLater(
+        () => ApkSourceService.instance.importApk('   '),
+        throwsA(
+          isA<ApkSourceException>()
+              .having((e) => e.code, 'code', ApkSourceService.uriMalformedCode),
         ),
       );
       await expectLater(
-        () => service.resolveImportPath('relative/app.apk'),
+        () => ApkSourceService.instance.importApk('file://${apk.path}'),
         throwsA(
           isA<ApkSourceException>().having(
             (e) => e.code,
@@ -509,12 +581,33 @@ void main() {
         ),
       );
       await expectLater(
-        () => service.resolveImportPath('file://'),
+        () => ApkSourceService.instance.importApk('relative/app.apk'),
         throwsA(
-          isA<ApkSourceException>()
-              .having((e) => e.code, 'code', ApkSourceService.pathInvalidCode),
+          isA<ApkSourceException>().having(
+            (e) => e.code,
+            'code',
+            ApkSourceService.uriUnsupportedCode,
+          ),
         ),
       );
+
+      expect(calls, isEmpty, reason: 'rejected inputs never reach the channel');
+      expect(imported, isEmpty);
+    });
+
+    test('a malformed envelope is a typed MALFORMED error, never a silent path',
+        () async {
+      installHandler((call) async => '{not-json');
+
+      await expectLater(
+        () => ApkSourceService.instance
+            .importApk('content://media/external/file/44'),
+        throwsA(
+          isA<ApkSourceException>()
+              .having((e) => e.code, 'code', ApkSourceService.uriMalformedCode),
+        ),
+      );
+      expect(imported, isEmpty);
     });
   });
 }

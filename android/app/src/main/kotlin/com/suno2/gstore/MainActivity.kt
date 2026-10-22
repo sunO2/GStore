@@ -11,6 +11,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -21,6 +22,8 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
+import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -780,10 +783,106 @@ class MainActivity : FlutterActivity() {
                         result.error("DETAIL", "获取应用详情失败: ${e.message}", null)
                     }
                 }
+                // 把 `content://` / 绝对路径归一为「核心可导入的本地绝对路径」。
+                // 只挂在既有 gstore/apk_source 通道上（gstore/platform 保持 13 个方法）。
+                // 成功 → 绝对路径字符串；失败 → `{"ok":false,"code":"CORE_E_APK_URI_*"}`。
+                "materializeUri" -> {
+                    result.success(materializeUri(call.arguments as? String))
+                }
                 else -> result.notImplemented()
             }
         }
     }
+
+    /// `materializeUri` 的实现：流式物化 `content://` 到 cacheDir/imports，绝不整包读入内存。
+    ///
+    /// 返回绝对路径，或与 `PlatformChannel` 同款的 typed 信封字符串。文件名 =
+    /// `<sha256(uri)>.<扩展名>`：同一 URI 幂等覆盖，不泄漏原始文件名 / 路径。
+    private fun materializeUri(raw: String?): String {
+        if (raw.isNullOrBlank()) {
+            return apkUriError("CORE_E_APK_URI_MALFORMED", "empty uri")
+        }
+        if (raw.startsWith("file://")) {
+            return apkUriError(
+                "CORE_E_APK_URI_UNSUPPORTED",
+                "file:// uris are not importable"
+            )
+        }
+        // 绝对路径：原样返回（Dart 侧只走一次通道，保持单一入口）。
+        if (raw.startsWith("/")) return raw
+        if (!raw.startsWith("content://")) {
+            return apkUriError(
+                "CORE_E_APK_URI_UNSUPPORTED",
+                "expected an absolute path or content:// uri"
+            )
+        }
+        val uri = try {
+            Uri.parse(raw)
+        } catch (e: Exception) {
+            return apkUriError("CORE_E_APK_URI_MALFORMED", e.message ?: "malformed uri")
+        }
+        val importsDir = File(cacheDir, "imports")
+        if (!importsDir.isDirectory && !importsDir.mkdirs()) {
+            return apkUriError(
+                "CORE_E_APK_URI_COPY_FAILED",
+                "cannot create ${importsDir.absolutePath}"
+            )
+        }
+        val target = File(importsDir, "${sha256Hex(raw)}.${extensionOf(displayNameOf(uri))}")
+        try {
+            val input = contentResolver.openInputStream(uri)
+                ?: return apkUriError("CORE_E_APK_URI_UNREADABLE", "openInputStream returned null")
+            input.use { source ->
+                target.outputStream().use { sink ->
+                    source.copyTo(sink, 64 * 1024)
+                }
+            }
+        } catch (e: SecurityException) {
+            target.delete()
+            return apkUriError(
+                "CORE_E_APK_URI_UNREADABLE",
+                e.message ?: "content provider permission denied"
+            )
+        } catch (e: java.io.FileNotFoundException) {
+            target.delete()
+            return apkUriError("CORE_E_APK_URI_UNREADABLE", e.message ?: "content uri not found")
+        } catch (e: java.io.IOException) {
+            target.delete()
+            return apkUriError("CORE_E_APK_URI_COPY_FAILED", e.message ?: "copy failed")
+        }
+        return target.absolutePath
+    }
+
+    private fun displayNameOf(uri: Uri): String? = runCatching {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
+
+    /// 扩展名只保留字母数字（防止 provider 提供带路径/分隔符的名字），无则 `bin`。
+    private fun extensionOf(displayName: String?): String {
+        val raw = displayName?.substringAfterLast('.', "") ?: ""
+        val clean = raw.lowercase().filter { it.isLetterOrDigit() }.take(10)
+        return clean.ifEmpty { "bin" }
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private fun apkUriError(code: String, message: String): String =
+        JSONObject().apply {
+            put("ok", false)
+            put("code", code)
+            put("message", message)
+        }.toString()
 
     /// 模块是否可用：APK 内含该 .so，或已解压到私有目录（只读：不解压、不写入）。
     private fun hasModule(module: String, requestedAbi: String?): Boolean {

@@ -1,8 +1,7 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 一张应用签名证书的信息（LibChecker 风格展示）
@@ -225,8 +224,11 @@ class ApkSourceException implements Exception {
   String toString() => 'ApkSourceException($code): $message';
 }
 
-/// `content://` 读取接缝：返回 APK 字节；null = 读取方放弃。
-typedef ContentUriReader = Future<List<int>?> Function(String uri);
+/// `gstore/apk_source.materializeUri` 接缝：返回本地绝对路径。
+typedef MaterializeUriResolver = Future<String> Function(String pathOrUri);
+
+/// `CoreApi.importFile` 接缝：返回导入结果句柄（FRB `BigInt`）。
+typedef CoreApkImporter = Future<BigInt> Function(String pathOrFd);
 
 /// 已安装应用 APK 路径（sourceDir）获取服务
 ///
@@ -261,96 +263,136 @@ class ApkSourceService {
   bool get isSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
-  /// 无 content resolver 时的稳定错误码（Dart 侧当前 BLOCKED，见
-  /// [materialiseContentUri]）。
-  static const String uriBlockedCode = 'CORE_E_APK_URI_BLOCKED';
-
-  /// 既不是绝对路径、也不是 `file://` / `content://` 的导入地址。
+  /// 物化 / 导入地址的稳定错误码（与 Kotlin `gstore/apk_source` 一致）。
+  static const String uriMalformedCode = 'CORE_E_APK_URI_MALFORMED';
   static const String uriUnsupportedCode = 'CORE_E_APK_URI_UNSUPPORTED';
+  static const String uriUnreadableCode = 'CORE_E_APK_URI_UNREADABLE';
+  static const String uriCopyFailedCode = 'CORE_E_APK_URI_COPY_FAILED';
 
-  /// 空路径 / 非法 `file://`。
-  static const String pathInvalidCode = 'CORE_E_APK_PATH_INVALID';
+  /// 测试接缝：替换 `gstore/apk_source.materializeUri`（null = 真实通道）。
+  MaterializeUriResolver? _debugMaterializeUriResolver;
 
-  /// 测试接缝：注入 `content://` 读取器（生产默认 null = BLOCKED）。
-  ContentUriReader? _debugContentUriReader;
-
-  /// 测试接缝：覆盖物化目标目录（默认 `getTemporaryDirectory()`）。
-  String? _debugCacheDir;
+  /// 测试接缝：替换 `CoreApi.importFile`（null = 真实 FRB 句柄）。
+  CoreApkImporter? _debugCoreImporter;
 
   /// 把弹层 / 系统选择器给出的地址归一为**核心导入可用的绝对路径**。
   ///
-  /// 注意：`CoreApi.importFile` 的生成参数名是 `pathOrFd`（不是计划早期措辞里的
-  /// `path`），路径或已打开的 fd 字符串都能传。
-  /// * 绝对路径 → 原样返回；
-  /// * `file://` → 解码后的本地路径；
-  /// * `content://` → 先物化到 cacheDir 再返回（见 [materialiseContentUri]）；
-  /// * 其它 → [uriUnsupportedCode]。
+  /// 归一统一交给 `gstore/apk_source.materializeUri`（既有通道，不新增
+  /// `gstore/platform` 方法）：Kotlin 侧把 `content://` 流式拷贝到
+  /// `cacheDir/imports/<sha256(uri)>.<ext>`，并把绝对路径原样返回，
+  /// 因此 Dart 侧始终只走一次通道。
+  ///
+  /// `CoreApi.importFile` 的生成参数名是 `pathOrFd`（不是计划早期措辞里的
+  /// `path`），见 [importApk]。
   Future<String> resolveImportPath(String pathOrUri) async {
     final value = pathOrUri.trim();
     if (value.isEmpty) {
-      throw const ApkSourceException(pathInvalidCode, 'empty APK path');
-    }
-    if (value.startsWith('content://')) {
-      return materialiseContentUri(value);
+      throw const ApkSourceException(uriMalformedCode, 'empty APK path');
     }
     if (value.startsWith('file://')) {
-      final parsed = Uri.tryParse(value);
-      if (parsed == null || parsed.path.isEmpty || parsed.path == '/') {
-        throw ApkSourceException(
-          pathInvalidCode,
-          'malformed file URI: $value',
-        );
-      }
-      return parsed.path;
+      throw ApkSourceException(
+        uriUnsupportedCode,
+        'file:// APK paths are not importable: $value',
+      );
     }
-    if (value.startsWith('/')) return value;
+    if (!value.startsWith('/') && !value.startsWith('content://')) {
+      throw ApkSourceException(
+        uriUnsupportedCode,
+        'expected an absolute path or content:// URI: $value',
+      );
+    }
+    final resolver = _debugMaterializeUriResolver ?? _materializeViaChannel;
+    return resolver(value);
+  }
+
+  /// 解析 [pathOrUri] 后交给 `CoreApi.importFile(pathOrFd:)`。
+  ///
+  /// 测试可经 [debugSetCoreImporter] 注入假件；生产复用 [CoreApiFacade]
+  /// 的进程级句柄（与 `CoreBootstrap` 同一实例）。
+  Future<BigInt> importApk(String pathOrUri) async {
+    final resolved = await resolveImportPath(pathOrUri);
+    final importer = _debugCoreImporter ?? _defaultCoreImporter;
+    return importer(resolved);
+  }
+
+  Future<String> _materializeViaChannel(String pathOrUri) async {
+    final String? raw;
+    try {
+      raw = await _channel.invokeMethod<String>('materializeUri', pathOrUri);
+    } on MissingPluginException catch (error) {
+      throw ApkSourceException(
+        uriUnreadableCode,
+        error.message ?? 'gstore/apk_source.materializeUri unavailable',
+      );
+    } on PlatformException catch (error) {
+      throw ApkSourceException(
+        error.code.isEmpty ? uriUnreadableCode : error.code,
+        error.message ?? 'materializeUri failed',
+      );
+    }
+    if (raw == null || raw.isEmpty) {
+      throw ApkSourceException(
+        uriUnreadableCode,
+        'materializeUri returned no path for $pathOrUri',
+      );
+    }
+    // 成功返回本地绝对路径；失败返回与 PlatformChannel 同款的 JSON 信封。
+    if (!raw.startsWith('{')) return raw;
+    return _decodeEnvelope(raw, pathOrUri);
+  }
+
+  String _decodeEnvelope(String raw, String pathOrUri) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      throw ApkSourceException(
+        uriMalformedCode,
+        'materializeUri returned malformed JSON: $raw',
+      );
+    }
+    if (decoded is! Map) {
+      throw ApkSourceException(
+        uriMalformedCode,
+        'materializeUri returned a non-object envelope: $raw',
+      );
+    }
+    if (decoded['ok'] == false) {
+      throw ApkSourceException(
+        decoded['code']?.toString() ?? uriUnreadableCode,
+        decoded['message']?.toString() ??
+            'materializeUri failed for $pathOrUri',
+      );
+    }
+    final path = decoded['path'];
+    if (path is String && path.isNotEmpty) return path;
     throw ApkSourceException(
-      uriUnsupportedCode,
-      'expected an absolute path, file:// or content:// URI: $value',
+      uriMalformedCode,
+      'materializeUri envelope has no path: $raw',
     );
   }
 
-  /// 把 `content://` 物化到 cacheDir 并返回本地 APK 路径。
-  ///
-  /// **BLOCKED（Dart 侧）**：`gstore/platform` 与 `gstore/apk_source` 都没有
-  /// 暴露 `ContentResolver.openInputStream`，所以默认没有可用的读取器；此时抛
-  /// [uriBlockedCode]，绝不把 `content://` 当普通路径交给导入层（那会静默失败）。
-  /// 读取器可经 [debugSetContentUriReader] 注入（测试 / 未来新增通道）。
-  Future<String> materialiseContentUri(
-    String uri, {
-    ContentUriReader? reader,
-  }) async {
-    final read = reader ?? _debugContentUriReader;
-    if (read == null) {
-      throw ApkSourceException(
-        uriBlockedCode,
-        'no content resolver channel in Dart; cannot materialise $uri',
-      );
-    }
-    final bytes = await read(uri);
-    if (bytes == null || bytes.isEmpty) {
-      throw ApkSourceException(uriBlockedCode, 'no bytes for $uri');
-    }
-    final cachePath =
-        _debugCacheDir ?? (await getTemporaryDirectory()).path;
-    final dir = Directory('$cachePath/gstore_apk_import');
-    await dir.create(recursive: true);
-    final name = 'apk_${uri.hashCode.abs()}_${bytes.length}.apk';
-    final file = File('${dir.path}/$name');
-    await file.writeAsBytes(bytes, flush: true);
-    return file.path;
+  Future<BigInt> _defaultCoreImporter(String pathOrFd) async {
+    final support = await getApplicationSupportDirectory();
+    final root = '${support.path}/gstore_core';
+    final api = await CoreApiFacade.init(
+      dataDir: '$root/data',
+      filesDir: '$root/files',
+      cacheDir: '$root/cache',
+    );
+    return api.importFile(pathOrFd: pathOrFd);
   }
 
-  /// 测试用：注入 `content://` 读取器（null 恢复 BLOCKED 默认）。
+  /// 测试用：替换 `materializeUri` 通道调用（null 恢复真实通道）。
   @visibleForTesting
-  void debugSetContentUriReader(ContentUriReader? reader) {
-    _debugContentUriReader = reader;
+  void debugSetMaterializeUriResolver(MaterializeUriResolver? resolver) {
+    _debugMaterializeUriResolver = resolver;
   }
 
-  /// 测试用：覆盖物化目标目录（null 恢复 `getTemporaryDirectory()`）。
+  /// 测试用：替换 `CoreApi.importFile`（null 恢复真实 FRB 句柄）。
   @visibleForTesting
-  void debugSetCacheDir(String? path) {
-    _debugCacheDir = path;
+  void debugSetCoreImporter(CoreApkImporter? importer) {
+    _debugCoreImporter = importer;
   }
 
   /// 获取已安装应用的 sourceDir（APK 路径），失败/不支持时返回 null
