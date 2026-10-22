@@ -6,8 +6,9 @@
 - **Feature HEAD:** `6ea4de02e0acaa4b697d42746ca76d907020da70`
   (`fix(download): import legacy before any core read`).
 - **Final code HEAD:** `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
-  (`docs(download): record final-wave fixes`), the last code commit after the
-  final-wave fixes `ce7ef133` and `e918c77a`.
+  (`docs(download): record final-wave fixes`). Its tree contains all final
+  Wave-3 code, but its own diff is docs-only; the last code-changing commit is
+  `e918c77a` (the final-wave fixes `ce7ef133` and `e918c77a` precede it).
 - **Wave 3 docs HEAD at close:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
   (`docs(download): rebuild release APK for final HEAD`). Docs-only; superseded
   by the later docs reconciliation commits on the same branch. Its only changes
@@ -87,8 +88,9 @@ full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
 - Artifact: `build/app/outputs/flutter-apk/app-release.apk`, 150589102 bytes,
   sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`,
   mtime `2026-10-22 22:40:57 +0800` (epoch 1792680057 > 1792679127), so the
-  artifact is newer than the final code commit and contains `ce7ef133`,
-  `e918c77a`, and `42dfde34`.
+  artifact is newer than the final code-changing commit `e918c77a` and the
+  docs-only `42dfde34`; its tree contains `ce7ef133`, `e918c77a`, and
+  `42dfde34`.
 - Recorded at the end of `target/test-evidence/87-gate3.txt` as
   `RELEASE REBUILD (final HEAD)` with `RESULT: PASS`; the `87-gate3.txt`
   sha256 in the table above was recomputed after that append.
