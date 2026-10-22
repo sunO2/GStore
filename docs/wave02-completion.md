@@ -65,14 +65,14 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 | 2 | Refresh preserves core tables; corrupt-source injection keeps old catalog | **PASS** | 6 corrupt sources rejected with typed `CORE_E_CATALOG_REFRESH_*`; catalog/non-catalog snapshots unchanged |
 | 3 | Real-Dart parity `--catalog` and `--channel` (FTS5+LIKE, categories, detail) | **PASS** | both `parity OK: getAllApps=17 searchApps=2 getAppInfoMissing=None`; `catalog_query_parity` also passes |
 | 4 | Update service/prefs: `update_parity`, Flutter prefs migration, `update_prefs_roundtrip` | **PASS** | Flutter 10/10 after rebuilding a stale native `.so` (build-state only) |
-| 5 | Inventory contract + `package-inventory.sh` + `adb devices` | **DEFERRED / BLOCKED** (owner deferred; contract/device split) | contract & visibility tests pass at contract level only; script exits 3 `RESULT: BLOCKED (no device)`; `adb devices` empty; the Todo 8 outcome is deferred by the owner, so it is not a pass |
+| 5 | Inventory contract + `package-inventory.sh` + `adb devices` | **DEFERRED / BLOCKED** (owner deferred; contract/device split) | contract & visibility tests pass at contract level only; `adb devices` empty; the Todo 8 outcome is deferred by the owner, so it is not a pass. `scripts/qa/package-inventory.sh` now exits 3 `RESULT: DEFERRED (no positive inventory evidence)` on init-only logcat and only passes on a positive inventory marker (`target/test-evidence/74-inventory-script-fix.txt`) |
 | 6 | FRB/facades: Rust `catalog_update_api`, Flutter API test, codegen idempotency | **PASS** | 1/1 Rust, 4/4 Flutter, codegen + `git diff --exit-code` clean |
 | 7 | Flags all false; flag-off old path | **PASS** | `dto_events_flags_defaults_all_false` (6/6); “flag off” test routes to legacy backends only |
-| 8 | Release APK `android-arm64` | **BLOCKED (environment)** | `:integration_test:extractReleaseAnnotations` → `androidx.test:runner:1.2+` Maven/TLS handshake failure; not a code pass |
+| 8 | Release APK `android-arm64` | **PASS** | `flutter build apk --release --target-platform android-arm64` exit 0; `build/app/outputs/flutter-apk/app-release.apk` is 150572442 bytes, sha256 `0cad05e1f3cfce9ce445eb4435300a9fc790ca2018b84f0563e2ddf564006db5`; evidence `target/test-evidence/76-release-apk-closeout.txt`. The earlier `:integration_test:extractReleaseAnnotations` / `androidx.test:runner:1.2+` Maven/TLS block was transient and did not reproduce; no Gradle/pubspec/env change was made. |
 | 8b | Dart compile proof (`flutter build bundle --debug`) | **PASS** | exit 0, `kernel_blob.bin` produced |
 | 8c | App-module Kotlin compile (`:app:compileDebugKotlin`) | **PASS** | `BUILD SUCCESSFUL`, 334 tasks |
 | 9 | Full regression: `gstore_core` | **PASS** | 21 test binaries, 141 tests, 0 failed |
-| 9b | Full regression: `gstore_host` | **PASS except build-state modules** | `76 passed / 8 failed`; the 8 remaining failures are missing module `.so` files only. The 2 stale schema-v1 bridge assertions were fixed in the closeout fix commit. (The pre-fix run was 74/10.) |
+| 9b | Full regression: `gstore_host` | **PASS** | `87 passed / 0 failed / 0 ignored` (harness lines 84+1+2+0), `cargo test --manifest-path rust/gstore_host/Cargo.toml` exit 0; the module `.so` files (`libgstore_mod_qr.so`, `libgstore_mod_analyzer.so`, `libgstore_mod_repo.so`) were built by `rust/build_all.sh`; evidence `target/test-evidence/71-host-suite.txt`. The 2 stale V2 bridge assertions were fixed in `6906005f`. (The pre-fix run was 74/10.) |
 | 9c | Flutter regression (prefs + handoff + core API) | **PASS** | 18/18 |
 | 9d | `flutter analyze` on Wave 2 changed Dart | **PASS** | 13 items, “No issues found!” |
 | 10 | Scope fidelity (flags/version/deletions/Wave 3+) | **PASS** | no flag-default diff, version stays `1.0.34+1`, no deleted files, Android diff only the package-inventory bridge |
@@ -85,25 +85,33 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
    contract level, but no ADB device/emulator run was performed (`adb devices`
    empty; `package-inventory.sh` exits 3 with `RESULT: BLOCKED (no device)`).
    Neither the on-device run nor Todo 8 as a whole is claimed as a pass.
-2. **Release APK — ENVIRONMENT BLOCKED.** `flutter build apk --release
-   --target-platform android-arm64` fails while resolving
-   `androidx.test:runner:1.2+` for `:integration_test` due to a Gradle/JVM
-   TLS/proxy issue: `curl` reaches `repo.maven.apache.org` /
-   `storage.googleapis.com`, but the Gradle JVM handshake fails with
-   `Remote host terminated the handshake` (TLS 1.2/1.3 negotiation). This is an
-   environment/toolchain block, not a product-code failure. Compensating proofs:
-   `flutter build bundle --debug` PASS and `:app:compileDebugKotlin` PASS.
-   A release/device PASS is **not** claimed.
-3. **Build-state `gstore_host` lib-test failures (8).** Only the module `.so`
-   build-state failures remain: `libgstore_mod_analyzer.so`,
-   `libgstore_mod_repo.so` and `libgstore_mod_qr.so` are not built (`rust/build_all.sh`
-   builds them). The 2 stale schema-v1 assertions in `bridge.rs`
-   (`core_api_contract`, `core_writes_empty_after_init_and_migration`), which
-   expected `schema_version`/`import_snapshot` to return `1`, were **fixed in the
+2. **Release APK — RESOLVED during closeout.** `flutter build apk --release
+   --target-platform android-arm64` now exits 0. The artifact
+   `build/app/outputs/flutter-apk/app-release.apk` is 150572442 bytes, sha256
+   `0cad05e1f3cfce9ce445eb4435300a9fc790ca2018b84f0563e2ddf564006db5`, sha1
+   `0e214f199cd038f97671c1d44ce66a7d853777bb`. An independent rerun (26s)
+   reproduced the identical sha256. The earlier
+   `:integration_test:extractReleaseAnnotations` /
+   `androidx.test:runner:1.2+` Maven/TLS block did **not** reproduce, and no
+   Gradle/pubspec/env change was made; evidence
+   `target/test-evidence/76-release-apk-closeout.txt`. Residual risk: the
+   transient network/TLS block may recur in a clean environment (for example a
+   cold Gradle cache behind a strict proxy), in which case rerun the build or
+   pre-warm the Gradle cache.
+3. **Build-state `gstore_host` lib-test failures — RESOLVED.** `bash
+   rust/build_all.sh` exits 0 (7/7 crates, 47.5s) and builds the module `.so`
+   files (`libgstore_mod_qr.so`, `libgstore_mod_analyzer.so`,
+   `libgstore_mod_repo.so`); `cargo test --manifest-path
+   rust/gstore_host/Cargo.toml` then exits 0 with harness lines 84+1+2+0 =
+   **87 passed / 0 failed / 0 ignored**. An independent rerun reproduced the
+   same counts, and the 8 previously failing analyzer/repo/qr module tests now
+   pass; evidence `target/test-evidence/71-host-suite.txt`. The 2 stale
+   schema-v1 assertions in `bridge.rs` (`core_api_contract`,
+   `core_writes_empty_after_init_and_migration`), which expected
+   `schema_version`/`import_snapshot` to return `1`, were **fixed in the
    closeout fix commit** `6906005fb7ff32826a0e54c199afc0142f35eae0`
    (`fix(test): align host bridge schema expectations with V2`,
-   `Plan-Todo: 11`). Host suite after the fix: **76 passed / 8 failed** (the 2
-   repaired tests moved from failed to passed).
+   `Plan-Todo: 11`).
 4. **Stale native `.so` for Flutter native tests (resolved during the gate).**
    The first `update_prefs_migration_test.dart` run failed on an FRB content-hash
    mismatch because `rust/gstore_host/target/release/libgstore_host.so` predated
@@ -118,15 +126,16 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 
 ## Wave 2 code-level gate status
 
-**PASS at the code level for Todos 1-7 and 9-11, with**
-**Todo 8 DEFERRED / BLOCKED** (owner deferred; contract/device split), one
-environment-blocked release build, and 8 documented build-state module-`.so`
-host failures. Schema,
+**PASS at the code level for Todos 1-7 and 9-11, and PASS for the release APK**
+(`android-arm64`, 150572442 bytes, sha256
+`0cad05e1f3cfce9ce445eb4435300a9fc790ca2018b84f0563e2ddf564006db5`), with
+**Todo 8 DEFERRED / BLOCKED (owner deferred; contract/device split)**. Schema,
 refresh/rollback, parity, update/prefs, inventory-contract, FRB, flag and scope
-checks pass. `gstore_core` and the Flutter regression suites pass in full;
-`gstore_host` is **76 passed / 8 failed** and every remaining failure is the
-missing module `.so` build artifact (not a Wave 2 regression). Todo 8 remains
-DEFERRED / BLOCKED because the owner deferred it: only the contract level passed
-and the on-device instrumentation was not run (no ADB device). The release APK
-could not be produced because the Gradle JVM could not complete the Maven TLS
-handshake. Neither Todo 8 nor the release build is reported as a pass.
+checks pass. `gstore_core` and the Flutter regression suites pass in full, and
+`gstore_host` is **87 passed / 0 failed / 0 ignored** after `rust/build_all.sh`
+built the module `.so` artifacts. Todo 8 remains DEFERRED / BLOCKED because the
+owner deferred it: only the contract level passed and the on-device
+instrumentation was not run (no ADB device). The production
+bootstrap/FRB-caller gap remains **DEFERRED** before any flag flip. Neither
+Todo 8 nor the on-device instrumentation is reported as a pass.
+
