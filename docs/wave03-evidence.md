@@ -32,7 +32,7 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 | 6 | `target/test-evidence/85-flag-off.txt` | 23228 | `40c050c569ccf1caa8887aaa85a5b70dbab564d5ef1a73d9d78d35b8fe1fc556` |
 | 7 | `target/test-evidence/86-download-parity.txt` | 7793 | `b48435f1f649e6d6d097b5f419501d5b7c678d28e7a9e96a16dd4c84fd12f67a` |
 | 7 | `target/test-evidence/86-download-parity-fail.txt` | 1849 | `49257571d456d56e912d06ea673630dda0ec605d47e0707435e58809efb01752` |
-| 8 | `target/test-evidence/87-gate3.txt` | 11570 | `e34f1d3fe17307f64cc5c7e5ac934d8f8152730e3226e30fbadd0a1dbcc3ca0a` |
+| 8 | `target/test-evidence/87-gate3.txt` | 11576 | `1f59dcb66dbc67bfd7a28b79bdb4b01f9f5cd18135fa0a913d0db58496c4e8c7` |
 | 8 | `target/test-evidence/87-gate3-fail.txt` | 3815 | `9bd145b49b024d1f6171aba5fcc1393c03edd543f53945f1cbd56b5b76634f93` |
 
 ## Gate 3 (Todo 8) mapping
