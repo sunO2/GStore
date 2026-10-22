@@ -142,3 +142,17 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `PROXY_CAPTURE_RULE_INVALID` | proxy | 422 | `capture.rules.set` 载荷非法：`url` 非绝对 `http(s)` URL、`kind` 非 `replace`/`local`、`id` 不符 `[A-Za-z0-9_-]{1,64}` 或未知字段；校验失败时**不改动**内存/磁盘上的规则表（Todo 14） |
 | `PROXY_CAPTURE_RULE_LIMIT` | proxy | 507 | `capture.rules.set` 新增规则会使规则表超过 `CAPTURE_RULE_CAP`（128），或单条规则序列化超过 `CAPTURE_RULE_ENTRY_MAX_BYTES`（2048）；被拒的 `set` 绝不落盘（Todo 14） |
 | `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED` | proxy | 500 | `captures.breakpoint.*` 为**冻结契约草图**（Todo 34）：线缆形状已冻结，但 MITM 暂停/恢复数据面路径本期未实现，故每个断点方法都返回此码。默认关，流量不受影响（Todo 34） |
+
+## 核心域（`gstore_core`，Wave 04）
+
+`gstore_core` 是数据服务：**事实进、决策出**，不经过模块信封（见
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) §0 与 [`docs/adr/0001-core-boundary.md`](./docs/adr/0001-core-boundary.md)）。
+因此下表的错误以 `gstore_core::Error` 变体携带稳定 `code` 字符串的形式跨越 FRB
+（宿主 `core_err` 渲染为 `"<error.code()>: <message>"`），不会塌缩成 500。
+
+| code | 模块 | 通常 Error 变体 | 含义 |
+|---|---|---|---|
+| `CORE_E_FACTS_MISSING` | core | `Unsupported` | 前端从未推送过平台事实（`platform_facts` 表无行）：更新判定无法开始，整批中止（`UpdateService`）。前端应在 `CoreBootstrap.start()` 里 `pushPlatformFacts` 后再调用更新检查 |
+| `CORE_E_INVENTORY_STALE` | core | `Conflict`（push）/ `Unsupported`（判定时） | 两处语义：`InventoryStore::push` 收到同一 `source_id` 的 `seq < stored_seq` → `Conflict`，消息即该常量；更新判定时库存龄期超过 `UpdateRules.max_inventory_age_secs` → `Unsupported`（`force` 可绕过）。批量检查里单个应用的库存缺失/过期**只**把该应用标为 skipped（`inventory_missing` / `inventory_stale`），不整体中止 |
+| `CORE_E_RULES_INVALID` | core | `InvalidArgument` | `setInstallRules` / `setUpdateRules` 载荷的版本、JSON 或枚举值非法（消息以 `CORE_E_RULES_INVALID: ` 开头）；被拒的写入不改变已有规则 |
+| `CORE_E_INSTALL_SESSION` | core | `NotFound` | `InstallService::on_result` 收到未知 `session_id`（宿主 `bridge.rs` 会再补一次 `CORE_E_INSTALL_SESSION:` 前缀）；前端应经 `pendingRequests()` 重新对账后重报 |

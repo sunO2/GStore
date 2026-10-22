@@ -172,6 +172,11 @@ jobs:
       - name: C ABI drift + consumer
         run: bash scripts/dev/check_c_abi.sh
 
+      # ADR 0001: gstore_core has no platform symbols, no deleted adapter file
+      # has come back, and JavaVM stays inside the four allowlisted host files.
+      - name: Core boundary guard (ADR 0001)
+        run: bash scripts/qa/boundary-check.sh
+
       - name: Baseline-aware quality gate (dart + clippy, no libclang)
         env:
           # Never install libclang.  Point bindgen at a non-existent path so

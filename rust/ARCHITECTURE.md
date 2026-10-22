@@ -13,6 +13,43 @@
 
 ---
 
+## 0. Core boundary（核心边界，Wave 04）
+
+> 新增（2026-10-23）：取代 wave-04 的"平台适配器"方向。权威记录见
+> [`docs/adr/0001-core-boundary.md`](./docs/adr/0001-core-boundary.md)，机器门禁为
+> [`scripts/qa/boundary-check.sh`](../scripts/qa/boundary-check.sh)（CI 与 `scripts/qa/f2-quality.sh` 都必须跑绿）。
+
+`gstore_core` 是**数据服务**，不是平台驱动者：**事实进，决策出**（facts in, decisions out）。
+core 的任何一条边都不得调用平台代码。
+
+- 前端 → core（事实）：`PlatformFacts`、`InventorySnapshot`、`InstallReport`、`InstallRules`、
+  `UpdateRules`、`setOnline`。
+- core → 前端（决策 / 事件）：`UpdateCandidate[]`、`InstallStart`/`InstallRequest`
+  （另经 `install.requested`）、`DownloadTask`、`inventory.changed`、`install.unknown`。
+- core 拥有：catalog、channel、pack、inventory、facts、更新判定、变体选择、下载队列、数据库。
+- 前端拥有：已安装应用查询、install/uninstall/launch 执行、通知、前台服务、权限 UI、
+  文件选择器、`content://` 物化、密钥。前端规则是**数据**（`frontend_rules`，带版本），不是回调。
+- `gstore_core` 内**零平台符号**：无 `PlatformHost`、无 `InstallerPort`、无 `Capability`、
+  无 `jni::`、无平台 vtable。`rust/gstore_host/src/` 下也不再有平台适配器文件：
+  Wave 04 删除的 8 个文件（platform/installer/notification 宿主、四个能力 bridge 与平台上下文）
+  的完整清单就是 `scripts/qa/boundary-check.sh` 的规则 2。
+
+**仅有的两个模块级例外**（均在 core 之外，且显式列在允许清单上）：
+
+1. `protect_fd(fd) -> bool` —— `gstore_mod_proxy` 在 Rust 内创建 socket 并交宿主保护，
+   是模块 ABI 的槽位，不属于 core。
+2. 代理的 `uid -> package` 解析 —— 包名反查是数据面包路径的原语，同样只存在于模块/宿主接缝。
+
+两者经 `gstore_contract` 的模块 ABI 注入；宿主侧只允许出现在
+`gstore_host/src/{jvm.rs,jni_bridge.rs,tun_bridge.rs,dl_adapter.rs}`，`JavaVM` 也**只**允许出现在
+这四个文件（`jvm.rs` 是唯一的 VM owner）。`gstore_core` 永远看不到它们。
+
+**`gstore_core` 必须能在桌面宿主上构建**（`cargo check --manifest-path rust/gstore_core/Cargo.toml`；
+`cargo tree --manifest-path rust/gstore_core/Cargo.toml -e normal` 中不得出现 `jni`）：
+TUI / macOS / Linux 前端是一等公民，Android 只是 `gstore_host` 的一个边缘。
+
+---
+
 ## 1. 背景与目标
 
 ### 1.1 现状

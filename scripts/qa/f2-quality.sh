@@ -100,6 +100,11 @@ fi
 
 cd "$REPO_ROOT"
 
+# Core boundary guard (ADR 0001): cheap and fail-fast, so run it before the
+# expensive analyzer/clippy passes.  It is a hard gate here as well as in CI.
+if [ "$VERBOSE" = 1 ]; then echo "[boundary] bash scripts/qa/boundary-check.sh" >&2; fi
+bash "$REPO_ROOT/scripts/qa/boundary-check.sh"
+
 STRICT=()
 IFS=',' read -r -a _strict_parts <<< "$STRICT_CRATES"
 for _s in "${_strict_parts[@]}"; do
