@@ -8,9 +8,10 @@
 - **Final code HEAD:** `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
   (`docs(download): record final-wave fixes`), the last code commit after the
   final-wave fixes `ce7ef133` and `e918c77a`.
-- **Current docs-only HEAD:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
-  (`docs(download): rebuild release APK for final HEAD`); its only changes are
-  `docs/wave03-completion.md` and `docs/wave03-evidence.md`.
+- **Wave 3 docs HEAD at close:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  (`docs(download): rebuild release APK for final HEAD`). Docs-only; superseded
+  by the later docs reconciliation commits on the same branch. Its only changes
+  are `docs/wave03-completion.md` and `docs/wave03-evidence.md`.
 - **Date:** 2026-10-22
 
 ## How to read this index
@@ -57,11 +58,11 @@ full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
   suite (50/50), parity `--download` (`rows=14`, idempotent second migration),
   `--channel` / `--catalog`, baseline-aware `f2-quality.sh` (`NEW findings 0`),
   strict core clippy, FRB codegen idempotency, Kotlin compile, release APK
-  (**rebuilt at final HEAD `42dfde34`**: 150589102 bytes, sha256
+  (**rebuilt at/after final code HEAD `42dfde34`**: 150589102 bytes, sha256
   `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`),
   `adb devices` (BLOCKED, no device), flags/old-path proof, and scope audit.
-  The original pre-rebuild Gate-3 APK is **superseded (historical)**. Its
-  sha256 `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (superseded, historical, pre-rebuild) is kept only as history;
+  The original pre-rebuild Gate-3 APK has sha256
+  `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (**superseded**; pre-rebuild APK, kept only as history);
   it predates `ce7ef133` / `e918c77a` (mtime 2026-10-22 21:43) and is not the
   current APK.
 - `87-gate3-fail.txt` — injected field/path parity drift (both EXIT 1 with exact
@@ -76,11 +77,11 @@ full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
 
 - Built at/after code HEAD `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
   (`docs(download): record final-wave fixes`; commit time
-  2026-10-22 22:25:27 +0800, epoch 1792679127). The current branch HEAD is the
-  later docs-only commit `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  2026-10-22 22:25:27 +0800, epoch 1792679127). The APK was built before the
+  later Wave 3 docs HEAD at close, `2915f462b49d03c483a3dac1c1fefbe1501866af`
   (`docs(download): rebuild release APK for final HEAD`, 2026-10-22 22:41:50
-  +0800), whose only changes are these two docs; the APK below was built before
-  that docs commit and is unaffected by it.
+  +0800), a docs-only commit whose only changes are these two docs; no later
+  docs-only commit changes the artifact.
 - Command: `flutter build apk --release --target-platform android-arm64`
   (`EXIT: 0`, `assembleRelease` 76.9s).
 - Artifact: `build/app/outputs/flutter-apk/app-release.apk`, 150589102 bytes,
@@ -91,10 +92,9 @@ full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
 - Recorded at the end of `target/test-evidence/87-gate3.txt` as
   `RELEASE REBUILD (final HEAD)` with `RESULT: PASS`; the `87-gate3.txt`
   sha256 in the table above was recomputed after that append.
-- The prior Gate-3 APK hash `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (superseded, historical, pre-rebuild)
-  is kept only as history because it predates `ce7ef133`/`e918c77a`
-  (150589102 bytes, mtime 2026-10-22 21:43). No code/flag/version change was
-  made for this rebuild.
+- The prior Gate-3 APK hash `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (**superseded**; pre-rebuild APK, kept only as history)
+  predates `ce7ef133`/`e918c77a` (150589102 bytes, mtime 2026-10-22 21:43). No
+  code/flag/version change was made for this rebuild.
 
 ## Status summary
 

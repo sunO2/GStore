@@ -9,8 +9,9 @@
 - **Final code HEAD:** `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
   (`docs(download): record final-wave fixes`). This is the last code commit;
   the final-wave fixes `ce7ef133` and `e918c77a` precede it.
-- **Current docs-only HEAD:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
-  (`docs(download): rebuild release APK for final HEAD`). It is after the
+- **Wave 3 docs HEAD at close:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  (`docs(download): rebuild release APK for final HEAD`). Docs-only; superseded
+  by the later docs reconciliation commits on the same branch. It is after the
   release rebuild and its only changes are `docs/wave03-completion.md` and
   `docs/wave03-evidence.md`.
 - **Gate 3 close commit:** `8a9c759f` (`test(download): close Wave 3 Gate`,
@@ -99,9 +100,9 @@ The Todo 8 hash is not written into its own commit (self-reference); it is the
 | `e918c77a` | 2 | `fix(download): refresh core rows from the module` |
 | `42dfde34` | 8 | `docs(download): record final-wave fixes` |
 
-`42dfde34` is the final **code** HEAD. The later `2915f462`
-(`docs(download): rebuild release APK for final HEAD`) is docs-only and changes
-only `docs/wave03-completion.md` + `docs/wave03-evidence.md`.
+`42dfde34` is the final **code** HEAD. The later Wave 3 docs HEAD at close,
+`2915f462` (`docs(download): rebuild release APK for final HEAD`), is docs-only:
+it changes only `docs/wave03-completion.md` + `docs/wave03-evidence.md`.
 
 ## Gate 3 matrix
 
@@ -126,7 +127,7 @@ only the focused final-wave checks recorded in
 | 4b | `cargo clippy --manifest-path rust/gstore_core/Cargo.toml --all-targets -- -D warnings` | **PASS** | `Finished dev profile`; EXIT 0 |
 | 5 | FRB codegen idempotency | **PASS** | codegen `Done!`, EXIT 0; `git diff --exit-code` on `rust/gstore_host/src/frb_generated.rs` + `lib/core/rust/generated/` = empty, DIFF_EXIT 0; no leftover to commit |
 | 6 | `./gradlew :app:compileDebugKotlin --offline` (integration_test excluded) | **PASS** | `BUILD SUCCESSFUL in 37s`, 334 tasks; EXIT 0 |
-| 7 | `flutter build apk --release --target-platform android-arm64` | **PASS** | rebuilt at final HEAD `42dfde34` (includes final-wave fixes `ce7ef133`/`e918c77a`/`42dfde34`); `✓ Built .../app-release.apk (150.6MB)`; EXIT 0; 150589102 bytes; sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`; mtime 2026-10-22 22:40:57 +0800 (after the 22:25:27 +0800 final commit); known Maven/TLS issue did not reproduce |
+| 7 | `flutter build apk --release --target-platform android-arm64` | **PASS** | rebuilt at/after final code HEAD `42dfde34` (includes final-wave fixes `ce7ef133`/`e918c77a`/`42dfde34`); `✓ Built .../app-release.apk (150.6MB)`; EXIT 0; 150589102 bytes; sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`; mtime 2026-10-22 22:40:57 +0800 (after the 22:25:27 +0800 final commit); known Maven/TLS issue did not reproduce |
 | 8 | Device (`adb devices`) | **BLOCKED** | empty device list; `DEVICE_QA: BLOCKED (no ADB device)`; no device pass claimed |
 | 9 | Flags default false + old path authoritative | **PASS** | `dto_events_flags_defaults_all_false ... ok`; `git diff e5692829..HEAD -- rust/gstore_core/src/flags.rs lib/core/core_flags.dart` empty; T6 group `install flag off keeps the legacy path` passes |
 | 10 | Scope audit | **PASS** | 60 changed files at the Gate-3 code HEAD `6ea4de02` (the F3-noted count) and 64 changed files at final HEAD `42dfde34`; both sets are entirely in the Wave-3 download/install/notification surface; no Wave 4/5/6, no JsChannel/rquickjs, no resync/removal, no desktop/HarmonyOS/iOS/CLI, no pack signatures; `git diff --diff-filter=D` empty; `pubspec.yaml` diff empty (`1.0.34+1`) |
