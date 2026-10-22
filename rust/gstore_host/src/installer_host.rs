@@ -448,12 +448,15 @@ impl<B: InstallerJni> InstallerPort for AndroidInstallerPort<B> {
     fn install_result(&self, session_id: &str) -> Result<Option<InstallOutcome>, Error> {
         let stored = {
             let mut guard = lock_store();
-            // A native callback normally clears the pending marker while
-            // recording, but an async callback can race `begin_install`.
-            // Draining a terminal result always clears it so
-            // `pending_sessions` cannot report a completed session.
-            guard.pending.remove(session_id);
-            guard.results.remove(session_id)
+            let stored = guard.results.remove(session_id);
+            if stored.is_some() {
+                // A native callback normally clears the pending marker while
+                // recording, but an async callback can race `begin_install`.
+                // Only an actually drained terminal result clears it so
+                // `pending_sessions` never loses a live session.
+                guard.pending.remove(session_id);
+            }
+            stored
         };
         if let Some(stored) = stored {
             return Ok(Some(stored_outcome(&stored)));
@@ -470,10 +473,10 @@ impl<B: InstallerJni> InstallerPort for AndroidInstallerPort<B> {
             return Ok(None);
         };
         let mut guard = lock_store();
-        guard.pending.remove(session_id);
         if !guard.terminal_seen.insert(session_id.to_string()) {
             return Ok(None);
         }
+        guard.pending.remove(session_id);
         Ok(Some(outcome))
     }
 

@@ -407,3 +407,56 @@ fn installer_contract_drained_result_clears_stale_pending_marker() {
         "draining a terminal result must clear the pending marker"
     );
 }
+
+#[test]
+fn installer_contract_live_pending_marker_survives_poll() {
+    let _guard = serial();
+    reset_result_store();
+
+    let bridge = FakeBridge::new();
+    bridge.set_install_json(
+        r#"{"method":"package_installer","status":"pending","packageName":"com.example.live","versionName":null,"error":null}"#,
+    );
+    bridge.set_query_json(
+        r#"{"method":"package_installer","status":"pending","packageName":"com.example.live","versionName":null,"error":null}"#,
+    );
+    let port = AndroidInstallerPort::new(bridge);
+
+    port.begin_install(Path::new("/tmp/app.apk"), "session-live")
+        .expect("live pending");
+    println!(
+        "pending_before={:?}",
+        port.pending_sessions().expect("pending before")
+    );
+    let polled = port.install_result("session-live").expect("live poll");
+    println!("poll_result={polled:?}");
+    assert_eq!(polled, None);
+    let pending_after = port.pending_sessions().expect("pending after");
+    println!("pending_after={pending_after:?}");
+    assert_eq!(
+        pending_after,
+        vec!["session-live".to_string()],
+        "a pending poll must not clear the live marker"
+    );
+
+    record_install_result(
+        "session-live",
+        "installed",
+        Some("com.example.live"),
+        Some("5.0.0"),
+        None,
+    );
+    assert_eq!(
+        port.install_result("session-live").expect("terminal poll"),
+        Some(InstallOutcome::Installed {
+            package_name: Some("com.example.live".to_string()),
+            version_name: Some("5.0.0".to_string()),
+        })
+    );
+    assert!(
+        port.pending_sessions()
+            .expect("pending after terminal")
+            .is_empty(),
+        "a terminal drain must clear the pending marker"
+    );
+}

@@ -417,9 +417,12 @@ object InstallerBridge {
             return pendingJson(pending.method, pending.packageName)
         }
 
-        // Recovery must use the numeric PackageInstaller session id persisted
-        // at commit time; the app session id is a string and never parseable.
-        val numeric = pending.installerSessionId ?: sessionId.toIntOrNull()
+        // Recovery may only use the numeric PackageInstaller session id that
+        // was persisted at commit time. The app session id is an opaque string
+        // (task:now:counter:pid) and is NEVER parsed into an int. Legacy entries
+        // without a numeric id simply stay pending unless the package update
+        // check above already resolved them.
+        val numeric = pending.installerSessionId
         if (numeric != null) {
             val info = runCatching {
                 packageManager()?.packageInstaller?.getSessionInfo(numeric)
