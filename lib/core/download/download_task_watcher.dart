@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -57,9 +58,9 @@ class DownloadTaskWatcher {
     unawaited(_sub?.cancel());
     _started.clear();
     _sub = service.watchAll().listen(
-      _onUpdate,
-      onError: (Object e) => debugPrint('DownloadTaskWatcher: 任务流异常 - $e'),
-    );
+          _onUpdate,
+          onError: (Object e) => debugPrint('DownloadTaskWatcher: 任务流异常 - $e'),
+        );
     debugPrint('DownloadTaskWatcher: 已订阅全局任务流');
   }
 
@@ -83,14 +84,21 @@ class DownloadTaskWatcher {
           notif.onDownloadStart(id, title, task.fileName);
         }
         // 服务内部已做 500ms 节流
-        notif.onDownloadProgress(id, title, task.fileName, task.received, task.total);
+        notif.onDownloadProgress(
+            id, title, task.fileName, task.received, task.total);
       case DownloadStatusEnum.paused:
         break;
       case DownloadStatusEnum.completed:
         notif.onDownloadComplete(id);
         _started.remove(id);
         // 自动安装只认任务自己持久化的标记（跨重启也有效）
-        if (task.installAfterDownload) _install(task.filePath);
+        if (task.installAfterDownload) {
+          if (CoreFlags.install) {
+            unawaited(_installCore(id.toString(), task.filePath));
+          } else {
+            _install(task.filePath);
+          }
+        }
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
         _started.remove(id);
@@ -109,6 +117,22 @@ class DownloadTaskWatcher {
     debugPrint('DownloadTaskWatcher: 下载完成，触发安装 $filePath');
     // 安装失败（如安装器抛异常）不得成为未处理的异步错误：在独立任务里捕获并上报。
     unawaited(_installQuietly(manager, filePath));
+  }
+
+  Future<void> _installCore(String moduleTaskId, String filePath) async {
+    final manager = ModuleManager.instance.get<InstallManager>();
+    if (manager == null) {
+      debugPrint('DownloadTaskWatcher: InstallManager 不可用，跳过自动安装');
+      return;
+    }
+    debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $moduleTaskId');
+    try {
+      await manager.installTask(moduleTaskId, filePath);
+    } catch (e, st) {
+      debugPrint(
+        'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',
+      );
+    }
   }
 
   /// 执行自动安装并吞掉异常（含堆栈上报），避免 `unawaited` 产生未处理异步错误。

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 
@@ -42,15 +43,28 @@ class DownloadNotificationService {
   @visibleForTesting
   static int debugCallCount = 0;
 
+  /// 测试专用 spy：真实调用插件发布/启动通知的次数。
+  ///
+  /// 下载内核接管后必须保持为 0；只有真正走到
+  /// `flutter_local_notifications` / `flutter_foreground_task` 才递增。
+  @visibleForTesting
+  static int debugPostCount = 0;
+
   /// 测试专用：重置 spy 计数。
   @visibleForTesting
-  static void debugResetCallCount() => debugCallCount = 0;
+  static void debugResetCallCount() {
+    debugCallCount = 0;
+    debugPostCount = 0;
+  }
+
+  bool get _coreOwnsNotifications => CoreFlags.download;
 
   /// 进度通知节流（避免高频刷新）
   final Map<int, DateTime> _lastNotify = {};
 
   /// 初始化（应用启动时调用）
   Future<void> init() async {
+    if (_coreOwnsNotifications) return;
     if (_initialized) return;
     _initialized = true;
 
@@ -58,7 +72,8 @@ class DownloadNotificationService {
       // flutter_local_notifications
       await _local.initialize(
         settings: const InitializationSettings(
-          android: AndroidInitializationSettings('@mipmap/ic_launcher_foreground'),
+          android:
+              AndroidInitializationSettings('@mipmap/ic_launcher_foreground'),
         ),
         onDidReceiveNotificationResponse: (response) {
           // 点击进度通知跳转下载中心
@@ -108,6 +123,7 @@ class DownloadNotificationService {
 
   /// 请求通知权限（Android 13+ 必需）
   Future<void> requestPermission() async {
+    if (_coreOwnsNotifications) return;
     await init();
     try {
       await _local
@@ -136,6 +152,7 @@ class DownloadNotificationService {
   /// 下载开始
   void onDownloadStart(int id, String title, String fileName) {
     debugCallCount++;
+    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -153,6 +170,7 @@ class DownloadNotificationService {
     int total,
   ) {
     debugCallCount++;
+    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -166,11 +184,13 @@ class DownloadNotificationService {
   /// 下载完成（移除进度通知）
   void onDownloadComplete(int id) {
     debugCallCount++;
+    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
@@ -178,11 +198,13 @@ class DownloadNotificationService {
   /// 下载失败（显示失败通知）
   void onDownloadError(int id, String title) {
     debugCallCount++;
+    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.show(
           id: id,
           title: '下载失败',
@@ -203,11 +225,13 @@ class DownloadNotificationService {
   /// 下载取消（移除通知）
   void onDownloadCancel(int id) {
     debugCallCount++;
+    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
@@ -221,6 +245,7 @@ class DownloadNotificationService {
     int total,
   ) {
     final percent = total > 0 ? (count / total * 100).round() : 0;
+    debugPostCount++;
     _safeNotify(() => _local.show(
           id: id,
           title: title,
@@ -247,8 +272,10 @@ class DownloadNotificationService {
 
   /// 启动前台服务（保持进程，下载后台继续）
   Future<void> startForegroundService() async {
+    if (_coreOwnsNotifications) return;
     try {
       if (await FlutterForegroundTask.isRunningService) return;
+      debugPostCount++;
       await FlutterForegroundTask.startService(
         serviceId: _foregroundServiceId,
         notificationTitle: '后台下载中',
@@ -270,6 +297,7 @@ class DownloadNotificationService {
   }
 
   Future<void> _stopForegroundService() async {
+    if (_coreOwnsNotifications) return;
     try {
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();

@@ -145,6 +145,7 @@ fn notification_class(env: &mut JNIEnv) -> Result<&'static GlobalRef, String> {
 
 /// Real bridge: calls the Kotlin `com.suno2.gstore.NotificationBridge` statics.
 #[derive(Debug, Clone, Copy, Default)]
+#[flutter_rust_bridge::frb(opaque)]
 pub struct JniNotificationBridge;
 
 impl JniNotificationBridge {

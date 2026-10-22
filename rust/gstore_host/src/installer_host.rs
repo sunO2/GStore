@@ -129,6 +129,7 @@ fn jstring_value(env: &mut JNIEnv, object: JObject) -> Result<Option<String>, St
 /// Every failure is returned as a typed `Err(String)`; nothing panics across
 /// the JNI boundary.
 #[derive(Debug, Clone, Copy, Default)]
+#[flutter_rust_bridge::frb(opaque)]
 pub struct JniInstallerBridge;
 
 impl JniInstallerBridge {

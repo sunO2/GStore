@@ -5,6 +5,8 @@
 /// `RustDownloadService` / install paths yet.
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
@@ -163,6 +165,7 @@ DownloadStatusEnum _statusFromCore(String status) {
       return DownloadStatusEnum.completed;
     case 'failed':
       return DownloadStatusEnum.failed;
+    case 'cancelled':
     case 'removed':
       return DownloadStatusEnum.cancelled;
     case 'paused':
@@ -172,20 +175,49 @@ DownloadStatusEnum _statusFromCore(String status) {
   }
 }
 
+int _epochMs(int raw) => raw < 1000000000000 ? raw * 1000 : raw;
+
+List<SegmentInfo>? _segmentsFromJson(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return const <SegmentInfo>[];
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(SegmentInfo.fromMap)
+        .toList(growable: false);
+  } catch (_) {
+    return const <SegmentInfo>[];
+  }
+}
+
+Map<String, String> _headersFromJson(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return const <String, String>{};
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map) return const <String, String>{};
+    return decoded.map(
+      (key, value) => MapEntry(key.toString(), value.toString()),
+    );
+  } catch (_) {
+    return const <String, String>{};
+  }
+}
+
 /// Maps one core `download_task` projection to the Dart model.
 DownloadTask toDownloadTask(rust.DownloadTaskDto dto) {
   final status = dto.status;
   final mapped = _statusFromCore(status);
   final String? error;
-  if (status == 'needs_restart') {
-    error = 'needs_restart';
-  } else if (!_coreStatuses.contains(status)) {
-    error = status;
+  if (status == 'needs_restart' || !_coreStatuses.contains(status)) {
+    final rawError = dto.error;
+    error = rawError == null || rawError.isEmpty ? status : rawError;
   } else {
     error = dto.error;
   }
+  final id = int.tryParse(dto.moduleTaskId ?? '') ?? dto.id.toInt();
   return DownloadTask(
-    id: dto.id.toInt(),
+    id: id,
     appId: dto.appId ?? '',
     appName: dto.appName ?? '',
     version: dto.version ?? '',
@@ -198,11 +230,14 @@ DownloadTask toDownloadTask(rust.DownloadTaskDto dto) {
     speedBps: dto.speedBps.toInt(),
     etaSec: dto.etaSec?.toInt(),
     error: error,
-    segments: null,
+    segments: _segmentsFromJson(dto.segmentsJson),
+    headers: _headersFromJson(dto.headersJson),
     installAfterDownload: dto.installAfterDownload,
-    lastStartedAt: dto.lastStartedAt?.toInt() ?? 0,
-    createdAt: DateTime.fromMillisecondsSinceEpoch(dto.createdAt.toInt() * 1000),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(dto.updatedAt.toInt() * 1000),
+    lastStartedAt: _epochMs(dto.lastStartedAt?.toInt() ?? 0),
+    createdAt:
+        DateTime.fromMillisecondsSinceEpoch(_epochMs(dto.createdAt.toInt())),
+    updatedAt:
+        DateTime.fromMillisecondsSinceEpoch(_epochMs(dto.updatedAt.toInt())),
   );
 }
 

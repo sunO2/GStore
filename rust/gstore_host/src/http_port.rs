@@ -11,6 +11,7 @@ use gstore_core::Error;
 
 /// Synchronous reqwest transport.
 #[derive(Debug, Default, Clone, Copy)]
+#[flutter_rust_bridge::frb(opaque)]
 pub struct ReqwestHttpPort;
 
 impl ReqwestHttpPort {

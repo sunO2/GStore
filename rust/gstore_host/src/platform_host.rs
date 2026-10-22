@@ -335,6 +335,7 @@ fn install_via_bridge(apk_path: &Path) -> Result<(), Error> {
 
 /// Android host backed by `com.suno2.gstore.PlatformHostBridge`.
 #[derive(Debug, Clone, Copy, Default)]
+#[flutter_rust_bridge::frb(opaque)]
 pub struct AndroidPlatformHost;
 
 impl AndroidPlatformHost {

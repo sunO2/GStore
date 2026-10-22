@@ -3007,6 +3007,269 @@ impl DownloadApi {
     }
 }
 
+// ===========================================================================
+// InstallApi (Wave 3 Todo 6)
+// ===========================================================================
+
+use gstore_core::event::CoreEvent;
+use gstore_core::install::service::{
+    InstallAttempt, InstallReconcileReport, InstallRecord, InstallService,
+};
+use gstore_core::ports::installer::InstallerPort as CoreInstallerPort;
+
+const CORE_E_INSTALL_NOT_FOUND: &str = "CORE_E_INSTALL_NOT_FOUND";
+const CORE_E_INSTALL_INVALID_ARG: &str = "CORE_E_INSTALL_INVALID_ARG";
+const CORE_E_INSTALL_CONFLICT: &str = "CORE_E_INSTALL_CONFLICT";
+const CORE_E_INSTALL_UNSUPPORTED: &str = "CORE_E_INSTALL_UNSUPPORTED";
+const CORE_E_INSTALL_DB: &str = "CORE_E_INSTALL_DB";
+const CORE_E_INSTALL_INTERNAL: &str = "CORE_E_INSTALL_INTERNAL";
+
+fn install_err(error: CoreError) -> String {
+    match error {
+        CoreError::NotFound(message) => format!("{CORE_E_INSTALL_NOT_FOUND}: {message}"),
+        CoreError::InvalidArgument(message) => {
+            format!("{CORE_E_INSTALL_INVALID_ARG}: {message}")
+        }
+        CoreError::Conflict(message) => format!("{CORE_E_INSTALL_CONFLICT}: {message}"),
+        CoreError::Unsupported(message) => {
+            format!("{CORE_E_INSTALL_UNSUPPORTED}: {message}")
+        }
+        CoreError::Io(message) | CoreError::Serialization(message) => {
+            format!("{CORE_E_INSTALL_DB}: {message}")
+        }
+        CoreError::Internal(message) => {
+            if message.contains("CORE_E_INSTALL_READ") || message.contains("CORE_E_INSTALL_WRITE") {
+                format!("{CORE_E_INSTALL_DB}: {message}")
+            } else {
+                format!("{CORE_E_INSTALL_INTERNAL}: {message}")
+            }
+        }
+        CoreError::Network(message) => {
+            format!("{CORE_E_INSTALL_INTERNAL}: network: {message}")
+        }
+        CoreError::Unauthorized(message) => {
+            format!("{CORE_E_INSTALL_INTERNAL}: unauthorized: {message}")
+        }
+        CoreError::Forbidden(message) => {
+            format!("{CORE_E_INSTALL_INTERNAL}: forbidden: {message}")
+        }
+        CoreError::RateLimited(message) => {
+            format!("{CORE_E_INSTALL_INTERNAL}: rate_limited: {message}")
+        }
+    }
+}
+
+/// One `download_task` install projection crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct InstallRecordDto {
+    pub module_task_id: String,
+    pub app_id: String,
+    pub status: String,
+    pub method: Option<String>,
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+    pub installed_at: Option<i64>,
+    pub installed_version: Option<String>,
+    pub install_after_download: bool,
+}
+
+impl From<InstallRecord> for InstallRecordDto {
+    fn from(record: InstallRecord) -> Self {
+        Self {
+            module_task_id: record.module_task_id,
+            app_id: record.app_id,
+            status: record.status,
+            method: record.method,
+            session_id: record.session_id,
+            error: record.error,
+            installed_at: record.installed_at,
+            installed_version: record.installed_version,
+            install_after_download: record.install_after_download,
+        }
+    }
+}
+
+/// Result of one install attempt (record plus optional event JSON).
+#[derive(Debug, Clone)]
+pub struct InstallAttemptDto {
+    pub record: InstallRecordDto,
+    pub event_json: Option<String>,
+}
+
+fn event_json(event: Option<CoreEvent>) -> Result<Option<String>, String> {
+    event
+        .map(|event| event.to_json().map_err(install_err))
+        .transpose()
+}
+
+fn attempt_dto(attempt: InstallAttempt) -> Result<InstallAttemptDto, String> {
+    Ok(InstallAttemptDto {
+        record: InstallRecordDto::from(attempt.record),
+        event_json: event_json(attempt.event)?,
+    })
+}
+
+/// Summary of one install reconciliation sweep.
+#[derive(Debug, Clone)]
+pub struct InstallReconcileDto {
+    pub checked: u32,
+    pub resolved: u32,
+    pub still_pending: u32,
+    pub errors: Vec<String>,
+    pub events: Vec<String>,
+}
+
+fn install_count(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn reconcile_dto(
+    report: InstallReconcileReport,
+    events: Vec<CoreEvent>,
+) -> Result<InstallReconcileDto, String> {
+    Ok(InstallReconcileDto {
+        checked: install_count(report.checked),
+        resolved: install_count(report.resolved),
+        still_pending: install_count(report.still_pending),
+        errors: report.errors,
+        events: events
+            .into_iter()
+            .map(|event| event.to_json().map_err(install_err))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+/// FRB facade over the durable core [`InstallService`].
+///
+/// Install state lives on `download_task`; `install`/`maybe_install_after_download`
+/// are idempotent and `on_result` rejects duplicate terminal callbacks without
+/// emitting a second event. Errors use stable `CORE_E_INSTALL_*` prefixes.
+#[frb(opaque)]
+pub struct InstallApi {
+    service: InstallService,
+}
+
+impl InstallApi {
+    /// Opens the core database, wires the Android installer port, and runs one
+    /// best-effort reconciliation sweep.
+    ///
+    /// The sweep is never fatal: failures are logged and initialization still
+    /// succeeds, so a transient installer/device problem cannot disable install.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<InstallApi, String> {
+        prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
+        let db = open_core_db(&data_dir)?;
+        let installer: Arc<dyn CoreInstallerPort> = Arc::new(
+            crate::installer_host::AndroidInstallerPort::new(
+                crate::installer_host::JniInstallerBridge::new(),
+            ),
+        );
+        let service = InstallService::new(db.shared_writer(), installer);
+        match service.reconcile() {
+            Ok((report, events)) => {
+                if !events.is_empty() {
+                    crate::log_bridge::push_host_log(
+                        2,
+                        format!(
+                            "install reconcile at init: checked={} resolved={} events={}",
+                            report.checked,
+                            report.resolved,
+                            events.len()
+                        ),
+                    );
+                }
+            }
+            Err(error) => crate::log_bridge::push_host_log(
+                2,
+                format!("install reconcile at init (non-fatal): {error}"),
+            ),
+        }
+        Ok(Self { service })
+    }
+
+    /// Wraps an already-built service (integration tests only).
+    #[frb(ignore)]
+    #[doc(hidden)]
+    pub fn from_service_for_test(service: InstallService) -> InstallApi {
+        Self { service }
+    }
+
+    /// Starts (or observes) an install for `module_task_id`.
+    pub fn install(&self, module_task_id: String) -> Result<InstallAttemptDto, String> {
+        self.service
+            .install(&module_task_id)
+            .map_err(install_err)
+            .and_then(attempt_dto)
+    }
+
+    /// Installs once after a completed download when the row requested it.
+    pub fn maybe_install_after_download(
+        &self,
+        module_task_id: String,
+    ) -> Result<Option<InstallAttemptDto>, String> {
+        self.service
+            .maybe_install_after_download(&module_task_id)
+            .map_err(install_err)?
+            .map(attempt_dto)
+            .transpose()
+    }
+
+    /// Uninstalls `package_name` through the installer port.
+    pub fn uninstall(&self, package_name: String) -> Result<(), String> {
+        self.service.uninstall(&package_name).map_err(install_err)
+    }
+
+    /// Launches `package_name` through the installer port.
+    pub fn launch(&self, package_name: String) -> Result<(), String> {
+        self.service.launch(&package_name).map_err(install_err)
+    }
+
+    /// Whether the host installer can install packages.
+    pub fn can_install(&self) -> bool {
+        self.service.can_install()
+    }
+
+    /// Lists every row currently pending reconciliation.
+    pub fn list_pending(&self) -> Result<Vec<InstallRecordDto>, String> {
+        self.service
+            .list_pending()
+            .map_err(install_err)
+            .map(|records| records.into_iter().map(InstallRecordDto::from).collect())
+    }
+
+    /// Applies an asynchronous installer result and returns its event JSON
+    /// (`None` for a duplicate/non-pending callback).
+    pub fn on_result(
+        &self,
+        session_id: String,
+        status: String,
+        package_name: Option<String>,
+        version_name: Option<String>,
+        error: Option<String>,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .on_result(
+                &session_id,
+                &status,
+                package_name.as_deref(),
+                version_name.as_deref(),
+                error.as_deref(),
+            )
+            .map_err(install_err)
+            .and_then(event_json)
+    }
+
+    /// Reconciles every pending install session and returns the sweep report
+    /// together with every event JSON it produced.
+    pub fn reconcile(&self) -> Result<InstallReconcileDto, String> {
+        let (report, events) = self.service.reconcile().map_err(install_err)?;
+        reconcile_dto(report, events)
+    }
+}
+
 #[cfg(test)]
 mod channel_api_tests {
     use super::*;

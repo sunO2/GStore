@@ -3,6 +3,9 @@ import 'package:app_installer/app_installer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/download/download_facade.dart';
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
@@ -37,6 +40,15 @@ enum InstallMethod {
 
   /// Shizuku 静默安装（需 Shizuku 授权）
   shizuku,
+
+  /// Android PackageInstaller 会话
+  packageInstaller,
+
+  /// 系统安装 Intent
+  intent,
+
+  /// 跨平台兼容安装钩子
+  platform,
 }
 
 /// 应用安装管理器
@@ -55,6 +67,10 @@ class InstallManager implements IInstallService {
   /// 注入假件，脱离 Rust / 真机。
   static Future<String?> Function(String command) _commandRunner =
       rustShizukuRunner;
+
+  /// 测试专用：替换安装门面（默认 [InstallFacade.instance]）。
+  @visibleForTesting
+  static InstallFacade? installFacadeForTest;
 
   /// Shizuku 是否已运行（Binder 连接）
   bool _binderRunning = false;
@@ -101,6 +117,7 @@ class InstallManager implements IInstallService {
   static void resetForTest() {
     _instance = null;
     _commandRunner = rustShizukuRunner;
+    installFacadeForTest = null;
   }
 
   /// 当前是否视为 Android 平台
@@ -172,7 +189,8 @@ class InstallManager implements IInstallService {
   bool _isUserRejected(String? result) {
     if (result == null) return false;
     final r = result.toLowerCase();
-    return r.contains('rejected permissions') || r.contains('install_failed_aborted');
+    return r.contains('rejected permissions') ||
+        r.contains('install_failed_aborted');
   }
 
   /// 生成"暂存 APK 到 /data/local/tmp 再安装再清理"的 sh -c 兼容命令。
@@ -191,10 +209,88 @@ class InstallManager implements IInstallService {
         "rm -f ${_shQuote(stage)}";
   }
 
+  InstallFacade get _installFacade =>
+      installFacadeForTest ?? InstallFacade.instance;
+
+  InstallMethod _mapInstallMethod(String? method) {
+    switch (method) {
+      case 'shizuku':
+        return InstallMethod.shizuku;
+      case 'package_installer':
+        return InstallMethod.packageInstaller;
+      case 'intent':
+        return InstallMethod.intent;
+      case 'platform':
+        return InstallMethod.platform;
+      default:
+        return InstallMethod.system;
+    }
+  }
+
+  /// Installs a core download task through [InstallFacade] when the install
+  /// flag is armed; otherwise delegates to the legacy [installApk] path.
+  Future<(bool, InstallMethod)> installTask(
+    String moduleTaskId,
+    String filePath,
+  ) async {
+    if (!CoreFlags.install) {
+      return installApk(filePath);
+    }
+    try {
+      final attempt = await _installFacade.install(moduleTaskId);
+      return (
+        attempt.record.isInstalled,
+        _mapInstallMethod(attempt.record.method),
+      );
+    } catch (e) {
+      appLog.error('InstallManager: 核心安装失败 - $e', data: {
+        'moduleTaskId': moduleTaskId,
+        'filePath': filePath,
+      });
+      return (false, InstallMethod.system);
+    }
+  }
+
+  Future<String?> _findCoreTaskId(String filePath) async {
+    try {
+      for (final dto in await DownloadFacade.instance.list()) {
+        if (dto.destPath == filePath) {
+          return dto.moduleTaskId ?? dto.id.toString();
+        }
+      }
+    } catch (e) {
+      appLog.error('InstallManager: 查询核心下载任务失败 - $e', data: {
+        'filePath': filePath,
+      });
+    }
+    return null;
+  }
+
   /// 安装 APK
   /// 优先使用 Shizuku 静默安装（可用时），否则回退系统安装
   /// 返回 (是否成功, 使用的安装方式)
   Future<(bool, InstallMethod)> installApk(String filePath) async {
+    if (CoreFlags.install) {
+      final coreTaskId = await _findCoreTaskId(filePath);
+      if (coreTaskId != null) {
+        try {
+          final attempt = await _installFacade.install(coreTaskId);
+          return (
+            attempt.record.isInstalled,
+            _mapInstallMethod(attempt.record.method),
+          );
+        } catch (e) {
+          appLog.error('InstallManager: 核心安装失败 - $e', data: {
+            'moduleTaskId': coreTaskId,
+            'filePath': filePath,
+          });
+          return (false, InstallMethod.system);
+        }
+      }
+      appLog.info(
+        'InstallManager: APK 不在内核下载任务中（模块安装，超出核心应用安装范围），保留旧安装路径: $filePath',
+      );
+    }
     if (!_isAndroid || !filePath.endsWith('.apk')) {
       return (false, _preferredMethod);
     }
@@ -261,6 +357,17 @@ class InstallManager implements IInstallService {
   /// [action] uninstall（卸载）/ disable（停用）/ enable（启用）
   /// 返回是否成功
   Future<bool> managePackage(String packageName, String action) async {
+    if (action == 'uninstall' && CoreFlags.install) {
+      try {
+        await _installFacade.uninstall(packageName);
+        return true;
+      } catch (e) {
+        appLog.error('InstallManager: 核心卸载失败 - $e', data: {
+          'packageName': packageName,
+        });
+        return false;
+      }
+    }
     final command = switch (action) {
       'uninstall' => 'pm uninstall --user 0 "$packageName"',
       'disable' => 'pm disable-user --user 0 "$packageName"',
@@ -340,7 +447,8 @@ class InstallManager implements IInstallService {
   /// 跳转到系统"卸载应用"确认界面，由用户手动确认
   Future<bool> openUninstallInSystem(String packageName) async {
     try {
-      final ok = await _systemIntentChannel.invokeMethod<bool>('openUninstall', {
+      final ok =
+          await _systemIntentChannel.invokeMethod<bool>('openUninstall', {
         'packageName': packageName,
       });
       return ok ?? false;
@@ -354,7 +462,8 @@ class InstallManager implements IInstallService {
   /// 用户可在系统详情页手动"清除数据"/"清除缓存"
   Future<bool> openAppDetailsInSystem(String packageName) async {
     try {
-      final ok = await _systemIntentChannel.invokeMethod<bool>('openAppDetails', {
+      final ok =
+          await _systemIntentChannel.invokeMethod<bool>('openAppDetails', {
         'packageName': packageName,
       });
       return ok ?? false;

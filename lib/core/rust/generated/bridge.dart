@@ -10,10 +10,10 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `attempt_dto`, `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `event_json`, `from_summary`, `init_inner`, `install_count`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `reconcile_dto`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -389,6 +389,53 @@ abstract class HostInspector implements RustOpaqueInterface {
   /// `nativeSetTunFd` 持有，模块事件/日志继续入有界环形缓冲，新 isolate
   /// 重新订阅时补发）。任务（[`crate::task_bridge`]）继续运行，仅其 sink 被丢弃。
   Future<void> resetBridges();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstallApi>>
+abstract class InstallApi implements RustOpaqueInterface {
+  /// Whether the host installer can install packages.
+  Future<bool> canInstall();
+
+  /// Opens the core database, wires the Android installer port, and runs one
+  /// best-effort reconciliation sweep.
+  ///
+  /// The sweep is never fatal: failures are logged and initialization still
+  /// succeeds, so a transient installer/device problem cannot disable install.
+  static Future<InstallApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeInstallApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Starts (or observes) an install for `module_task_id`.
+  Future<InstallAttemptDto> install({required String moduleTaskId});
+
+  /// Launches `package_name` through the installer port.
+  Future<void> launch({required String packageName});
+
+  /// Lists every row currently pending reconciliation.
+  Future<List<InstallRecordDto>> listPending();
+
+  /// Installs once after a completed download when the row requested it.
+  Future<InstallAttemptDto?> maybeInstallAfterDownload(
+      {required String moduleTaskId});
+
+  /// Applies an asynchronous installer result and returns its event JSON
+  /// (`None` for a duplicate/non-pending callback).
+  Future<String?> onResult(
+      {required String sessionId,
+      required String status,
+      String? packageName,
+      String? versionName,
+      String? error});
+
+  /// Reconciles every pending install session and returns the sweep report
+  /// together with every event JSON it produced.
+  Future<InstallReconcileDto> reconcile();
+
+  /// Uninstalls `package_name` through the installer port.
+  Future<void> uninstall({required String packageName});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstanceHandle>>
@@ -1336,6 +1383,116 @@ class FlagsPatch {
           install == other.install &&
           jsChannel == other.jsChannel &&
           coreWrites == other.coreWrites;
+}
+
+/// Result of one install attempt (record plus optional event JSON).
+class InstallAttemptDto {
+  final InstallRecordDto record;
+  final String? eventJson;
+
+  const InstallAttemptDto({
+    required this.record,
+    this.eventJson,
+  });
+
+  @override
+  int get hashCode => record.hashCode ^ eventJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallAttemptDto &&
+          runtimeType == other.runtimeType &&
+          record == other.record &&
+          eventJson == other.eventJson;
+}
+
+/// Summary of one install reconciliation sweep.
+class InstallReconcileDto {
+  final int checked;
+  final int resolved;
+  final int stillPending;
+  final List<String> errors;
+  final List<String> events;
+
+  const InstallReconcileDto({
+    required this.checked,
+    required this.resolved,
+    required this.stillPending,
+    required this.errors,
+    required this.events,
+  });
+
+  @override
+  int get hashCode =>
+      checked.hashCode ^
+      resolved.hashCode ^
+      stillPending.hashCode ^
+      errors.hashCode ^
+      events.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallReconcileDto &&
+          runtimeType == other.runtimeType &&
+          checked == other.checked &&
+          resolved == other.resolved &&
+          stillPending == other.stillPending &&
+          errors == other.errors &&
+          events == other.events;
+}
+
+/// One `download_task` install projection crossing the FRB boundary.
+class InstallRecordDto {
+  final String moduleTaskId;
+  final String appId;
+  final String status;
+  final String? method;
+  final String? sessionId;
+  final String? error;
+  final PlatformInt64? installedAt;
+  final String? installedVersion;
+  final bool installAfterDownload;
+
+  const InstallRecordDto({
+    required this.moduleTaskId,
+    required this.appId,
+    required this.status,
+    this.method,
+    this.sessionId,
+    this.error,
+    this.installedAt,
+    this.installedVersion,
+    required this.installAfterDownload,
+  });
+
+  @override
+  int get hashCode =>
+      moduleTaskId.hashCode ^
+      appId.hashCode ^
+      status.hashCode ^
+      method.hashCode ^
+      sessionId.hashCode ^
+      error.hashCode ^
+      installedAt.hashCode ^
+      installedVersion.hashCode ^
+      installAfterDownload.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InstallRecordDto &&
+          runtimeType == other.runtimeType &&
+          moduleTaskId == other.moduleTaskId &&
+          appId == other.appId &&
+          status == other.status &&
+          method == other.method &&
+          sessionId == other.sessionId &&
+          error == other.error &&
+          installedAt == other.installedAt &&
+          installedVersion == other.installedVersion &&
+          installAfterDownload == other.installAfterDownload;
 }
 
 /// One `"{channel}:{app_id}"` tag bucket.

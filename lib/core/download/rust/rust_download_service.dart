@@ -4,7 +4,12 @@ import 'package:flutter/foundation.dart';
 
 import 'dart:typed_data';
 
+import 'package:path_provider/path_provider.dart';
+
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/core/download_request.dart';
+import 'package:gstore/core/download/core_download_builder.dart';
+import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/rust_download_mapper.dart';
 import '../download_paths.dart';
@@ -14,6 +19,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// [IDownloadService] 的 **Rust 内核实现**：把任务管理与传输交给
 /// `gstore_mod_download` 模块，Dart 侧只做参数整形、结果映射与事件解复用。
@@ -96,6 +102,17 @@ class RustDownloadService implements IDownloadService {
     bool forceDownload = false,
     bool installAfterDownload = true,
   }) async {
+    if (CoreFlags.download) {
+      return _downloadViaCore(
+        appid: appid,
+        appName: appName,
+        version: version,
+        url: url,
+        fileName: fileName,
+        saveFileName: saveFileName,
+        installAfterDownload: installAfterDownload,
+      );
+    }
     // 落盘路径必须与 Dart 实现共用同一份规则，否则换内核后文件会落到别处
     final dest = await DownloadPaths.resolveSavePath(
       saveFileName: saveFileName,
@@ -104,7 +121,8 @@ class RustDownloadService implements IDownloadService {
 
     if (installAfterDownload) {
       // 明确不假装支持：安装仍由 Dart 侧流程负责
-      appLog.info('RustDownloadService: installAfterDownload 由 Dart 侧处理（内核不负责安装）');
+      appLog.info(
+          'RustDownloadService: installAfterDownload 由 Dart 侧处理（内核不负责安装）');
     }
 
     return _start(
@@ -136,6 +154,17 @@ class RustDownloadService implements IDownloadService {
   }) async {
     // 惰性 URL 解析：取一次当前有效地址（签名 URL 过期由上层重新构造请求）
     final url = request.urlProvider?.call() ?? request.url;
+    if (CoreFlags.download) {
+      return _downloadViaCore(
+        appid: appid,
+        appName: appName,
+        version: version,
+        url: url,
+        fileName: fileName,
+        saveFileName: request.savePath ?? saveFileName,
+        installAfterDownload: installAfterDownload,
+      );
+    }
     // savePath 声明为可空：为空时回落到与 download() 相同的目录约定
     final dest = request.savePath ??
         await DownloadPaths.resolveSavePath(
@@ -144,7 +173,8 @@ class RustDownloadService implements IDownloadService {
         );
 
     if (installAfterDownload) {
-      appLog.info('RustDownloadService: installAfterDownload 由 Dart 侧处理（内核不负责安装）');
+      appLog.info(
+          'RustDownloadService: installAfterDownload 由 Dart 侧处理（内核不负责安装）');
     }
 
     return _start(
@@ -163,6 +193,60 @@ class RustDownloadService implements IDownloadService {
     );
   }
 
+  /// Starts the core-owned download.
+  ///
+  /// The host-created core instance uses the default scheduler config; the Dart
+  /// settings push (`_pushConfig`) is intentionally skipped here. That prevents
+  /// mixing the legacy module instance with the core-owned one (known Wave-3
+  /// limitation, not a claim that settings are applied).
+  Future<DownloadTask> _downloadViaCore({
+    required String appid,
+    required String appName,
+    required String version,
+    required String url,
+    required String fileName,
+    String? saveFileName,
+    bool installAfterDownload = false,
+  }) async {
+    // An absolute save path short-circuits directory resolution; otherwise the
+    // builder falls back to the app documents dir exactly like DownloadPaths.
+    final docsDir = saveFileName != null && saveFileName.startsWith('/')
+        ? ''
+        : (await getApplicationDocumentsDirectory()).path;
+    final core = await CoreDownloadBuilder.build(
+      appId: appid,
+      appName: appName,
+      version: version,
+      fileName: fileName,
+      url: url,
+      saveFileName: saveFileName,
+      docsDir: docsDir,
+      installAfterDownload: installAfterDownload,
+    );
+    final id = await DownloadFacade.instance.start(
+      rust.DownloadStartRequest(
+        appId: core.appId,
+        appName: core.appName,
+        version: core.version,
+        fileName: core.fileName,
+        url: core.url,
+        destPath: core.destPath,
+        kind: core.kind,
+        resourceId: core.resourceId,
+        resourceVersion: core.resourceVersion,
+        dedupKey: core.dedupKey,
+        expectedSha256: core.expectedSha256,
+        installAfterDownload: core.installAfterDownload,
+      ),
+    );
+    final dto = await DownloadFacade.instance.get(id.toString());
+    if (dto == null) {
+      throw StateError(
+          'RustDownloadService: core task $id not found after start');
+    }
+    return toDownloadTask(dto);
+  }
+
   /// 把 Dart 设置页里的下载配置下发给模块。
   ///
   /// 模块实例创建时用的是它自己的**默认值**（并发 3 / 连接 4），必须显式下发一次，
@@ -178,7 +262,8 @@ class RustDownloadService implements IDownloadService {
         // 关闭"分段下载" → 每文件连接数压到 1，等价整文件单连接
         if (!multi) 'connections': 1,
       });
-      debugPrint('RustDownloadService: 配置下发 maxConcurrent=$concurrent multiSegment=$multi');
+      debugPrint(
+          'RustDownloadService: 配置下发 maxConcurrent=$concurrent multiSegment=$multi');
     } catch (e) {
       debugPrint('RustDownloadService: 下发下载配置失败 - $e');
     }
@@ -226,19 +311,46 @@ class RustDownloadService implements IDownloadService {
   }
 
   @override
-  Future<void> pause(int id) => _op('download.pause', id);
+  Future<void> pause(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.pause(id.toString()),
+        legacy: () => _op('download.pause', id),
+      );
 
   @override
-  Future<void> resume(int id) => _op('download.resume', id);
+  Future<void> resume(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.resume(id.toString()),
+        legacy: () => _op('download.resume', id),
+      );
 
   @override
-  Future<void> cancel(int id) => _op('download.cancel', id);
+  Future<void> cancel(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.cancel(id.toString()),
+        legacy: () => _op('download.cancel', id),
+      );
 
   @override
-  Future<void> retry(int id) => _op('download.retry', id);
+  Future<void> retry(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.retry(id.toString()),
+        legacy: () => _op('download.retry', id),
+      );
 
   @override
-  Future<void> restart(int id) => _op('download.restart', id);
+  Future<void> restart(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.restart(id.toString()),
+        legacy: () => _op('download.restart', id),
+      );
+
+  Future<void> _coreOp({
+    required bool isEnabled,
+    required Future<void> Function() core,
+    required Future<void> Function() legacy,
+  }) =>
+      isEnabled ? core() : legacy();
 
   Future<void> _op(String method, int id) async {
     // 诊断：确认按钮实际走到了哪个模块方法
@@ -249,13 +361,27 @@ class RustDownloadService implements IDownloadService {
 
   @override
   Future<DownloadTask?> getTask(int id) async {
+    if (CoreFlags.download) {
+      final dto = await DownloadFacade.instance.get(id.toString());
+      return dto == null ? null : toDownloadTask(dto);
+    }
     final raw = await _invoke('download.get', {'id': id});
     if (raw is! Map<String, dynamic>) return null;
     return RustDownloadMapper.fromDto(raw);
   }
 
   /// 列出任务（可选按状态索引过滤）。面板展示列表时用。
-  Future<List<DownloadTask>> listTasks({List<DownloadStatusEnum>? statuses}) async {
+  Future<List<DownloadTask>> listTasks(
+      {List<DownloadStatusEnum>? statuses}) async {
+    if (CoreFlags.download) {
+      final tasks = (await DownloadFacade.instance.list())
+          .map(toDownloadTask)
+          .toList(growable: false);
+      if (statuses == null) return tasks;
+      return tasks
+          .where((t) => statuses.contains(t.status))
+          .toList(growable: false);
+    }
     final raw = await _invoke('download.list', {
       if (statuses != null) 'statuses': [for (final s in statuses) s.index],
     });
@@ -264,7 +390,11 @@ class RustDownloadService implements IDownloadService {
 
   /// 删除任务（含落盘文件），模块侧 `download.remove`
   @override
-  Future<void> remove(int id) => _op('download.remove', id);
+  Future<void> remove(int id) => _coreOp(
+        isEnabled: CoreFlags.download,
+        core: () => DownloadFacade.instance.remove(id.toString()),
+        legacy: () => _op('download.remove', id),
+      );
 
   /// 全局任务流：**不过滤 id**，供通知栏 / 自动安装统一消费。
   ///
@@ -272,6 +402,9 @@ class RustDownloadService implements IDownloadService {
   /// 否则消费方拿到的任务会缺 url / 路径 / 应用名。
   @override
   Stream<DownloadTask> watchAll() {
+    if (CoreFlags.download) {
+      return DownloadFacade.instance.watchAll().map(toDownloadTask);
+    }
     final bases = <int, DownloadTask>{};
     return RustModuleManager.instance.moduleEvents
         .where((e) => e.eventType == _evProgress || e.eventType == _evDone)
@@ -297,6 +430,15 @@ class RustDownloadService implements IDownloadService {
 
   @override
   Stream<DownloadTask> watch(int id) async* {
+    if (CoreFlags.download) {
+      final dto = await DownloadFacade.instance.get(id.toString());
+      if (dto != null) yield toDownloadTask(dto);
+      await for (final next in DownloadFacade.instance.watchAll()) {
+        final task = toDownloadTask(next);
+        if (task.id == id) yield task;
+      }
+      return;
+    }
     // 先取一次全量任务作基底：进度事件不含 url / 保存路径 / 应用名，
     // 直接拿它构造会把面板里这些字段清空（信息弹框看不到地址就是这么来的）。
     var base = await getTask(id);
