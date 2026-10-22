@@ -1775,6 +1775,18 @@ impl ChannelApi {
         ChannelKey::new(key).map_err(core_err)
     }
 
+    /// Builds the code-to-driver resolver used by the update service.
+    ///
+    /// The closure keeps the whole `ChannelApiInner` alive, so a facade that
+    /// only needs the resolver may drop its own [`ChannelApi`] handle.
+    pub(crate) fn resolver(&self) -> gstore_core::update::service::ChannelResolver {
+        let inner = Arc::clone(&self.inner);
+        Arc::new(move |code: &str| {
+            let key = ChannelKey::new(code).ok()?;
+            inner.registry.driver(&key).ok()
+        })
+    }
+
     fn require_channel(&self, key: &str) -> Result<ChannelKey, String> {
         let key = self.channel_key(key)?;
         if self
@@ -2147,6 +2159,486 @@ impl ChannelApi {
                     proxy: config.proxy,
                 })
             })
+    }
+}
+
+
+// ===========================================================================
+// CatalogApi / AddedAppsApi / UpdateApi (Wave 2 Todo 10)
+// ===========================================================================
+
+use gstore_core::added::apps::{AddedApp, AddedAppsService};
+use gstore_core::catalog::refresh::{catalog_changed_event, refresh_catalog};
+use gstore_core::catalog::service::CatalogService;
+use gstore_core::ports::PlatformHost;
+use gstore_core::update::service::{UpdateCheckReport, UpdateService};
+
+fn open_core_db(data_dir: &str) -> Result<DbHandle, String> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|error| format!("io: create dir {data_dir}: {error}"))?;
+    DbHandle::open(Path::new(data_dir)).map_err(|error| core_err(CoreError::Io(error.0)))
+}
+
+fn prepare_dirs(data_dir: &str, files_dir: &str, cache_dir: &str) -> Result<(), String> {
+    for dir in [data_dir, files_dir, cache_dir] {
+        std::fs::create_dir_all(dir).map_err(|error| format!("io: create dir {dir}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// One page of the local catalog plus the unpaged total.
+#[derive(Debug, Clone)]
+pub struct CatalogPage {
+    pub apps: Vec<ChannelAppInfo>,
+    pub total: i64,
+}
+
+/// Result of a remote catalog refresh.
+#[derive(Debug, Clone)]
+pub struct CatalogRefreshResult {
+    pub apps: i64,
+    pub categories: i64,
+    pub configs: i64,
+    pub fts_rows: i64,
+    pub changed: bool,
+    pub backup: Option<String>,
+    /// Serialized `catalog.changed` event when the catalog changed, else `"null"`.
+    pub events_json: String,
+}
+
+/// Read-only facade over the core local catalog.
+#[frb(opaque)]
+pub struct CatalogApi {
+    db: DbHandle,
+    service: CatalogService,
+    http: Arc<dyn HttpPort>,
+}
+
+impl CatalogApi {
+    /// Opens the core database and binds the local catalog service.
+    ///
+    /// Safe to call more than once against the same directories.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<CatalogApi, String> {
+        prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
+        let db = open_core_db(&data_dir)?;
+        let service = CatalogService::new(db.clone()).map_err(core_err)?;
+        let http: Arc<dyn HttpPort> = Arc::new(crate::http_port::ReqwestHttpPort::new());
+        Ok(Self { db, service, http })
+    }
+
+    /// Lists every imported app in `rowid` order.
+    pub fn list(&self) -> Result<Vec<ChannelAppInfo>, String> {
+        self.service
+            .list()
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(ChannelAppInfo::from_summary).collect())
+    }
+
+    /// Returns one page plus the unpaged total.
+    pub fn list_page(&self, offset: u32, limit: u32) -> Result<CatalogPage, String> {
+        self.service
+            .list_page(offset, limit)
+            .map_err(core_err)
+            .map(|(apps, total)| CatalogPage {
+                apps: apps.into_iter().map(ChannelAppInfo::from_summary).collect(),
+                total: i64::try_from(total).unwrap_or(i64::MAX),
+            })
+    }
+
+    /// Searches by keyword (empty keyword yields an empty list).
+    pub fn search(&self, keyword: String) -> Result<Vec<ChannelAppInfo>, String> {
+        self.service
+            .search(&keyword)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(ChannelAppInfo::from_summary).collect())
+    }
+
+    /// Reads one app, or `None` when it is absent.
+    pub fn get_app(&self, app_id: String) -> Result<Option<ChannelAppInfo>, String> {
+        self.service
+            .get_app(&app_id)
+            .map_err(core_err)
+            .map(|app| app.map(ChannelAppInfo::from_summary))
+    }
+
+    /// Lists imported categories in `rowid` order.
+    pub fn categories(&self) -> Result<Vec<ChannelCategoryInfo>, String> {
+        self.service
+            .categories()
+            .map_err(core_err)
+            .map(|categories| categories.into_iter().map(ChannelCategoryInfo::from).collect())
+    }
+
+    /// Lists apps whose category contains `category_id`.
+    pub fn by_category(&self, category_id: String) -> Result<Vec<ChannelAppInfo>, String> {
+        self.service
+            .by_category(&category_id)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(ChannelAppInfo::from_summary).collect())
+    }
+
+    /// Reads one app detail payload, or `None` when it is absent.
+    pub fn get_app_detail(
+        &self,
+        app_id: String,
+    ) -> Result<Option<ChannelAppDetailInfo>, String> {
+        self.service
+            .get_app_detail(&app_id)
+            .map_err(core_err)
+            .map(|detail| detail.map(ChannelAppDetailInfo::from))
+    }
+
+    /// Downloads and atomically replaces the catalog.
+    ///
+    /// This is the production `catalog.changed` forwarding point: when the
+    /// replace changed rows, `events_json` carries the serialized
+    /// `CoreEvent::CatalogChanged`; otherwise it is the JSON literal `null`.
+    pub fn refresh(&self, url: String) -> Result<CatalogRefreshResult, String> {
+        let report = refresh_catalog(&self.db, self.http.as_ref(), &url).map_err(core_err)?;
+        let events_json = if report.changed {
+            let event = catalog_changed_event().map_err(core_err)?;
+            serde_json::to_string(&event)
+                .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?
+        } else {
+            "null".to_string()
+        };
+        Ok(CatalogRefreshResult {
+            apps: i64::try_from(report.apps).unwrap_or(i64::MAX),
+            categories: i64::try_from(report.categories).unwrap_or(i64::MAX),
+            configs: i64::try_from(report.configs).unwrap_or(i64::MAX),
+            fts_rows: i64::try_from(report.fts_rows).unwrap_or(i64::MAX),
+            changed: report.changed,
+            backup: report.backup,
+            events_json,
+        })
+    }
+}
+
+/// One `added_apps` row crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct AddedAppEntry {
+    pub id: i64,
+    pub channel_id: String,
+    pub app_id: String,
+    pub add_time: i64,
+    pub sort_order: i64,
+    pub is_enabled: bool,
+}
+
+impl From<AddedApp> for AddedAppEntry {
+    fn from(app: AddedApp) -> Self {
+        Self {
+            id: app.id,
+            channel_id: app.channel_id,
+            app_id: app.app_id,
+            add_time: app.add_time,
+            sort_order: app.sort_order,
+            is_enabled: app.is_enabled,
+        }
+    }
+}
+
+/// One `"{channel}:{app_id}"` tag bucket.
+#[derive(Debug, Clone)]
+pub struct TagGroup {
+    pub key: String,
+    pub tags: Vec<String>,
+}
+
+/// Added-apps and user-tag facade over [`AddedAppsService`].
+#[frb(opaque)]
+pub struct AddedAppsApi {
+    service: AddedAppsService,
+}
+
+impl AddedAppsApi {
+    /// Opens the core database and binds the added-apps service.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<AddedAppsApi, String> {
+        prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
+        let db = open_core_db(&data_dir)?;
+        Ok(Self {
+            service: AddedAppsService::new(db),
+        })
+    }
+
+    /// Adds or refreshes one `(channel, app_id)` row.
+    pub fn add(
+        &self,
+        channel: String,
+        app_id: String,
+        sort_order: Option<i64>,
+    ) -> Result<AddedAppEntry, String> {
+        self.service
+            .add(&channel, &app_id, sort_order)
+            .map_err(core_err)
+            .map(AddedAppEntry::from)
+    }
+
+    /// Removes one row and all of its tags.
+    pub fn remove(&self, channel: String, app_id: String) -> Result<bool, String> {
+        self.service.remove(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Renames an app id inside one channel.
+    pub fn rename(
+        &self,
+        channel: String,
+        old_app_id: String,
+        new_app_id: String,
+    ) -> Result<bool, String> {
+        self.service
+            .rename(&channel, &old_app_id, &new_app_id)
+            .map_err(core_err)
+    }
+
+    /// Sets one row's sort weight.
+    pub fn set_order(
+        &self,
+        channel: String,
+        app_id: String,
+        sort_order: i64,
+    ) -> Result<(), String> {
+        self.service
+            .set_order(&channel, &app_id, sort_order)
+            .map_err(core_err)
+    }
+
+    /// Toggles one row and returns the new added state.
+    pub fn toggle(&self, channel: String, app_id: String) -> Result<bool, String> {
+        self.service.toggle(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Deletes every added row in one channel.
+    pub fn clear_channel(&self, channel: String) -> Result<u32, String> {
+        self.service
+            .clear_channel(&channel)
+            .map_err(core_err)
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Deletes every added row across all channels.
+    pub fn clear_all(&self) -> Result<u32, String> {
+        self.service
+            .clear_all()
+            .map_err(core_err)
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Lists every added app, newest first.
+    pub fn list(&self) -> Result<Vec<AddedAppEntry>, String> {
+        self.service
+            .list()
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(AddedAppEntry::from).collect())
+    }
+
+    /// Lists one channel's added apps, newest first.
+    pub fn list_channel(&self, channel: String) -> Result<Vec<AddedAppEntry>, String> {
+        self.service
+            .list_channel(&channel)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(AddedAppEntry::from).collect())
+    }
+
+    /// Returns one row, if present.
+    pub fn get(&self, channel: String, app_id: String) -> Result<Option<AddedAppEntry>, String> {
+        self.service
+            .get(&channel, &app_id)
+            .map_err(core_err)
+            .map(|app| app.map(AddedAppEntry::from))
+    }
+
+    /// Whether `(channel, app_id)` is in `added_apps`.
+    pub fn is_added(&self, channel: String, app_id: String) -> Result<bool, String> {
+        self.service.is_added(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Total number of added apps.
+    pub fn total_count(&self) -> Result<i64, String> {
+        self.service.total_count().map_err(core_err)
+    }
+
+    /// Number of added apps in one channel.
+    pub fn count_channel(&self, channel: String) -> Result<i64, String> {
+        self.service.count_channel(&channel).map_err(core_err)
+    }
+
+    /// Replaces all tags for one app.
+    pub fn set_tags(
+        &self,
+        channel: String,
+        app_id: String,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        self.service
+            .set_tags(&channel, &app_id, &tags)
+            .map_err(core_err)
+    }
+
+    /// Adds one tag (idempotent, trimmed; empty is a no-op).
+    pub fn add_tag(&self, channel: String, app_id: String, tag: String) -> Result<(), String> {
+        self.service
+            .add_tag(&channel, &app_id, &tag)
+            .map_err(core_err)
+    }
+
+    /// Removes one tag; absent tags are a no-op.
+    pub fn remove_tag(&self, channel: String, app_id: String, tag: String) -> Result<(), String> {
+        self.service
+            .remove_tag(&channel, &app_id, &tag)
+            .map_err(core_err)
+    }
+
+    /// Returns one app's tags, earliest first.
+    pub fn tags(&self, channel: String, app_id: String) -> Result<Vec<String>, String> {
+        self.service.tags(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Returns all tag buckets keyed by `"{channel}:{app_id}"`.
+    pub fn tags_index(&self) -> Result<Vec<TagGroup>, String> {
+        self.service
+            .tags_index()
+            .map_err(core_err)
+            .map(|index| {
+                index
+                    .into_iter()
+                    .map(|(key, tags)| TagGroup { key, tags })
+                    .collect()
+            })
+    }
+}
+
+/// Serialized result of one update check.
+#[derive(Debug, Clone)]
+pub struct UpdateReport {
+    pub checked_at: i64,
+    pub total: i64,
+    pub used_cache: bool,
+    /// JSON array of `AppUpdateInfo` (camelCase, no `detail`).
+    pub updates_json: String,
+    /// JSON array of `UpdateSkip`.
+    pub skipped_json: String,
+    /// JSON array of `CoreEvent` (`update.found`, ...).
+    pub events_json: String,
+}
+
+fn encode_update_report(report: UpdateCheckReport) -> Result<UpdateReport, String> {
+    let updates_json = serde_json::to_string(&report.updates)
+        .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?;
+    let skipped_json = serde_json::to_string(&report.skipped)
+        .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?;
+    let events_json = serde_json::to_string(&report.events)
+        .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?;
+    Ok(UpdateReport {
+        checked_at: report.checked_at,
+        total: i64::try_from(report.total).unwrap_or(i64::MAX),
+        used_cache: report.used_cache,
+        updates_json,
+        skipped_json,
+        events_json,
+    })
+}
+
+/// Update check/cache facade over [`UpdateService`].
+#[frb(opaque)]
+pub struct UpdateApi {
+    service: UpdateService,
+}
+
+impl UpdateApi {
+    /// Opens the core database, binds channel drivers, and wires the Android
+    /// platform host.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<UpdateApi, String> {
+        prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
+        let db = open_core_db(&data_dir)?;
+        let channel_api = ChannelApi::init(data_dir, files_dir, cache_dir)?;
+        let resolver = channel_api.resolver();
+        let platform: Arc<dyn PlatformHost> = Arc::new(
+            crate::platform_host::AndroidPlatformHost::new(),
+        );
+        Ok(Self {
+            service: UpdateService::new(db, resolver, platform),
+        })
+    }
+
+    /// Wraps an already-built service (integration tests only).
+    #[frb(ignore)]
+    #[doc(hidden)]
+    pub fn from_service_for_test(service: UpdateService) -> UpdateApi {
+        Self { service }
+    }
+
+    /// Checks every added app, honoring the one-hour cache unless `force`.
+    pub fn check(&self, force: bool) -> Result<UpdateReport, String> {
+        let report = self.service.check_all(force).map_err(core_err)?;
+        encode_update_report(report)
+    }
+
+    /// Forces a full update check.
+    pub fn run(&self) -> Result<UpdateReport, String> {
+        let report = self.service.run().map_err(core_err)?;
+        encode_update_report(report)
+    }
+
+    /// Checks one app, preferring the cache; returns serialized
+    /// `AppUpdateInfo` or `None`.
+    pub fn check_app(
+        &self,
+        app_id: String,
+        channel_code: Option<String>,
+    ) -> Result<Option<String>, String> {
+        let update = self
+            .service
+            .check_app(&app_id, channel_code.as_deref())
+            .map_err(core_err)?;
+        update
+            .map(|info| {
+                serde_json::to_string(&info)
+                    .map_err(|error| core_err(CoreError::Serialization(error.to_string())))
+            })
+            .transpose()
+    }
+
+    /// Returns the cached updatable apps as a JSON array.
+    pub fn list(&self) -> Result<String, String> {
+        let updates = self.service.list().map_err(core_err)?;
+        serde_json::to_string(&updates)
+            .map_err(|error| core_err(CoreError::Serialization(error.to_string())))
+    }
+
+    /// Drops `app_id` from the cache once the installed version caught up.
+    pub fn mark_updated(&self, app_id: String) -> Result<bool, String> {
+        self.service.mark_updated(&app_id).map_err(core_err)
+    }
+
+    /// Whether the cache contains `app_id`.
+    pub fn has_update(&self, app_id: String) -> Result<bool, String> {
+        self.service.has_update(&app_id).map_err(core_err)
+    }
+
+    /// Number of cached updatable apps.
+    pub fn count(&self) -> Result<i64, String> {
+        self.service
+            .count()
+            .map_err(core_err)
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// Whether the cached results are still inside the one-hour window.
+    pub fn cache_valid(&self) -> Result<bool, String> {
+        self.service.is_cache_valid().map_err(core_err)
     }
 }
 

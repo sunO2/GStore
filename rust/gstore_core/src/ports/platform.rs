@@ -356,7 +356,7 @@ pub struct DeviceInfo {
 ///
 /// The hooks are `#[doc(hidden)]` implementation details; callers use the
 /// gated methods only.
-pub trait PlatformHost {
+pub trait PlatformHost: Send + Sync {
     /// Capabilities advertised by this host.
     fn capabilities(&self) -> CapabilitySet;
 

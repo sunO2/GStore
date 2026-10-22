@@ -10,9 +10,10 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `driver_for`, `driver`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `pack_err`, `read_plain_env`, `record`, `require_channel`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_service_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -57,6 +58,126 @@ Future<String?> foregroundReadJson() =>
 /// 未初始化（Kotlin 尚未交付 applicationContext）/ 调用失败 → `null`。
 Future<String?> frameMetricsReadJson() =>
     RustLib.instance.api.crateBridgeFrameMetricsReadJson();
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>
+abstract class AddedAppsApi implements RustOpaqueInterface {
+  /// Adds or refreshes one `(channel, app_id)` row.
+  Future<AddedAppEntry> add(
+      {required String channel,
+      required String appId,
+      PlatformInt64? sortOrder});
+
+  /// Adds one tag (idempotent, trimmed; empty is a no-op).
+  Future<void> addTag(
+      {required String channel, required String appId, required String tag});
+
+  /// Deletes every added row across all channels.
+  Future<int> clearAll();
+
+  /// Deletes every added row in one channel.
+  Future<int> clearChannel({required String channel});
+
+  /// Number of added apps in one channel.
+  Future<PlatformInt64> countChannel({required String channel});
+
+  /// Returns one row, if present.
+  Future<AddedAppEntry?> get_({required String channel, required String appId});
+
+  /// Opens the core database and binds the added-apps service.
+  static Future<AddedAppsApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeAddedAppsApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Whether `(channel, app_id)` is in `added_apps`.
+  Future<bool> isAdded({required String channel, required String appId});
+
+  /// Lists every added app, newest first.
+  Future<List<AddedAppEntry>> list();
+
+  /// Lists one channel's added apps, newest first.
+  Future<List<AddedAppEntry>> listChannel({required String channel});
+
+  /// Removes one row and all of its tags.
+  Future<bool> remove({required String channel, required String appId});
+
+  /// Removes one tag; absent tags are a no-op.
+  Future<void> removeTag(
+      {required String channel, required String appId, required String tag});
+
+  /// Renames an app id inside one channel.
+  Future<bool> rename(
+      {required String channel,
+      required String oldAppId,
+      required String newAppId});
+
+  /// Sets one row's sort weight.
+  Future<void> setOrder(
+      {required String channel,
+      required String appId,
+      required PlatformInt64 sortOrder});
+
+  /// Replaces all tags for one app.
+  Future<void> setTags(
+      {required String channel,
+      required String appId,
+      required List<String> tags});
+
+  /// Returns one app's tags, earliest first.
+  Future<List<String>> tags({required String channel, required String appId});
+
+  /// Returns all tag buckets keyed by `"{channel}:{app_id}"`.
+  Future<List<TagGroup>> tagsIndex();
+
+  /// Toggles one row and returns the new added state.
+  Future<bool> toggle({required String channel, required String appId});
+
+  /// Total number of added apps.
+  Future<PlatformInt64> totalCount();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CatalogApi>>
+abstract class CatalogApi implements RustOpaqueInterface {
+  /// Lists apps whose category contains `category_id`.
+  Future<List<ChannelAppInfo>> byCategory({required String categoryId});
+
+  /// Lists imported categories in `rowid` order.
+  Future<List<ChannelCategoryInfo>> categories();
+
+  /// Reads one app, or `None` when it is absent.
+  Future<ChannelAppInfo?> getApp({required String appId});
+
+  /// Reads one app detail payload, or `None` when it is absent.
+  Future<ChannelAppDetailInfo?> getAppDetail({required String appId});
+
+  /// Opens the core database and binds the local catalog service.
+  ///
+  /// Safe to call more than once against the same directories.
+  static Future<CatalogApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeCatalogApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Lists every imported app in `rowid` order.
+  Future<List<ChannelAppInfo>> list();
+
+  /// Returns one page plus the unpaged total.
+  Future<CatalogPage> listPage({required int offset, required int limit});
+
+  /// Downloads and atomically replaces the catalog.
+  ///
+  /// This is the production `catalog.changed` forwarding point: when the
+  /// replace changed rows, `events_json` carries the serialized
+  /// `CoreEvent::CatalogChanged`; otherwise it is the JSON literal `null`.
+  Future<CatalogRefreshResult> refresh({required String url});
+
+  /// Searches by keyword (empty keyword yields an empty list).
+  Future<List<ChannelAppInfo>> search({required String keyword});
+}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ChannelApi>>
 abstract class ChannelApi implements RustOpaqueInterface {
@@ -317,6 +438,151 @@ abstract class TaskBridge implements RustOpaqueInterface {
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<UpdateApi>>
+abstract class UpdateApi implements RustOpaqueInterface {
+  /// Whether the cached results are still inside the one-hour window.
+  Future<bool> cacheValid();
+
+  /// Checks every added app, honoring the one-hour cache unless `force`.
+  Future<UpdateReport> check({required bool force});
+
+  /// Checks one app, preferring the cache; returns serialized
+  /// `AppUpdateInfo` or `None`.
+  Future<String?> checkApp({required String appId, String? channelCode});
+
+  /// Number of cached updatable apps.
+  Future<PlatformInt64> count();
+
+  /// Whether the cache contains `app_id`.
+  Future<bool> hasUpdate({required String appId});
+
+  /// Opens the core database, binds channel drivers, and wires the Android
+  /// platform host.
+  static Future<UpdateApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeUpdateApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Returns the cached updatable apps as a JSON array.
+  Future<String> list();
+
+  /// Drops `app_id` from the cache once the installed version caught up.
+  Future<bool> markUpdated({required String appId});
+
+  /// Forces a full update check.
+  Future<UpdateReport> run();
+}
+
+/// One `added_apps` row crossing the FRB boundary.
+class AddedAppEntry {
+  final PlatformInt64 id;
+  final String channelId;
+  final String appId;
+  final PlatformInt64 addTime;
+  final PlatformInt64 sortOrder;
+  final bool isEnabled;
+
+  const AddedAppEntry({
+    required this.id,
+    required this.channelId,
+    required this.appId,
+    required this.addTime,
+    required this.sortOrder,
+    required this.isEnabled,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      channelId.hashCode ^
+      appId.hashCode ^
+      addTime.hashCode ^
+      sortOrder.hashCode ^
+      isEnabled.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AddedAppEntry &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          channelId == other.channelId &&
+          appId == other.appId &&
+          addTime == other.addTime &&
+          sortOrder == other.sortOrder &&
+          isEnabled == other.isEnabled;
+}
+
+/// One page of the local catalog plus the unpaged total.
+class CatalogPage {
+  final List<ChannelAppInfo> apps;
+  final PlatformInt64 total;
+
+  const CatalogPage({
+    required this.apps,
+    required this.total,
+  });
+
+  @override
+  int get hashCode => apps.hashCode ^ total.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogPage &&
+          runtimeType == other.runtimeType &&
+          apps == other.apps &&
+          total == other.total;
+}
+
+/// Result of a remote catalog refresh.
+class CatalogRefreshResult {
+  final PlatformInt64 apps;
+  final PlatformInt64 categories;
+  final PlatformInt64 configs;
+  final PlatformInt64 ftsRows;
+  final bool changed;
+  final String? backup;
+
+  /// Serialized `catalog.changed` event when the catalog changed, else `"null"`.
+  final String eventsJson;
+
+  const CatalogRefreshResult({
+    required this.apps,
+    required this.categories,
+    required this.configs,
+    required this.ftsRows,
+    required this.changed,
+    this.backup,
+    required this.eventsJson,
+  });
+
+  @override
+  int get hashCode =>
+      apps.hashCode ^
+      categories.hashCode ^
+      configs.hashCode ^
+      ftsRows.hashCode ^
+      changed.hashCode ^
+      backup.hashCode ^
+      eventsJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogRefreshResult &&
+          runtimeType == other.runtimeType &&
+          apps == other.apps &&
+          categories == other.categories &&
+          configs == other.configs &&
+          ftsRows == other.ftsRows &&
+          changed == other.changed &&
+          backup == other.backup &&
+          eventsJson == other.eventsJson;
 }
 
 /// Full app detail crossing the FRB boundary.
@@ -838,4 +1104,72 @@ class FlagsPatch {
           install == other.install &&
           jsChannel == other.jsChannel &&
           coreWrites == other.coreWrites;
+}
+
+/// One `"{channel}:{app_id}"` tag bucket.
+class TagGroup {
+  final String key;
+  final List<String> tags;
+
+  const TagGroup({
+    required this.key,
+    required this.tags,
+  });
+
+  @override
+  int get hashCode => key.hashCode ^ tags.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TagGroup &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          tags == other.tags;
+}
+
+/// Serialized result of one update check.
+class UpdateReport {
+  final PlatformInt64 checkedAt;
+  final PlatformInt64 total;
+  final bool usedCache;
+
+  /// JSON array of `AppUpdateInfo` (camelCase, no `detail`).
+  final String updatesJson;
+
+  /// JSON array of `UpdateSkip`.
+  final String skippedJson;
+
+  /// JSON array of `CoreEvent` (`update.found`, ...).
+  final String eventsJson;
+
+  const UpdateReport({
+    required this.checkedAt,
+    required this.total,
+    required this.usedCache,
+    required this.updatesJson,
+    required this.skippedJson,
+    required this.eventsJson,
+  });
+
+  @override
+  int get hashCode =>
+      checkedAt.hashCode ^
+      total.hashCode ^
+      usedCache.hashCode ^
+      updatesJson.hashCode ^
+      skippedJson.hashCode ^
+      eventsJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UpdateReport &&
+          runtimeType == other.runtimeType &&
+          checkedAt == other.checkedAt &&
+          total == other.total &&
+          usedCache == other.usedCache &&
+          updatesJson == other.updatesJson &&
+          skippedJson == other.skippedJson &&
+          eventsJson == other.eventsJson;
 }
