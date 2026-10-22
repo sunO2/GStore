@@ -5,15 +5,22 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.os.Build
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 
 /**
- * Shared `PackageManager` extraction used by both the Dart APK-info channel and
- * the Rust `PlatformHostBridge`. Keeps the signature/component rules in one
- * place so the two surfaces cannot drift.
+ * Shared `PackageManager` extraction used by the Dart `gstore/apk_info` and
+ * `gstore/platform` channels. Keeps the signature/component rules in one place
+ * so the two surfaces cannot drift.
+ *
+ * `installedAppJson` is the wire shape of the core `InstalledApp` DTO: the key
+ * set is pinned by the plan's trap table and must stay exactly
+ * `package_name, app_name, version_name, version_code, icon, is_system,
+ * signature_sha256, source_dir, installer, target_sdk, min_sdk, abis`.
  */
 object InventoryInspector {
 
@@ -23,7 +30,13 @@ object InventoryInspector {
         val versionName: String,
         val versionCode: Long,
         val icon: String?,
-        val system: Boolean,
+        val isSystem: Boolean,
+        val signatureSha256: String?,
+        val sourceDir: String?,
+        val installer: String?,
+        val targetSdk: Int,
+        val minSdk: Int,
+        val abis: List<String>,
     )
 
     data class SignatureEntry(
@@ -59,15 +72,20 @@ object InventoryInspector {
     )
 
     fun installedApps(pm: PackageManager): List<InstalledAppEntry> {
+        // One `getInstalledPackages` call. Signature flags ride along so
+        // `signature_sha256` costs no extra per-app binder round trip.
         @Suppress("DEPRECATION")
-        val packages = pm.getInstalledPackages(0)
-        return packages.mapNotNull { info -> entry(pm, info) }
+        val packages = pm.getInstalledPackages(signatureFlags())
+        return packages.mapNotNull { info -> entry(pm, info, installer = null) }
     }
 
     @Throws(PackageManager.NameNotFoundException::class)
     fun installedApp(pm: PackageManager, packageName: String): InstalledAppEntry {
-        return entry(pm, pm.getPackageInfo(packageName, 0))
-            ?: throw PackageManager.NameNotFoundException(packageName)
+        return entry(
+            pm,
+            pm.getPackageInfo(packageName, signatureFlags()),
+            installer = installerPackage(pm, packageName),
+        ) ?: throw PackageManager.NameNotFoundException(packageName)
     }
 
     @Throws(PackageManager.NameNotFoundException::class)
@@ -129,12 +147,8 @@ object InventoryInspector {
                     as X509Certificate
                 subject = cert.subjectDN.name
                 algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" } ?: "SHA256withRSA"
-                sha256 = MessageDigest.getInstance("SHA-256")
-                    .digest(sig.toByteArray())
-                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                sha1 = MessageDigest.getInstance("SHA-1")
-                    .digest(sig.toByteArray())
-                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+                sha256 = sha256Of(sig)
+                sha1 = sha1Of(sig)
             } catch (e: Exception) {
                 // A single unparseable certificate degrades to empty fields.
             }
@@ -200,18 +214,36 @@ object InventoryInspector {
         return ComponentsReport(components, permissionStates)
     }
 
-    fun installedAppJson(entry: InstalledAppEntry): org.json.JSONObject {
-        return org.json.JSONObject().apply {
+    fun installedAppJson(entry: InstalledAppEntry): JSONObject {
+        return JSONObject().apply {
             put("package_name", entry.packageName)
             put("app_name", entry.appName)
             put("version_name", entry.versionName)
             put("version_code", entry.versionCode)
-            put("icon", entry.icon ?: org.json.JSONObject.NULL)
-            put("system", entry.system)
+            put("icon", entry.icon ?: JSONObject.NULL)
+            put("is_system", entry.isSystem)
+            put("signature_sha256", entry.signatureSha256 ?: JSONObject.NULL)
+            put("source_dir", entry.sourceDir ?: JSONObject.NULL)
+            put("installer", entry.installer ?: JSONObject.NULL)
+            put("target_sdk", entry.targetSdk)
+            put("min_sdk", entry.minSdk)
+            put("abis", JSONArray(entry.abis))
         }
     }
 
-    private fun entry(pm: PackageManager, info: PackageInfo): InstalledAppEntry? {
+    private fun signatureFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+
+    private fun entry(
+        pm: PackageManager,
+        info: PackageInfo,
+        installer: String?,
+    ): InstalledAppEntry? {
         val appInfo = info.applicationInfo ?: return null
         val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             info.longVersionCode
@@ -225,9 +257,69 @@ object InventoryInspector {
             versionName = info.versionName ?: "",
             versionCode = versionCode,
             icon = appInfo.icon.takeIf { it != 0 }?.let { "resource://$it" },
-            system = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+            isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+            signatureSha256 = firstSignerSha256(info),
+            sourceDir = appInfo.sourceDir,
+            installer = installer,
+            targetSdk = appInfo.targetSdkVersion,
+            minSdk = appInfo.minSdkVersion,
+            abis = deviceAbis(),
         )
     }
+
+    /** First (deduped) signer SHA-256; null when the package exposes no certificate. */
+    private fun firstSignerSha256(info: PackageInfo): String? {
+        val signers: List<Signature> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo ?: return null
+            if (signingInfo.hasMultipleSigners()) {
+                signingInfo.apkContentsSigners?.toList().orEmpty()
+            } else {
+                // Current signer is the last entry of the rotation history.
+                listOfNotNull(signingInfo.signingCertificateHistory?.lastOrNull())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures?.toList().orEmpty()
+        }
+        val seen = linkedSetOf<String>()
+        for (signer in signers) {
+            val digest = sha256Of(signer)
+            if (digest.isNotEmpty() && seen.add(digest)) return digest
+        }
+        return null
+    }
+
+    /**
+     * The public SDK exposes no per-app ABI list — `ApplicationInfo.primaryCpuAbi`
+     * and the per-split ABI data are hidden APIs — so the device ABI list is the
+     * documented fallback, matching `PlatformFacts.abis`.
+     */
+    private fun deviceAbis(): List<String> = Build.SUPPORTED_ABIS.toList()
+
+    /**
+     * Install source is absent from `getInstalledPackages`, and a per-app lookup
+     * would turn the bulk scan into an N+1 query, so list entries report unknown;
+     * the single-app path resolves the real installer.
+     */
+    private fun installerPackage(pm: PackageManager, packageName: String): String? =
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                pm.getInstallSourceInfo(packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getInstallerPackageName(packageName)
+            }
+        }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    private fun sha256Of(signature: Signature): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(signature.toByteArray())
+            .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+
+    private fun sha1Of(signature: Signature): String =
+        MessageDigest.getInstance("SHA-1")
+            .digest(signature.toByteArray())
+            .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
 
     private fun component(
         name: String?,

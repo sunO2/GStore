@@ -19,16 +19,22 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import io.flutter.plugin.common.BinaryMessenger
+import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 
 /**
- * Kotlin side of the Rust notification/FGS host.
+ * Kotlin side of the Dart notification / foreground-service channel.
  *
- * The Rust sink calls these statics with a stable JSON payload. Notifications
- * are never posted while the user has denied `POST_NOTIFICATIONS`; in that case
- * the caller receives `CORE_E_NOTIFY_PERMISSION_DENIED`.
+ * `gstore/notifications` methods: `show` and `update` (aliases of [notify], the
+ * same `id` replaces the notification), `cancel`, `startForeground` (arguments
+ * `{id: Int, json: String}`) and `stopForeground`. Every call returns a typed
+ * JSON result; notifications are never posted while the user has denied
+ * `POST_NOTIFICATIONS` (the caller receives `CORE_E_NOTIFY_PERMISSION_DENIED`).
  */
 object NotificationBridge {
+
+    const val CHANNEL = "gstore/notifications"
 
     private const val TAG = "NotificationBridge"
 
@@ -101,6 +107,41 @@ object NotificationBridge {
         runCatching { ensureChannels(application) }
             .onSuccess { initialized = true }
             .onFailure { Log.w(TAG, "通知渠道初始化失败（忽略）: ${it.message}") }
+    }
+
+    @JvmStatic
+    fun register(messenger: BinaryMessenger) {
+        MethodChannel(messenger, CHANNEL).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "show", "update" -> result.success(
+                        notify(
+                            (call.arguments as? String)
+                                ?: throw IllegalArgumentException("${call.method} requires a JSON payload")
+                        )
+                    )
+                    "cancel" -> result.success(
+                        cancel(
+                            (call.arguments as? Int)
+                                ?: throw IllegalArgumentException("cancel requires an int notification id")
+                        )
+                    )
+                    "startForeground" -> result.success(
+                        startForeground(
+                            (call.argument<Int>("id"))
+                                ?: throw IllegalArgumentException("startForeground requires id"),
+                            (call.argument<String>("json"))
+                                ?: throw IllegalArgumentException("startForeground requires json"),
+                        )
+                    )
+                    "stopForeground" -> result.success(stopForeground())
+                    else -> result.notImplemented()
+                }
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "${call.method} 失败: ${e.message}")
+                result.success(errorJson(CODE_NOTIFY_FAILED, e.message ?: "notify failed"))
+            }
+        }
     }
 
     /** Whether the user currently allows notifications. */
@@ -238,6 +279,29 @@ object NotificationBridge {
         } catch (e: Exception) {
             Log.w(TAG, "notify 失败: ${e.message}")
             errorJson(CODE_NOTIFY_FAILED, e.message ?: "notify failed")
+        }
+    }
+
+    /** Wire name `show`: posts (or replaces, by `id`) one notification. */
+    @JvmStatic
+    fun show(json: String): String = notify(json)
+
+    /** Wire name `update`: same-id replace, identical semantics to [notify]. */
+    @JvmStatic
+    fun update(json: String): String = notify(json)
+
+    /** Cancels one posted notification. Never throws. */
+    @JvmStatic
+    fun cancel(notificationId: Int): String {
+        val context = appContext ?: return errorJson(CODE_NOT_INITIALIZED, "NotificationBridge not initialized")
+        return try {
+            NotificationManagerCompat.from(context).cancel(notificationId)
+            okJson()
+        } catch (e: SecurityException) {
+            errorJson(CODE_PERMISSION_DENIED, e.message ?: "notifications denied")
+        } catch (e: Exception) {
+            Log.w(TAG, "cancel 失败: ${e.message}")
+            errorJson(CODE_NOTIFY_FAILED, e.message ?: "cancel failed")
         }
     }
 

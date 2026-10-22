@@ -1,9 +1,6 @@
 package com.suno2.gstore
 
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -20,6 +17,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -40,6 +38,9 @@ class MainActivity : FlutterActivity() {
         /// 性能悬浮窗触发通道：负责 SYSTEM_ALERT_WINDOW 授权引导与
         /// PerfOverlayService 的启停（悬浮窗逻辑在 Service 内）。
         private const val PERF_OVERLAY_CHANNEL = "gstore/perf_overlay"
+
+        /// 安装终端事件通道（EventChannel）：InstallerBridge 的唯一结果出口。
+        private const val INSTALL_EVENTS_CHANNEL = "gstore/install_events"
 
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
@@ -79,9 +80,6 @@ class MainActivity : FlutterActivity() {
     /// 非 null 时拒绝并发的 prepare，避免覆盖挂起 Result 造成 Dart 侧永久挂起。
     private var pendingPrepareResult: MethodChannel.Result? = null
 
-    /// 包增删/替换广播：安装状态变化时让 Rust 包清单缓存失效。
-    private var packageChangeReceiver: BroadcastReceiver? = null
-
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -95,20 +93,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 应用启动即初始化 Shizuku 特权执行薄壳：加载 libgstore_host + 回调 Rust
-        // 侧 nativeInit（缓存 JavaVM 与本类 GlobalRef），供 Rust 经 JNI 执行 shell。
-        // best-effort：失败静默绝不崩溃，不依赖 VPN/Flutter 引擎启动时序。
-        ShizukuExecBridge.ensureInit(applicationContext)
-        // 包清单 JNI 桥：缓存 applicationContext + 解析 PlatformHostBridge 类。
-        PlatformHostBridge.init(applicationContext)
-        // 安装执行层：缓存 applicationContext（JNI native 表由上面 PlatformHostBridge
-        // 的 init 链路注册）。best-effort，失败静默绝不崩溃。
+        // 平台能力通道（清单/设备/性能读数/Shizuku 执行）：只缓存 applicationContext，
+        // 方法处理器在 configureFlutterEngine 中注册。
+        PlatformChannel.init(applicationContext)
+        // 安装执行层：缓存 applicationContext（终端结果经 gstore/install_events 回传）。
         runCatching { InstallerBridge.init(applicationContext) }
             .onFailure { Log.w(TAG, "InstallerBridge.init 失败（忽略）: ${it.message}") }
-        // 通知 / 前台服务：创建渠道并跟踪前台 Activity，供 Rust 宿主发布通知。
+        // 通知 / 前台服务：创建渠道并跟踪前台 Activity，供 Dart 通道发布通知。
         runCatching { NotificationBridge.init(applicationContext) }
             .onFailure { Log.w(TAG, "NotificationBridge.init 失败（忽略）: ${it.message}") }
-        registerPackageChangeReceiver()
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
             Log.i(TAG, "onCreate: 收到管理空间入口请求")
@@ -125,49 +118,14 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供 Rust JNI
-        // `frame_metrics_read_json` 读取。幂等；失败静默。
+        // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供
+        // `gstore/platform.readFrameMetrics` 读取。幂等；失败静默。
         FrameMetricsCollector.attach(this)
     }
 
     override fun onPause() {
         FrameMetricsCollector.detach(this)
         super.onPause()
-    }
-
-    override fun onDestroy() {
-        packageChangeReceiver?.let { receiver ->
-            runCatching { unregisterReceiver(receiver) }
-        }
-        packageChangeReceiver = null
-        super.onDestroy()
-    }
-
-    private fun registerPackageChangeReceiver() {
-        if (packageChangeReceiver != null) return
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_PACKAGE_ADDED)
-            addAction(Intent.ACTION_PACKAGE_REMOVED)
-            addAction(Intent.ACTION_PACKAGE_REPLACED)
-            addAction(Intent.ACTION_PACKAGE_CHANGED)
-            addDataScheme("package")
-        }
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                PlatformHostBridge.invalidateCache()
-            }
-        }
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                registerReceiver(receiver, filter)
-            }
-            packageChangeReceiver = receiver
-        } catch (e: Exception) {
-            Log.w(TAG, "注册包变更广播失败（忽略）: ${e.message}")
-        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -186,10 +144,28 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// 绑定 `gstore/install_events`：listen 时接上 sink，cancel 时清空（热重启安全）。
+    private fun registerInstallEvents(flutterEngine: FlutterEngine) {
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, INSTALL_EVENTS_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    InstallerBridge.setEventSink(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    InstallerBridge.clearEventSink()
+                }
+            })
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // 免权限电池数据源兜底（SELinux 拒绝 sysfs current_now/voltage_now 时）。
         BatteryChannel.register(flutterEngine, applicationContext)
+        // 平台能力 / 通知 / 安装终端事件：Dart 侧的行为入口（替代已删除的 JNI 桥）。
+        PlatformChannel.register(flutterEngine.dartExecutor.binaryMessenger)
+        NotificationBridge.register(flutterEngine.dartExecutor.binaryMessenger)
+        registerInstallEvents(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "openUninstall" -> {

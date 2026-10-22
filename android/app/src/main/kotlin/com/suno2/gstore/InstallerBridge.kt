@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.FileProvider
+import io.flutter.plugin.common.EventChannel
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -21,15 +22,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /**
- * Android install execution layer for the Rust [`InstallerPort`].
+ * Android install execution layer driven by Dart over `gstore/install_events`.
  *
  * Branch order is fixed: Shizuku (shell uid 2000) → `PackageInstaller` session →
  * system `ACTION_VIEW` intent. Every branch returns the same stable JSON object,
- * and asynchronous outcomes are delivered to Rust through
- * [nativeOnInstallResult] (one terminal report per session id).
+ * and asynchronous terminal outcomes are pushed to the Dart `EventChannel` sink
+ * (one terminal report per session id).
  *
- * All blocking work stays on the caller's (Rust) thread; the PackageInstaller
- * and Intent paths only *start* work and return `pending`. User-action results
+ * All blocking work stays on the caller's thread; the `PackageInstaller` and
+ * Intent paths only *start* work and return `pending`. User-action results
  * arrive through [InstallResultReceiver], never through `onActivityResult`.
  */
 object InstallerBridge {
@@ -77,23 +78,23 @@ object InstallerBridge {
 
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
-    /**
-     * Rust implementation of the durable result callback.
-     *
-     * JNI name: `Java_com_suno2_gstore_InstallerBridge_nativeOnInstallResult`.
-     */
+    /** Dart `gstore/install_events` sink: wired on listen, cleared on cancel. */
+    @Volatile
+    private var eventSink: EventChannel.EventSink? = null
+
     @JvmStatic
-    external fun nativeOnInstallResult(
-        sessionId: String,
-        status: String,
-        packageName: String?,
-        versionName: String?,
-        error: String?
-    )
+    fun setEventSink(sink: EventChannel.EventSink?) {
+        eventSink = sink
+    }
+
+    @JvmStatic
+    fun clearEventSink() {
+        eventSink = null
+    }
 
     /**
-     * Captures the application context. Called from `MainActivity.onCreate`
-     * after the native library is loaded; best-effort, never throws.
+     * Captures the application context. Called from `MainActivity.onCreate`;
+     * best-effort, never throws.
      */
     @JvmStatic
     fun init(context: Context) {
@@ -457,7 +458,8 @@ object InstallerBridge {
     // ------------------------------------------------------------------
 
     /**
-     * Reports one terminal result to Rust exactly once per session id.
+     * Reports one terminal result to Dart exactly once per session id.
+     * Returns the stable JSON payload; a duplicate report returns the first one.
      * Failures are logged; this method never throws.
      */
     @JvmStatic
@@ -468,18 +470,42 @@ object InstallerBridge {
         packageName: String?,
         versionName: String?,
         error: String?
-    ) {
-        if (!reportedTerminals.add(sessionId)) {
-            return
+    ): String {
+        val existing = terminalPayloads[sessionId]
+        if (existing != null || !reportedTerminals.add(sessionId)) {
+            return existing ?: resultJson(method, status, packageName, versionName, error)
         }
-        terminalPayloads[sessionId] = resultJson(method, status, packageName, versionName, error)
-        runCatching {
-            nativeOnInstallResult(sessionId, status, packageName, versionName, error)
-        }.onFailure {
-            Log.w(TAG, "nativeOnInstallResult failed: ${it.message}")
-        }
+        val json = resultJson(method, status, packageName, versionName, error)
+        terminalPayloads[sessionId] = json
+        emitTerminal(terminalEvent(sessionId, method, status, packageName, versionName, error))
         clearPending(sessionId)
+        return json
     }
+
+    private fun emitTerminal(event: Map<String, Any?>) {
+        mainHandler.post {
+            val sink = eventSink ?: return@post
+            runCatching { sink.success(event) }
+                .onFailure { Log.w(TAG, "install event sink failed: ${it.message}") }
+        }
+    }
+
+    private fun terminalEvent(
+        sessionId: String,
+        method: String,
+        status: String,
+        packageName: String?,
+        versionName: String?,
+        error: String?
+    ): Map<String, Any?> = linkedMapOf(
+        "sessionId" to sessionId,
+        "packageName" to packageName,
+        "ok" to (status == "installed"),
+        "status" to status,
+        "method" to method,
+        "installedVersion" to versionName,
+        "error" to error,
+    )
 
     private fun rememberTerminal(
         sessionId: String,
@@ -488,13 +514,7 @@ object InstallerBridge {
         packageName: String?,
         versionName: String?,
         error: String?
-    ): String {
-        reportedTerminals.add(sessionId)
-        val json = resultJson(method, status, packageName, versionName, error)
-        terminalPayloads[sessionId] = json
-        clearPending(sessionId)
-        return json
-    }
+    ): String = reportTerminal(sessionId, method, status, packageName, versionName, error)
 
     /** Pending session id + metadata matching an installed package, if any. */
     fun pendingSessionForPackage(packageName: String): PendingSession? {
