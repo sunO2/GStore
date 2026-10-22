@@ -301,6 +301,161 @@ fn install_idempotent() {
 }
 
 #[test]
+fn install_installed_row_is_idempotent_without_apk() {
+    let dir = TempDir::new("installed_no_apk");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    let conn = db.shared_writer();
+    let apk = make_apk(dir.path(), "idempotent.apk");
+    seed_task(
+        &conn,
+        "task-installed",
+        "completed",
+        apk.to_str().unwrap(),
+        false,
+    );
+
+    let fake = Arc::new(FakeInstallerPort::new(true));
+    fake.set_immediate(installed_outcome("1.2.3"));
+    let service = InstallService::new(Arc::clone(&conn), fake.clone());
+
+    let first = service.install("task-installed").unwrap();
+    assert_eq!(first.record.status, INSTALL_STATUS_INSTALLED);
+    assert_eq!(fake.begin_count(), 1);
+
+    std::fs::remove_file(&apk).expect("apk deleted after install");
+
+    let second = service
+        .install("task-installed")
+        .expect("already-installed row must be an idempotent no-op");
+    assert_eq!(second.record.status, INSTALL_STATUS_INSTALLED);
+    assert!(
+        second.event.is_none(),
+        "no second event for a no-op install"
+    );
+    assert_eq!(second.record.installed_version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        fake.begin_count(),
+        1,
+        "deleting the APK must not trigger another begin_install"
+    );
+}
+
+#[test]
+fn install_port_failure_is_durable_result() {
+    let dir = TempDir::new("port_failure");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    let conn = db.shared_writer();
+    let apk = make_apk(dir.path(), "failure.apk");
+    seed_task(
+        &conn,
+        "task-failure",
+        "completed",
+        apk.to_str().unwrap(),
+        false,
+    );
+
+    let fake = Arc::new(FakeInstallerPort::new(true));
+    fake.set_begin_error("installer exploded");
+    let service = InstallService::new(Arc::clone(&conn), fake.clone());
+
+    let attempt = service
+        .install("task-failure")
+        .expect("a port-level install failure is a durable Ok result");
+    println!("port-failure attempt = {attempt:?}");
+    assert_eq!(attempt.record.status, "failed");
+    assert_eq!(attempt.record.error.as_deref(), Some("installer exploded"));
+    assert!(matches!(
+        attempt.event,
+        Some(CoreEvent::InstallResult { success: false, .. })
+    ));
+    assert_eq!(fake.begin_count(), 1);
+    assert_eq!(
+        service.get("task-failure").unwrap().status,
+        "failed",
+        "failure must be persisted"
+    );
+}
+
+#[test]
+fn install_reconcile_partial_failure_preserves_events() {
+    let dir = TempDir::new("partial_failure");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    let conn = db.shared_writer();
+    let apk_a = make_apk(dir.path(), "a.apk");
+    let apk_b = make_apk(dir.path(), "b.apk");
+    seed_task(&conn, "task-a", "completed", apk_a.to_str().unwrap(), false);
+    seed_task(&conn, "task-b", "completed", apk_b.to_str().unwrap(), false);
+
+    let fake = Arc::new(FakeInstallerPort::new(true));
+    fake.set_pending();
+    let service = InstallService::new(Arc::clone(&conn), fake.clone());
+    let session_a = service
+        .install("task-a")
+        .unwrap()
+        .record
+        .session_id
+        .expect("session A");
+    let session_b = service
+        .install("task-b")
+        .unwrap()
+        .record
+        .session_id
+        .expect("session B");
+
+    fake.complete(
+        &session_a,
+        InstallOutcome::Installed {
+            package_name: Some("com.example.a".to_string()),
+            version_name: Some("1.2.3".to_string()),
+        },
+    );
+    fake.fail_session(&session_b, "transient poll failure");
+
+    let (report, events) = service.reconcile().unwrap();
+    println!("partial reconcile = ({report:?}, {events:?})");
+    assert_eq!(report.checked, 2);
+    assert_eq!(report.resolved, 1);
+    assert_eq!(report.still_pending, 1);
+    assert_eq!(report.errors.len(), 1, "row B failure is reported per row");
+    assert!(report.errors[0].contains("task-b"));
+    assert!(report.errors[0].contains("transient poll failure"));
+    assert_eq!(events.len(), 1, "row A event must survive row B failure");
+    match &events[0] {
+        CoreEvent::InstallResult {
+            app_id,
+            package_name,
+            success,
+            ..
+        } => {
+            assert_eq!(app_id, "app.demo");
+            assert_eq!(package_name.as_deref(), Some("com.example.a"));
+            assert!(success);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    assert_eq!(
+        service.get("task-a").unwrap().status,
+        INSTALL_STATUS_INSTALLED
+    );
+    assert_eq!(
+        service.get("task-b").unwrap().status,
+        INSTALL_STATUS_PENDING
+    );
+
+    // A is terminal, so the second sweep only sees B and never re-emits A.
+    let (report, events) = service.reconcile().unwrap();
+    println!("partial reconcile#2 = ({report:?}, {events:?})");
+    assert_eq!(
+        report.checked, 1,
+        "only the still-pending row is re-scanned"
+    );
+    assert_eq!(report.resolved, 0);
+    assert_eq!(report.still_pending, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert!(events.is_empty(), "A's event must not be emitted twice");
+}
+
+#[test]
 fn install_after_download_once() {
     let dir = TempDir::new("after_download");
     let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();

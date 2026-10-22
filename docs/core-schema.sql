@@ -1,11 +1,13 @@
--- Canonical Wave 0/1/2 schema for gstore_core.
+-- Canonical Wave 0/1/2/3 schema for gstore_core.
 --
 -- This file is the canonical DDL text. The embedded refinery migrations
--- `rust/gstore_core/migrations/V1__core_schema.sql` +
--- `V2__catalog_update.sql` must produce exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts that by
--- normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
+-- `rust/gstore_core/migrations/V1__core_schema.sql`,
+-- `V2__catalog_update.sql`, and `V3__download_install.sql` must produce
+-- exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts
+-- that by normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
 -- foreign_key_list dumps for a migrated database and for a database created by
--- executing this file.
+-- executing this file. V3 adds the durable install-state columns and the
+-- partial pending-install index on `download_task`.
 --
 -- refinery owns the `schema_migrations` ledger; its exact DDL is reproduced
 -- first so this file is self-contained.

@@ -85,7 +85,7 @@ pub struct InstallAttempt {
 }
 
 /// Summary of one reconciliation sweep.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallReconcileReport {
     /// Pending rows examined.
     pub checked: usize,
@@ -93,6 +93,8 @@ pub struct InstallReconcileReport {
     pub resolved: usize,
     /// Rows that remain pending.
     pub still_pending: usize,
+    /// Per-row installer failures (`task:session: error`); those rows stay pending.
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -234,12 +236,24 @@ impl InstallService {
     /// - [`Error::InvalidArgument`] when `dest_path` is empty or not a file.
     /// - [`Error::Conflict`] when the download is not `completed`.
     /// - [`Error::Unsupported`] when the installer cannot install.
-    /// - The installer's typed error (after recording `failed`).
+    /// - [`Error::Internal`] when a durable write fails.
+    ///
+    /// A port-level `begin_install` failure is NOT an error: it is recorded as
+    /// `failed` and returned as one `install.result { success: false }` event.
     pub fn install(&self, module_task_id: &str) -> Result<InstallAttempt, Error> {
         let row = {
             let guard = self.lock()?;
             Self::required(&guard, module_task_id)?
         };
+
+        if row.install_status == INSTALL_STATUS_INSTALLED
+            || row.install_status == INSTALL_STATUS_PENDING
+        {
+            return Ok(InstallAttempt {
+                record: row.into_record(),
+                event: None,
+            });
+        }
 
         let dest_path = row.dest_path.clone().unwrap_or_default();
         if dest_path.trim().is_empty() || !Path::new(&dest_path).is_file() {
@@ -296,14 +310,30 @@ impl InstallService {
         {
             Ok(ticket) => ticket,
             Err(error) => {
-                if let Err(persist) = self.record_port_failure(module_task_id, &session, &error) {
-                    return Err(Error::Internal(format!(
-                        "{} (persist failure: {})",
-                        error.message(),
-                        persist.message()
-                    )));
-                }
-                return Err(error);
+                let guard = self.lock()?;
+                let changed = guard
+                    .execute(
+                        "UPDATE download_task SET install_status = 'failed', \
+                             install_error = ?1, updated_at = ?2 \
+                         WHERE module_task_id = ?3 AND install_session_id = ?4 \
+                           AND install_status = 'pending'",
+                        rusqlite::params![error.message(), now_ms()?, module_task_id, session],
+                    )
+                    .map_err(|e| {
+                        Error::Internal(format!(
+                            "CORE_E_INSTALL_WRITE: failure {module_task_id}: {e}"
+                        ))
+                    })?;
+                let current = Self::required(&guard, module_task_id)?;
+                let event = if changed > 0 {
+                    Some(install_event(&current, false, None, Some(error.message())))
+                } else {
+                    None
+                };
+                return Ok(InstallAttempt {
+                    record: current.into_record(),
+                    event,
+                });
             }
         };
 
@@ -361,29 +391,6 @@ impl InstallService {
                 })
             }
         }
-    }
-
-    fn record_port_failure(
-        &self,
-        module_task_id: &str,
-        session: &str,
-        error: &Error,
-    ) -> Result<(), Error> {
-        let guard = self.lock()?;
-        guard
-            .execute(
-                "UPDATE download_task SET install_status = 'failed', install_error = ?1, \
-                     updated_at = ?2 \
-                 WHERE module_task_id = ?3 AND install_session_id = ?4 \
-                   AND install_status = 'pending'",
-                rusqlite::params![error.message(), now_ms()?, module_task_id, session],
-            )
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "CORE_E_INSTALL_WRITE: failure {module_task_id}: {e}"
-                ))
-            })?;
-        Ok(())
     }
 
     fn transition_outcome(
@@ -501,10 +508,13 @@ impl InstallService {
     ///
     /// Returns the sweep report together with every event produced by the
     /// sweep, so callers cannot accidentally drop install results. A pending
-    /// row with an empty session id becomes `unknown`.
+    /// row with an empty session id becomes `unknown`; a per-row installer
+    /// poll error is recorded in [`InstallReconcileReport::errors`] and that
+    /// row stays pending, so later rows still resolve and no event is lost.
     ///
     /// # Errors
-    /// Propagates installer and database failures.
+    /// Propagates database failures that make the sweep impossible; installer
+    /// poll errors are reported per row instead.
     pub fn reconcile(&self) -> Result<(InstallReconcileReport, Vec<CoreEvent>), Error> {
         let pending: Vec<(String, Option<String>)> = {
             let guard = self.lock()?;
@@ -554,36 +564,47 @@ impl InstallService {
                 continue;
             }
 
-            match self.installer.install_result(&session_id)? {
-                Some(outcome) => {
-                    let guard = self.lock()?;
-                    let changed = Self::transition_outcome(
-                        &guard,
-                        &module_task_id,
-                        &session_id,
-                        &outcome,
-                        now_ms()?,
-                    )?;
-                    if !changed {
-                        let current = Self::required(&guard, &module_task_id)?;
-                        if current.install_status == INSTALL_STATUS_PENDING {
-                            report.still_pending += 1;
-                        } else {
-                            report.resolved += 1;
-                        }
-                        continue;
-                    }
-                    let current = Self::required(&guard, &module_task_id)?;
-                    events.push(install_event(
-                        &current,
-                        outcome.is_success(),
-                        outcome.package_name(),
-                        outcome.message(),
+            let outcome = match self.installer.install_result(&session_id) {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => {
+                    report.still_pending += 1;
+                    continue;
+                }
+                Err(error) => {
+                    report.errors.push(format!(
+                        "{module_task_id}:{session_id}: {}",
+                        error.message()
                     ));
+                    report.still_pending += 1;
+                    continue;
+                }
+            };
+
+            let guard = self.lock()?;
+            let changed = Self::transition_outcome(
+                &guard,
+                &module_task_id,
+                &session_id,
+                &outcome,
+                now_ms()?,
+            )?;
+            if !changed {
+                let current = Self::required(&guard, &module_task_id)?;
+                if current.install_status == INSTALL_STATUS_PENDING {
+                    report.still_pending += 1;
+                } else {
                     report.resolved += 1;
                 }
-                None => report.still_pending += 1,
+                continue;
             }
+            let current = Self::required(&guard, &module_task_id)?;
+            events.push(install_event(
+                &current,
+                outcome.is_success(),
+                outcome.package_name(),
+                outcome.message(),
+            ));
+            report.resolved += 1;
         }
 
         Ok((report, events))

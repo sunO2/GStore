@@ -449,6 +449,7 @@ struct FakeInstallerState {
     mode: Mutex<FakeInstallMode>,
     pending_sessions: Mutex<Vec<String>>,
     completed: Mutex<BTreeMap<String, InstallOutcome>>,
+    session_errors: Mutex<BTreeMap<String, String>>,
     begin_calls: Mutex<Vec<RecordedInstallCall>>,
     uninstall_calls: Mutex<Vec<String>>,
     launch_calls: Mutex<Vec<String>>,
@@ -477,6 +478,7 @@ impl FakeInstallerPort {
                 })),
                 pending_sessions: Mutex::new(Vec::new()),
                 completed: Mutex::new(BTreeMap::new()),
+                session_errors: Mutex::new(BTreeMap::new()),
                 begin_calls: Mutex::new(Vec::new()),
                 uninstall_calls: Mutex::new(Vec::new()),
                 launch_calls: Mutex::new(Vec::new()),
@@ -519,6 +521,15 @@ impl FakeInstallerPort {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|session| session != session_id);
+    }
+
+    /// Makes `install_result` fail for `session_id`.
+    pub fn fail_session(&self, session_id: &str, message: &str) {
+        self.state
+            .session_errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), message.to_string());
     }
 
     /// Recorded `begin_install` calls, in order.
@@ -607,6 +618,16 @@ impl InstallerPort for FakeInstallerPort {
         self.state
             .install_result_calls
             .fetch_add(1, Ordering::SeqCst);
+        if let Some(message) = self
+            .state
+            .session_errors
+            .lock()
+            .map_err(|_| internal("installer session errors"))?
+            .get(session_id)
+            .cloned()
+        {
+            return Err(Error::Internal(message));
+        }
         Ok(self
             .state
             .completed
