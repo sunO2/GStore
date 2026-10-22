@@ -101,6 +101,10 @@ class MainActivity : FlutterActivity() {
         ShizukuExecBridge.ensureInit(applicationContext)
         // 包清单 JNI 桥：缓存 applicationContext + 解析 PlatformHostBridge 类。
         PlatformHostBridge.init(applicationContext)
+        // 安装执行层：缓存 applicationContext（JNI native 表由上面 PlatformHostBridge
+        // 的 init 链路注册）。best-effort，失败静默绝不崩溃。
+        runCatching { InstallerBridge.init(applicationContext) }
+            .onFailure { Log.w(TAG, "InstallerBridge.init 失败（忽略）: ${it.message}") }
         registerPackageChangeReceiver()
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
