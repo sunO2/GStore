@@ -4,10 +4,14 @@
   Wave 3/5/6 are explicitly **not started**.
 - **Repo / branch:** `GStore-wave02` @ `wave02/rust-core-catalog`
 - **Base:** `9d5b41f3` (`9d5b41f3726fd733dc843f6069fd19c7ab14e3ae`, Wave 0/1 closeout)
-- **Final code HEAD (before this doc commit):**
+- **Feature HEAD (before closeout fixes):**
   `3c59e5dc3e247f2d636002c9cb13302bd141998c`
   (`feat(catalog): expose catalog/added/update APIs behind flags`)
-- **Commit count `9d5b41f3..3c59e5dc`:** **14**
+- **Closeout fix commit:** `fix(test): align host bridge schema expectations with V2`
+  (`Plan-Todo: 11`; the commit that adds this line — resolve its hash with
+  `git log -1 --format=%H`)
+- **Commit count `9d5b41f3..HEAD`:** **16** (14 feature/fix + Gate closeout doc +
+  this schema-alignment fix)
 - **Date:** 2026-10-22
 - **Toolchain:** rustc/cargo 1.92.0, Flutter 3.44.8 (stable), FRB codegen 2.11.1
 
@@ -25,7 +29,7 @@
 - FRB/facades for catalog/added/update exposed **behind flags**; all flags
   remain disabled and the legacy Dart paths stay in place.
 
-## Commits (`9d5b41f3..3c59e5dc`)
+## Commits (`9d5b41f3..HEAD`)
 
 | Commit | Todo | Subject |
 |---|---|---|
@@ -43,6 +47,8 @@
 | `9fa7e514` | 8 | feat(android): add package inventory bridge |
 | `1a55f535` | 3/5/6 fix | fix(test): align core api expectations with V2 schema |
 | `3c59e5dc` | 10 | feat(catalog): expose catalog/added/update APIs behind flags |
+| `12ca93e7` | 11 | test(catalog): close Wave 2 Gate |
+| closeout fix (this commit) | 11 fix | fix(test): align host bridge schema expectations with V2 |
 
 ## Gate 2 matrix
 
@@ -62,7 +68,7 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 | 8b | Dart compile proof (`flutter build bundle --debug`) | **PASS** | exit 0, `kernel_blob.bin` produced |
 | 8c | App-module Kotlin compile (`:app:compileDebugKotlin`) | **PASS** | `BUILD SUCCESSFUL`, 334 tasks |
 | 9 | Full regression: `gstore_core` | **PASS** | 21 test binaries, 141 tests, 0 failed |
-| 9b | Full regression: `gstore_host` | **PRE-EXISTING FAILURES** | 74 passed / 10 failed (see residuals); not introduced or fixed here |
+| 9b | Full regression: `gstore_host` | **PASS except build-state modules** | `76 passed / 8 failed`; the 8 remaining failures are missing module `.so` files only. The 2 stale schema-v1 bridge assertions were fixed in the closeout fix commit. (The pre-fix run was 74/10.) |
 | 9c | Flutter regression (prefs + handoff + core API) | **PASS** | 18/18 |
 | 9d | `flutter analyze` on Wave 2 changed Dart | **PASS** | 13 items, “No issues found!” |
 | 10 | Scope fidelity (flags/version/deletions/Wave 3+) | **PASS** | no flag-default diff, version stays `1.0.34+1`, no deleted files, Android diff only Todo 8 inventory |
@@ -76,18 +82,23 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
    therefore **not** claimed as a pass.
 2. **Release APK — ENVIRONMENT BLOCKED.** `flutter build apk --release
    --target-platform android-arm64` fails while resolving
-   `androidx.test:runner:1.2+` for `:integration_test` due to TLS handshake
-   failures against `repo.maven.apache.org` / `storage.googleapis.com`. This is
-   a network/environment block, not a product-code failure. Compensating proofs:
+   `androidx.test:runner:1.2+` for `:integration_test` due to a Gradle/JVM
+   TLS/proxy issue: `curl` reaches `repo.maven.apache.org` /
+   `storage.googleapis.com`, but the Gradle JVM handshake fails with
+   `Remote host terminated the handshake` (TLS 1.2/1.3 negotiation). This is an
+   environment/toolchain block, not a product-code failure. Compensating proofs:
    `flutter build bundle --debug` PASS and `:app:compileDebugKotlin` PASS.
    A release/device PASS is **not** claimed.
-3. **Pre-existing `gstore_host` lib-test failures (10).** Not introduced by
-   Wave 2 and not fixed here:
-   - 8 × module `.so` not built (`libgstore_mod_analyzer/repo/qr.so`) — run
-     `rust/build_all.sh` to build modules.
-   - 2 × stale schema-v1 assertions in `bridge.rs` (`core_api_contract`,
-     `core_writes_empty_after_init_and_migration`) expect `schema_version=1`
-     while V2 correctly reports `2`.
+3. **Build-state `gstore_host` lib-test failures (8).** Only the module `.so`
+   build-state failures remain: `libgstore_mod_analyzer.so`,
+   `libgstore_mod_repo.so` and `libgstore_mod_qr.so` are not built (`rust/build_all.sh`
+   builds them). The 2 stale schema-v1 assertions in `bridge.rs`
+   (`core_api_contract`, `core_writes_empty_after_init_and_migration`), which
+   expected `schema_version`/`import_snapshot` to return `1`, were **fixed in the
+   closeout fix commit** `fix(test): align host bridge schema expectations with
+   V2` (`Plan-Todo: 11`; hash via `git log -1 --format=%H`). Host suite after the
+   fix: **76 passed / 8 failed** (the 2 repaired tests moved from failed to
+   passed).
 4. **Stale native `.so` for Flutter native tests (resolved during the gate).**
    The first `update_prefs_migration_test.dart` run failed on an FRB content-hash
    mismatch because `rust/gstore_host/target/release/libgstore_host.so` predated
@@ -102,9 +113,12 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 
 ## Wave 2 code-level gate status
 
-**PASS at the code level, with one explicitly BLOCKED device check and one
-environment-blocked release build.** All schema, refresh/rollback, parity,
-update/prefs, inventory-contract, FRB, flag, regression and scope checks pass.
-The only incomplete item is Todo 8 on-device instrumentation (no ADB device),
-and the release APK could not be produced because of the environment's Maven/TLS
-restriction; both are recorded above and are **not** reported as passes.
+**PASS at the code level, with one explicitly BLOCKED device check, one
+environment-blocked release build, and 8 documented build-state module-`.so`
+host failures.** Schema, refresh/rollback, parity, update/prefs,
+inventory-contract, FRB, flag and scope checks pass. `gstore_core` and the
+Flutter regression suites pass in full; `gstore_host` is **76 passed / 8 failed**
+and every remaining failure is the missing module `.so` build artifact (not a
+Wave 2 regression). Todo 8 on-device instrumentation remains BLOCKED (no ADB
+device), and the release APK could not be produced because the Gradle JVM could
+not complete the Maven TLS handshake; neither is reported as a pass.

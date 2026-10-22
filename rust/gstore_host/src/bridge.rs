@@ -728,7 +728,10 @@ mod core_api_tests {
         .expect("CoreApi::init");
 
         let init = api.migrate_paths().expect("migrate_paths");
-        assert_eq!(init.schema_version, 1);
+        assert_eq!(
+            init.schema_version,
+            gstore_core::migration::CORE_SCHEMA_VERSION
+        );
         assert!(
             std::path::Path::new(&init.db_path).exists(),
             "db file missing: {}",
@@ -776,7 +779,7 @@ mod core_api_tests {
         let version = api
             .import_snapshot(snapshot.to_string_lossy().into_owned())
             .expect("import_snapshot");
-        assert_eq!(version, 1);
+        assert_eq!(version, gstore_core::migration::CORE_SCHEMA_VERSION);
 
         let migration_doc = root.join("migration_channel.json");
         std::fs::write(
@@ -915,7 +918,7 @@ mod core_api_tests {
         assert_eq!(
             api.import_snapshot(snapshot.to_string_lossy().into_owned())
                 .expect("import_snapshot"),
-            1
+            gstore_core::migration::CORE_SCHEMA_VERSION
         );
 
         let count = core_writes_count(&init.db_path);
