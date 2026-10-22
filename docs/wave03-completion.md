@@ -27,6 +27,10 @@ channel, catalog), baseline-aware quality, clippy, FRB codegen idempotency,
 Kotlin compile, and the release APK. **Device QA is BLOCKED (no ADB device)** —
 no on-device install/notification/FGS claim is made.
 
+The release APK was rebuilt at final HEAD `42dfde34` after the final-wave fixes
+(`ce7ef133`, `e918c77a`); the earlier pre-fix APK hash is superseded (see
+`docs/wave03-evidence.md`).
+
 Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 `target/test-evidence/87-gate3-fail.txt` (injected failures).
 `target/` is local-only/gitignored; see `docs/wave03-evidence.md`.
@@ -100,10 +104,10 @@ Evidence: `target/test-evidence/87-gate3.txt`; injected failures:
 | 4b | `cargo clippy --manifest-path rust/gstore_core/Cargo.toml --all-targets -- -D warnings` | **PASS** | `Finished dev profile`; EXIT 0 |
 | 5 | FRB codegen idempotency | **PASS** | codegen `Done!`, EXIT 0; `git diff --exit-code` on `rust/gstore_host/src/frb_generated.rs` + `lib/core/rust/generated/` = empty, DIFF_EXIT 0; no leftover to commit |
 | 6 | `./gradlew :app:compileDebugKotlin --offline` (integration_test excluded) | **PASS** | `BUILD SUCCESSFUL in 37s`, 334 tasks; EXIT 0 |
-| 7 | `flutter build apk --release --target-platform android-arm64` | **PASS** | `✓ Built .../app-release.apk (150.6MB)`; EXIT 0; 150589102 bytes; sha256 `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382`; known Maven/TLS issue did not reproduce |
+| 7 | `flutter build apk --release --target-platform android-arm64` | **PASS** | rebuilt at final HEAD `42dfde34` (includes final-wave fixes `ce7ef133`/`e918c77a`/`42dfde34`); `✓ Built .../app-release.apk (150.6MB)`; EXIT 0; 150589102 bytes; sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`; mtime 2026-10-22 22:40:57 +0800 (after the 22:25:27 +0800 final commit); known Maven/TLS issue did not reproduce |
 | 8 | Device (`adb devices`) | **BLOCKED** | empty device list; `DEVICE_QA: BLOCKED (no ADB device)`; no device pass claimed |
 | 9 | Flags default false + old path authoritative | **PASS** | `dto_events_flags_defaults_all_false ... ok`; `git diff e5692829..HEAD -- rust/gstore_core/src/flags.rs lib/core/core_flags.dart` empty; T6 group `install flag off keeps the legacy path` passes |
-| 10 | Scope audit | **PASS** | 60 changed files all in the Wave-3 download/install/notification surface; no Wave 4/5/6, no JsChannel/rquickjs, no resync/removal, no desktop/HarmonyOS/iOS/CLI, no pack signatures; `git diff --diff-filter=D` empty; `pubspec.yaml` diff empty (`1.0.34+1`) |
+| 10 | Scope audit | **PASS** | 60 changed files at the Gate-3 code HEAD `6ea4de02` (the F3-noted count) and 64 changed files at final HEAD `42dfde34`; both sets are entirely in the Wave-3 download/install/notification surface; no Wave 4/5/6, no JsChannel/rquickjs, no resync/removal, no desktop/HarmonyOS/iOS/CLI, no pack signatures; `git diff --diff-filter=D` empty; `pubspec.yaml` diff empty (`1.0.34+1`) |
 | 11 | Injected failure behavior | **PASS** | `--inject-field-diff` EXIT 1 with `status_code 0 -> 1`; `--inject-path-diff` EXIT 1 with `dest_path ...-drift`; `--download --channel` EXIT 2 |
 | 12 | Final-wave audit fixes | **PASS** | Flag-on app installs have **no** legacy fallback (`CORE_E_INSTALL_NO_CORE_TASK`; module APKs pass `moduleInstall: true`); legacy import resolves before the first core list in `_findCoreTaskId`/`installTask`; `DownloadApi.list`/`watchAll` reconcile from the module each tick; async install results are pumped every 500 ms by `gstore-install-reconcile` plus a bounded Dart pending poller; evidence `target/test-evidence/88-final-wave-fix.txt` |
 

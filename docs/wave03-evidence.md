@@ -32,7 +32,7 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 | 6 | `target/test-evidence/85-flag-off.txt` | 23228 | `40c050c569ccf1caa8887aaa85a5b70dbab564d5ef1a73d9d78d35b8fe1fc556` |
 | 7 | `target/test-evidence/86-download-parity.txt` | 7793 | `b48435f1f649e6d6d097b5f419501d5b7c678d28e7a9e96a16dd4c84fd12f67a` |
 | 7 | `target/test-evidence/86-download-parity-fail.txt` | 1849 | `49257571d456d56e912d06ea673630dda0ec605d47e0707435e58809efb01752` |
-| 8 | `target/test-evidence/87-gate3.txt` | 11576 | `1f59dcb66dbc67bfd7a28b79bdb4b01f9f5cd18135fa0a913d0db58496c4e8c7` |
+| 8 | `target/test-evidence/87-gate3.txt` | 12826 | `5104e6622b84e2fdd3e7dbe96b498492bce982120f0418ba63235cfdb9c78339` |
 | 8 | `target/test-evidence/87-gate3-fail.txt` | 3815 | `9bd145b49b024d1f6171aba5fcc1393c03edd543f53945f1cbd56b5b76634f93` |
 | Final-wave | `target/test-evidence/88-final-wave-fix.txt` | 7391 | `2f7727e391a6ca8be11231575a5cbab411529be2aff9115b2e69b209adf0fcb0` |
 
@@ -42,9 +42,13 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
   suite (50/50), parity `--download` (`rows=14`, idempotent second migration),
   `--channel` / `--catalog`, baseline-aware `f2-quality.sh` (`NEW findings 0`),
   strict core clippy, FRB codegen idempotency, Kotlin compile, release APK
-  (150589102 bytes, sha256
-  `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382`),
+  (**rebuilt at final HEAD `42dfde34`**: 150589102 bytes, sha256
+  `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`),
   `adb devices` (BLOCKED, no device), flags/old-path proof, and scope audit.
+  The original Gate-3 APK (150589102 bytes, sha256
+  `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382`, mtime
+  2026-10-22 21:43) is **superseded** because it predates `ce7ef133` /
+  `e918c77a`; it is retained here for historical accuracy, not deleted.
 - `87-gate3-fail.txt` — injected field/path parity drift (both EXIT 1 with exact
   diff lines), mutually exclusive suite selection (EXIT 2), and the explicit
   device BLOCKED record.
@@ -52,6 +56,24 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
   legacy fallback (`CORE_E_INSTALL_NO_CORE_TASK`), import-before-list order,
   module-refresh proof for `DownloadApi.list`, 500 ms install pump and bounded
   Dart pending poller proof, plus the exact command exits above.
+
+## Release rebuild (final HEAD)
+
+- HEAD: `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
+  (`docs(download): record final-wave fixes`; commit time
+  2026-10-22 22:25:27 +0800, epoch 1792679127).
+- Command: `flutter build apk --release --target-platform android-arm64`
+  (`EXIT: 0`, `assembleRelease` 76.9s).
+- Artifact: `build/app/outputs/flutter-apk/app-release.apk`, 150589102 bytes,
+  sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`,
+  mtime `2026-10-22 22:40:57 +0800` (epoch 1792680057 > 1792679127), so the
+  artifact is newer than the final commit and contains `ce7ef133`,
+  `e918c77a`, and `42dfde34`.
+- Recorded at the end of `target/test-evidence/87-gate3.txt` as
+  `RELEASE REBUILD (final HEAD)` with `RESULT: PASS`; the `87-gate3.txt`
+  sha256 in the table above was recomputed after that append.
+- The prior Gate-3 APK hash (`bf6d90eb...`) is marked **superseded**, kept for
+  history. No code/flag/version change was made for this rebuild.
 
 ## Status summary
 
