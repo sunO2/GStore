@@ -34,6 +34,7 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 | 7 | `target/test-evidence/86-download-parity-fail.txt` | 1849 | `49257571d456d56e912d06ea673630dda0ec605d47e0707435e58809efb01752` |
 | 8 | `target/test-evidence/87-gate3.txt` | 11576 | `1f59dcb66dbc67bfd7a28b79bdb4b01f9f5cd18135fa0a913d0db58496c4e8c7` |
 | 8 | `target/test-evidence/87-gate3-fail.txt` | 3815 | `9bd145b49b024d1f6171aba5fcc1393c03edd543f53945f1cbd56b5b76634f93` |
+| Final-wave | `target/test-evidence/88-final-wave-fix.txt` | 7391 | `2f7727e391a6ca8be11231575a5cbab411529be2aff9115b2e69b209adf0fcb0` |
 
 ## Gate 3 (Todo 8) mapping
 
@@ -47,6 +48,10 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 - `87-gate3-fail.txt` — injected field/path parity drift (both EXIT 1 with exact
   diff lines), mutually exclusive suite selection (EXIT 2), and the explicit
   device BLOCKED record.
+- `88-final-wave-fix.txt` — FINAL-WAVE fix evidence: flag-on install has no
+  legacy fallback (`CORE_E_INSTALL_NO_CORE_TASK`), import-before-list order,
+  module-refresh proof for `DownloadApi.list`, 500 ms install pump and bounded
+  Dart pending poller proof, plus the exact command exits above.
 
 ## Status summary
 

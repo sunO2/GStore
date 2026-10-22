@@ -37,8 +37,13 @@ Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
   `download_task` populated by start/get/reconcile and reconciled with the
   module DB.
 - FRB `DownloadApi` (`start/list/get/pause/resume/cancel/retry/restart/remove/
-  watchAll`, 500 ms change-only terminal-correct stream) and `InstallApi`
-  (`install/uninstall/launch/canInstall/listPending`).
+  watchAll`, 500 ms change-only terminal-correct stream). Every `list` and every
+  watch tick runs a best-effort `reconcile()` first, so module progress/terminal
+  state is reflected in the core rows; an unmounted/failing module is logged and
+  the authoritative core rows are still returned.
+- FRB `InstallApi` (`install/get/uninstall/launch/canInstall/listPending/
+  reconcile`); `InstallApi::init` pumps `reconcile()` every 500 ms so async
+  PackageInstaller/Intent results become durable without an explicit caller.
 - V3 `download_task` install state (`install_status`, `install_method`,
   `install_session_id`, `install_error`, `installed_at`, `installed_version`)
   plus durable `InstallService` results and `install.result` events.
@@ -71,6 +76,14 @@ Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 The Todo 8 hash is not written into its own commit (self-reference); it is the
 `test(download): close Wave 3 Gate` commit on the same branch.
 
+## Final-wave fix commits (post-Gate 3)
+
+| Commit | Plan-Todo | Subject |
+|---|---|---|
+| `ce7ef133` | 6 | `fix(install): remove flag-on legacy fallback and pump async results` |
+| `e918c77a` | 2 | `fix(download): refresh core rows from the module` |
+| *(this commit)* | 8 | `docs(download): record final-wave fixes` |
+
 ## Gate 3 matrix
 
 Evidence: `target/test-evidence/87-gate3.txt`; injected failures:
@@ -92,6 +105,7 @@ Evidence: `target/test-evidence/87-gate3.txt`; injected failures:
 | 9 | Flags default false + old path authoritative | **PASS** | `dto_events_flags_defaults_all_false ... ok`; `git diff e5692829..HEAD -- rust/gstore_core/src/flags.rs lib/core/core_flags.dart` empty; T6 group `install flag off keeps the legacy path` passes |
 | 10 | Scope audit | **PASS** | 60 changed files all in the Wave-3 download/install/notification surface; no Wave 4/5/6, no JsChannel/rquickjs, no resync/removal, no desktop/HarmonyOS/iOS/CLI, no pack signatures; `git diff --diff-filter=D` empty; `pubspec.yaml` diff empty (`1.0.34+1`) |
 | 11 | Injected failure behavior | **PASS** | `--inject-field-diff` EXIT 1 with `status_code 0 -> 1`; `--inject-path-diff` EXIT 1 with `dest_path ...-drift`; `--download --channel` EXIT 2 |
+| 12 | Final-wave audit fixes | **PASS** | Flag-on app installs have **no** legacy fallback (`CORE_E_INSTALL_NO_CORE_TASK`; module APKs pass `moduleInstall: true`); legacy import resolves before the first core list in `_findCoreTaskId`/`installTask`; `DownloadApi.list`/`watchAll` reconcile from the module each tick; async install results are pumped every 500 ms by `gstore-install-reconcile` plus a bounded Dart pending poller; evidence `target/test-evidence/88-final-wave-fix.txt` |
 
 ## BLOCKED / DEFERRED
 
@@ -105,17 +119,24 @@ Evidence: `target/test-evidence/87-gate3.txt`; injected failures:
 
 ## Known residuals
 
-1. **Core module default scheduler config.** Module download scheduler defaults
+1. **Resolved (final wave): core rows refresh from the module.** `DownloadApi.list`
+   and every `watchAll` tick run a best-effort `HostDownloadPort::reconcile()`
+   before reading `download_task`, so progress and terminal state are never
+   stuck at the values captured by `start`. Reconcile failures are logged and
+   polling continues; only a core read failure stops the watch thread.
+2. **Resolved (final wave): two install findings.** (a) With
+   `CoreFlags.install == true`, an app install that does not resolve to a core
+   `download_task` logs `CORE_E_INSTALL_NO_CORE_TASK` and returns
+   `(false, InstallMethod.system)` — it never calls Shizuku/AppInstaller. Only an
+   explicitly module-owned APK (`installApk(..., moduleInstall: true)`) keeps
+   the legacy path. (b) The legacy import runs before the first core list, and
+   async install results are pumped every 500 ms (`InstallApi::init` thread plus
+   a bounded 500 ms/180 s Dart pending poller).
+3. **Core module default scheduler config.** Module download scheduler defaults
    remain owned by `gstore_mod_download`; the core does not yet carry a
    default scheduler configuration. Task orchestration and state are core-owned,
    but scheduling policy still depends on the module engine defaults.
-2. **`install=true` / `download=false` legacy fallback.** The supported
-   combination in this wave is both flags false (pure legacy) or download core
-   with install core. Enabling only `CoreFlags.install` keeps the legacy
-   download path while install delegates to the core; the install facade falls
-   back safely, but this split combination is not a cutover target and has no
-   dedicated end-to-end parity row.
-3. **Host-vs-Dart module DB path / `needs_restart`.** Imported *active* tasks
+4. **Host-vs-Dart module DB path / `needs_restart`.** Imported *active* tasks
    that reference the module DB can resolve to a different module DB path in
    the host than the Dart side used before migration. Such rows are reported as
    `needs_restart` instead of being silently resumed, so a restart (or explicit
