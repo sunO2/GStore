@@ -377,12 +377,28 @@ impl HostDownloadPort {
         self.core_reader().list()
     }
 
+    /// Best-effort module refresh, then a bridge-free core read.
+    ///
+    /// Live module progress is only reflected in `download_task` after a
+    /// reconcile sweep, so every list/watch tick must refresh first. A module
+    /// failure (not mounted, transient bridge error, missing module DB) is
+    /// logged and never hides the authoritative core rows.
+    pub fn refresh_and_list(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
+        if let Err(error) = self.reconcile() {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("download reconcile (best-effort) failed: {error}"),
+            );
+        }
+        self.list_core()
+    }
+
     pub fn start(&self, req: &DownloadRequest) -> Result<i64, PortError> {
         self.with_port(|port| port.start(req))
     }
 
     pub fn list(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
-        self.list_core()
+        self.refresh_and_list()
     }
 
     pub fn get(&self, module_task_id: &str) -> Result<DownloadTaskRow, PortError> {
@@ -421,6 +437,6 @@ impl HostDownloadPort {
     }
 
     pub fn watch_all(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
-        self.list_core()
+        self.refresh_and_list()
     }
 }

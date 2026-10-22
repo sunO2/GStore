@@ -113,6 +113,13 @@ impl FakeBridge {
             .insert(42, task_json(42, 2, 10, "dedup:example"));
         bridge
     }
+
+    fn set_task(&self, id: u64, value: Value) {
+        self.tasks
+            .lock()
+            .expect("fake bridge lock")
+            .insert(id, value);
+    }
 }
 
 impl ModuleBridge for FakeBridge {
@@ -224,6 +231,49 @@ fn download_api_start_and_list_without_module_mount() {
         Some("com.example.app"),
         "core authority survives an unusable module"
     );
+}
+
+#[test]
+fn download_api_list_refreshes_core_rows_from_module() {
+    let (conn, core_db) = core_conn();
+    let bridge = FakeBridge::default();
+    let port = HostDownloadPort::with_bridge_for_test(
+        bridge.clone(),
+        conn.clone(),
+        core_db.clone(),
+        None,
+    );
+    let api = DownloadApi::from_port_for_test(port);
+
+    let id = api.start(start_request()).expect("start via fake module");
+    assert_eq!(id, 42);
+
+    // The module is still running with no bytes received. A list call must
+    // reconcile core rows from the module before reading them.
+    bridge.set_task(42, task_json(42, 2, 0, "dedup:example"));
+    let first = api.list().expect("first list");
+    println!("download_api refresh first: {first:?}");
+    assert_eq!(first[0].status, "running");
+    assert_eq!(first[0].bytes_done, 0);
+
+    // The module advanced to completion between calls; the same list call
+    // path must reflect it without an explicit reconcile at the caller.
+    bridge.set_task(42, task_json(42, 4, 100, "dedup:example"));
+    let second = api.list().expect("second list");
+    println!("download_api refresh second: {second:?}");
+    assert_eq!(second[0].status, "completed");
+    assert_eq!(second[0].bytes_done, 100);
+
+    // A module that cannot be called still leaves the authoritative core rows
+    // readable (the reconcile failure is best-effort and logged).
+    let failing =
+        HostDownloadPort::with_bridge_for_test(FailingBridge, conn.clone(), core_db, None);
+    let core_rows = DownloadApi::from_port_for_test(failing)
+        .list()
+        .expect("list must stay bridge-free");
+    println!("download_api refresh without module: {core_rows:?}");
+    assert_eq!(core_rows[0].status, "completed");
+    assert_eq!(core_rows[0].bytes_done, 100);
 }
 
 #[test]

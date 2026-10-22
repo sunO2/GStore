@@ -2925,7 +2925,7 @@ fn validate_start_request(request: &DownloadStartRequest) -> Result<(), String> 
 /// `CORE_E_DOWNLOAD_*` prefixes.
 #[frb(opaque)]
 pub struct DownloadApi {
-    port: HostDownloadPort,
+    port: Arc<HostDownloadPort>,
 }
 
 impl DownloadApi {
@@ -2954,14 +2954,18 @@ impl DownloadApi {
                 format!("download reconcile at init (non-fatal): {error}"),
             );
         }
-        Ok(Self { port })
+        Ok(Self {
+            port: Arc::new(port),
+        })
     }
 
     /// Wraps an already-built port (integration tests only).
     #[frb(ignore)]
     #[doc(hidden)]
     pub fn from_port_for_test(port: HostDownloadPort) -> DownloadApi {
-        Self { port }
+        Self {
+            port: Arc::new(port),
+        }
     }
 
     pub fn start(&self, request: DownloadStartRequest) -> Result<i64, String> {
@@ -3038,14 +3042,14 @@ impl DownloadApi {
     /// The thread exits when Dart cancels the stream (`sink.add` errors) or the
     /// core read fails.
     pub fn watch_all(&self, sink: crate::frb_generated::StreamSink<DownloadTaskDto>) {
-        let reader = self.port.core_reader();
+        let port = Arc::clone(&self.port);
         let spawned = std::thread::Builder::new()
             .name("gstore-download-watch".to_string())
             .spawn(move || {
                 let mut state = DownloadWatchState::new();
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(500));
-                    let rows = match reader.list() {
+                    let rows = match port.refresh_and_list() {
                         Ok(rows) => rows,
                         Err(error) => {
                             crate::log_bridge::push_host_log(
