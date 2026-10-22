@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gstore_core::migration;
+use gstore_core::{db, migration};
 use rusqlite::{Connection, ErrorCode};
 
 static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
@@ -525,6 +525,10 @@ fn migration_v2_contract() {
         fts_sql.contains("appId UNINDEXED"),
         "apps_fts must declare appId UNINDEXED: {fts_sql}"
     );
+    assert!(
+        !fts_sql.contains("contentless_delete"),
+        "apps_fts DDL must match Dart: {fts_sql}"
+    );
     for old in ["apps_ai", "apps_ad", "apps_au"] {
         assert!(
             !object_exists(&conn, "trigger", old),
@@ -727,4 +731,87 @@ fn catalog_fts_helper_reports_presence() {
         "migrated database must report apps_fts"
     );
     println!("catalog_fts_available = true after apply_core_schema");
+}
+
+#[test]
+fn catalog_schema_v2_backup_before_upgrade() {
+    let dir = TempDir::new("backup");
+    let db_path = dir.path().join("gstore_core.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(V1_SQL).unwrap();
+        for (app_id, name) in [
+            ("com.topjohnwu.magisk", "Magisk"),
+            ("com.v2ray.ang", "v2rayNG"),
+            ("com.x8bit.bitwarden", "Bitwarden"),
+        ] {
+            conn.execute(
+                "INSERT INTO apps(appId, name, user, repositories, icon, des, category) \
+                 VALUES (?1, ?2, 'u', 'r', 'i', 'summary', 'TOOLS')",
+                rusqlite::params![app_id, name],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO categories(id, description, icon) VALUES ('TOOLS', '工具', 'i')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO categories(id, description, icon) VALUES ('MEDIA', '影音', 'i')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 1);
+    }
+
+    let conn = db::open_at(&db_path).expect("upgrade V1 database");
+
+    assert_eq!(user_version(&conn), 2);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM apps"), 3);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM categories"), 2);
+
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".bak-v1-"))
+        })
+        .collect();
+    backups.sort();
+    println!("backups = {backups:?}");
+    assert_eq!(backups.len(), 1, "exactly one V1 backup: {backups:?}");
+
+    let backup = Connection::open(&backups[0]).expect("open backup");
+    assert_eq!(user_version(&backup), 1, "backup keeps the V1 version");
+    assert_eq!(count(&backup, "SELECT COUNT(*) FROM apps"), 3);
+    assert_eq!(count(&backup, "SELECT COUNT(*) FROM categories"), 2);
+    println!(
+        "backup = {} user_version={} apps={} categories={}",
+        backups[0].display(),
+        user_version(&backup),
+        count(&backup, "SELECT COUNT(*) FROM apps"),
+        count(&backup, "SELECT COUNT(*) FROM categories")
+    );
+    drop(backup);
+    drop(conn);
+
+    let reopened = db::open_at(&db_path).expect("reopen at current version");
+    assert_eq!(user_version(&reopened), 2);
+    let backups_after: Vec<PathBuf> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".bak-v1-"))
+        })
+        .collect();
+    assert_eq!(
+        backups_after.len(),
+        1,
+        "current-version reopen must not create another backup: {backups_after:?}"
+    );
 }

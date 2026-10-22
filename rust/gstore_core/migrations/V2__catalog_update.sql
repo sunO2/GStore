@@ -70,14 +70,11 @@ DROP TRIGGER IF EXISTS apps_fts_delete;
 DROP TRIGGER IF EXISTS apps_fts_update;
 DROP TABLE IF EXISTS apps_fts;
 
--- `contentless_delete=1` keeps the Dart delete-by-rowid triggers working:
--- stock SQLite rejects DELETE on a plain contentless FTS5 table.
 CREATE VIRTUAL TABLE apps_fts USING fts5(
     appId UNINDEXED,
     name,
     des,
-    content='',
-    contentless_delete=1
+    content=''
 );
 
 CREATE TRIGGER IF NOT EXISTS apps_fts_insert AFTER INSERT ON apps BEGIN
@@ -86,11 +83,13 @@ CREATE TRIGGER IF NOT EXISTS apps_fts_insert AFTER INSERT ON apps BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS apps_fts_delete AFTER DELETE ON apps BEGIN
-    DELETE FROM apps_fts WHERE rowid = old.rowid;
+    INSERT INTO apps_fts(apps_fts, rowid, appId, name, des)
+    VALUES ('delete', old.rowid, old.appId, old.name, old.des);
 END;
 
 CREATE TRIGGER IF NOT EXISTS apps_fts_update AFTER UPDATE ON apps BEGIN
-    DELETE FROM apps_fts WHERE rowid = old.rowid;
+    INSERT INTO apps_fts(apps_fts, rowid, appId, name, des)
+    VALUES ('delete', old.rowid, old.appId, old.name, old.des);
     INSERT INTO apps_fts(rowid, appId, name, des)
     VALUES (new.rowid, new.appId, new.name, new.des);
 END;

@@ -116,9 +116,50 @@ pub fn open_at(path: &Path) -> Result<Connection, DbError> {
         std::fs::create_dir_all(parent)
             .map_err(|e| DbError(format!("create data dir {}: {e}", parent.display())))?;
     }
+    let existed = path.exists();
     let mut conn = open_connection(path, false)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| DbError(format!("read user_version {}: {e}", path.display())))?;
+    if existed && version > 0 && version < i64::from(migration::CORE_SCHEMA_VERSION) {
+        backup_before_migration(&conn, path, version)?;
+    }
     migration::apply_core_schema(&mut conn)?;
     Ok(conn)
+}
+
+fn backup_before_migration(
+    conn: &Connection,
+    path: &Path,
+    from_version: i64,
+) -> Result<(), DbError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| DbError(format!("backup clock: {e}")))?
+        .as_nanos();
+    let dest = unique_backup_path(path, from_version, nanos);
+    conn.execute(
+        "VACUUM INTO ?1",
+        rusqlite::params![dest.to_string_lossy().into_owned()],
+    )
+    .map_err(|e| {
+        DbError(format!(
+            "backup {} before v{from_version} migration: {e}",
+            dest.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn unique_backup_path(path: &Path, from_version: i64, nanos: u128) -> PathBuf {
+    let base = format!("{}.bak-v{from_version}-{nanos}", path.display());
+    let mut candidate = PathBuf::from(&base);
+    let mut attempt = 0_u32;
+    while candidate.exists() {
+        attempt += 1;
+        candidate = PathBuf::from(format!("{base}-{attempt}"));
+    }
+    candidate
 }
 
 /// Opens (or creates) the core database under `data_dir` and applies the schema.
