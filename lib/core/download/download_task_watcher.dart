@@ -128,6 +128,9 @@ class DownloadTaskWatcher {
     debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $moduleTaskId');
     try {
       await manager.installTask(moduleTaskId, filePath);
+      // 自动安装的另一条入口：核心把 `install.requested` 事件排队，前端在
+      // 既有的「下载完成」路径上一次性排空（不新增常驻定时器）。
+      await manager.consumeInstallRequests();
     } catch (e, st) {
       debugPrint(
         'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',

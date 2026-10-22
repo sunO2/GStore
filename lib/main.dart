@@ -28,6 +28,7 @@ import 'package:gstore/core/service/proxy_connect_controller.dart';
 import 'package:gstore/core/service/proxy_connect_intent_bridge.dart';
 import 'package:gstore/core/service/proxy_status_notification.dart';
 import 'package:gstore/core/service/proxy_vpn_service.dart';
+import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
@@ -300,6 +301,13 @@ main() async {
     if (_isChatUiNoise(message)) return;
     appLog.debug(message);
   };
+
+  // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
+  // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
+  // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
+  // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
+  // false，旧路径（flags 全 false）继续权威，启动不崩溃。
+  await CoreBootstrap.start();
 
   // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
   // 第二次调用为 no-op）。必须在 registerService 之前：启动装配

@@ -1,8 +1,8 @@
 /// 本应用帧指标（FrameMetrics）的 Dart 模型与容错解析层。
 ///
-/// Kotlin `FrameMetricsCollector.readJson` 经 Rust JNI 暴露为一次 FRB 调用；
-/// 本文件把它解析为 [FrameMetricsReading]，并提供可注入的
-/// [RustJniFrameMetricsBridge]。单测无需 FFI / 真机。
+/// Kotlin `FrameMetricsCollector.readJson` 经 `gstore/platform` 暴露为一次平台
+/// 通道调用；本文件把它解析为 [FrameMetricsReading]，并提供可注入的
+/// [RustJniFrameMetricsBridge]。单测无需平台通道 / 真机。
 ///
 /// 同时提供纯 Dart 的 [frameMetricsFromDurations]，用与 Kotlin 侧一致的
 /// 口径（最近秩百分位 + 1.5 × 标称帧间隔 jank）由帧耗时计算摘要，便于
@@ -11,10 +11,10 @@
 /// 所有解析入口**绝不抛出**：非法 / 非对象 JSON → `null`，缺失字段 → `null`。
 library;
 
-import 'dart:convert' show jsonDecode;
+import 'dart:convert' show jsonDecode, jsonEncode;
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:gstore/core/rust/generated/bridge.dart' as rust_bridge;
+import 'package:gstore/core/platform/platform_channel.dart';
 
 /// 一次帧指标摘要（毫秒口径；[jankPercent] 为 0–100）。
 class FrameMetricsReading {
@@ -142,18 +142,26 @@ double _percentile(List<double> sorted, double percentile) {
   return sorted[index];
 }
 
-/// Rust JNI 帧指标读取 seam（生产：FRB `frame_metrics_read_json`）。
+/// 帧指标读取 seam（生产：`gstore/platform.readFrameMetrics`）。
 typedef RustFrameMetricsJsonReader = Future<String?> Function();
 
-/// Rust JNI → Kotlin `FrameMetricsCollector` 的 Dart 门面。
+/// `gstore/platform.readFrameMetrics` 的 Dart 门面。
 ///
-/// 生产默认走生成的 FRB 函数；[readJson] 可注入，单测无需 FFI。
-/// 所有入口**绝不抛出**（异常 / 未初始化 / 非法 JSON → `null`）。
+/// 类名与构造参数保持历史形状；生产默认走
+/// [PlatformChannelClient.readFrameMetrics]。[readJson] 可注入，单测无需平台通道。
+/// 所有入口**绝不抛出**（异常 / 未实现 / 非法 JSON → `null`）。
 class RustJniFrameMetricsBridge {
-  RustJniFrameMetricsBridge({RustFrameMetricsJsonReader? readJson})
-      : _readJson = readJson ?? rust_bridge.frameMetricsReadJson;
+  RustJniFrameMetricsBridge({
+    RustFrameMetricsJsonReader? readJson,
+    PlatformChannelClient? client,
+  }) : _readJson = readJson ?? (() => _readJsonFrom(client));
 
   final RustFrameMetricsJsonReader _readJson;
+
+  static final PlatformChannelClient _defaultClient = PlatformChannelClient();
+
+  static Future<String?> _readJsonFrom(PlatformChannelClient? client) async =>
+      jsonEncode(await (client ?? _defaultClient).readFrameMetrics());
 
   /// 读取一次并解析；不可用 / 无样本 / 失败 → `null`。
   Future<FrameMetricsReading?> read() async {

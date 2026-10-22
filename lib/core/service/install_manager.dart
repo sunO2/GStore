@@ -63,8 +63,8 @@ class InstallManager implements IInstallService {
 
   /// 执行特权 shell 命令的底层 runner（默认走 Rust 统一门面 [rustShizukuRunner]）。
   ///
-  /// 与旧 `_shizukuApi.runCommand` 的可替身性对应：测试可经 [commandRunnerForTest]
-  /// 注入假件，脱离 Rust / 真机。
+  /// 与旧的插件命令执行入口可替身性对应：测试可经 [commandRunnerForTest]
+  /// 注入假件，脱离平台通道 / 真机。
   static Future<String?> Function(String command) _commandRunner =
       rustShizukuRunner;
 
@@ -77,6 +77,20 @@ class InstallManager implements IInstallService {
   static Duration installPollInterval = const Duration(milliseconds: 500);
   @visibleForTesting
   static Duration installPollTimeout = const Duration(seconds: 180);
+
+  /// 时钟接缝：上报 `reported_at` 用，测试注入固定值以做精确断言。
+  @visibleForTesting
+  static DateTime Function() clock = DateTime.now;
+
+  /// 系统安装器接缝（生产：[AppInstaller.installApk]），测试可注入假件。
+  static Future<void> Function(String path) _appInstaller =
+      AppInstaller.installApk;
+
+  @visibleForTesting
+  static set appInstallerForTest(
+    Future<void> Function(String path) installer,
+  ) =>
+      _appInstaller = installer;
 
   static const String _installNoCoreTask = 'CORE_E_INSTALL_NO_CORE_TASK';
   static const Set<String> _terminalInstallStatuses = <String>{
@@ -139,6 +153,8 @@ class InstallManager implements IInstallService {
     installFacadeForTest = null;
     installPollInterval = const Duration(milliseconds: 500);
     installPollTimeout = const Duration(seconds: 180);
+    clock = DateTime.now;
+    _appInstaller = AppInstaller.installApk;
   }
 
   /// 当前是否视为 Android 平台
@@ -267,12 +283,24 @@ class InstallManager implements IInstallService {
   ) async {
     try {
       await _ensureInstallRecovered();
-      final attempt = await _installFacade.install(moduleTaskId);
-      _maybeStartInstallPoller(moduleTaskId, attempt.record.status);
-      return (
-        attempt.record.isInstalled,
-        _mapInstallMethod(attempt.record.method),
+      final start = await _installFacade.install(moduleTaskId);
+      final request = start.request;
+      if (request == null) {
+        // The core already settled this row: report it and DO NOT install.
+        _maybeStartInstallPoller(moduleTaskId, start.record.status);
+        return (
+          start.record.isInstalled,
+          _mapInstallMethod(start.record.method),
+        );
+      }
+      final result = await _executeInstallRequest(
+        request,
+        fallbackPath: filePath,
       );
+      // `install()` also queues the re-derivable `install.requested` event for
+      // this session; drain it so a later drain does not install twice.
+      await _drainInstallEvents(skipSessionId: request.sessionId);
+      return result;
     } catch (e) {
       appLog.error('InstallManager: 核心安装失败 - $e', data: {
         'moduleTaskId': moduleTaskId,
@@ -282,13 +310,163 @@ class InstallManager implements IInstallService {
     }
   }
 
+  /// Executes one durable [InstallRequest] and reports the terminal status.
+  ///
+  /// The staged `pm install` path is unchanged (Shizuku); a failure falls back
+  /// to [AppInstaller.installApk] unless the user explicitly denied the install.
+  Future<(bool, InstallMethod)> _executeInstallRequest(
+    InstallRequest request, {
+    String? fallbackPath,
+  }) async {
+    final method = _mapInstallMethod(request.method);
+    final apkPath =
+        request.apkPath.isNotEmpty ? request.apkPath : (fallbackPath ?? '');
+
+    if (!_isAndroid) {
+      await _reportRequest(
+        request,
+        status: InstallReportStatus.failed,
+        error: 'CORE_E_INSTALL_PLATFORM: install effects need Android',
+      );
+      return (false, method);
+    }
+    if (!apkPath.endsWith('.apk') || !File(apkPath).existsSync()) {
+      await _reportRequest(
+        request,
+        status: InstallReportStatus.failed,
+        error: 'CORE_E_INSTALL_APK_MISSING: $apkPath',
+      );
+      return (false, method);
+    }
+
+    var ok = false;
+    var status = InstallReportStatus.failed;
+    String? error;
+
+    if (request.method == 'shizuku') {
+      if (!_checked) await checkShizuku();
+      if (_binderRunning && _permissionGranted) {
+        try {
+          final result = await _commandRunner(
+            _stageAndInstallCommand(apkPath),
+          );
+          if (isPmSuccess(result)) {
+            ok = true;
+            status = InstallReportStatus.installed;
+          } else if (_isUserRejected(result)) {
+            status = InstallReportStatus.denied;
+            error = result;
+          } else {
+            error = result ?? 'pm install returned no output';
+          }
+        } on TimeoutException catch (e) {
+          status = InstallReportStatus.timeout;
+          error = '$e';
+        } catch (e) {
+          error = '$e';
+        }
+      }
+    }
+
+    if (!ok && status != InstallReportStatus.denied) {
+      try {
+        await _appInstaller(apkPath);
+        ok = true;
+        status = InstallReportStatus.installed;
+        error = null;
+      } catch (e) {
+        status = InstallReportStatus.failed;
+        error = '$e';
+      }
+    }
+
+    await _reportRequest(
+      request,
+      status: status,
+      installedVersion: ok ? request.versionName : null,
+      error: error,
+    );
+    return (ok, method);
+  }
+
+  Future<void> _reportRequest(
+    InstallRequest request, {
+    required String status,
+    String? installedVersion,
+    String? error,
+  }) async {
+    if (request.sessionId.isEmpty) return;
+    try {
+      await _installFacade.reportResult(
+        InstallReport(
+          sessionId: request.sessionId,
+          status: status,
+          method: request.method,
+          installedVersion: installedVersion,
+          error: error,
+          reportedAt: clock().millisecondsSinceEpoch,
+        ),
+      );
+      appLog.info('InstallManager: 安装结果已上报', data: {
+        'sessionId': request.sessionId,
+        'status': status,
+        'method': request.method,
+      });
+    } catch (e) {
+      appLog.error('InstallManager: 安装结果上报失败 - $e', data: {
+        'sessionId': request.sessionId,
+        'status': status,
+      });
+    }
+  }
+
+  /// Drains `install.requested` events and executes every request they carry.
+  ///
+  /// Called from the existing download-done path (`DownloadTaskWatcher`), so no
+  /// new always-on timer is introduced. Returns the number of executed requests.
+  Future<int> consumeInstallRequests() async {
+    List<String> events;
+    try {
+      events = await _installFacade.takeEvents();
+    } catch (e) {
+      appLog.error('InstallManager: 读取安装事件失败 - $e');
+      return 0;
+    }
+    var handled = 0;
+    for (final raw in events) {
+      final request = parseInstallRequestEvent(raw);
+      if (request == null) {
+        debugPrint('InstallManager: 忽略无法解析的安装事件');
+        continue;
+      }
+      handled++;
+      await _executeInstallRequest(request);
+    }
+    return handled;
+  }
+
+  Future<void> _drainInstallEvents({required String skipSessionId}) async {
+    try {
+      final events = await _installFacade.takeEvents();
+      for (final raw in events) {
+        final request = parseInstallRequestEvent(raw);
+        if (request == null || request.sessionId == skipSessionId) continue;
+        await _executeInstallRequest(request);
+      }
+    } catch (e) {
+      appLog.error('InstallManager: 清理安装事件失败 - $e');
+    }
+  }
+
   /// Recovers installs left pending by a previous process exactly once before
   /// the first core install attempt.
   Future<void> _ensureInstallRecovered() async {
     if (_installRecoveryDone) return;
     _installRecoveryDone = true;
     try {
-      await _installFacade.reconcile();
+      // `pendingRequests()` runs the read-driven timeout sweep and returns the
+      // rows a previous process left pending.
+      await _installFacade.pendingRequests();
     } catch (e) {
       appLog.error('InstallManager: 启动安装恢复失败（忽略） - $e');
     }
@@ -321,7 +499,7 @@ class InstallManager implements IInstallService {
 
   Future<void> _pollInstallOnce(String moduleTaskId, Timer timer) async {
     try {
-      await _installFacade.reconcile();
+      await _installFacade.pendingRequests();
       final record = await _installFacade.get(moduleTaskId);
       final status = record?.status;
       if (status == null || !_terminalInstallStatuses.contains(status)) {

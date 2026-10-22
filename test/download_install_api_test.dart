@@ -183,22 +183,35 @@ class _FakeInstallBackend implements InstallBackend {
     method: 'shizuku',
   );
 
-  @override
-  Future<bool> canInstall() async {
-    calls.add('canInstall');
-    return true;
-  }
+  /// Request returned by [install]; null = the core settled the row.
+  InstallRequest? request;
 
   @override
-  Future<InstallAttempt> install(String moduleTaskId) async {
+  Future<InstallStart> install(String moduleTaskId) async {
     calls.add('install:$moduleTaskId');
-    return InstallAttempt(record: record);
+    return InstallStart(record: record, request: request);
   }
 
   @override
-  Future<InstallAttempt?> maybeInstallAfterDownload(String moduleTaskId) async {
-    calls.add('maybe:$moduleTaskId');
-    return InstallAttempt(record: record);
+  Future<List<InstallStart>> pendingRequests() async {
+    calls.add('pendingRequests');
+    return const <InstallStart>[];
+  }
+
+  @override
+  Future<InstallResultAck> reportResult(InstallReport report) async {
+    calls.add('reportResult:${report.status}');
+    return InstallResultAck(
+      sessionId: report.sessionId,
+      status: report.status,
+      changed: true,
+    );
+  }
+
+  @override
+  Future<List<String>> takeEvents() async {
+    calls.add('takeEvents');
+    return const <String>[];
   }
 
   @override
@@ -214,36 +227,6 @@ class _FakeInstallBackend implements InstallBackend {
   @override
   Future<void> launch(String packageName) async =>
       calls.add('launch:$packageName');
-
-  @override
-  Future<List<InstallRecord>> listPending() async {
-    calls.add('listPending');
-    return <InstallRecord>[record];
-  }
-
-  @override
-  Future<String?> onResult({
-    required String sessionId,
-    required String status,
-    String? packageName,
-    String? versionName,
-    String? error,
-  }) async {
-    calls.add('onResult:$sessionId:$status');
-    return null;
-  }
-
-  @override
-  Future<InstallReconcile> reconcile() async {
-    calls.add('reconcile');
-    return const InstallReconcile(
-      checked: 1,
-      resolved: 1,
-      stillPending: 0,
-      errors: <String>[],
-      events: <String>[],
-    );
-  }
 }
 
 /// Pending on install, then terminal on the second `get`.
@@ -262,25 +245,19 @@ class _PollingInstallBackend extends _FakeInstallBackend {
   );
 
   int getCalls = 0;
-  int reconcileCalls = 0;
+  int pendingRequestsCalls = 0;
 
   @override
-  Future<InstallAttempt> install(String moduleTaskId) async {
+  Future<InstallStart> install(String moduleTaskId) async {
     calls.add('install:$moduleTaskId');
-    return const InstallAttempt(record: _pending);
+    return const InstallStart(record: _pending);
   }
 
   @override
-  Future<InstallReconcile> reconcile() async {
-    reconcileCalls++;
-    calls.add('reconcile');
-    return const InstallReconcile(
-      checked: 1,
-      resolved: 0,
-      stillPending: 1,
-      errors: <String>[],
-      events: <String>[],
-    );
+  Future<List<InstallStart>> pendingRequests() async {
+    pendingRequestsCalls++;
+    calls.add('pendingRequests');
+    return const <InstallStart>[];
   }
 
   @override
@@ -314,6 +291,9 @@ class _RecordingInstallManager implements InstallManager {
     installApkCalls++;
     return (true, InstallMethod.system);
   }
+
+  @override
+  Future<int> consumeInstallRequests() async => 0;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -432,7 +412,7 @@ void main() {
       expect(result, (true, InstallMethod.shizuku));
       expect(uninstalled, isTrue);
       expect(install.calls, <String>[
-        'reconcile',
+        'pendingRequests',
         'install:task-1',
         'uninstall:com.example.app',
       ]);
@@ -458,7 +438,7 @@ void main() {
 
       expect(result.$1, isTrue);
       expect(downloads.calls, contains('list'));
-      expect(install.calls, <String>['reconcile', 'install:7']);
+      expect(install.calls, <String>['pendingRequests', 'install:7']);
       expect(commands, 0);
     });
 
@@ -548,7 +528,7 @@ void main() {
 
       expect(result, (false, InstallMethod.packageInstaller));
       expect(install.getCalls, 2, reason: 'pending then terminal ends the pump');
-      expect(install.reconcileCalls, 3,
+      expect(install.pendingRequestsCalls, 3,
           reason: 'one recovery sweep plus one sweep per poll');
       expect(
         install.calls.where((call) => call.startsWith('get:')),
@@ -578,7 +558,7 @@ void main() {
       expect(result, (true, InstallMethod.shizuku));
       expect(install.calls.where((call) => call.startsWith('get:')), isEmpty);
       expect(
-        install.calls.where((call) => call == 'reconcile'),
+        install.calls.where((call) => call == 'pendingRequests'),
         hasLength(1),
         reason: 'only the pre-install recovery sweep runs',
       );

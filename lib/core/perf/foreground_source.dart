@@ -1,16 +1,16 @@
 /// 前台应用事件源（AccessibilityService）的 Dart 模型与容错解析层。
 ///
-/// Kotlin `ForegroundAccessibilityService.readJson` 经 Rust JNI 暴露为一次
-/// FRB 调用；本文件把它解析为 [ForegroundReading]，并提供可注入的
-/// [RustJniForegroundBridge]。单测无需 FFI / 真机。
+/// Kotlin `ForegroundAccessibilityService.readJson` 经 `gstore/platform`
+/// 暴露为一次平台通道调用；本文件把它解析为 [ForegroundReading]，并提供可注入的
+/// [RustJniForegroundBridge]。单测无需平台通道 / 真机。
 ///
 /// 所有解析入口**绝不抛出**：非法 / 非对象 JSON → `null`，缺失字段 → `null`。
 library;
 
-import 'dart:convert' show jsonDecode;
+import 'dart:convert' show jsonDecode, jsonEncode;
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:gstore/core/rust/generated/bridge.dart' as rust_bridge;
+import 'package:gstore/core/platform/platform_channel.dart';
 
 /// 一次无障碍服务前台缓存快照。
 class ForegroundReading {
@@ -65,18 +65,26 @@ ForegroundReading? foregroundReadingFromJson(String json) {
   }
 }
 
-/// 无障碍服务探测 seam（生产：Rust JNI；测试可注入）。
+/// 无障碍服务探测 seam（生产：`gstore/platform.readForeground`；测试可注入）。
 typedef ForegroundAccessibilityProbe = Future<ForegroundReading?> Function();
 
-/// Rust JNI → Kotlin `ForegroundAccessibilityService` 的 Dart 门面。
+/// `gstore/platform.readForeground` 的 Dart 门面。
 ///
-/// 生产默认走生成的 FRB 函数；[readJson] 可注入，单测无需 FFI。
-/// 所有入口**绝不抛出**（异常 / 未初始化 / 非法 JSON → `null`）。
+/// 类名与构造参数保持历史形状；生产默认走
+/// [PlatformChannelClient.readForeground]。[readJson] 可注入，单测无需平台通道。
+/// 所有入口**绝不抛出**（异常 / 未实现 / 非法 JSON → `null`）。
 class RustJniForegroundBridge {
-  RustJniForegroundBridge({Future<String?> Function()? readJson})
-      : _readJson = readJson ?? rust_bridge.foregroundReadJson;
+  RustJniForegroundBridge({
+    Future<String?> Function()? readJson,
+    PlatformChannelClient? client,
+  }) : _readJson = readJson ?? (() => _readJsonFrom(client));
 
   final Future<String?> Function() _readJson;
+
+  static final PlatformChannelClient _defaultClient = PlatformChannelClient();
+
+  static Future<String?> _readJsonFrom(PlatformChannelClient? client) async =>
+      jsonEncode(await (client ?? _defaultClient).readForeground());
 
   /// 读取一次并解析；不可用 / 失败 → `null`。
   Future<ForegroundReading?> read() async {

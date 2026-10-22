@@ -30,6 +30,15 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
     const MethodChannel('gstore/battery'),
     (call) async => null,
   );
+  // 同理：`gstore/platform` 是 Android 宿主能力通道（Todo 4）。测试宿主没有它，
+  // 且**未 mock 的 MethodChannel 在 `testWidgets` 的 FakeAsync 下永不回答**
+  // （轮询 / 屏幕探测会挂起）。这里显式等价「无原生实现」：5 个桥接类的默认
+  // reader 立即降级到既有兜底路径，与基线（无宿主 .so / 无通道）行为一致。
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(
+    const MethodChannel('gstore/platform'),
+    (call) async => null,
+  );
   RustBridge.debugForceUnavailable = true;
   ModuleBootstrap.instance.debugConfigure(
     ensureOverride: (
