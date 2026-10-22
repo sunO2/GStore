@@ -3,6 +3,14 @@
 - **Branch:** `wave02/rust-core-catalog` in worktree `GStore-wave02`
 - **Wave 3 code range:** `e5692829..6ea4de02` = **12** commits (Todo 1-7),
   followed by the Todo 8 Gate 3 docs commit `test(download): close Wave 3 Gate`.
+- **Feature HEAD:** `6ea4de02e0acaa4b697d42746ca76d907020da70`
+  (`fix(download): import legacy before any core read`).
+- **Final code HEAD:** `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
+  (`docs(download): record final-wave fixes`), the last code commit after the
+  final-wave fixes `ce7ef133` and `e918c77a`.
+- **Current docs-only HEAD:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  (`docs(download): rebuild release APK for final HEAD`); its only changes are
+  `docs/wave03-completion.md` and `docs/wave03-evidence.md`.
 - **Date:** 2026-10-22
 
 ## How to read this index
@@ -38,6 +46,13 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 
 ## Gate 3 (Todo 8) mapping
 
+The full matrix counts in `87-gate3.txt` (core **161/161** across 23 binaries,
+host **119/119** across 9 binaries, Flutter focused **50/50**) were produced at
+code HEAD `6ea4de02e0acaa4b697d42746ca76d907020da70`. There was **no
+full-suite rerun** at final code HEAD `42dfde34` or at docs-only HEAD
+`2915f462`; after `6ea4de02` only the focused final-wave checks recorded in
+`target/test-evidence/88-final-wave-fix.txt` were run.
+
 - `87-gate3.txt` — full Gate 3 matrix: Rust core/host totals, focused Flutter
   suite (50/50), parity `--download` (`rows=14`, idempotent second migration),
   `--channel` / `--catalog`, baseline-aware `f2-quality.sh` (`NEW findings 0`),
@@ -45,10 +60,10 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
   (**rebuilt at final HEAD `42dfde34`**: 150589102 bytes, sha256
   `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`),
   `adb devices` (BLOCKED, no device), flags/old-path proof, and scope audit.
-  The original Gate-3 APK (150589102 bytes, sha256
-  `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382`, mtime
-  2026-10-22 21:43) is **superseded** because it predates `ce7ef133` /
-  `e918c77a`; it is retained here for historical accuracy, not deleted.
+  The original pre-rebuild Gate-3 APK is **superseded (historical)**. Its
+  sha256 `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (superseded, historical, pre-rebuild) is kept only as history;
+  it predates `ce7ef133` / `e918c77a` (mtime 2026-10-22 21:43) and is not the
+  current APK.
 - `87-gate3-fail.txt` — injected field/path parity drift (both EXIT 1 with exact
   diff lines), mutually exclusive suite selection (EXIT 2), and the explicit
   device BLOCKED record.
@@ -59,21 +74,27 @@ mismatch as "new run", not necessarily "wrong result". No hash is invented here.
 
 ## Release rebuild (final HEAD)
 
-- HEAD: `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
+- Built at/after code HEAD `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
   (`docs(download): record final-wave fixes`; commit time
-  2026-10-22 22:25:27 +0800, epoch 1792679127).
+  2026-10-22 22:25:27 +0800, epoch 1792679127). The current branch HEAD is the
+  later docs-only commit `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  (`docs(download): rebuild release APK for final HEAD`, 2026-10-22 22:41:50
+  +0800), whose only changes are these two docs; the APK below was built before
+  that docs commit and is unaffected by it.
 - Command: `flutter build apk --release --target-platform android-arm64`
   (`EXIT: 0`, `assembleRelease` 76.9s).
 - Artifact: `build/app/outputs/flutter-apk/app-release.apk`, 150589102 bytes,
   sha256 `0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`,
   mtime `2026-10-22 22:40:57 +0800` (epoch 1792680057 > 1792679127), so the
-  artifact is newer than the final commit and contains `ce7ef133`,
+  artifact is newer than the final code commit and contains `ce7ef133`,
   `e918c77a`, and `42dfde34`.
 - Recorded at the end of `target/test-evidence/87-gate3.txt` as
   `RELEASE REBUILD (final HEAD)` with `RESULT: PASS`; the `87-gate3.txt`
   sha256 in the table above was recomputed after that append.
-- The prior Gate-3 APK hash (`bf6d90eb...`) is marked **superseded**, kept for
-  history. No code/flag/version change was made for this rebuild.
+- The prior Gate-3 APK hash `bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` (superseded, historical, pre-rebuild)
+  is kept only as history because it predates `ce7ef133`/`e918c77a`
+  (150589102 bytes, mtime 2026-10-22 21:43). No code/flag/version change was
+  made for this rebuild.
 
 ## Status summary
 

@@ -6,8 +6,15 @@
 - **Base:** `e5692829` (`e5692829407a3c98ba4f9fc5ed4bdf9fbec59620`, Wave 2 HEAD)
 - **Feature HEAD:** `6ea4de02e0acaa4b697d42746ca76d907020da70`
   (`fix(download): import legacy before any core read`)
-- **Gate 3 close commit:** `test(download): close Wave 3 Gate` (`Plan-Todo: 8`,
-  this docs commit)
+- **Final code HEAD:** `42dfde34f5896ab588ffa701c1ee776baafbbe5d`
+  (`docs(download): record final-wave fixes`). This is the last code commit;
+  the final-wave fixes `ce7ef133` and `e918c77a` precede it.
+- **Current docs-only HEAD:** `2915f462b49d03c483a3dac1c1fefbe1501866af`
+  (`docs(download): rebuild release APK for final HEAD`). It is after the
+  release rebuild and its only changes are `docs/wave03-completion.md` and
+  `docs/wave03-evidence.md`.
+- **Gate 3 close commit:** `8a9c759f` (`test(download): close Wave 3 Gate`,
+  `Plan-Todo: 8`), on the same branch.
 - **Date:** 2026-10-22
 - **Toolchain:** rustc/cargo 1.92.0, Flutter 3.44.8 (stable), FRB codegen 2.11.1
 
@@ -27,9 +34,13 @@ channel, catalog), baseline-aware quality, clippy, FRB codegen idempotency,
 Kotlin compile, and the release APK. **Device QA is BLOCKED (no ADB device)** —
 no on-device install/notification/FGS claim is made.
 
-The release APK was rebuilt at final HEAD `42dfde34` after the final-wave fixes
-(`ce7ef133`, `e918c77a`); the earlier pre-fix APK hash is superseded (see
-`docs/wave03-evidence.md`).
+The release APK was rebuilt at/after code HEAD `42dfde34` after the final-wave
+fixes (`ce7ef133`, `e918c77a`): 150589102 bytes, sha256
+`0bab385b600bc7d6f8fec419a2760083c22d01fd85291e4c9a3a85e81dcd38b3`, mtime
+2026-10-22 22:40:57 +0800. The earlier pre-rebuild APK hash
+`bf6d90eb67cbbf6a77daf549c2fc394e5eef06e31f27df23a47acf4b02340382` is **superseded**
+(predates `ce7ef133`/`e918c77a`; mtime 21:43) and is kept only as history
+(see `docs/wave03-evidence.md`).
 
 Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 `target/test-evidence/87-gate3-fail.txt` (injected failures).
@@ -75,7 +86,7 @@ Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 | `522e43ef3f75a6c2d2169564fd635c777eab19be` | 6 | feat(download): expose DownloadApi/InstallApi behind flags |
 | `c578b110dc73539311042b53df667c68eabccb77` | 7 | test(download): add legacy migration and parity |
 | `6ea4de02e0acaa4b697d42746ca76d907020da70` | 7 fix | fix(download): import legacy before any core read |
-| *(this commit)* | 8 | test(download): close Wave 3 Gate |
+| `8a9c759f` | 8 | test(download): close Wave 3 Gate |
 
 The Todo 8 hash is not written into its own commit (self-reference); it is the
 `test(download): close Wave 3 Gate` commit on the same branch.
@@ -86,12 +97,23 @@ The Todo 8 hash is not written into its own commit (self-reference); it is the
 |---|---|---|
 | `ce7ef133` | 6 | `fix(install): remove flag-on legacy fallback and pump async results` |
 | `e918c77a` | 2 | `fix(download): refresh core rows from the module` |
-| *(this commit)* | 8 | `docs(download): record final-wave fixes` |
+| `42dfde34` | 8 | `docs(download): record final-wave fixes` |
+
+`42dfde34` is the final **code** HEAD. The later `2915f462`
+(`docs(download): rebuild release APK for final HEAD`) is docs-only and changes
+only `docs/wave03-completion.md` + `docs/wave03-evidence.md`.
 
 ## Gate 3 matrix
 
 Evidence: `target/test-evidence/87-gate3.txt`; injected failures:
 `target/test-evidence/87-gate3-fail.txt`.
+
+All matrix counts below (core 161/161 across 23 binaries, host 119/119 across
+9 binaries, Flutter focused 50/50) are the Gate 3 run at code HEAD
+`6ea4de02e0acaa4b697d42746ca76d907020da70`. There was **no full-suite rerun**
+at final code HEAD `42dfde34` or at docs-only HEAD `2915f462`; after `6ea4de02`
+only the focused final-wave checks recorded in
+`target/test-evidence/88-final-wave-fix.txt` were run.
 
 | # | Check | Result | Evidence / note |
 |---|---|---|---|
