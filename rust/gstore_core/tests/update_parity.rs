@@ -644,6 +644,37 @@ fn update_cache_ttl() {
 }
 
 #[test]
+fn update_cache_timestamp_overflow_is_safe() {
+    let (_dir, db, drivers) = parity_fixture();
+    let platform = platform_with(vec![installed("com.a", "1.0.0")]);
+    let (clock, clock_fn) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, Arc::clone(&platform), clock_fn);
+    assert!(!service.check_all(true).unwrap().updates.is_empty());
+
+    insert_pref(&db, "update_last_checked_at", &i64::MIN.to_string());
+    clock.store(i64::MAX, Ordering::SeqCst);
+    assert!(!service.is_cache_valid().unwrap());
+    let gets = platform.calls("get_installed");
+    let report = service.check_all(false).unwrap();
+    assert!(!report.used_cache);
+    assert_eq!(report.checked_at, i64::MAX);
+    assert!(platform.calls("get_installed") > gets);
+
+    clock.store(i64::MIN, Ordering::SeqCst);
+    let backwards = service.check_all(false).unwrap();
+    assert!(backwards.used_cache);
+    assert_eq!(backwards.checked_at, i64::MAX);
+    assert!(service.is_cache_valid().unwrap());
+
+    let future = 1_000_000_500_i64;
+    insert_pref(&db, "update_last_checked_at", &future.to_string());
+    clock.store(1_000_000_000, Ordering::SeqCst);
+    let shelf = service.check_all(false).unwrap();
+    assert!(shelf.used_cache);
+    assert_eq!(shelf.checked_at, future);
+}
+
+#[test]
 fn update_prefs_roundtrip() {
     let (_dir, db, drivers) = parity_fixture();
     insert_pref(

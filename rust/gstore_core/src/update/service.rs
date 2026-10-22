@@ -195,7 +195,7 @@ impl UpdateService {
             let cached = self.list()?;
             if !cached.is_empty() {
                 if let Some(last) = self.last_checked_at()? {
-                    if now - last < UPDATE_CACHE_TTL_MS {
+                    if now.saturating_sub(last) < UPDATE_CACHE_TTL_MS {
                         return Ok(UpdateCheckReport {
                             checked_at: last,
                             total: cached.len(),
@@ -317,7 +317,7 @@ impl UpdateService {
         let Some(last) = self.last_checked_at()? else {
             return Ok(false);
         };
-        Ok((self.clock)() - last < UPDATE_CACHE_TTL_MS)
+        Ok((self.clock)().saturating_sub(last) < UPDATE_CACHE_TTL_MS)
     }
 
     fn run_batch(&self, now: i64) -> Result<UpdateCheckReport, Error> {
