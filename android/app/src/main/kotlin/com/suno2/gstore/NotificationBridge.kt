@@ -167,14 +167,23 @@ object NotificationBridge {
         forceOngoing: Boolean = false,
     ): Notification {
         val payload = runCatching { JSONObject(json) }.getOrElse { JSONObject() }
-        val channelId = payload.optString("channelId", DOWNLOAD_CHANNEL_ID)
+        // Malformed/blank foreground payloads must still land on the FGS channel.
+        val fallbackChannel =
+            if (forceOngoing) FOREGROUND_CHANNEL_ID else DOWNLOAD_CHANNEL_ID
+        val channelId = if (payload.has("channelId") && !payload.isNull("channelId")) {
+            payload.optString("channelId", fallbackChannel)
+        } else {
+            fallbackChannel
+        }
         ensureChannelFor(context, channelId)
         val progress = if (payload.has("progress") && !payload.isNull("progress")) {
             payload.optInt("progress", 0).coerceIn(0, 100)
         } else {
             null
         }
-        val ongoing = payload.optBoolean("ongoing", forceOngoing)
+        // A foreground-service notification is ongoing even when the Rust payload
+        // carries "ongoing": false; regular notifications keep the payload value.
+        val ongoing = payload.optBoolean("ongoing", false) || forceOngoing
         val tapPayload = if (payload.has("payload") && !payload.isNull("payload")) {
             payload.optString("payload", DEFAULT_PAYLOAD)
         } else {

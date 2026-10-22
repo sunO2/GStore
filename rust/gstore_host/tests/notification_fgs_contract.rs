@@ -140,6 +140,33 @@ fn notification_fgs_contract_permission_denied_is_typed() {
 }
 
 #[test]
+fn notification_fgs_contract_denied_retry_is_not_throttled() {
+    let (clock, clock_fn) = fake_clock();
+    let bridge = RecordingBridge::default();
+    *bridge
+        .notify_response
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(r#"{"ok":false,"code":"CORE_E_NOTIFY_PERMISSION_DENIED"}"#.to_string());
+    let sink = HostNotificationSink::with_clock(bridge.clone(), clock_fn);
+
+    clock.store(0, Ordering::SeqCst);
+    let error = sink
+        .notify(&notification(1))
+        .expect_err("first post denied");
+    assert!(matches!(error, Error::Forbidden(_)));
+
+    *bridge
+        .notify_response
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    clock.store(0, Ordering::SeqCst);
+    sink.notify(&notification(1))
+        .expect("retry after denial posts");
+    assert_eq!(bridge.notify_count(), 2);
+}
+
+#[test]
 fn notification_fgs_contract_start_stop_are_idempotent() {
     let (_clock, clock_fn) = fake_clock();
     let bridge = RecordingBridge::default();
@@ -199,7 +226,7 @@ fn notification_fgs_contract_payload_is_exact() {
     let foreground: serde_json::Value = serde_json::from_str(start.1).expect("json");
     assert_eq!(foreground["id"], FOREGROUND_NOTIFICATION_ID);
     assert_eq!(foreground["channelId"], FOREGROUND_CHANNEL_ID);
-    assert_eq!(foreground["ongoing"], false);
+    assert_eq!(foreground["ongoing"], true);
 }
 
 #[test]

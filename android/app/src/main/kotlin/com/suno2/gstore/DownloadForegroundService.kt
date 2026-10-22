@@ -34,7 +34,7 @@ class DownloadForegroundService : Service() {
 
     private fun buildNotification(payload: String?, id: Int): Notification {
         val effective = payload?.takeIf { it.isNotBlank() }
-            ?: """{"title":"后台下载中","body":"GStore 正在后台下载应用"}"""
+            ?: """{"channelId":"foreground_service","title":"后台下载中","body":"GStore 正在后台下载应用"}"""
         return NotificationBridge.buildNotification(this, effective, id, forceOngoing = true)
     }
 

@@ -321,7 +321,7 @@ impl<B: NotificationJni> HostNotificationSink<B> {
     pub fn notify(&self, notification: &Notification) -> Result<(), Error> {
         let now = (self.clock)();
         {
-            let mut last = self
+            let last = self
                 .last_posted
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -331,14 +331,18 @@ impl<B: NotificationJni> HostNotificationSink<B> {
             {
                 return Ok(());
             }
-            last.insert(notification.id, now);
         }
         let payload = notification_payload(notification).to_string();
         let raw = self
             .bridge
             .notify(&payload)
             .map_err(|error| map_bridge_error("notify", error))?;
-        interpret_response("notify", &raw)
+        interpret_response("notify", &raw)?;
+        self.last_posted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(notification.id, now);
+        Ok(())
     }
 
     /// Starts the foreground service once; repeated calls are no-ops.
@@ -356,6 +360,7 @@ impl<B: NotificationJni> HostNotificationSink<B> {
         let foreground = Notification {
             id: FOREGROUND_NOTIFICATION_ID,
             channel_id: FOREGROUND_CHANNEL_ID.to_string(),
+            ongoing: true,
             ..notification.clone()
         };
         let payload = notification_payload(&foreground).to_string();
