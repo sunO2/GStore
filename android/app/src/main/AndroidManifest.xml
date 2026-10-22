@@ -85,6 +85,13 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Rust 通知宿主的 dataSync 前台服务（id 997，与 Legacy Dart 路径共享渠道）。 -->
+        <service
+            android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
         <!-- 代理 VPN 前台服务：与上面的 dataSync 服务共存（类型/权限不同）。
              同进程（不声明 android:process）；详见 ProxyVpnService 类文档。 -->
         <service

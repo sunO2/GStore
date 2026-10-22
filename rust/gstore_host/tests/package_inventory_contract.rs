@@ -175,7 +175,10 @@ fn package_inventory_contract_decodes_and_gates() {
     let caps = host.capabilities();
     assert!(caps.supports(Capability::Inventory));
     assert!(caps.supports(Capability::DeviceInfo));
-    assert!(!caps.supports(Capability::Install));
+    assert!(caps.supports(Capability::Install));
+    assert!(!caps.supports(Capability::StoragePaths));
+    assert!(!caps.supports(Capability::Connectivity));
+    assert!(!caps.supports(Capability::Secrets));
 
     let list_error = host.list_installed().expect_err("no VM in tests");
     assert_eq!(list_error.code(), "unsupported");

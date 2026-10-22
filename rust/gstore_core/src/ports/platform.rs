@@ -290,14 +290,30 @@ pub struct AppComponents {
 }
 
 /// Notification payload accepted by [`PlatformHost::notify`].
+///
+/// The shape is additive and serde-backward compatible: payloads that only
+/// carry `channel_id`/`title`/`body` still decode, with the optional fields
+/// taking their documented defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
+    /// Android notification id (per-task progress notifications share one id).
+    #[serde(default)]
+    pub id: i32,
     /// Android notification channel id.
     pub channel_id: String,
     /// Notification title.
     pub title: String,
     /// Notification body.
     pub body: String,
+    /// Progress percentage (`0..=100`); `None` renders an indeterminate bar.
+    #[serde(default)]
+    pub progress: Option<u8>,
+    /// Whether the notification cannot be dismissed by the user.
+    #[serde(default)]
+    pub ongoing: bool,
+    /// Tap payload (for example `download_center`).
+    #[serde(default)]
+    pub payload: Option<String>,
 }
 
 /// Application storage directories resolved by the host.

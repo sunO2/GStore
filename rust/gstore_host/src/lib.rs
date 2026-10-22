@@ -8,6 +8,7 @@ mod dl_adapter;
 mod jni_bridge;
 pub mod platform_host;
 pub mod installer_host;
+pub mod notification_host;
 pub mod http_port;
 pub use http_port::ReqwestHttpPort;
 pub use repo_port::{ModuleManagerBridge, ModuleRepoPort, RepoBridge};

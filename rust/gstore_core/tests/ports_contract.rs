@@ -30,9 +30,13 @@ fn app(package_name: &str) -> InstalledApp {
 
 fn notification() -> Notification {
     Notification {
+        id: 1,
         channel_id: "gstore.default".to_string(),
         title: "GStore".to_string(),
         body: "hello".to_string(),
+        progress: Some(50),
+        ongoing: false,
+        payload: Some("download_center".to_string()),
     }
 }
 

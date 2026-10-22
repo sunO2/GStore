@@ -733,6 +733,7 @@ pub(crate) fn install_platform_context(
         ),
     );
     crate::platform_host::init_class(env);
+    crate::notification_host::init_class(env);
     let _ = install_platform_natives(env);
     if !install_installer_natives(env) {
         crate::log_bridge::push_host_log(

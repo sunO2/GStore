@@ -105,6 +105,9 @@ class MainActivity : FlutterActivity() {
         // 的 init 链路注册）。best-effort，失败静默绝不崩溃。
         runCatching { InstallerBridge.init(applicationContext) }
             .onFailure { Log.w(TAG, "InstallerBridge.init 失败（忽略）: ${it.message}") }
+        // 通知 / 前台服务：创建渠道并跟踪前台 Activity，供 Rust 宿主发布通知。
+        runCatching { NotificationBridge.init(applicationContext) }
+            .onFailure { Log.w(TAG, "NotificationBridge.init 失败（忽略）: ${it.message}") }
         registerPackageChangeReceiver()
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true

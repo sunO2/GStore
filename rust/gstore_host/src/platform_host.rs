@@ -17,7 +17,9 @@ use gstore_core::Error;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::JNIEnv;
 
+use crate::installer_host::{InstallerJni, JniInstallerBridge};
 use crate::jni_bridge::{platform_context, platform_jvm};
+use crate::notification_host::host_notification_sink;
 
 const PLATFORM_CLASS_NAME: &str = "com/suno2/gstore/PlatformHostBridge";
 const NOT_INITIALIZED: &str = "CORE_E_PLATFORM_NOT_INITIALIZED";
@@ -295,6 +297,42 @@ fn unsupported(operation: &str) -> Error {
     Error::Unsupported(format!("platform capability unavailable: {operation}"))
 }
 
+/// Compatibility adapter for the legacy [`Capability::Install`] surface.
+///
+/// `InstallService` + `InstallerPort` remains the sole orchestration path (the
+/// database owns the durable session). This adapter only preserves the old
+/// capability promise for callers that still invoke `PlatformHost::install`.
+fn install_via_bridge(apk_path: &Path) -> Result<(), Error> {
+    let session = format!("platform:{}", crate::notification_host::now_ms());
+    let path = apk_path.to_string_lossy();
+    let raw = JniInstallerBridge
+        .install(&path, &session)
+        .map_err(|error| Error::Internal(format!("CORE_E_INSTALL_BRIDGE: install: {error}")))?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| Error::Internal(format!("CORE_E_INSTALL_BRIDGE: malformed: {error}")))?;
+    let status = parsed
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            Error::Internal("CORE_E_INSTALL_BRIDGE: missing install status".to_string())
+        })?;
+    let detail = parsed
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("CORE_E_INSTALL_FAILED");
+    match status {
+        "installed" => Ok(()),
+        "denied" => Err(Error::Forbidden(detail.to_string())),
+        "pending" => Err(Error::Unsupported(
+            "CORE_E_PLATFORM_INSTALL_PENDING: use InstallerPort".to_string(),
+        )),
+        "failed" => Err(Error::Internal(detail.to_string())),
+        other => Err(Error::Internal(format!(
+            "CORE_E_INSTALL_BRIDGE: unknown install status: {other}"
+        ))),
+    }
+}
+
 /// Android host backed by `com.suno2.gstore.PlatformHostBridge`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AndroidPlatformHost;
@@ -308,7 +346,15 @@ impl AndroidPlatformHost {
 
 impl PlatformHost for AndroidPlatformHost {
     fn capabilities(&self) -> CapabilitySet {
-        CapabilitySet::from_caps([Capability::Inventory, Capability::DeviceInfo])
+        CapabilitySet::from_caps([
+            Capability::Inventory,
+            Capability::DeviceInfo,
+            Capability::Install,
+            Capability::Uninstall,
+            Capability::Launch,
+            Capability::Notify,
+            Capability::ForegroundService,
+        ])
     }
 
     fn list_installed_unchecked(&self) -> Result<Vec<InstalledApp>, Error> {
@@ -389,28 +435,44 @@ impl PlatformHost for AndroidPlatformHost {
         parse_device_info(&json)
     }
 
-    fn install_unchecked(&self, _apk_path: &Path) -> Result<(), Error> {
-        Err(unsupported("install"))
+    fn install_unchecked(&self, apk_path: &Path) -> Result<(), Error> {
+        install_via_bridge(apk_path)
     }
 
-    fn uninstall_unchecked(&self, _package_name: &str) -> Result<(), Error> {
-        Err(unsupported("uninstall"))
+    fn uninstall_unchecked(&self, package_name: &str) -> Result<(), Error> {
+        match JniInstallerBridge.uninstall(package_name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Error::Forbidden(format!(
+                "CORE_E_INSTALL_UNINSTALL: {package_name}"
+            ))),
+            Err(error) => Err(Error::Internal(format!(
+                "CORE_E_INSTALL_BRIDGE: uninstall: {error}"
+            ))),
+        }
     }
 
-    fn launch_unchecked(&self, _package_name: &str) -> Result<(), Error> {
-        Err(unsupported("launch"))
+    fn launch_unchecked(&self, package_name: &str) -> Result<(), Error> {
+        match JniInstallerBridge.launch(package_name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Error::NotFound(format!(
+                "CORE_E_INSTALL_LAUNCH: {package_name}"
+            ))),
+            Err(error) => Err(Error::Internal(format!(
+                "CORE_E_INSTALL_BRIDGE: launch: {error}"
+            ))),
+        }
     }
 
-    fn notify_unchecked(&self, _notification: &Notification) -> Result<(), Error> {
-        Err(unsupported("notify"))
+    fn notify_unchecked(&self, notification: &Notification) -> Result<(), Error> {
+        host_notification_sink().notify(notification)
     }
 
-    fn start_foreground_unchecked(&self, _notification: &Notification) -> Result<(), Error> {
-        Err(unsupported("foreground_service"))
+    fn start_foreground_unchecked(&self, notification: &Notification) -> Result<(), Error> {
+        host_notification_sink().start_foreground(notification)
     }
 
     fn stop_foreground_unchecked(&self) -> Result<(), Error> {
-        Err(unsupported("foreground_service"))
+        host_notification_sink().stop_foreground()
     }
 
     fn storage_paths_unchecked(&self) -> Result<StoragePaths, Error> {
