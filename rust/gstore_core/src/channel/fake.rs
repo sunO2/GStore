@@ -149,6 +149,7 @@ pub struct InMemoryChannelDriver {
     meta: ChannelMeta,
     initialized: AtomicBool,
     apps: RwLock<BTreeMap<String, AppSummary>>,
+    updates: RwLock<BTreeMap<String, AppUpdate>>,
     categories: RwLock<Vec<ChannelCategory>>,
     config: RwLock<Option<ChannelConfig>>,
     cache_size: AtomicU64,
@@ -164,6 +165,7 @@ impl InMemoryChannelDriver {
             meta,
             initialized: AtomicBool::new(false),
             apps: RwLock::new(BTreeMap::new()),
+            updates: RwLock::new(BTreeMap::new()),
             categories: RwLock::new(Vec::new()),
             config: RwLock::new(None),
             cache_size: AtomicU64::new(0),
@@ -175,6 +177,20 @@ impl InMemoryChannelDriver {
         self.apps = RwLock::new(
             apps.into_iter()
                 .map(|app| (app.app_id.clone(), app))
+                .collect(),
+        );
+        self
+    }
+
+    /// Seeds the driver's update payloads keyed by app id.
+    ///
+    /// [`ChannelDriver::check_app_update`] returns a seeded payload verbatim;
+    /// apps without a payload keep the summary-derived default behavior.
+    pub fn with_updates(mut self, updates: Vec<AppUpdate>) -> Self {
+        self.updates = RwLock::new(
+            updates
+                .into_iter()
+                .map(|update| (update.app_id.clone(), update))
                 .collect(),
         );
         self
@@ -312,6 +328,14 @@ impl ChannelDriver for InMemoryChannelDriver {
     }
 
     fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
+        if let Some(update) = self
+            .updates
+            .read()
+            .map_err(|_| Error::Internal("channel driver update lock poisoned".to_string()))?
+            .get(app_id)
+        {
+            return Ok(update.clone());
+        }
         let detail = self.get_app_detail(app_id, false)?;
         let package_name = detail.package_name.clone().unwrap_or_default();
         Ok(AppUpdate {
