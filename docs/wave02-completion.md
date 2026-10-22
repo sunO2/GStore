@@ -139,3 +139,24 @@ instrumentation was not run (no ADB device). The production
 bootstrap/FRB-caller gap remains **DEFERRED** before any flag flip. Neither
 Todo 8 nor the on-device instrumentation is reported as a pass.
 
+## Closeout re-check (Gate 2)
+
+- **Date:** 2026-10-22
+- **Worktree / HEAD:** `GStore-wave02`, branch `wave02/rust-core-catalog`, HEAD `2abeb5fa`
+- **Commands and exit codes:**
+  - `bash scripts/qa/parity.sh --catalog` — exit 0
+  - `bash scripts/qa/f2-quality.sh` — exit 0
+  - `cargo test --manifest-path rust/gstore_host/Cargo.toml` — exit 0
+  - `flutter build apk --release --target-platform android-arm64` — exit 0
+- **Parity line:** `parity OK: getAllApps=17 searchApps=2 getAppInfoMissing=None`
+- **f2-quality:** `NEW findings (0)` (baseline dart=731, clippy=99)
+- **Host suite:** `84 + 1 + 2 + 0 = 87 passed / 0 failed / 0 ignored`
+- **Release sha256:** `0cad05e1f3cfce9ce445eb4435300a9fc790ca2018b84f0563e2ddf564006db5` (`build/app/outputs/flutter-apk/app-release.apk`, 150572442 bytes)
+- **Scope guard:** flags diff `0` lines; `pubspec.yaml` stays `version: 1.0.34+1`; `git diff --diff-filter=DR --name-only 9d5b41f3..HEAD` empty.
+- **Evidence:** `target/test-evidence/72-gate2-closeout.txt`
+- **Final status:** **PASS** (checks 1-5 all pass).
+- **Todo 8: DEFERRED / BLOCKED (owner deferred; contract/device split), not a pass.**
+
+Todo 1 / Todo 4 / Todo 5 wording above is unchanged; this re-check only appends the
+Gate 2 closeout result and does not reinterpret or upgrade Todo 8.
+
