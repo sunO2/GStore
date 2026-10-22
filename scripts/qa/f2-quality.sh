@@ -397,6 +397,12 @@ except (json.JSONDecodeError, OSError) as e:
     sys.exit(1)
 
 base_dart = base.get('dart', []) or []
+
+# FRB output under lib/core/rust/generated/ is machine-generated and pinned (flutter_rust_bridge 2.11.1), so findings there are not actionable.
+GENERATED_DIR = 'lib/core/rust/generated/'
+dart_findings = [f for f in dart_findings if not f['file'].startswith(GENERATED_DIR)]
+base_dart = [f for f in base_dart if not f['file'].startswith(GENERATED_DIR)]
+
 base_clippy = base.get('clippy', {}) or {}
 base_meta = base.get('meta', {}) or {}
 base_clippy_exit = base_meta.get('clippy_exit', {}) or {}
