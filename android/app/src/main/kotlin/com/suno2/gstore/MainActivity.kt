@@ -1,10 +1,11 @@
 package com.suno2.gstore
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.content.pm.Signature
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -20,12 +21,8 @@ import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.security.MessageDigest
-import java.security.cert.CertificateFactory
-import java.security.cert.X509Certificate
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -82,6 +79,9 @@ class MainActivity : FlutterActivity() {
     /// 非 null 时拒绝并发的 prepare，避免覆盖挂起 Result 造成 Dart 侧永久挂起。
     private var pendingPrepareResult: MethodChannel.Result? = null
 
+    /// 包增删/替换广播：安装状态变化时让 Rust 包清单缓存失效。
+    private var packageChangeReceiver: BroadcastReceiver? = null
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -99,6 +99,9 @@ class MainActivity : FlutterActivity() {
         // 侧 nativeInit（缓存 JavaVM 与本类 GlobalRef），供 Rust 经 JNI 执行 shell。
         // best-effort：失败静默绝不崩溃，不依赖 VPN/Flutter 引擎启动时序。
         ShizukuExecBridge.ensureInit(applicationContext)
+        // 包清单 JNI 桥：缓存 applicationContext + 解析 PlatformHostBridge 类。
+        PlatformHostBridge.init(applicationContext)
+        registerPackageChangeReceiver()
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
             Log.i(TAG, "onCreate: 收到管理空间入口请求")
@@ -123,6 +126,41 @@ class MainActivity : FlutterActivity() {
     override fun onPause() {
         FrameMetricsCollector.detach(this)
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        packageChangeReceiver?.let { receiver ->
+            runCatching { unregisterReceiver(receiver) }
+        }
+        packageChangeReceiver = null
+        super.onDestroy()
+    }
+
+    private fun registerPackageChangeReceiver() {
+        if (packageChangeReceiver != null) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                PlatformHostBridge.invalidateCache()
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(receiver, filter)
+            }
+            packageChangeReceiver = receiver
+        } catch (e: Exception) {
+            Log.w(TAG, "注册包变更广播失败（忽略）: ${e.message}")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -605,70 +643,23 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val pm = packageManager
-                        val packageInfo = pm.getPackageInfo(
-                            packageName,
-                            PackageManager.GET_ACTIVITIES or
-                                PackageManager.GET_SERVICES or
-                                PackageManager.GET_RECEIVERS or
-                                PackageManager.GET_PROVIDERS or
-                                PackageManager.GET_PERMISSIONS
-                        )
-
-                        // 组件状态：完整类名 → map(type × name → exported/enabled/processName)
-                        fun componentStates(
-                            name: String?,
-                            type: String,
-                            exported: Boolean,
-                            enabled: Boolean,
-                            processName: String?
-                        ): Map<String, Any>? {
-                            if (name.isNullOrEmpty()) return null
-                            return mapOf(
-                                "type" to type,
-                                "name" to name,
-                                "exported" to exported,
-                                "enabled" to enabled,
-                                "processName" to (processName ?: "")
+                        val report = InventoryInspector.components(pm, packageName)
+                        val components = report.components.map {
+                            mapOf(
+                                "type" to it.kind,
+                                "name" to it.name,
+                                "exported" to it.exported,
+                                "enabled" to it.enabled,
+                                "processName" to (it.processName ?: "")
                             )
                         }
-
-                        val components = mutableListOf<Map<String, Any>>()
-                        packageInfo.activities?.forEach {
-                            componentStates(it.name, "ACTIVITY", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
+                        val permissionStates = report.permissionStates.map {
+                            mapOf(
+                                "name" to it.name,
+                                "granted" to it.granted,
+                                "neverForLocation" to it.neverForLocation
+                            )
                         }
-                        packageInfo.services?.forEach {
-                            componentStates(it.name, "SERVICE", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-                        packageInfo.receivers?.forEach {
-                            componentStates(it.name, "RECEIVER", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-                        packageInfo.providers?.forEach {
-                            componentStates(it.name, "PROVIDER", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-
-                        // 权限状态：granted + maxSdkVersion（requestedPermissions/requestedPermissionsFlags）
-                        val permissionStates = mutableListOf<Map<String, Any>>()
-                        val perms = packageInfo.requestedPermissions ?: emptyArray()
-                        val permFlags = packageInfo.requestedPermissionsFlags ?: IntArray(0)
-                        for (i in perms.indices) {
-                            val granted = i < permFlags.size &&
-                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
-                            val level = if (i < permFlags.size) {
-                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_NEVER_FOR_LOCATION) != 0
-                            } else {
-                                false
-                            }
-                            permissionStates.add(mapOf(
-                                "name" to perms[i],
-                                "granted" to granted,
-                                "neverForLocation" to level
-                            ))
-                        }
-
                         result.success(mapOf(
                             "components" to components,
                             "permissionStates" to permissionStates
@@ -685,100 +676,22 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val pm = packageManager
-                        // API 28 起 GET_SIGNATURES 已废弃：改用 GET_SIGNING_CERTIFICATES +
-                        // PackageInfo.signingInfo，才能拿到「多签名者」与「签名轮换历史」。
-                        val signFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            PackageManager.GET_SIGNING_CERTIFICATES
-                        } else {
-                            @Suppress("DEPRECATION")
-                            PackageManager.GET_SIGNATURES
-                        }
                         val packageInfo = pm.getPackageInfo(
                             packageName,
-                            signFlags or PackageManager.GET_META_DATA
+                            PackageManager.GET_META_DATA
                         )
 
-                        // 签名列表：每张证书解析 X509，提取 Subject DN 与 SHA-256/SHA-1 指纹。
-                        // 证书来源按官方语义二选一（两者互斥）：
-                        //   - hasMultipleSigners() → apkContentsSigners：并列的**全部**签名者
-                        //     （此时 getSigningCertificateHistory() 会返回 null）
-                        //   - 否则 → signingCertificateHistory：原始→当前，含**轮换历史**
-                        //     （末位为当前证书，其余为历史证书）
-                        // kind: signer=并列签名者 / current=当前证书 / history=历史证书
-                        val certEntries = mutableListOf<Pair<Signature, String>>()
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            val signingInfo = packageInfo.signingInfo
-                            if (signingInfo != null) {
-                                if (signingInfo.hasMultipleSigners()) {
-                                    signingInfo.apkContentsSigners?.forEach {
-                                        certEntries.add(it to "signer")
-                                    }
-                                } else {
-                                    val history = signingInfo.signingCertificateHistory
-                                    if (history != null) {
-                                        for (index in history.indices) {
-                                            val isCurrent = index == history.lastIndex
-                                            certEntries.add(
-                                                history[index] to
-                                                    if (isCurrent) "current" else "history"
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            @Suppress("DEPRECATION")
-                            packageInfo.signatures?.forEach { certEntries.add(it to "current") }
+                        val signatureReport = InventoryInspector.signatures(pm, packageName)
+                        val signatures = signatureReport.entries.map {
+                            mapOf(
+                                "algorithm" to it.algorithm,
+                                "subject" to it.subject,
+                                "sha256" to it.sha256,
+                                "sha1" to it.sha1,
+                                "kind" to it.kind
+                            )
                         }
-
-                        val signatures = mutableListOf<Map<String, String>>()
-                        // 按 SHA-256 去重：多签名者与轮换历史理论上互斥，防御性兜底
-                        val seenDigests = mutableSetOf<String>()
-                        for ((sig, kind) in certEntries) {
-                            var algorithm = "SHA256withRSA"
-                            var subject = ""
-                            var sha256 = ""
-                            var sha1 = ""
-                            try {
-                                val cert = CertificateFactory.getInstance("X509")
-                                    .generateCertificate(ByteArrayInputStream(sig.toByteArray()))
-                                    as X509Certificate
-                                subject = cert.subjectDN.name
-                                algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" }
-                                    ?: "SHA256withRSA"
-                                sha256 = MessageDigest.getInstance("SHA-256")
-                                    .digest(sig.toByteArray())
-                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                                sha1 = MessageDigest.getInstance("SHA-1")
-                                    .digest(sig.toByteArray())
-                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                            } catch (e: Exception) {
-                                // 单张证书解析失败：降级为空字段，不影响其余证书
-                            }
-                            if (sha256.isNotEmpty() && !seenDigests.add(sha256)) continue
-                            signatures.add(mapOf(
-                                "algorithm" to algorithm,
-                                "subject" to subject,
-                                "sha256" to sha256,
-                                "sha1" to sha1,
-                                "kind" to kind,
-                            ))
-                        }
-
-                        // 签名形态摘要（供 UI 提示：并列多签名 / 含轮换历史）
-                        var signingShape = "single"
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            val signingInfo = packageInfo.signingInfo
-                            if (signingInfo != null) {
-                                signingShape = when {
-                                    signingInfo.hasMultipleSigners() -> "multiple"
-                                    signingInfo.hasPastSigningCertificates() -> "rotation"
-                                    else -> "single"
-                                }
-                            }
-                        } else if (signatures.size > 1) {
-                            signingShape = "multiple"
-                        }
+                        val signingShape = signatureReport.shape
 
                         // meta-data：Bundle → Map<String, String>（跳过 null 值）
                         val metaData = mutableMapOf<String, String>()

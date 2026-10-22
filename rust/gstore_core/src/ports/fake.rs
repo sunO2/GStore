@@ -13,7 +13,8 @@ use crate::error::Error;
 use crate::ports::http::{validate_http_url, HttpOptions, HttpPort, HttpResponse};
 use crate::ports::metadata::{MetadataPort, PackageMetadata};
 use crate::ports::platform::{
-    CapabilitySet, Connectivity, DeviceInfo, InstalledApp, Notification, PlatformHost, StoragePaths,
+    AppComponents, AppSignature, CapabilitySet, Connectivity, DeviceInfo, InstalledApp,
+    Notification, PlatformHost, StoragePaths,
 };
 use crate::ports::repo::{validate_repo_source, RepoApp, RepoMeta, RepoPort};
 use crate::ports::secret::validate_secret_key;
@@ -31,6 +32,10 @@ fn internal(context: &str) -> Error {
 pub struct FakePlatformHost {
     capabilities: RwLock<CapabilitySet>,
     installed: RwLock<BTreeMap<String, InstalledApp>>,
+    source_dirs: RwLock<BTreeMap<String, String>>,
+    signatures: RwLock<BTreeMap<String, Vec<AppSignature>>>,
+    permissions: RwLock<BTreeMap<String, Vec<String>>>,
+    components: RwLock<BTreeMap<String, AppComponents>>,
     online: AtomicBool,
     connectivity: Connectivity,
     storage: StoragePaths,
@@ -53,6 +58,10 @@ impl FakePlatformHost {
         Self {
             capabilities: RwLock::new(capabilities),
             installed: RwLock::new(BTreeMap::new()),
+            source_dirs: RwLock::new(BTreeMap::new()),
+            signatures: RwLock::new(BTreeMap::new()),
+            permissions: RwLock::new(BTreeMap::new()),
+            components: RwLock::new(BTreeMap::new()),
             online: AtomicBool::new(true),
             connectivity: Connectivity::Wifi,
             storage: StoragePaths {
@@ -85,6 +94,46 @@ impl FakePlatformHost {
                 installed.insert(app.package_name.clone(), app);
             }
         }
+        self
+    }
+
+    /// Seeds signing certificates for one package.
+    #[must_use]
+    pub fn with_signatures(self, package_name: &str, values: Vec<AppSignature>) -> Self {
+        self.signatures
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(package_name.to_string(), values);
+        self
+    }
+
+    /// Seeds requested permissions for one package.
+    #[must_use]
+    pub fn with_permissions(self, package_name: &str, values: Vec<String>) -> Self {
+        self.permissions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(package_name.to_string(), values);
+        self
+    }
+
+    /// Seeds components and permission states for one package.
+    #[must_use]
+    pub fn with_components(self, package_name: &str, values: AppComponents) -> Self {
+        self.components
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(package_name.to_string(), values);
+        self
+    }
+
+    /// Seeds the base APK source path for one package.
+    #[must_use]
+    pub fn with_source_dir(self, package_name: &str, source_dir: &str) -> Self {
+        self.source_dirs
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(package_name.to_string(), source_dir.to_string());
         self
     }
 
@@ -178,6 +227,69 @@ impl PlatformHost for FakePlatformHost {
             .map_err(|_| internal("platform installed"))?
             .get(package_name)
             .cloned())
+    }
+
+    fn is_installed_unchecked(&self, package_name: &str) -> Result<bool, Error> {
+        self.record("is_installed")?;
+        Ok(self
+            .installed
+            .read()
+            .map_err(|_| internal("platform installed"))?
+            .contains_key(package_name))
+    }
+
+    fn get_source_dir_unchecked(&self, package_name: &str) -> Result<Option<String>, Error> {
+        self.record("get_source_dir")?;
+        let installed = self
+            .installed
+            .read()
+            .map_err(|_| internal("platform installed"))?;
+        if !installed.contains_key(package_name) {
+            return Ok(None);
+        }
+        let source_dirs = self
+            .source_dirs
+            .read()
+            .map_err(|_| internal("platform source dirs"))?;
+        Ok(Some(source_dirs.get(package_name).cloned().unwrap_or_else(
+            || format!("/data/app/{package_name}/base.apk"),
+        )))
+    }
+
+    fn get_signatures_unchecked(&self, package_name: &str) -> Result<Vec<AppSignature>, Error> {
+        self.record("get_signatures")?;
+        Ok(self
+            .signatures
+            .read()
+            .map_err(|_| internal("platform signatures"))?
+            .get(package_name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn get_permissions_unchecked(&self, package_name: &str) -> Result<Vec<String>, Error> {
+        self.record("get_permissions")?;
+        Ok(self
+            .permissions
+            .read()
+            .map_err(|_| internal("platform permissions"))?
+            .get(package_name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn get_components_unchecked(&self, package_name: &str) -> Result<AppComponents, Error> {
+        self.record("get_components")?;
+        Ok(self
+            .components
+            .read()
+            .map_err(|_| internal("platform components"))?
+            .get(package_name)
+            .cloned()
+            .unwrap_or(AppComponents {
+                components: Vec::new(),
+                permission_states: Vec::new(),
+            }))
     }
 
     fn install_unchecked(&self, apk_path: &Path) -> Result<(), Error> {

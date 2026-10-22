@@ -5,6 +5,7 @@ mod manager;
 mod repo_port;
 mod dl_adapter;
 mod jni_bridge;
+pub mod platform_host;
 pub mod http_port;
 pub use http_port::ReqwestHttpPort;
 pub use repo_port::{ModuleManagerBridge, ModuleRepoPort, RepoBridge};

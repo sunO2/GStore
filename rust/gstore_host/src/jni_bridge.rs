@@ -673,6 +673,8 @@ fn guard_jni<F: FnOnce()>(export: &str, body: F) {
 const PLATFORM_BRIDGE_CLASS: &str = "com/suno2/gstore/PlatformHostBridge";
 const PLATFORM_INIT_CONTEXT: &str = "nativeInitContext";
 const PLATFORM_INIT_CONTEXT_SIG: &str = "(Landroid/content/Context;)V";
+const PLATFORM_INVALIDATE_INVENTORY: &str = "nativeInvalidateInventory";
+const PLATFORM_INVALIDATE_INVENTORY_SIG: &str = "()V";
 
 /// `applicationContext` captured for PlatformHost operations (set once).
 static PLATFORM_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
@@ -722,6 +724,7 @@ pub(crate) fn install_platform_context(
             platform_context().is_some()
         ),
     );
+    crate::platform_host::init_class(env);
     let _ = install_platform_natives(env);
     Ok(())
 }
@@ -743,12 +746,20 @@ pub(crate) fn install_platform_natives(env: &mut JNIEnv) -> bool {
             return false;
         }
     };
-    let methods = [NativeMethod {
-        name: PLATFORM_INIT_CONTEXT.into(),
-        sig: PLATFORM_INIT_CONTEXT_SIG.into(),
-        fn_ptr: Java_com_suno2_gstore_PlatformHostBridge_nativeInitContext as *const ()
-            as *mut c_void,
-    }];
+    let methods = [
+        NativeMethod {
+            name: PLATFORM_INIT_CONTEXT.into(),
+            sig: PLATFORM_INIT_CONTEXT_SIG.into(),
+            fn_ptr: Java_com_suno2_gstore_PlatformHostBridge_nativeInitContext as *const ()
+                as *mut c_void,
+        },
+        NativeMethod {
+            name: PLATFORM_INVALIDATE_INVENTORY.into(),
+            sig: PLATFORM_INVALIDATE_INVENTORY_SIG.into(),
+            fn_ptr: Java_com_suno2_gstore_PlatformHostBridge_nativeInvalidateInventory as *const ()
+                as *mut c_void,
+        },
+    ];
     match env.register_native_methods(&class, &methods) {
         Ok(()) => {
             PLATFORM_BRIDGE_INSTALLED.store(true, Ordering::SeqCst);
@@ -782,6 +793,17 @@ pub extern "system" fn Java_com_suno2_gstore_PlatformHostBridge_nativeInitContex
         if let Err(error) = install_platform_context(&mut env, &context) {
             crate::log_bridge::push_host_log(3, error);
         }
+    });
+}
+
+/// Kotlin: `PlatformHostBridge.nativeInvalidateInventory()`.
+#[no_mangle]
+pub extern "system" fn Java_com_suno2_gstore_PlatformHostBridge_nativeInvalidateInventory(
+    _env: JNIEnv,
+    _class: JObject,
+) {
+    guard_jni("PlatformHostBridge.nativeInvalidateInventory", || {
+        crate::platform_host::invalidate_cache();
     });
 }
 

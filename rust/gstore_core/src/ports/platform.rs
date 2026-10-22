@@ -236,6 +236,59 @@ pub struct InstalledApp {
     pub system: bool,
 }
 
+/// One signing certificate attached to an installed application.
+///
+/// `kind` is `signer` (co-signer), `current`, or `history` (rotation history),
+/// mirroring the Android signing-info contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSignature {
+    /// Certificate signature algorithm (for example `SHA256withRSA`).
+    pub algorithm: String,
+    /// Certificate subject distinguished name.
+    pub subject: String,
+    /// Colon-separated uppercase/lowercase hex SHA-256 digest.
+    pub sha256: String,
+    /// Colon-separated hex SHA-1 digest.
+    pub sha1: String,
+    /// `signer` / `current` / `history`.
+    pub kind: String,
+}
+
+/// One Android manifest component of an installed application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppComponent {
+    /// `ACTIVITY` / `SERVICE` / `RECEIVER` / `PROVIDER`.
+    pub kind: String,
+    /// Fully-qualified component class name.
+    pub name: String,
+    /// Whether the component is exported.
+    pub exported: bool,
+    /// Whether the component is enabled.
+    pub enabled: bool,
+    /// Declared process name, when the host reports one.
+    pub process_name: Option<String>,
+}
+
+/// Requested-permission state for an installed application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppPermissionState {
+    /// Android permission name.
+    pub name: String,
+    /// Whether the permission is currently granted.
+    pub granted: bool,
+    /// Whether the app declared `neverForLocation`.
+    pub never_for_location: bool,
+}
+
+/// Component and permission inventory for one installed application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppComponents {
+    /// Manifest components (activities, services, receivers, providers).
+    pub components: Vec<AppComponent>,
+    /// Requested-permission states.
+    pub permission_states: Vec<AppPermissionState>,
+}
+
 /// Notification payload accepted by [`PlatformHost::notify`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
@@ -339,6 +392,36 @@ pub trait PlatformHost {
         self.get_installed_unchecked(package_name)
     }
 
+    /// Whether `package_name` is installed.
+    fn is_installed(&self, package_name: &str) -> Result<bool, Error> {
+        self.require(Capability::Inventory)?;
+        self.is_installed_unchecked(package_name)
+    }
+
+    /// Resolves the base APK source directory for `package_name`.
+    fn get_source_dir(&self, package_name: &str) -> Result<Option<String>, Error> {
+        self.require(Capability::Inventory)?;
+        self.get_source_dir_unchecked(package_name)
+    }
+
+    /// Reads signing certificates for `package_name`.
+    fn get_signatures(&self, package_name: &str) -> Result<Vec<AppSignature>, Error> {
+        self.require(Capability::Inventory)?;
+        self.get_signatures_unchecked(package_name)
+    }
+
+    /// Reads requested permissions for `package_name`.
+    fn get_permissions(&self, package_name: &str) -> Result<Vec<String>, Error> {
+        self.require(Capability::Inventory)?;
+        self.get_permissions_unchecked(package_name)
+    }
+
+    /// Reads components and permission states for `package_name`.
+    fn get_components(&self, package_name: &str) -> Result<AppComponents, Error> {
+        self.require(Capability::Inventory)?;
+        self.get_components_unchecked(package_name)
+    }
+
     /// Installs an APK from `apk_path`.
     fn install(&self, apk_path: &Path) -> Result<(), Error> {
         self.require(Capability::Install)?;
@@ -430,6 +513,49 @@ pub trait PlatformHost {
     /// Implementation hook for [`PlatformHost::get_installed`].
     #[doc(hidden)]
     fn get_installed_unchecked(&self, package_name: &str) -> Result<Option<InstalledApp>, Error>;
+
+    /// Implementation hook for [`PlatformHost::is_installed`].
+    ///
+    /// The default keeps the trait backward compatible for hosts that only
+    /// implement the base inventory surface.
+    #[doc(hidden)]
+    fn is_installed_unchecked(&self, _package_name: &str) -> Result<bool, Error> {
+        Err(Error::Unsupported(
+            "platform inventory detail: is_installed".to_string(),
+        ))
+    }
+
+    /// Implementation hook for [`PlatformHost::get_source_dir`].
+    #[doc(hidden)]
+    fn get_source_dir_unchecked(&self, _package_name: &str) -> Result<Option<String>, Error> {
+        Err(Error::Unsupported(
+            "platform inventory detail: get_source_dir".to_string(),
+        ))
+    }
+
+    /// Implementation hook for [`PlatformHost::get_signatures`].
+    #[doc(hidden)]
+    fn get_signatures_unchecked(&self, _package_name: &str) -> Result<Vec<AppSignature>, Error> {
+        Err(Error::Unsupported(
+            "platform inventory detail: get_signatures".to_string(),
+        ))
+    }
+
+    /// Implementation hook for [`PlatformHost::get_permissions`].
+    #[doc(hidden)]
+    fn get_permissions_unchecked(&self, _package_name: &str) -> Result<Vec<String>, Error> {
+        Err(Error::Unsupported(
+            "platform inventory detail: get_permissions".to_string(),
+        ))
+    }
+
+    /// Implementation hook for [`PlatformHost::get_components`].
+    #[doc(hidden)]
+    fn get_components_unchecked(&self, _package_name: &str) -> Result<AppComponents, Error> {
+        Err(Error::Unsupported(
+            "platform inventory detail: get_components".to_string(),
+        ))
+    }
 
     /// Implementation hook for [`PlatformHost::install`].
     #[doc(hidden)]
