@@ -7,15 +7,22 @@
 pub mod config;
 pub mod fake;
 pub mod http;
+pub mod installer;
 pub mod metadata;
 pub mod platform;
 pub mod repo;
 pub mod secret;
 
 pub use config::CoreConfig;
-pub use fake::{FakeHttpPort, FakeMetadataPort, FakePlatformHost, FakeRepoPort, RecordedHttpCall};
+pub use fake::{
+    FakeHttpPort, FakeInstallerPort, FakeMetadataPort, FakePlatformHost, FakeRepoPort,
+    RecordedHttpCall, RecordedInstallCall,
+};
 pub use http::{
     validate_http_url, validate_proxy_url, HttpOptions, HttpPort, HttpResponse, DEFAULT_TIMEOUT,
+};
+pub use installer::{
+    InstallMethod, InstallOutcome, InstallTicket, InstallerPort, PlatformInstaller,
 };
 pub use metadata::{
     CachedMetadataPort, ClockFn, MetadataPort, PackageMetadata, METADATA_CACHE_TTL,

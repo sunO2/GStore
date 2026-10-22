@@ -11,6 +11,7 @@ pub mod dto;
 pub mod error;
 pub mod event;
 pub mod flags;
+pub mod install;
 pub mod migration;
 pub mod ports;
 pub mod update;
@@ -29,7 +30,13 @@ pub use dto::{
 pub use error::Error;
 pub use event::{CoreEvent, ScriptUiField};
 pub use flags::{flags, reset_flags, set_flags, Flags, FlagsApi, FlagsPatch};
+pub use install::{
+    InstallAttempt, InstallReconcileReport, InstallRecord, InstallService, INSTALL_STATUS_DENIED,
+    INSTALL_STATUS_FAILED, INSTALL_STATUS_INSTALLED, INSTALL_STATUS_NONE, INSTALL_STATUS_PENDING,
+    INSTALL_STATUS_TIMEOUT, INSTALL_STATUS_UNKNOWN,
+};
 pub use ports::{
-    Capability, CapabilitySet, CoreConfig, DownloadPort, FileSecretPort, HttpPort, MetadataPort,
-    PlatformHost, RepoPort,
+    Capability, CapabilitySet, CoreConfig, DownloadPort, FakeInstallerPort, FileSecretPort,
+    HttpPort, InstallMethod, InstallOutcome, InstallTicket, InstallerPort, MetadataPort,
+    PlatformHost, PlatformInstaller, RepoPort,
 };

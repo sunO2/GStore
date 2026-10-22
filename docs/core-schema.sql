@@ -166,11 +166,21 @@ CREATE TABLE IF NOT EXISTS download_task(
     error TEXT,
     last_started_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    install_status TEXT NOT NULL DEFAULT 'none',
+    install_method TEXT,
+    install_session_id TEXT,
+    install_error TEXT,
+    installed_at INTEGER,
+    installed_version TEXT
 );
 
 CREATE INDEX IF NOT EXISTS ix_download_task_status
     ON download_task(status, priority DESC, id ASC);
+
+-- Reconciliation only scans pending installs.
+CREATE INDEX IF NOT EXISTS ix_download_task_install_status
+    ON download_task(install_status) WHERE install_status = 'pending';
 
 -- Dedup contract: at most one ACTIVE row per dedup_key. Once the previous row
 -- is TERMINAL (completed/failed/cancelled), re-inserting the same dedup_key is
@@ -243,4 +253,4 @@ CREATE TABLE IF NOT EXISTS outbox(
     updated_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
