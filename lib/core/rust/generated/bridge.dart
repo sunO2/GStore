@@ -10,10 +10,10 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `init_inner`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_service_for_test`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -300,6 +300,46 @@ abstract class CoreApi implements RustOpaqueInterface {
           dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   Future<CoreInitResult> migratePaths();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<DownloadApi>>
+abstract class DownloadApi implements RustOpaqueInterface {
+  Future<void> cancel({required String moduleTaskId});
+
+  Future<DownloadTaskDto?> get_({required String moduleTaskId});
+
+  /// Opens the core database and binds the download port.
+  ///
+  /// The one reconcile sweep is best-effort: a missing module is logged and
+  /// never fails initialization.
+  static Future<DownloadApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeDownloadApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  Future<List<DownloadTaskDto>> list();
+
+  Future<void> pause({required String moduleTaskId});
+
+  Future<void> remove({required String moduleTaskId});
+
+  Future<void> restart({required String moduleTaskId});
+
+  Future<void> resume({required String moduleTaskId});
+
+  Future<void> retry({required String moduleTaskId});
+
+  Future<PlatformInt64> start({required DownloadStartRequest request});
+
+  /// 500 ms polling stream over the authoritative core rows.
+  ///
+  /// Only changed rows are emitted; a terminal row is emitted exactly once
+  /// (per-task terminal event) and the stream stays open for later tasks.
+  /// The thread exits when Dart cancels the stream (`sink.add` errors) or the
+  /// core read fails.
+  Stream<DownloadTaskDto> watchAll();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
@@ -1010,6 +1050,198 @@ class CoreWritesMarker {
           domain == other.domain &&
           firstWriteAt == other.firstWriteAt &&
           snapshotId == other.snapshotId;
+}
+
+/// Start request accepted by [`DownloadApi::start`] (FRB data class).
+class DownloadStartRequest {
+  final String appId;
+  final String appName;
+  final String version;
+  final String fileName;
+  final String url;
+  final String destPath;
+  final String kind;
+  final String resourceId;
+  final String resourceVersion;
+  final String dedupKey;
+  final String? expectedSha256;
+  final bool installAfterDownload;
+
+  const DownloadStartRequest({
+    required this.appId,
+    required this.appName,
+    required this.version,
+    required this.fileName,
+    required this.url,
+    required this.destPath,
+    required this.kind,
+    required this.resourceId,
+    required this.resourceVersion,
+    required this.dedupKey,
+    this.expectedSha256,
+    required this.installAfterDownload,
+  });
+
+  @override
+  int get hashCode =>
+      appId.hashCode ^
+      appName.hashCode ^
+      version.hashCode ^
+      fileName.hashCode ^
+      url.hashCode ^
+      destPath.hashCode ^
+      kind.hashCode ^
+      resourceId.hashCode ^
+      resourceVersion.hashCode ^
+      dedupKey.hashCode ^
+      expectedSha256.hashCode ^
+      installAfterDownload.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DownloadStartRequest &&
+          runtimeType == other.runtimeType &&
+          appId == other.appId &&
+          appName == other.appName &&
+          version == other.version &&
+          fileName == other.fileName &&
+          url == other.url &&
+          destPath == other.destPath &&
+          kind == other.kind &&
+          resourceId == other.resourceId &&
+          resourceVersion == other.resourceVersion &&
+          dedupKey == other.dedupKey &&
+          expectedSha256 == other.expectedSha256 &&
+          installAfterDownload == other.installAfterDownload;
+}
+
+/// One `download_task` row crossing the FRB boundary (FRB data class).
+class DownloadTaskDto {
+  final PlatformInt64 id;
+  final String? moduleTaskId;
+  final String? dedupKey;
+  final String? appId;
+  final String? appName;
+  final String? version;
+  final String? fileName;
+  final String? kind;
+  final String? resourceId;
+  final String? resourceVersion;
+  final String? url;
+  final String? destPath;
+  final String status;
+  final PlatformInt64 bytesDone;
+  final PlatformInt64 total;
+  final PlatformInt64 speedBps;
+  final PlatformInt64? etaSec;
+  final String? segmentsJson;
+  final PlatformInt64 retries;
+  final String? serverMeta;
+  final PlatformInt64 priority;
+  final String? headersJson;
+  final String? expectedSha256;
+  final bool installAfterDownload;
+  final String? error;
+  final PlatformInt64? lastStartedAt;
+  final PlatformInt64 createdAt;
+  final PlatformInt64 updatedAt;
+
+  const DownloadTaskDto({
+    required this.id,
+    this.moduleTaskId,
+    this.dedupKey,
+    this.appId,
+    this.appName,
+    this.version,
+    this.fileName,
+    this.kind,
+    this.resourceId,
+    this.resourceVersion,
+    this.url,
+    this.destPath,
+    required this.status,
+    required this.bytesDone,
+    required this.total,
+    required this.speedBps,
+    this.etaSec,
+    this.segmentsJson,
+    required this.retries,
+    this.serverMeta,
+    required this.priority,
+    this.headersJson,
+    this.expectedSha256,
+    required this.installAfterDownload,
+    this.error,
+    this.lastStartedAt,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      moduleTaskId.hashCode ^
+      dedupKey.hashCode ^
+      appId.hashCode ^
+      appName.hashCode ^
+      version.hashCode ^
+      fileName.hashCode ^
+      kind.hashCode ^
+      resourceId.hashCode ^
+      resourceVersion.hashCode ^
+      url.hashCode ^
+      destPath.hashCode ^
+      status.hashCode ^
+      bytesDone.hashCode ^
+      total.hashCode ^
+      speedBps.hashCode ^
+      etaSec.hashCode ^
+      segmentsJson.hashCode ^
+      retries.hashCode ^
+      serverMeta.hashCode ^
+      priority.hashCode ^
+      headersJson.hashCode ^
+      expectedSha256.hashCode ^
+      installAfterDownload.hashCode ^
+      error.hashCode ^
+      lastStartedAt.hashCode ^
+      createdAt.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DownloadTaskDto &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          moduleTaskId == other.moduleTaskId &&
+          dedupKey == other.dedupKey &&
+          appId == other.appId &&
+          appName == other.appName &&
+          version == other.version &&
+          fileName == other.fileName &&
+          kind == other.kind &&
+          resourceId == other.resourceId &&
+          resourceVersion == other.resourceVersion &&
+          url == other.url &&
+          destPath == other.destPath &&
+          status == other.status &&
+          bytesDone == other.bytesDone &&
+          total == other.total &&
+          speedBps == other.speedBps &&
+          etaSec == other.etaSec &&
+          segmentsJson == other.segmentsJson &&
+          retries == other.retries &&
+          serverMeta == other.serverMeta &&
+          priority == other.priority &&
+          headersJson == other.headersJson &&
+          expectedSha256 == other.expectedSha256 &&
+          installAfterDownload == other.installAfterDownload &&
+          error == other.error &&
+          lastStartedAt == other.lastStartedAt &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
 }
 
 /// Rust-owned feature flag snapshot (FRB data class).

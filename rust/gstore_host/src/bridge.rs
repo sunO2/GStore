@@ -880,8 +880,8 @@ mod core_api_tests {
             "module db exists but module is unmounted: expected a typed error"
         );
         assert!(
-            api.download_port().snapshot().is_err(),
-            "an unmounted module must yield a typed error, not rows"
+            api.download_port().snapshot().is_ok(),
+            "snapshots are core-authoritative and must not require a mounted module"
         );
 
         drop(api);
@@ -2715,6 +2715,295 @@ impl UpdateApi {
     /// Whether the cached results are still inside the one-hour window.
     pub fn cache_valid(&self) -> Result<bool, String> {
         self.service.is_cache_valid().map_err(core_err)
+    }
+}
+
+// ===========================================================================
+// DownloadApi (Wave 3 Todo 2)
+// ===========================================================================
+
+use crate::download_host::{DownloadWatchState, HostDownloadPort};
+use gstore_core::download::port::{DownloadRequest, PortError};
+use gstore_core::download::DownloadTaskRow;
+
+const CORE_E_DOWNLOAD_INVALID_ARG: &str = "CORE_E_DOWNLOAD_INVALID_ARG";
+const CORE_E_DOWNLOAD_MODULE: &str = "CORE_E_DOWNLOAD_MODULE";
+const CORE_E_DOWNLOAD_DB: &str = "CORE_E_DOWNLOAD_DB";
+const CORE_E_DOWNLOAD_UNKNOWN_TASK: &str = "CORE_E_DOWNLOAD_UNKNOWN_TASK";
+const CORE_E_DOWNLOAD_NEEDS_RESTART: &str = "CORE_E_DOWNLOAD_NEEDS_RESTART";
+
+/// Start request accepted by [`DownloadApi::start`] (FRB data class).
+#[derive(Debug, Clone)]
+pub struct DownloadStartRequest {
+    pub app_id: String,
+    pub app_name: String,
+    pub version: String,
+    pub file_name: String,
+    pub url: String,
+    pub dest_path: String,
+    pub kind: String,
+    pub resource_id: String,
+    pub resource_version: String,
+    pub dedup_key: String,
+    pub expected_sha256: Option<String>,
+    pub install_after_download: bool,
+}
+
+impl From<DownloadStartRequest> for DownloadRequest {
+    fn from(request: DownloadStartRequest) -> Self {
+        Self {
+            app_id: request.app_id,
+            app_name: request.app_name,
+            version: request.version,
+            file_name: request.file_name,
+            url: request.url,
+            dest_path: request.dest_path,
+            kind: request.kind,
+            resource_id: request.resource_id,
+            resource_version: request.resource_version,
+            dedup_key: request.dedup_key,
+            expected_sha256: request.expected_sha256,
+            install_after_download: request.install_after_download,
+        }
+    }
+}
+
+/// One `download_task` row crossing the FRB boundary (FRB data class).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownloadTaskDto {
+    pub id: i64,
+    pub module_task_id: Option<String>,
+    pub dedup_key: Option<String>,
+    pub app_id: Option<String>,
+    pub app_name: Option<String>,
+    pub version: Option<String>,
+    pub file_name: Option<String>,
+    pub kind: Option<String>,
+    pub resource_id: Option<String>,
+    pub resource_version: Option<String>,
+    pub url: Option<String>,
+    pub dest_path: Option<String>,
+    pub status: String,
+    pub bytes_done: i64,
+    pub total: i64,
+    pub speed_bps: i64,
+    pub eta_sec: Option<i64>,
+    pub segments_json: Option<String>,
+    pub retries: i64,
+    pub server_meta: Option<String>,
+    pub priority: i64,
+    pub headers_json: Option<String>,
+    pub expected_sha256: Option<String>,
+    pub install_after_download: bool,
+    pub error: Option<String>,
+    pub last_started_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<DownloadTaskRow> for DownloadTaskDto {
+    fn from(row: DownloadTaskRow) -> Self {
+        Self {
+            id: row.id,
+            module_task_id: row.module_task_id,
+            dedup_key: row.dedup_key,
+            app_id: row.app_id,
+            app_name: row.app_name,
+            version: row.version,
+            file_name: row.file_name,
+            kind: row.kind,
+            resource_id: row.resource_id,
+            resource_version: row.resource_version,
+            url: row.url,
+            dest_path: row.dest_path,
+            status: row.status,
+            bytes_done: row.bytes_done,
+            total: row.total,
+            speed_bps: row.speed_bps,
+            eta_sec: row.eta_sec,
+            segments_json: row.segments_json,
+            retries: row.retries,
+            server_meta: row.server_meta,
+            priority: row.priority,
+            headers_json: row.headers_json,
+            expected_sha256: row.expected_sha256,
+            install_after_download: row.install_after_download,
+            error: row.error,
+            last_started_at: row.last_started_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+fn download_err(error: PortError) -> String {
+    match error {
+        PortError::Module(message) => format!("{CORE_E_DOWNLOAD_MODULE}: {message}"),
+        PortError::Db(message) => format!("{CORE_E_DOWNLOAD_DB}: {message}"),
+        PortError::UnknownTask(id) => format!("{CORE_E_DOWNLOAD_UNKNOWN_TASK}: {id}"),
+        PortError::NeedsRestart(id) => format!("{CORE_E_DOWNLOAD_NEEDS_RESTART}: {id}"),
+    }
+}
+
+fn validate_task_id(module_task_id: &str) -> Result<(), String> {
+    if module_task_id.trim().is_empty() {
+        return Err(format!(
+            "{CORE_E_DOWNLOAD_INVALID_ARG}: module_task_id must not be empty"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_start_request(request: &DownloadStartRequest) -> Result<(), String> {
+    for (field, value) in [
+        ("app_id", request.app_id.as_str()),
+        ("file_name", request.file_name.as_str()),
+        ("url", request.url.as_str()),
+        ("dest_path", request.dest_path.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{CORE_E_DOWNLOAD_INVALID_ARG}: {field} must not be empty"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// FRB facade over the Todo-1 [`HostDownloadPort`].
+///
+/// Mutations require a mounted download module; `list`/`snapshot`/`watchAll`
+/// read the authoritative core rows bridge-free. Errors use the stable
+/// `CORE_E_DOWNLOAD_*` prefixes.
+#[frb(opaque)]
+pub struct DownloadApi {
+    port: HostDownloadPort,
+}
+
+impl DownloadApi {
+    /// Opens the core database and binds the download port.
+    ///
+    /// The one reconcile sweep is best-effort: a missing module is logged and
+    /// never fails initialization.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<DownloadApi, String> {
+        prepare_dirs(&data_dir, &files_dir, &cache_dir)?;
+        let db = open_core_db(&data_dir)?;
+        let conn = db.shared_writer();
+        let core_db_path = gstore_core::db::core_db_path(Path::new(&data_dir));
+        let port = HostDownloadPort::new(
+            conn,
+            core_db_path,
+            PathBuf::from(&data_dir),
+            PathBuf::from(&cache_dir),
+        );
+        if let Err(error) = port.reconcile() {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("download reconcile at init (non-fatal): {error}"),
+            );
+        }
+        Ok(Self { port })
+    }
+
+    /// Wraps an already-built port (integration tests only).
+    #[frb(ignore)]
+    #[doc(hidden)]
+    pub fn from_port_for_test(port: HostDownloadPort) -> DownloadApi {
+        Self { port }
+    }
+
+    pub fn start(&self, request: DownloadStartRequest) -> Result<i64, String> {
+        validate_start_request(&request)?;
+        let request = DownloadRequest::from(request);
+        self.port.start(&request).map_err(download_err)
+    }
+
+    pub fn list(&self) -> Result<Vec<DownloadTaskDto>, String> {
+        self.port
+            .list()
+            .map_err(download_err)
+            .map(|rows| rows.into_iter().map(DownloadTaskDto::from).collect())
+    }
+
+    pub fn get(&self, module_task_id: String) -> Result<Option<DownloadTaskDto>, String> {
+        validate_task_id(&module_task_id)?;
+        self.port
+            .get(&module_task_id)
+            .map_err(download_err)
+            .map(|row| Some(DownloadTaskDto::from(row)))
+    }
+
+    pub fn pause(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.pause(&module_task_id).map_err(download_err)
+    }
+
+    pub fn resume(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.resume(&module_task_id).map_err(download_err)
+    }
+
+    pub fn cancel(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.cancel(&module_task_id).map_err(download_err)
+    }
+
+    pub fn retry(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.retry(&module_task_id).map_err(download_err)
+    }
+
+    pub fn restart(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.restart(&module_task_id).map_err(download_err)
+    }
+
+    pub fn remove(&self, module_task_id: String) -> Result<(), String> {
+        validate_task_id(&module_task_id)?;
+        self.port.remove(&module_task_id).map_err(download_err)
+    }
+
+    /// 500 ms polling stream over the authoritative core rows.
+    ///
+    /// Only changed rows are emitted; a terminal row is emitted exactly once
+    /// (per-task terminal event) and the stream stays open for later tasks.
+    /// The thread exits when Dart cancels the stream (`sink.add` errors) or the
+    /// core read fails.
+    pub fn watch_all(&self, sink: crate::frb_generated::StreamSink<DownloadTaskDto>) {
+        let reader = self.port.core_reader();
+        let spawned = std::thread::Builder::new()
+            .name("gstore-download-watch".to_string())
+            .spawn(move || {
+                let mut state = DownloadWatchState::new();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let rows = match reader.list() {
+                        Ok(rows) => rows,
+                        Err(error) => {
+                            crate::log_bridge::push_host_log(
+                                2,
+                                format!("download watch stopped: {error}"),
+                            );
+                            return;
+                        }
+                    };
+                    for dto in state.observe(rows) {
+                        if sink.add(dto).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("download watch thread failed to start: {error}"),
+            );
+        }
     }
 }
 

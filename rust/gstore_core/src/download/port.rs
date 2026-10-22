@@ -529,17 +529,7 @@ fn existing_row_id(conn: &Connection, column: &str, value: &str) -> Result<Optio
 }
 
 fn query_rows(conn: &Connection) -> Result<Vec<DownloadTaskRow>, PortError> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT {} FROM download_task ORDER BY id",
-            crate::download::ROW_COLUMNS
-        ))
-        .map_err(|e| PortError::Db(format!("prepare list: {e}")))?;
-    let rows = stmt
-        .query_map([], crate::download::row_from_sql)
-        .map_err(|e| PortError::Db(format!("query list: {e}")))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| PortError::Db(format!("read list: {e}")))
+    crate::download::list_tasks(conn).map_err(|e| PortError::Db(e.to_string()))
 }
 
 #[cfg(test)]

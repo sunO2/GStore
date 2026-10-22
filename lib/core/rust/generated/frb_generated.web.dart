@@ -38,6 +38,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi;
 
   CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_DownloadApiPtr => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi;
+
+  CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_EventBridgePtr => wire
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge;
 
@@ -86,6 +90,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   CoreApi
       dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
+          dynamic raw);
+
+  @protected
+  DownloadApi
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
           dynamic raw);
 
   @protected
@@ -154,6 +163,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  DownloadApi
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          dynamic raw);
+
+  @protected
   EventBridge
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           dynamic raw);
@@ -214,6 +228,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  DownloadApi
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          dynamic raw);
+
+  @protected
   EventBridge
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           dynamic raw);
@@ -252,6 +271,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UpdateApi
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
           dynamic raw);
+
+  @protected
+  RustStreamSink<DownloadTaskDto> dco_decode_StreamSink_download_task_dto_Sse(
+      dynamic raw);
 
   @protected
   RustStreamSink<LogMessage> dco_decode_StreamSink_log_message_Sse(dynamic raw);
@@ -293,6 +316,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker dco_decode_box_autoadd_core_writes_marker(dynamic raw);
+
+  @protected
+  DownloadStartRequest dco_decode_box_autoadd_download_start_request(
+      dynamic raw);
+
+  @protected
+  DownloadTaskDto dco_decode_box_autoadd_download_task_dto(dynamic raw);
 
   @protected
   FlagsPatch dco_decode_box_autoadd_flags_patch(dynamic raw);
@@ -340,6 +370,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CoreWritesMarker dco_decode_core_writes_marker(dynamic raw);
 
   @protected
+  DownloadStartRequest dco_decode_download_start_request(dynamic raw);
+
+  @protected
+  DownloadTaskDto dco_decode_download_task_dto(dynamic raw);
+
+  @protected
   Flags dco_decode_flags(dynamic raw);
 
   @protected
@@ -369,6 +405,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ChannelEntry> dco_decode_list_channel_entry(dynamic raw);
+
+  @protected
+  List<DownloadTaskDto> dco_decode_list_download_task_dto(dynamic raw);
 
   @protected
   List<ModuleInfo> dco_decode_list_module_info(dynamic raw);
@@ -413,6 +452,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker? dco_decode_opt_box_autoadd_core_writes_marker(dynamic raw);
+
+  @protected
+  DownloadTaskDto? dco_decode_opt_box_autoadd_download_task_dto(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -465,6 +507,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   CoreApi
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
+          SseDeserializer deserializer);
+
+  @protected
+  DownloadApi
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
           SseDeserializer deserializer);
 
   @protected
@@ -533,6 +580,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  DownloadApi
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          SseDeserializer deserializer);
+
+  @protected
   EventBridge
       sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           SseDeserializer deserializer);
@@ -593,6 +645,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  DownloadApi
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          SseDeserializer deserializer);
+
+  @protected
   EventBridge
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           SseDeserializer deserializer);
@@ -631,6 +688,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   UpdateApi
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
           SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<DownloadTaskDto> sse_decode_StreamSink_download_task_dto_Sse(
+      SseDeserializer deserializer);
 
   @protected
   RustStreamSink<LogMessage> sse_decode_StreamSink_log_message_Sse(
@@ -678,6 +739,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker sse_decode_box_autoadd_core_writes_marker(
+      SseDeserializer deserializer);
+
+  @protected
+  DownloadStartRequest sse_decode_box_autoadd_download_start_request(
+      SseDeserializer deserializer);
+
+  @protected
+  DownloadTaskDto sse_decode_box_autoadd_download_task_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -732,6 +801,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CoreWritesMarker sse_decode_core_writes_marker(SseDeserializer deserializer);
 
   @protected
+  DownloadStartRequest sse_decode_download_start_request(
+      SseDeserializer deserializer);
+
+  @protected
+  DownloadTaskDto sse_decode_download_task_dto(SseDeserializer deserializer);
+
+  @protected
   Flags sse_decode_flags(SseDeserializer deserializer);
 
   @protected
@@ -764,6 +840,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ChannelEntry> sse_decode_list_channel_entry(
+      SseDeserializer deserializer);
+
+  @protected
+  List<DownloadTaskDto> sse_decode_list_download_task_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -811,6 +891,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker? sse_decode_opt_box_autoadd_core_writes_marker(
+      SseDeserializer deserializer);
+
+  @protected
+  DownloadTaskDto? sse_decode_opt_box_autoadd_download_task_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -866,6 +950,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           CoreApi self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          DownloadApi self, SseSerializer serializer);
 
   @protected
   void
@@ -934,6 +1023,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          DownloadApi self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           EventBridge self, SseSerializer serializer);
 
@@ -994,6 +1088,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          DownloadApi self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           EventBridge self, SseSerializer serializer);
 
@@ -1031,6 +1130,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
           UpdateApi self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_StreamSink_download_task_dto_Sse(
+      RustStreamSink<DownloadTaskDto> self, SseSerializer serializer);
 
   @protected
   void sse_encode_StreamSink_log_message_Sse(
@@ -1079,6 +1182,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_core_writes_marker(
       CoreWritesMarker self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_download_start_request(
+      DownloadStartRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_download_task_dto(
+      DownloadTaskDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_flags_patch(
@@ -1138,6 +1249,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       CoreWritesMarker self, SseSerializer serializer);
 
   @protected
+  void sse_encode_download_start_request(
+      DownloadStartRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_download_task_dto(
+      DownloadTaskDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_flags(Flags self, SseSerializer serializer);
 
   @protected
@@ -1171,6 +1290,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_channel_entry(
       List<ChannelEntry> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_download_task_dto(
+      List<DownloadTaskDto> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_module_info(
@@ -1220,6 +1343,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_core_writes_marker(
       CoreWritesMarker? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_download_task_dto(
+      DownloadTaskDto? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(
@@ -1304,6 +1431,18 @@ class RustLibWire implements BaseWire {
           int ptr) =>
       wasmModule
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
+              ptr);
+
+  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          int ptr) =>
+      wasmModule
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+              ptr);
+
+  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          int ptr) =>
+      wasmModule
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
               ptr);
 
   void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
@@ -1439,6 +1578,14 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
       rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
+          int ptr);
+
+  external void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
+          int ptr);
+
+  external void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDownloadApi(
           int ptr);
 
   external void

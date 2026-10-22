@@ -98,3 +98,19 @@ pub fn load_task(
     .optional()
     .map_err(|e| DbError(format!("load task {module_task_id}: {e}")))
 }
+
+/// Loads every task row in `id` order.
+///
+/// `download_task` in `gstore_core.db` is authoritative, so callers that only
+/// need a snapshot (the host list/watch paths) must use this instead of asking
+/// the download module.
+pub fn list_tasks(conn: &rusqlite::Connection) -> Result<Vec<DownloadTaskRow>, DbError> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {ROW_COLUMNS} FROM download_task ORDER BY id"))
+        .map_err(|e| DbError(format!("prepare list tasks: {e}")))?;
+    let rows = stmt
+        .query_map([], row_from_sql)
+        .map_err(|e| DbError(format!("query list tasks: {e}")))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| DbError(format!("read list tasks: {e}")))
+}

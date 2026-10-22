@@ -6,6 +6,7 @@
 //! instance is created lazily on first use so `CoreApi::init` performs no module
 //! I/O beyond the one best-effort reconcile sweep.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -14,6 +15,8 @@ use gstore_core::download::port::{
     DownloadPort, DownloadRequest, ModuleBridge, ModuleDownloadPort, PortError, ReconcileReport,
 };
 use gstore_core::download::DownloadTaskRow;
+
+use crate::bridge::DownloadTaskDto;
 
 /// `ModuleBridge` that dispatches to the global module manager.
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +67,96 @@ enum PortSlot {
 pub enum ReconcileOutcome {
     Ok(ReconcileReport),
     Err(String),
+}
+
+/// Bridge-free reader over the authoritative core `download_task` table.
+///
+/// The watch thread owns one of these, so a snapshot never needs a mounted
+/// module and never touches global module state.
+#[derive(Clone)]
+pub struct CoreTaskReader {
+    conn: SharedConn,
+}
+
+impl CoreTaskReader {
+    pub fn new(conn: SharedConn) -> Self {
+        Self { conn }
+    }
+
+    pub fn list(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| PortError::Db("download core connection mutex poisoned".to_string()))?;
+        gstore_core::download::list_tasks(&conn).map_err(|e| PortError::Db(e.to_string()))
+    }
+
+    pub fn get(&self, module_task_id: &str) -> Result<Option<DownloadTaskRow>, PortError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| PortError::Db("download core connection mutex poisoned".to_string()))?;
+        gstore_core::download::load_task(&conn, module_task_id)
+            .map_err(|e| PortError::Db(e.to_string()))
+    }
+}
+
+const TERMINAL_STATUSES: [&str; 5] = [
+    "completed",
+    "failed",
+    "cancelled",
+    "removed",
+    "needs_restart",
+];
+
+fn is_terminal_status(status: &str) -> bool {
+    TERMINAL_STATUSES.contains(&status)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatchEntry {
+    projection: String,
+    terminal: bool,
+}
+
+/// Change detector behind `DownloadApi::watch_all`.
+///
+/// Contract: a row is emitted only when its full projection changes; a terminal
+/// row is emitted exactly once and never again, while later tasks are still
+/// emitted. In other words, "terminal" is a per-task terminal event and the
+/// stream remains open for tasks that appear afterwards.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DownloadWatchState {
+    last: HashMap<i64, WatchEntry>,
+}
+
+impl DownloadWatchState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn observe(&mut self, rows: Vec<DownloadTaskRow>) -> Vec<DownloadTaskDto> {
+        let mut emitted = Vec::new();
+        for row in rows {
+            let dto = DownloadTaskDto::from(row);
+            let projection = format!("{dto:?}");
+            let terminal = is_terminal_status(&dto.status);
+            match self.last.get(&dto.id) {
+                Some(entry) if entry.projection == projection => continue,
+                Some(entry) if entry.terminal => continue,
+                _ => {}
+            }
+            self.last.insert(
+                dto.id,
+                WatchEntry {
+                    projection,
+                    terminal,
+                },
+            );
+            emitted.push(dto);
+        }
+        emitted
+    }
 }
 
 /// [`DownloadPort`] facade that lazily binds the core port to the mounted
@@ -217,15 +310,28 @@ impl HostDownloadPort {
         &self.core_db_path
     }
 
+    /// Creates a bridge-free core reader (used by the FRB watch thread).
+    pub fn core_reader(&self) -> CoreTaskReader {
+        CoreTaskReader::new(self.conn.clone())
+    }
+
+    /// Lists the authoritative core rows without requiring a mounted module.
+    pub fn list_core(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
+        self.core_reader().list()
+    }
+
     pub fn start(&self, req: &DownloadRequest) -> Result<i64, PortError> {
         self.with_port(|port| port.start(req))
     }
 
     pub fn list(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
-        self.with_port(|port| port.list())
+        self.list_core()
     }
 
     pub fn get(&self, module_task_id: &str) -> Result<DownloadTaskRow, PortError> {
+        if let Some(row) = self.core_reader().get(module_task_id)? {
+            return Ok(row);
+        }
         self.with_port(|port| port.get(module_task_id))
     }
 
@@ -254,10 +360,10 @@ impl HostDownloadPort {
     }
 
     pub fn snapshot(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
-        self.with_port(|port| port.snapshot())
+        self.list_core()
     }
 
     pub fn watch_all(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
-        self.with_port(|port| port.watch_all())
+        self.list_core()
     }
 }
