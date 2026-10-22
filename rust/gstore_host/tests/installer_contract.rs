@@ -363,3 +363,47 @@ fn installer_contract_pending_sessions_track_store() {
         vec!["session-tracked".to_string()]
     );
 }
+
+#[test]
+fn installer_contract_drained_result_clears_stale_pending_marker() {
+    let _guard = serial();
+    reset_result_store();
+
+    let bridge = FakeBridge::new();
+    bridge.set_install_json(
+        r#"{"method":"package_installer","status":"pending","packageName":"com.example.drain","versionName":null,"error":null}"#,
+    );
+    let port = AndroidInstallerPort::new(bridge);
+
+    port.begin_install(Path::new("/tmp/app.apk"), "session-drain")
+        .expect("first pending");
+    record_install_result(
+        "session-drain",
+        "installed",
+        Some("com.example.drain"),
+        Some("4.0.0"),
+        None,
+    );
+    // Simulate the callback-before-`begin_install`-returns race: the pending
+    // marker is re-added after a terminal result is already stored.
+    port.begin_install(Path::new("/tmp/app.apk"), "session-drain")
+        .expect("race pending");
+    assert_eq!(
+        port.pending_sessions().expect("stale pending"),
+        vec!["session-drain".to_string()]
+    );
+
+    assert_eq!(
+        port.install_result("session-drain").expect("drain result"),
+        Some(InstallOutcome::Installed {
+            package_name: Some("com.example.drain".to_string()),
+            version_name: Some("4.0.0".to_string()),
+        })
+    );
+    assert!(
+        port.pending_sessions()
+            .expect("pending after drain")
+            .is_empty(),
+        "draining a terminal result must clear the pending marker"
+    );
+}

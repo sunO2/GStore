@@ -14,7 +14,11 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.util.Collections
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Android install execution layer for the Rust [`InstallerPort`].
@@ -38,6 +42,13 @@ object InstallerBridge {
 
     /** Bounded wait for an asynchronous install before a `timeout` result. */
     private const val TIMEOUT_MS = 120_000L
+
+    /**
+     * Bounded wait for the blocking Shizuku shell call. The worker cannot be
+     * force-killed, but the caller is bounded and still receives one terminal
+     * result.
+     */
+    private const val SHIZUKU_TIMEOUT_SECONDS = 180L
 
     /** Explicit broadcast action used by the PackageInstaller `PendingIntent`. */
     const val ACTION_INSTALL_COMMIT = "com.suno2.gstore.action.INSTALL_COMMIT"
@@ -149,6 +160,15 @@ object InstallerBridge {
         return installViaPackageInstaller(file, sessionId, packageName)
     }
 
+    /**
+     * Shizuku silent install with a caller-side bound.
+     *
+     * `ShizukuExecBridge.exec` is synchronous and not interruptible, so the
+     * shell call runs on a daemon worker. The caller waits at most
+     * [SHIZUKU_TIMEOUT_SECONDS] and then returns one terminal `timeout` result.
+     * The abandoned worker cannot be force-killed, but it always removes the
+     * staged APK in its own `finally` path once the shell call returns.
+     */
     private fun installViaShizuku(
         file: File,
         sessionId: String,
@@ -156,21 +176,54 @@ object InstallerBridge {
         archiveVersion: String?
     ): String? {
         val staged = File(STAGE_DIR, "gstore_install_${safeName(sessionId)}.apk")
+        val command =
+            "cp ${quote(file.absolutePath)} ${quote(staged.absolutePath)} && " +
+                "pm install -r ${quote(staged.absolutePath)}; " +
+                "rm -f ${quote(staged.absolutePath)}"
+
+        val worker = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "gstore-shizuku-install").apply { isDaemon = true }
+        }
+        val future = try {
+            worker.submit(Callable<String> {
+                try {
+                    ShizukuExecBridge.exec(command)
+                } catch (t: Throwable) {
+                    "Error: ${t.message ?: t.javaClass.simpleName}"
+                } finally {
+                    // Always remove the staged APK, including after a slow shell
+                    // call that outlived the caller's bounded wait.
+                    runCatching {
+                        ShizukuExecBridge.exec("rm -f ${quote(staged.absolutePath)}")
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            worker.shutdownNow()
+            Log.w(TAG, "Shizuku worker could not start: ${t.message}")
+            return null
+        }
+
         val output = try {
-            ShizukuExecBridge.exec(
-                "cp ${quote(file.absolutePath)} ${quote(staged.absolutePath)} && " +
-                    "pm install -r ${quote(staged.absolutePath)}; " +
-                    "rm -f ${quote(staged.absolutePath)}"
+            future.get(SHIZUKU_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (t: TimeoutException) {
+            future.cancel(true)
+            worker.shutdownNow()
+            Log.w(TAG, "Shizuku install exceeded ${SHIZUKU_TIMEOUT_SECONDS}s")
+            return rememberTerminal(
+                sessionId,
+                "shizuku",
+                "timeout",
+                packageName,
+                null,
+                "CORE_E_INSTALL_TIMEOUT: ${SHIZUKU_TIMEOUT_SECONDS}s"
             )
         } catch (t: Throwable) {
-            Log.w(TAG, "Shizuku install failed: ${t.message}")
+            worker.shutdownNow()
+            Log.w(TAG, "Shizuku install worker failed: ${t.message}")
             ""
         } finally {
-            // The shell command already removes it; this is the belt-and-braces
-            // cleanup for a command that never ran.
-            runCatching {
-                ShizukuExecBridge.exec("rm -f ${quote(staged.absolutePath)}")
-            }
+            worker.shutdown()
         }
 
         if (output.trim().startsWith("Success")) {
@@ -251,8 +304,15 @@ object InstallerBridge {
             )
 
             // Persist before commit so a broadcast that races the caller still
-            // finds the session entry.
-            persistPending(sessionId, packageName, "package_installer", file.absolutePath)
+            // finds the session entry. The numeric PackageInstaller session id
+            // is the only key that survives process death for recovery.
+            persistPending(
+                sessionId,
+                packageName,
+                "package_installer",
+                file.absolutePath,
+                sessionIdInt
+            )
             created.commit(pendingIntent.intentSender)
             armTimeout(sessionId, "package_installer")
             return pendingJson("package_installer", packageName)
@@ -340,32 +400,53 @@ object InstallerBridge {
         terminalPayloads[sessionId]?.let { return it }
 
         val pending = readPending(sessionId) ?: return null
+
+        // A package update after the pending entry was created is the
+        // strongest terminal signal available after process death.
         if (packageUpdatedSince(pending.packageName, pending.createdAt)) {
-            val version = installedVersion(pending.packageName)
-            return installedJson(pending.method, pending.packageName, version)
+            return installedJson(
+                pending.method,
+                pending.packageName,
+                installedVersion(pending.packageName)
+            )
         }
         if (pending.method == "intent") {
             return pendingJson("intent", pending.packageName)
         }
+        if (pending.method != "package_installer") {
+            return pendingJson(pending.method, pending.packageName)
+        }
 
-        val numeric = sessionId.toIntOrNull()
+        // Recovery must use the numeric PackageInstaller session id persisted
+        // at commit time; the app session id is a string and never parseable.
+        val numeric = pending.installerSessionId ?: sessionId.toIntOrNull()
         if (numeric != null) {
             val info = runCatching {
                 packageManager()?.packageInstaller?.getSessionInfo(numeric)
             }.getOrNull()
             if (info != null) {
-                return pendingJson(pending.method, pending.packageName)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    info.isStaged &&
+                    info.isStagedSessionFailed
+                ) {
+                    return resultJson(
+                        "package_installer",
+                        "failed",
+                        pending.packageName,
+                        null,
+                        "CORE_E_INSTALL_FAILED: staged session ${info.stagedSessionErrorCode}"
+                    )
+                }
+                // Active, sealed, or committed: the system still owns the
+                // session and will deliver a terminal broadcast when it exits.
+                return pendingJson("package_installer", pending.packageName)
             }
         }
 
-        // Session disappeared without an observable package update.
-        return resultJson(
-            pending.method,
-            "failed",
-            pending.packageName,
-            null,
-            "CORE_E_INSTALL_SESSION_MISSING"
-        )
+        // Session is gone but the package was not updated (checked above).
+        // Keep reporting pending instead of fabricating a failure: a persisted
+        // app session may still be resolved by a late broadcast.
+        return pendingJson("package_installer", pending.packageName)
     }
 
     // ------------------------------------------------------------------
@@ -489,13 +570,15 @@ object InstallerBridge {
         sessionId: String,
         packageName: String?,
         method: String,
-        apkPath: String
+        apkPath: String,
+        installerSessionId: Int? = null
     ) {
         val payload = JSONObject().apply {
             put("packageName", packageName ?: JSONObject.NULL)
             put("method", method)
             put("createdAt", System.currentTimeMillis())
             put("apkPath", apkPath)
+            put("installerSessionId", installerSessionId ?: JSONObject.NULL)
         }
         prefs()?.edit()?.putString(PREFS_KEY_PREFIX + sessionId, payload.toString())?.apply()
     }
@@ -515,7 +598,14 @@ object InstallerBridge {
                 },
                 method = json.optString("method", "intent"),
                 createdAt = json.optLong("createdAt", 0L),
-                apkPath = if (json.isNull("apkPath")) null else json.optString("apkPath")
+                apkPath = if (json.isNull("apkPath")) null else json.optString("apkPath"),
+                installerSessionId = if (!json.has("installerSessionId") ||
+                    json.isNull("installerSessionId")
+                ) {
+                    null
+                } else {
+                    json.optInt("installerSessionId", -1).takeIf { it >= 0 }
+                }
             )
         }.getOrNull()
     }
@@ -552,7 +642,9 @@ object InstallerBridge {
         val packageName: String?,
         val method: String,
         val createdAt: Long,
-        val apkPath: String?
+        val apkPath: String?,
+        /** Numeric `PackageInstaller` session id, for process-death recovery. */
+        val installerSessionId: Int?
     )
 
     /** Matched pending session. */
