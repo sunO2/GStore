@@ -7,6 +7,7 @@ import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -115,6 +116,10 @@ void main() {
     expect(missingDetail.success, isFalse);
     expect(missingDetail.data, isNull);
 
+    final categories = await channel.getAllCategories();
+    expect(categories.success, isTrue, reason: '${categories.error}');
+    expect(categories.data, isNotEmpty);
+
     final document = <String, dynamic>{
       'queries': {
         'search': searchQuery,
@@ -132,6 +137,8 @@ void main() {
         unknownCategory:
             byUnknownCategory.data!.map(_summaryToJson).toList(growable: false),
       },
+      'getAllCategories':
+          categories.data!.map(_categoryToJson).toList(growable: false),
       'getAppInfo': info.data == null ? null : _summaryToJson(info.data!),
       'getAppInfoMissing': missingInfo.data == null
           ? null
@@ -157,6 +164,12 @@ void main() {
     expect(document['searchApps'], isNotEmpty);
   });
 }
+
+Map<String, dynamic> _categoryToJson(db.AppCategory category) => {
+  'id': category.id,
+  'description': category.description,
+  'icon': category.icon,
+};
 
 Map<String, dynamic> _summaryToJson(AppSummary app) => {
   'appId': app.appId,
