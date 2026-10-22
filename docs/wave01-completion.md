@@ -5,9 +5,10 @@
 - **Repo / branch:** `GStore-wave01` @ `wave01/rust-core-channels`
 - **Base:** `9ec5132` (`9ec51320c0d2af107379744463325d36cdcd661c`)
 - **Final HEAD (closeout, before this doc commit):**
-  `80ff423c7d1c452eacf0373ddc3a4424848712ef`
-  (`test(qa): run F3 phone smoke with core fixtures` — empty marker, see below)
-- **Commit count `9ec5132..80ff423c`:** **43**
+  `02cf9202e870f0809f41563be8e2b5bf1b37a18e`
+  (`build(android): refresh tracked host libs for current FRB`)
+- **Commit count `9ec5132..02cf9202`:** **45**
+  (44 through `989e6bb9` + the host-refresh commit `02cf9202`)
 - **Date:** 2026-10-22
 
 ## Gates
@@ -17,9 +18,14 @@
 | F1 — plan compliance audit | **PASS** | `target/final/F1.md` (`f1_plan_audit_ok`, exit 0) |
 | F2 — baseline-aware quality | **PASS** | `target/final/F2.md` (exit 0, 0 NEW findings) |
 | Gate 1 — LocalDb parity / channel flag off | **PASS** | `target/test-evidence/14-gate1.txt` (parity OK twice, inject-diff exits 1, flags off) |
-| F3 — ARM64 phone smoke (**F3 PASS**) | **PASS** | `target/final/F3-device.log`, `target/final/F3.md` |
+| F3 — ARM64 phone smoke (**historical, pre-refresh**; F3 PASS) | **PASS (historical)** | `target/final/F3-device.log`, `target/final/F3.md` |
 
-### F3 detail
+### F3 detail — historical phone run (pre-refresh APK)
+
+> The 11/0/0 below is historical phone evidence for the **pre-refresh** APK
+> (phone-run HEAD `28c7cd49`). It is not a post-refresh result: F3 was **not
+> rerun** after `02cf9202` (no ARM64 device attached). See
+> "Host `.so` refresh" below.
 
 - **Device serial:** `10AFAL21AG00348`
 - **ABI:** `arm64-v8a`
@@ -65,8 +71,10 @@ bash build_android_rust.sh --host-only
 | `x86` | 6,448,200 | `f07656d5587a44904a08bfb818505077f090f5279ac07a1c124a6024c886b3e0` |
 
 Static `llvm-objdump` proof: `frb_get_rust_content_hash` decodes to
-`0x736d7af6` (`1936554742`) on all four ABIs. Module `.so`
-(qr/analyzer/repo/download/proxy/perf/llm) are separate and untouched.
+`0x736d7af6` (`1936554742`) on all four ABIs. The module `.so` libraries
+(`qr/analyzer/repo/download/proxy/perf`) are separate and untouched. The LLM
+module is optional and arm64-only; it is **not** built into `jniLibs` and was
+not part of this refresh.
 
 Evidence: `target/test-evidence/48-so-before.txt`,
 `49-so-build.txt`, `50-so-verify.txt`, `51-so-commit.txt`. Per risk #2 below,
@@ -89,8 +97,9 @@ all of `target/` is gitignored.
    were rebuilt from current Wave 0/1 source and now embed the current FRB
    content hash `0x736d7af6` (`1936554742`), replacing the stale `0x32512c08`.
    They are committed as `build(android): refresh tracked host libs for current FRB`,
-   which sits on top of `989e6bb9`. The module `.so`
-   (qr/analyzer/repo/download/proxy/perf/llm) are separate and untouched. This
+   which sits on top of `989e6bb9`. The module `.so` libraries
+   (`qr/analyzer/repo/download/proxy/perf`) are separate and untouched; the LLM
+   module is optional and arm64-only, not present in `jniLibs`. This
    refresh is **static-only**: F3 was not rerun because no ARM64 device was
    attached (`F3 not rerun — no ARM64 device attached`), and the prior phone
    PASS (11/0/0) in `target/final/F3-device.log` is historical evidence for the
