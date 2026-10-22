@@ -2731,6 +2731,8 @@ const CORE_E_DOWNLOAD_MODULE: &str = "CORE_E_DOWNLOAD_MODULE";
 const CORE_E_DOWNLOAD_DB: &str = "CORE_E_DOWNLOAD_DB";
 const CORE_E_DOWNLOAD_UNKNOWN_TASK: &str = "CORE_E_DOWNLOAD_UNKNOWN_TASK";
 const CORE_E_DOWNLOAD_NEEDS_RESTART: &str = "CORE_E_DOWNLOAD_NEEDS_RESTART";
+const CORE_E_DOWNLOAD_IMPORT_DB: &str = "CORE_E_DOWNLOAD_IMPORT_DB";
+const CORE_E_DOWNLOAD_IMPORT_INTERNAL: &str = "CORE_E_DOWNLOAD_IMPORT_INTERNAL";
 
 /// Start request accepted by [`DownloadApi::start`] (FRB data class).
 #[derive(Debug, Clone)]
@@ -2833,6 +2835,52 @@ impl From<DownloadTaskRow> for DownloadTaskDto {
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
+    }
+}
+
+/// Counters for one legacy source crossing the FRB boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationCountsDto {
+    pub inserted: i64,
+    pub updated: i64,
+    pub skipped: i64,
+}
+
+/// One-shot import outcome for both legacy sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadImportReportDto {
+    /// `None` when the Floor database was absent (see `skipped_missing`).
+    pub floor: Option<MigrationCountsDto>,
+    /// `None` when the download-module database was absent.
+    pub module: Option<MigrationCountsDto>,
+    /// Non-empty paths that did not exist and were skipped, never fatal.
+    pub skipped_missing: Vec<String>,
+}
+
+impl From<gstore_core::download::legacy::MigrationReport> for MigrationCountsDto {
+    fn from(report: gstore_core::download::legacy::MigrationReport) -> Self {
+        Self {
+            inserted: i64::try_from(report.inserted).unwrap_or(i64::MAX),
+            updated: i64::try_from(report.updated).unwrap_or(i64::MAX),
+            skipped: i64::try_from(report.skipped).unwrap_or(i64::MAX),
+        }
+    }
+}
+
+impl From<crate::download_host::LegacyImportReport> for DownloadImportReportDto {
+    fn from(report: crate::download_host::LegacyImportReport) -> Self {
+        Self {
+            floor: report.floor.map(MigrationCountsDto::from),
+            module: report.module.map(MigrationCountsDto::from),
+            skipped_missing: report.skipped_missing,
+        }
+    }
+}
+
+fn import_err(error: PortError) -> String {
+    match error {
+        PortError::Db(message) => format!("{CORE_E_DOWNLOAD_IMPORT_DB}: {message}"),
+        other => format!("{CORE_E_DOWNLOAD_IMPORT_INTERNAL}: {other}"),
     }
 }
 
@@ -2965,6 +3013,22 @@ impl DownloadApi {
     pub fn remove(&self, module_task_id: String) -> Result<(), String> {
         validate_task_id(&module_task_id)?;
         self.port.remove(&module_task_id).map_err(download_err)
+    }
+
+    /// One-shot, idempotent import of the legacy Floor and module databases.
+    ///
+    /// Missing databases are skipped and reported, never fatal. The core row
+    /// always wins over a duplicate legacy row (`dedup_key`), so this is safe
+    /// to call once per process before the first core-owned download.
+    pub fn import_legacy(
+        &self,
+        floor_db_path: String,
+        module_db_path: String,
+    ) -> Result<DownloadImportReportDto, String> {
+        self.port
+            .import_legacy(Path::new(&floor_db_path), Path::new(&module_db_path))
+            .map(DownloadImportReportDto::from)
+            .map_err(import_err)
     }
 
     /// 500 ms polling stream over the authoritative core rows.

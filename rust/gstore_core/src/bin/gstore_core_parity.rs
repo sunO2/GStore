@@ -12,16 +12,23 @@
 //! answers every query through [`CatalogService`]. Both modes emit the same
 //! document shape, so `parity_normalize.py` compares them unchanged.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use gstore_core::catalog::service::CatalogService;
 use gstore_core::channel::{ChannelCategory, ChannelDriver, LocalDbDriver};
 use gstore_core::db::DbHandle;
+use gstore_core::download::legacy::{migrate_legacy_floor_db, migrate_module_db, MigrationReport};
+use gstore_core::download::parity::{
+    merge_temp_role, part_files, resume_expected_bytes, status_enum_label,
+};
+use gstore_core::download::strategy::resolve_save_path;
 use gstore_core::dto::{
     AppDetail, AppSummary, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
 };
@@ -34,9 +41,13 @@ const KNOWN_CATEGORY: &str = "PROXY";
 const UNKNOWN_CATEGORY: &str = "NO_SUCH_CATEGORY";
 
 struct Args {
-    db: PathBuf,
+    db: Option<PathBuf>,
     out: PathBuf,
     catalog: bool,
+    download: bool,
+    legacy: Option<PathBuf>,
+    files: Option<PathBuf>,
+    module: Option<PathBuf>,
 }
 
 /// Query results shared by both harness modes.
@@ -67,26 +78,35 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    if !args.db.is_file() {
-        return Err(format!("seed database not found: {}", args.db.display()));
-    }
-
-    let handle = DbHandle::open_at(&args.db)
-        .map_err(|e| format!("open seeded db {}: {e}", args.db.display()))?;
-
-    let snapshot = if args.catalog {
-        collect_catalog(&handle)?
+    let document = if args.download {
+        collect_download(&args)?
     } else {
-        collect_driver(&handle)?
-    };
-    let document = document(&snapshot);
+        let db = args.db.as_ref().ok_or("missing --db <path>")?;
+        if !db.is_file() {
+            return Err(format!("seed database not found: {}", db.display()));
+        }
 
-    if let Some(parent) = args.out.parent() {
+        let handle =
+            DbHandle::open_at(db).map_err(|e| format!("open seeded db {}: {e}", db.display()))?;
+
+        let snapshot = if args.catalog {
+            collect_catalog(&handle)?
+        } else {
+            collect_driver(&handle)?
+        };
+        document(&snapshot)
+    };
+
+    write_document(&args.out, &document)
+}
+
+fn write_document(out: &Path, document: &Value) -> Result<(), String> {
+    if let Some(parent) = out.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let bytes =
-        serde_json::to_vec_pretty(&document).map_err(|e| format!("serialize parity json: {e}"))?;
-    fs::write(&args.out, bytes).map_err(|e| format!("write {}: {e}", args.out.display()))?;
+        serde_json::to_vec_pretty(document).map_err(|e| format!("serialize parity json: {e}"))?;
+    fs::write(out, bytes).map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok(())
 }
 
@@ -347,27 +367,345 @@ fn section_code(section: &DetailSection) -> &'static str {
     }
 }
 
+/// Canonical download/legacy-migration document.
+///
+/// Both sides of the gate emit this shape: the migration section proves the
+/// one-shot import is idempotent, and every row carries the migrated metadata
+/// plus the on-disk part/merge/resume facts. `checksum_supported` is the one
+/// intentional difference (Rust verifies `expected_sha256`; Dart does not) and
+/// the normalizer records it instead of diffing it.
+fn collect_download(args: &Args) -> Result<Value, String> {
+    let legacy = args
+        .legacy
+        .as_ref()
+        .ok_or("--download requires --legacy <db>")?;
+    let files = args
+        .files
+        .as_ref()
+        .ok_or("--download requires --files <dir>")?;
+    if !legacy.is_file() {
+        return Err(format!("legacy database not found: {}", legacy.display()));
+    }
+    if !files.is_dir() {
+        return Err(format!("fixture files dir not found: {}", files.display()));
+    }
+
+    let meta = read_meta(legacy)?;
+    let downloads_dir = meta
+        .get("downloads_dir")
+        .cloned()
+        .ok_or("fixture parity_meta.downloads_dir is missing")?;
+    let docs_dir = meta
+        .get("docs_dir")
+        .cloned()
+        .ok_or("fixture parity_meta.docs_dir is missing")?;
+
+    let source = read_floor_source(legacy, &downloads_dir, &docs_dir)?;
+    let expected_paths: HashMap<String, String> = source
+        .iter()
+        .map(|row| (row.dedup_key.clone(), row.expected_path.clone()))
+        .collect();
+
+    let core_db = args.out.with_file_name("download-parity-core.db");
+    remove_sqlite_files(&core_db);
+    let handle = DbHandle::open_at(&core_db)
+        .map_err(|e| format!("open fresh core db {}: {e}", core_db.display()))?;
+    let conn = handle
+        .writer()
+        .map_err(|e| format!("lock fresh core db: {e}"))?;
+
+    let floor_first = migrate_legacy_floor_db(&conn, legacy)
+        .map_err(|e| format!("floor migration first run: {e}"))?;
+    let module_first = match args.module.as_ref() {
+        Some(path) if path.is_file() => Some(
+            migrate_module_db(&conn, path)
+                .map_err(|e| format!("module migration first run: {e}"))?,
+        ),
+        _ => None,
+    };
+    let rows_after_first = gstore_core::download::list_tasks(&conn)
+        .map_err(|e| format!("list core rows after first migration: {e}"))?
+        .len();
+
+    let floor_second = migrate_legacy_floor_db(&conn, legacy)
+        .map_err(|e| format!("floor migration second run: {e}"))?;
+    let module_second = match args.module.as_ref() {
+        Some(path) if path.is_file() => Some(
+            migrate_module_db(&conn, path)
+                .map_err(|e| format!("module migration second run: {e}"))?,
+        ),
+        _ => None,
+    };
+    let core_rows = gstore_core::download::list_tasks(&conn)
+        .map_err(|e| format!("list core rows after second migration: {e}"))?;
+    let rows_after_second = core_rows.len();
+
+    if floor_second.inserted != 0
+        || module_second
+            .as_ref()
+            .is_some_and(|report| report.inserted != 0)
+    {
+        return Err("migration is not idempotent: second run inserted rows".to_string());
+    }
+
+    let duplicate_dedup_keys: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT dedup_key FROM download_task
+                 WHERE dedup_key IS NOT NULL
+                 GROUP BY dedup_key HAVING COUNT(*) > 1
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("count duplicate dedup keys: {e}"))?;
+    if duplicate_dedup_keys != 0 {
+        return Err(format!(
+            "core contains {duplicate_dedup_keys} duplicate dedup keys"
+        ));
+    }
+
+    for (dedup_key, expected_path) in &expected_paths {
+        let row = core_rows
+            .iter()
+            .find(|row| row.dedup_key.as_deref() == Some(dedup_key.as_str()))
+            .ok_or_else(|| format!("migrated core row missing for dedup key {dedup_key}"))?;
+        if row.dest_path.as_deref() != Some(expected_path.as_str()) {
+            return Err(format!(
+                "path parity drift for {dedup_key}: core={:?} expected={expected_path:?}",
+                row.dest_path
+            ));
+        }
+    }
+
+    let mut status_by_dedup: HashMap<String, i64> = source
+        .iter()
+        .map(|row| (row.dedup_key.clone(), row.status))
+        .collect();
+    if let Some(module) = args.module.as_ref().filter(|path| path.is_file()) {
+        for (dedup_key, status) in read_module_statuses(module)? {
+            status_by_dedup.entry(dedup_key).or_insert(status);
+        }
+    }
+
+    let rows: Vec<Value> = core_rows
+        .iter()
+        .map(|row| {
+            let dest = row.dest_path.clone().unwrap_or_default();
+            let dest_path = Path::new(&dest);
+            let status_code = row
+                .dedup_key
+                .as_ref()
+                .and_then(|key| status_by_dedup.get(key))
+                .copied()
+                .unwrap_or(5);
+            json!({
+                "module_task_id": row.module_task_id,
+                "dedup_key": row.dedup_key,
+                "app_id": row.app_id,
+                "dest_path": dest,
+                "status": row.status,
+                "status_code": status_code,
+                "status_enum": status_enum_label(status_code),
+                "bytes_done": row.bytes_done,
+                "total": row.total,
+                "install_after_download": row.install_after_download,
+                "resume_expected_bytes": resume_expected_bytes(dest_path),
+                "part_files": part_files(dest_path)
+                    .iter()
+                    .map(|part| json!({"index": part.index, "bytes": part.bytes}))
+                    .collect::<Vec<_>>(),
+                "merge_temp_role": merge_temp_role(dest_path),
+                "checksum_supported": true,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "mode": "download",
+        "migration": {
+            "floor": report_json(&floor_first),
+            "module": module_first.as_ref().map(report_json),
+            "second_run": {
+                "floor": report_json(&floor_second),
+                "module": module_second.as_ref().map(report_json),
+            },
+            "rows_after_first": rows_after_first,
+            "rows_after_second": rows_after_second,
+            "duplicate_dedup_keys": duplicate_dedup_keys,
+            "skipped_missing": [],
+            "path_rule_matches": true,
+        },
+        "rows": rows,
+    }))
+}
+
+#[derive(Debug)]
+struct FloorSourceRow {
+    dedup_key: String,
+    expected_path: String,
+    status: i64,
+}
+
+fn read_floor_source(
+    db: &Path,
+    downloads_dir: &str,
+    docs_dir: &str,
+) -> Result<Vec<FloorSourceRow>, String> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("open legacy fixture {}: {e}", db.display()))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT url, filePath, fileName, saveFileName, dedupKey, status
+             FROM download_task ORDER BY id",
+        )
+        .map_err(|e| format!("prepare legacy fixture rows: {e}"))?;
+    let mapped = stmt
+        .query_map([], |row| {
+            let url: String = row.get(0)?;
+            let file_path: String = row.get(1)?;
+            let file_name: String = row.get(2)?;
+            let save_file_name: Option<String> = row.get(3)?;
+            let dedup_key: Option<String> = row.get(4)?;
+            let status: i64 = row.get(5)?;
+            Ok((url, file_path, file_name, save_file_name, dedup_key, status))
+        })
+        .map_err(|e| format!("query legacy fixture rows: {e}"))?;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for row in mapped {
+        let (url, file_path, file_name, save_file_name, dedup_key, status) =
+            row.map_err(|e| format!("read legacy fixture row: {e}"))?;
+        let dedup_key = dedup_key
+            .filter(|key| !key.is_empty())
+            .unwrap_or_else(|| format!("legacy:{url}|{file_path}"));
+        if !seen.insert(dedup_key.clone()) {
+            continue;
+        }
+        let expected_path = resolve_save_path(
+            Some(Path::new(downloads_dir)),
+            Path::new(docs_dir),
+            save_file_name.as_deref(),
+            &file_name,
+        )
+        .to_string_lossy()
+        .into_owned();
+        if expected_path != file_path {
+            return Err(format!(
+                "fixture path rule drift for {dedup_key}: filePath={file_path} resolved={expected_path}"
+            ));
+        }
+        out.push(FloorSourceRow {
+            dedup_key,
+            expected_path,
+            status,
+        });
+    }
+    Ok(out)
+}
+
+fn read_module_statuses(db: &Path) -> Result<HashMap<String, i64>, String> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("open module fixture {}: {e}", db.display()))?;
+    let mut stmt = conn
+        .prepare("SELECT dedup_key, status FROM download_task ORDER BY id")
+        .map_err(|e| format!("prepare module fixture rows: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| format!("query module fixture rows: {e}"))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (dedup_key, status) = row.map_err(|e| format!("read module fixture row: {e}"))?;
+        if !dedup_key.is_empty() {
+            out.insert(dedup_key, status);
+        }
+    }
+    Ok(out)
+}
+
+fn read_meta(db: &Path) -> Result<HashMap<String, String>, String> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("open fixture meta {}: {e}", db.display()))?;
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM parity_meta")
+        .map_err(|e| format!("prepare fixture meta: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("query fixture meta: {e}"))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (key, value) = row.map_err(|e| format!("read fixture meta: {e}"))?;
+        out.insert(key, value);
+    }
+    Ok(out)
+}
+
+fn remove_sqlite_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+fn report_json(report: &MigrationReport) -> Value {
+    json!({
+        "inserted": report.inserted,
+        "updated": report.updated,
+        "skipped": report.skipped,
+    })
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut db = None;
     let mut out = None;
     let mut catalog = false;
+    let mut download = false;
+    let mut legacy = None;
+    let mut files = None;
+    let mut module = None;
     let mut iter = env::args().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--db" => db = Some(iter.next().ok_or("--db requires a path")?),
-            "--out" => out = Some(iter.next().ok_or("--out requires a path")?),
+            "--db" => db = Some(PathBuf::from(iter.next().ok_or("--db requires a path")?)),
+            "--out" => out = Some(PathBuf::from(iter.next().ok_or("--out requires a path")?)),
             "--catalog" => catalog = true,
+            "--download" => download = true,
+            "--legacy" => {
+                legacy = Some(PathBuf::from(
+                    iter.next().ok_or("--legacy requires a path")?,
+                ))
+            }
+            "--files" => files = Some(PathBuf::from(iter.next().ok_or("--files requires a path")?)),
+            "--module" => {
+                module = Some(PathBuf::from(
+                    iter.next().ok_or("--module requires a path")?,
+                ))
+            }
             "--help" | "-h" => {
                 return Err(
-                    "usage: gstore_core_parity [--catalog] --db <path> --out <path>".to_string(),
+                    "usage: gstore_core_parity [--catalog] --db <path> --out <path>\n\
+                     \x20      gstore_core_parity --download --legacy <db> [--module <db>] \
+                     --files <dir> --out <json>"
+                        .to_string(),
                 )
             }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    if catalog && download {
+        return Err("--catalog and --download are mutually exclusive".to_string());
+    }
     Ok(Args {
-        db: Path::new(&db.ok_or("missing --db <path>")?).to_path_buf(),
-        out: Path::new(&out.ok_or("missing --out <path>")?).to_path_buf(),
+        db,
+        out: out.ok_or("missing --out <path>")?,
         catalog,
+        download,
+        legacy,
+        files,
+        module,
     })
 }

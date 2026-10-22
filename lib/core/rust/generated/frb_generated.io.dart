@@ -350,6 +350,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   InstallAttemptDto dco_decode_box_autoadd_install_attempt_dto(dynamic raw);
 
   @protected
+  MigrationCountsDto dco_decode_box_autoadd_migration_counts_dto(dynamic raw);
+
+  @protected
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
@@ -387,6 +390,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker dco_decode_core_writes_marker(dynamic raw);
+
+  @protected
+  DownloadImportReportDto dco_decode_download_import_report_dto(dynamic raw);
 
   @protected
   DownloadStartRequest dco_decode_download_start_request(dynamic raw);
@@ -456,6 +462,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LogMessage dco_decode_log_message(dynamic raw);
 
   @protected
+  MigrationCountsDto dco_decode_migration_counts_dto(dynamic raw);
+
+  @protected
   ModuleEvent dco_decode_module_event(dynamic raw);
 
   @protected
@@ -492,6 +501,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   InstallAttemptDto? dco_decode_opt_box_autoadd_install_attempt_dto(
+      dynamic raw);
+
+  @protected
+  MigrationCountsDto? dco_decode_opt_box_autoadd_migration_counts_dto(
       dynamic raw);
 
   @protected
@@ -810,6 +823,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  MigrationCountsDto sse_decode_box_autoadd_migration_counts_dto(
+      SseDeserializer deserializer);
+
+  @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
@@ -853,6 +870,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CoreWritesMarker sse_decode_core_writes_marker(SseDeserializer deserializer);
+
+  @protected
+  DownloadImportReportDto sse_decode_download_import_report_dto(
+      SseDeserializer deserializer);
 
   @protected
   DownloadStartRequest sse_decode_download_start_request(
@@ -931,6 +952,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LogMessage sse_decode_log_message(SseDeserializer deserializer);
 
   @protected
+  MigrationCountsDto sse_decode_migration_counts_dto(
+      SseDeserializer deserializer);
+
+  @protected
   ModuleEvent sse_decode_module_event(SseDeserializer deserializer);
 
   @protected
@@ -971,6 +996,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   InstallAttemptDto? sse_decode_opt_box_autoadd_install_attempt_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  MigrationCountsDto? sse_decode_opt_box_autoadd_migration_counts_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -1292,6 +1321,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       InstallAttemptDto self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_migration_counts_dto(
+      MigrationCountsDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
@@ -1339,6 +1372,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_core_writes_marker(
       CoreWritesMarker self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_download_import_report_dto(
+      DownloadImportReportDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_download_start_request(
@@ -1421,6 +1458,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_log_message(LogMessage self, SseSerializer serializer);
 
   @protected
+  void sse_encode_migration_counts_dto(
+      MigrationCountsDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_module_event(ModuleEvent self, SseSerializer serializer);
 
   @protected
@@ -1463,6 +1504,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_install_attempt_dto(
       InstallAttemptDto? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_migration_counts_dto(
+      MigrationCountsDto? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);

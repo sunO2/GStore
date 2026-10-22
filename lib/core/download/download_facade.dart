@@ -6,9 +6,11 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
@@ -37,8 +39,16 @@ abstract class DownloadBackend {
   Stream<rust.DownloadTaskDto> watchAll();
 }
 
+/// Optional capability: one-shot import of legacy download databases.
+///
+/// Kept separate from [DownloadBackend] so existing fakes do not have to grow a
+/// method that only the production FRB backend implements.
+abstract class DownloadLegacyImport {
+  Future<void> importLegacyOnce({String? floorDbPath, String? moduleDbPath});
+}
+
 /// Production FRB backend. The `DownloadApi` handle is created lazily.
-class FrbDownloadBackend implements DownloadBackend {
+class FrbDownloadBackend implements DownloadBackend, DownloadLegacyImport {
   FrbDownloadBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   final String? dataDir;
@@ -47,6 +57,68 @@ class FrbDownloadBackend implements DownloadBackend {
 
   rust.DownloadApi? _api;
   Future<rust.DownloadApi>? _pending;
+
+  /// Process-wide memo: the legacy import runs at most once per process.
+  static Future<void>? _legacyImport;
+
+  /// Test seam: lets a suite exercise the import again with different paths.
+  @visibleForTesting
+  static void resetLegacyImportForTest() {
+    _legacyImport = null;
+  }
+
+  @override
+  Future<void> importLegacyOnce({String? floorDbPath, String? moduleDbPath}) {
+    return _legacyImport ??= _importLegacyOnce(
+      floorDbPath: floorDbPath,
+      moduleDbPath: moduleDbPath,
+    );
+  }
+
+  Future<void> _importLegacyOnce({
+    String? floorDbPath,
+    String? moduleDbPath,
+  }) async {
+    try {
+      final floor =
+          floorDbPath ?? '${await getDatabasesPath()}/download_task.db';
+      final module = moduleDbPath ??
+          '${(await getApplicationDocumentsDirectory()).path}'
+              '/gstore_mods/download/download.db';
+      _logLegacyMissing('floor', floor);
+      _logLegacyMissing('module', module);
+      final api = await _ensureApi();
+      final report = await api.importLegacy(
+        floorDbPath: floor,
+        moduleDbPath: module,
+      );
+      debugPrint(
+        'download legacy import: '
+        'floor=${report.floor?.inserted ?? 0} inserted/'
+        '${report.floor?.updated ?? 0} updated/'
+        '${report.floor?.skipped ?? 0} skipped, '
+        'module=${report.module?.inserted ?? 0} inserted/'
+        '${report.module?.updated ?? 0} updated/'
+        '${report.module?.skipped ?? 0} skipped, '
+        'missing=${report.skippedMissing}',
+      );
+    } catch (error) {
+      // Never block a download because the one-shot import failed.
+      debugPrint('download legacy import failed (non-fatal): $error');
+    }
+  }
+
+  void _logLegacyMissing(String label, String path) {
+    try {
+      if (!File(path).existsSync()) {
+        debugPrint(
+          'download legacy import: $label db missing at $path (skipped)',
+        );
+      }
+    } catch (error) {
+      debugPrint('download legacy import: cannot stat $label db: $error');
+    }
+  }
 
   Future<rust.DownloadApi> _ensureApi() {
     final existing = _api;
@@ -260,6 +332,22 @@ class DownloadFacade {
 
   DownloadBackend get _target =>
       backendOverride ?? _backend ?? (_resolved ??= _backendFactory());
+
+  /// Runs the one-shot legacy import when the backend supports it.
+  ///
+  /// Fake/test backends simply have no legacy data to import, so this is a
+  /// no-op for them and cannot break the flag routing tests.
+  Future<void> importLegacyOnce(
+      {String? floorDbPath, String? moduleDbPath}) async {
+    final target = _target;
+    if (target is DownloadLegacyImport) {
+      final legacy = target as DownloadLegacyImport;
+      await legacy.importLegacyOnce(
+        floorDbPath: floorDbPath,
+        moduleDbPath: moduleDbPath,
+      );
+    }
+  }
 
   Future<int> start(rust.DownloadStartRequest request) =>
       _target.start(request);

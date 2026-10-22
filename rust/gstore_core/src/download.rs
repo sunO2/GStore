@@ -1,6 +1,7 @@
 //! Download task persistence helpers for gstore_core.
 
 pub mod legacy;
+pub mod parity;
 pub mod port;
 pub mod strategy;
 

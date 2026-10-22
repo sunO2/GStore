@@ -208,6 +208,11 @@ class RustDownloadService implements IDownloadService {
     String? saveFileName,
     bool installAfterDownload = false,
   }) async {
+    // One-shot legacy import before the first core-owned operation. It is
+    // memoized per process and must never block the download (failures are
+    // logged inside the facade). Flag-off paths never reach this method.
+    await DownloadFacade.instance.importLegacyOnce();
+
     // An absolute save path short-circuits directory resolution; otherwise the
     // builder falls back to the app documents dir exactly like DownloadPaths.
     final docsDir = saveFileName != null && saveFileName.startsWith('/')

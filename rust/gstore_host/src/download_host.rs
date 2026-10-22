@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use gstore_core::db::SharedConn;
+use gstore_core::download::legacy::{migrate_legacy_floor_db, migrate_module_db, MigrationReport};
 use gstore_core::download::port::{
     DownloadPort, DownloadRequest, ModuleBridge, ModuleDownloadPort, PortError, ReconcileReport,
 };
@@ -62,6 +63,18 @@ enum PortSlot {
     Injected(Box<dyn DownloadPort + Send + Sync>),
 }
 
+/// Combined outcome of the one-shot legacy import.
+///
+/// A missing database is not an error: it is skipped and its path is recorded
+/// in [`Self::skipped_missing`], so a fresh install (or a device that never
+/// used one of the two legacy engines) still imports whatever exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyImportReport {
+    pub floor: Option<MigrationReport>,
+    pub module: Option<MigrationReport>,
+    pub skipped_missing: Vec<String>,
+}
+
 /// Result of the last reconcile attempt (kept observable for tests and Todo 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileOutcome {
@@ -108,6 +121,16 @@ const TERMINAL_STATUSES: [&str; 5] = [
     "removed",
     "needs_restart",
 ];
+
+fn is_present(path: &Path) -> bool {
+    !path.as_os_str().is_empty() && path.exists()
+}
+
+fn record_missing(report: &mut LegacyImportReport, path: &Path) {
+    if !path.as_os_str().is_empty() {
+        report.skipped_missing.push(path.display().to_string());
+    }
+}
 
 fn is_terminal_status(status: &str) -> bool {
     TERMINAL_STATUSES.contains(&status)
@@ -304,6 +327,40 @@ impl HostDownloadPort {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or(None)
+    }
+
+    /// Imports the legacy Floor (`download_task.db`) and download-module
+    /// databases into the shared core `download_task` table.
+    ///
+    /// Both sources are optional. A non-empty path that does not exist is
+    /// skipped and recorded in [`LegacyImportReport::skipped_missing`]; an
+    /// empty path is treated as "not provided". Only real I/O/schema failures
+    /// surface as [`PortError`]. The migration itself is idempotent and always
+    /// keeps the core row authoritative.
+    pub fn import_legacy(
+        &self,
+        floor_db_path: &Path,
+        module_db_path: &Path,
+    ) -> Result<LegacyImportReport, PortError> {
+        let mut report = LegacyImportReport::default();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| PortError::Db("download core connection mutex poisoned".to_string()))?;
+
+        if is_present(floor_db_path) {
+            report.floor = Some(migrate_legacy_floor_db(&conn, floor_db_path)?);
+        } else {
+            record_missing(&mut report, floor_db_path);
+        }
+
+        if is_present(module_db_path) {
+            report.module = Some(migrate_module_db(&conn, module_db_path)?);
+        } else {
+            record_missing(&mut report, module_db_path);
+        }
+
+        Ok(report)
     }
 
     pub fn db_path(&self) -> &Path {

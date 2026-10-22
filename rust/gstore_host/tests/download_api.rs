@@ -492,3 +492,124 @@ fn download_api_real_module_start_list_get() {
         "bounded real-module test"
     );
 }
+
+#[test]
+fn download_api_import_legacy_skips_missing_and_is_idempotent() {
+    let dir = TempDir::new("import_legacy");
+    let floor = dir.path().join("download_task.db");
+    {
+        let conn = Connection::open(&floor).expect("open floor fixture");
+        conn.execute_batch(
+            "CREATE TABLE download_task (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                appId TEXT NOT NULL, appName TEXT NOT NULL, version TEXT NOT NULL,
+                fileName TEXT NOT NULL, url TEXT NOT NULL, filePath TEXT NOT NULL,
+                total INTEGER NOT NULL, received INTEGER NOT NULL, status INTEGER NOT NULL,
+                createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, dedupKey TEXT
+            );",
+        )
+        .expect("floor DDL");
+        conn.execute(
+            "INSERT INTO download_task
+             (appId, appName, version, fileName, url, filePath, total, received,
+              status, createdAt, updatedAt, dedupKey)
+             VALUES ('com.example.legacy', 'Legacy', '1.0.0', 'legacy.bin',
+                     'https://example.test/legacy.bin', '/tmp/legacy.bin', 100, 10, 3, 1, 2,
+                     'app:legacy')",
+            [],
+        )
+        .expect("floor row");
+    }
+    let module = dir.path().join("download.db");
+    {
+        let conn = Connection::open(&module).expect("open module fixture");
+        conn.execute_batch(
+            "CREATE TABLE download_task (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL, app_name TEXT NOT NULL, version TEXT NOT NULL,
+                file_name TEXT NOT NULL, url TEXT NOT NULL, file_path TEXT NOT NULL,
+                total INTEGER NOT NULL, received INTEGER NOT NULL, status INTEGER NOT NULL,
+                dedup_key TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .expect("module DDL");
+        conn.execute(
+            "INSERT INTO download_task
+             (id, app_id, app_name, version, file_name, url, file_path, total, received,
+              status, dedup_key, created_at, updated_at)
+             VALUES (7, 'com.example.module', 'Module', '1.0.0', 'module.bin',
+                     'https://example.test/module.bin', '/tmp/module.bin', 50, 50, 4,
+                     'module:only', 1, 2)",
+            [],
+        )
+        .expect("module row");
+    }
+
+    let (conn, core_db) = core_conn();
+    let api = DownloadApi::from_port_for_test(HostDownloadPort::with_bridge_for_test(
+        FailingBridge,
+        conn,
+        core_db,
+        None,
+    ));
+
+    let first = api
+        .import_legacy(
+            floor.to_string_lossy().into_owned(),
+            module.to_string_lossy().into_owned(),
+        )
+        .expect("first legacy import");
+    println!("download_api import first: {first:?}");
+    assert_eq!(first.floor.as_ref().map(|f| f.inserted), Some(1));
+    assert_eq!(first.module.as_ref().map(|m| m.inserted), Some(1));
+    assert!(first.skipped_missing.is_empty());
+
+    let second = api
+        .import_legacy(
+            floor.to_string_lossy().into_owned(),
+            module.to_string_lossy().into_owned(),
+        )
+        .expect("second legacy import");
+    println!("download_api import second: {second:?}");
+    assert_eq!(second.floor.as_ref().map(|f| f.inserted), Some(0));
+    assert_eq!(second.module.as_ref().map(|m| m.inserted), Some(0));
+    assert_eq!(api.list().expect("list imported rows").len(), 2);
+
+    let missing = api
+        .import_legacy(
+            dir.path().join("no-floor.db").to_string_lossy().into_owned(),
+            dir.path().join("no-module.db").to_string_lossy().into_owned(),
+        )
+        .expect("missing legacy databases are skipped");
+    println!("download_api import missing: {missing:?}");
+    assert!(missing.floor.is_none());
+    assert!(missing.module.is_none());
+    assert_eq!(missing.skipped_missing.len(), 2);
+}
+
+#[test]
+fn download_api_import_legacy_surfaces_typed_error() {
+    let dir = TempDir::new("import_legacy_bad");
+    let not_a_db = dir.path().join("download_task.db");
+    std::fs::write(&not_a_db, b"not sqlite").expect("write bogus db");
+
+    let (conn, core_db) = core_conn();
+    let api = DownloadApi::from_port_for_test(HostDownloadPort::with_bridge_for_test(
+        FailingBridge,
+        conn,
+        core_db,
+        None,
+    ));
+    let error = api
+        .import_legacy(
+            not_a_db.to_string_lossy().into_owned(),
+            String::new(),
+        )
+        .expect_err("bogus database must fail typed");
+    println!("download_api import bad db: {error}");
+    assert!(
+        error.starts_with("CORE_E_DOWNLOAD_IMPORT_DB"),
+        "unexpected error: {error}"
+    );
+}

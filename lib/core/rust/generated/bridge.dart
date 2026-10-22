@@ -10,9 +10,9 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attempt_dto`, `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `event_json`, `from_summary`, `init_inner`, `install_count`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `reconcile_dto`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `attempt_dto`, `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `event_json`, `from_summary`, `import_err`, `init_inner`, `install_count`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `open_core_db`, `pack_err`, `prepare_dirs`, `read_plain_env`, `reconcile_dto`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
@@ -307,6 +307,14 @@ abstract class DownloadApi implements RustOpaqueInterface {
   Future<void> cancel({required String moduleTaskId});
 
   Future<DownloadTaskDto?> get_({required String moduleTaskId});
+
+  /// One-shot, idempotent import of the legacy Floor and module databases.
+  ///
+  /// Missing databases are skipped and reported, never fatal. The core row
+  /// always wins over a duplicate legacy row (`dedup_key`), so this is safe
+  /// to call once per process before the first core-owned download.
+  Future<DownloadImportReportDto> importLegacy(
+      {required String floorDbPath, required String moduleDbPath});
 
   /// Opens the core database and binds the download port.
   ///
@@ -1099,6 +1107,37 @@ class CoreWritesMarker {
           snapshotId == other.snapshotId;
 }
 
+/// One-shot import outcome for both legacy sources.
+class DownloadImportReportDto {
+  /// `None` when the Floor database was absent (see `skipped_missing`).
+  final MigrationCountsDto? floor;
+
+  /// `None` when the download-module database was absent.
+  final MigrationCountsDto? module;
+
+  /// Non-empty paths that did not exist and were skipped, never fatal.
+  final List<String> skippedMissing;
+
+  const DownloadImportReportDto({
+    this.floor,
+    this.module,
+    required this.skippedMissing,
+  });
+
+  @override
+  int get hashCode =>
+      floor.hashCode ^ module.hashCode ^ skippedMissing.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DownloadImportReportDto &&
+          runtimeType == other.runtimeType &&
+          floor == other.floor &&
+          module == other.module &&
+          skippedMissing == other.skippedMissing;
+}
+
 /// Start request accepted by [`DownloadApi::start`] (FRB data class).
 class DownloadStartRequest {
   final String appId;
@@ -1493,6 +1532,31 @@ class InstallRecordDto {
           installedAt == other.installedAt &&
           installedVersion == other.installedVersion &&
           installAfterDownload == other.installAfterDownload;
+}
+
+/// Counters for one legacy source crossing the FRB boundary.
+class MigrationCountsDto {
+  final PlatformInt64 inserted;
+  final PlatformInt64 updated;
+  final PlatformInt64 skipped;
+
+  const MigrationCountsDto({
+    required this.inserted,
+    required this.updated,
+    required this.skipped,
+  });
+
+  @override
+  int get hashCode => inserted.hashCode ^ updated.hashCode ^ skipped.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MigrationCountsDto &&
+          runtimeType == other.runtimeType &&
+          inserted == other.inserted &&
+          updated == other.updated &&
+          skipped == other.skipped;
 }
 
 /// One `"{channel}:{app_id}"` tag bucket.

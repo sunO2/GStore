@@ -4,39 +4,75 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# Suite selector: `--channel` (default) drives the raw LocalDbDriver against the
-# fixture copy; `--catalog` imports the fixture into a fresh core database and
-# drives CatalogService. Exactly one suite runs per invocation. Every other
-# argument (e.g. --inject-field-diff) is passed to the normalizer unchanged.
+# Suite selector: exactly one of
+#   --channel   raw LocalDbDriver against the fixture copy (default)
+#   --catalog   import the fixture into a fresh core DB and drive CatalogService
+#   --download  legacy Floor/module migration + on-disk part/merge/resume parity
+# Every other argument (e.g. --inject-field-diff, --inject-path-diff) is passed
+# to the normalizer unchanged. An unknown mode-like argument is never silently
+# treated as --channel: only the three names above select a suite.
 MODE=""
 NORMALIZER_ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    --channel|--catalog)
+    --channel|--catalog|--download)
       selected="${arg#--}"
       if [[ -n "$MODE" && "$MODE" != "$selected" ]]; then
-        echo "parity: choose exactly one suite (--channel or --catalog)" >&2
+        echo "parity: choose exactly one suite (--channel, --catalog, --download)" >&2
         exit 2
       fi
       MODE="$selected"
       ;;
-    *) NORMALIZER_ARGS+=("$arg") ;;
+    --inject-field-diff|--inject-path-diff)
+      NORMALIZER_ARGS+=("$arg")
+      ;;
+    *)
+      echo "parity: unknown argument: $arg (expected --channel, --catalog, --download, --inject-field-diff, --inject-path-diff)" >&2
+      exit 2
+      ;;
   esac
 done
 MODE="${MODE:-channel}"
 echo "$MODE parity suite selected"
 
+EVIDENCE="target/spike-evidence"
+mkdir -p "$EVIDENCE"
+
+if [[ "$MODE" == "download" ]]; then
+  DPI="$EVIDENCE/download-parity"
+  DART_JSON="$EVIDENCE/download-parity-dart.json"
+  RUST_JSON="$EVIDENCE/download-parity-rust.json"
+
+  echo "== fixture: $DPI (Floor download_task.db + module/download.db + files/) =="
+  python3 scripts/qa/gen_download_parity_fixture.py --out "$DPI"
+
+  echo "== rust: gstore_core_parity --download (real migrators, twice) =="
+  cargo run --quiet --manifest-path rust/gstore_core/Cargo.toml \
+    --bin gstore_core_parity -- \
+    --download \
+    --legacy "$DPI/legacy/download_task.db" \
+    --module "$DPI/module/download.db" \
+    --files "$DPI/files" \
+    --out "$RUST_JSON"
+
+  echo "== dart: dump_dart_download_parity_test (real DownloadPaths + SQLite) =="
+  flutter test test/parity/dump_dart_download_parity_test.dart
+
+  echo "== normalizer (download) =="
+  python3 scripts/qa/parity_normalize.py \
+    --download --dart "$DART_JSON" --rust "$RUST_JSON" \
+    ${NORMALIZER_ARGS[@]+"${NORMALIZER_ARGS[@]}"}
+  exit 0
+fi
+
 ASSET="assets/app/db/apps.db"
 FIXTURE_DIR="test/fixtures/parity"
 DB="$FIXTURE_DIR/localdb.db"
 SQL="$FIXTURE_DIR/localdb.sql"
-EVIDENCE="target/spike-evidence"
 DART_JSON="$EVIDENCE/parity-dart.json"
 RUST_JSON="$EVIDENCE/parity-rust.json"
 RUST_DB="$EVIDENCE/parity-rust-seed.db"
 CORE_DB="$EVIDENCE/parity-catalog.db"
-
-mkdir -p "$EVIDENCE"
 
 # Malformed/missing input must fail here, before either side can produce a
 # misleading empty document.
