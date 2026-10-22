@@ -18,6 +18,7 @@ CRATES=(
   "gstore_mod_repo"
   "gstore_mod_perf"
   "gstore_mod_llm"  # 默认 feature（无 llama.cpp）：验证 ABI/参数解析/降级路径
+  "gstore_mod_download"
   "gstore_host"   # 最后：其集成测试依赖上面各模块的 .so
 )
 

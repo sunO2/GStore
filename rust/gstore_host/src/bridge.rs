@@ -343,7 +343,8 @@ struct CorePaths {
 #[frb(opaque)]
 pub struct CoreApi {
     paths: std::sync::Mutex<Option<CorePaths>>,
-    db: std::sync::Mutex<Option<rusqlite::Connection>>,
+    db: std::sync::Mutex<Option<gstore_core::db::SharedConn>>,
+    download: crate::download_host::HostDownloadPort,
 }
 
 pub struct CoreInitResult {
@@ -457,14 +458,40 @@ impl CoreApi {
         }
         let conn = core_db::open(std::path::Path::new(&data_dir))
             .map_err(|e| format!("CORE_E_INIT: {}", e.0))?;
-        Ok(CoreApi {
+        let shared: gstore_core::db::SharedConn =
+            std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let download = crate::download_host::HostDownloadPort::new(
+            shared.clone(),
+            core_db::core_db_path(std::path::Path::new(&data_dir)),
+            PathBuf::from(&data_dir),
+            PathBuf::from(&cache_dir),
+        );
+        let api = CoreApi {
             paths: std::sync::Mutex::new(Some(CorePaths {
                 data_dir,
                 files_dir,
                 cache_dir,
             })),
-            db: std::sync::Mutex::new(Some(conn)),
-        })
+            db: std::sync::Mutex::new(Some(shared)),
+            download,
+        };
+        if let Err(error) = api.download.reconcile() {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("download reconcile at init (non-fatal): {error}"),
+            );
+        }
+        Ok(api)
+    }
+
+    #[allow(dead_code)] // consumed by Todo 2's DownloadApi facade
+    pub(crate) fn download_port(&self) -> &crate::download_host::HostDownloadPort {
+        &self.download
+    }
+
+    #[allow(dead_code)] // observable init reconcile outcome for tests and Todo 2
+    pub(crate) fn download_reconcile(&self) -> Option<crate::download_host::ReconcileOutcome> {
+        self.download.last_reconcile()
     }
 
     pub fn migrate_paths(&self) -> Result<CoreInitResult, String> {
@@ -492,6 +519,9 @@ impl CoreApi {
         let db = db
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        let db = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
         let schema_version: i32 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|e| format!("CORE_E_MIGRATE: read user_version: {e}"))?;
@@ -525,6 +555,9 @@ impl CoreApi {
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
 
+        let db = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
         let target = std::path::Path::new(&path);
         if target.exists() {
             std::fs::remove_file(target)
@@ -622,6 +655,9 @@ impl CoreApi {
         let db = db
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        let db = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
 
         match kind.as_str() {
             "channel_db" => {
@@ -629,7 +665,7 @@ impl CoreApi {
                     std::path::Path::new(&paths.1).join("secrets"),
                 );
                 let migrator = gstore_core::channel_migration::ChannelMigrator::new(
-                    db,
+                    &db,
                     &secrets,
                     migration_dir.join("backups"),
                 );
@@ -643,7 +679,7 @@ impl CoreApi {
                     std::path::Path::new(&paths.1).join("secrets"),
                 );
                 let migrator = gstore_core::channel_migration::ChannelMigrator::new(
-                    db,
+                    &db,
                     &secrets,
                     migration_dir.join("backups"),
                 );
@@ -667,7 +703,7 @@ impl CoreApi {
                     std::path::Path::new(&paths.1).join("secrets"),
                 );
                 let migrator = gstore_core::channel_migration::ChannelMigrator::new(
-                    db,
+                    &db,
                     &secrets,
                     migration_dir.join("backups"),
                 );
@@ -676,7 +712,7 @@ impl CoreApi {
                     .map(|report| report.sources as u32)
                     .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"))
             }
-            _ => core_migration::import_migration_file(db, &kind, path_ref)
+            _ => core_migration::import_migration_file(&db, &kind, path_ref)
                 .map(|written| written as u32)
                 .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {}", e.0)),
         }
@@ -690,7 +726,10 @@ impl CoreApi {
         let db = db
             .as_ref()
             .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
-        core_migration::core_write_marker(db, &domain)
+        let db = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        core_migration::core_write_marker(&db, &domain)
             .map(|marker| {
                 marker.map(|m| CoreWritesMarker {
                     domain: m.domain,
@@ -809,6 +848,40 @@ mod core_api_tests {
         assert!(
             err.contains("CORE_E_IMPORT_NOT_FOUND"),
             "unexpected error: {err}"
+        );
+
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn core_api_init_download_reconcile_is_non_fatal() {
+        let root = temp_root("download_reconcile");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let module_dir = data_dir.join("gstore_mods").join("download");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("download.db"), b"").unwrap();
+
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init must tolerate a missing download module");
+
+        let outcome = api
+            .download_reconcile()
+            .expect("init must record the reconcile outcome");
+        println!("init download reconcile outcome: {outcome:?}");
+        assert!(
+            matches!(outcome, crate::download_host::ReconcileOutcome::Err(_)),
+            "module db exists but module is unmounted: expected a typed error"
+        );
+        assert!(
+            api.download_port().snapshot().is_err(),
+            "an unmounted module must yield a typed error, not rows"
         );
 
         drop(api);

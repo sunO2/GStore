@@ -545,7 +545,8 @@ fn query_rows(conn: &Connection) -> Result<Vec<DownloadTaskRow>, PortError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -783,6 +784,203 @@ mod tests {
             rows.iter().all(|row| row.status != "running"),
             "no stale running row may survive a lost module db"
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct ReconcileBridge {
+        tasks: Arc<Mutex<HashMap<u64, Value>>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    fn task_value(id: u64, status: i64, received: i64, dedup: &str) -> Value {
+        json!({
+            "id": id,
+            "appId": "com.example.app",
+            "appName": "Example",
+            "version": "1.2.3",
+            "fileName": "example.apk",
+            "url": "https://example.test/example.apk",
+            "filePath": "/tmp/example.apk",
+            "status": status,
+            "received": received,
+            "total": 100,
+            "speedBps": 5,
+            "etaSec": 18,
+            "dedupKey": dedup,
+            "kind": "app",
+            "resourceId": "com.example.app",
+            "resourceVersion": "1.2.3",
+            "installAfterDownload": false
+        })
+    }
+
+    impl ReconcileBridge {
+        fn with_task(id: u64, status: i64, received: i64, dedup: &str) -> Self {
+            let bridge = Self::default();
+            bridge
+                .tasks
+                .lock()
+                .unwrap()
+                .insert(id, task_value(id, status, received, dedup));
+            bridge
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ModuleBridge for ReconcileBridge {
+        fn call(&self, method: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let body: Value =
+                serde_json::from_slice(payload).map_err(|e| format!("bad payload: {e}"))?;
+            match method {
+                "download.start" => {
+                    let value = task_value(42, 2, 10, "dedup:example");
+                    self.tasks.lock().unwrap().insert(42, value.clone());
+                    serde_json::to_vec(&value).map_err(|e| e.to_string())
+                }
+                "download.get" => {
+                    let id = body["id"].as_u64().ok_or("missing id")?;
+                    match self.tasks.lock().unwrap().get(&id).cloned() {
+                        Some(value) => serde_json::to_vec(&value).map_err(|e| e.to_string()),
+                        None => Ok(b"null".to_vec()),
+                    }
+                }
+                "download.pause"
+                | "download.resume"
+                | "download.cancel"
+                | "download.retry"
+                | "download.restart"
+                | "download.remove" => Ok(br#"{"ok":true}"#.to_vec()),
+                other => Err(format!("unexpected method {other}")),
+            }
+        }
+    }
+
+    #[test]
+    fn download_port_schema_reconcile() {
+        let dir = TempDir::new("schema_reconcile");
+        let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        crate::migration::apply_core_schema(&mut conn.lock().unwrap()).unwrap();
+
+        // 1. The fresh schema exposes every column the port writes.
+        {
+            let guard = conn.lock().unwrap();
+            let mut stmt = guard.prepare("PRAGMA table_info(download_task)").unwrap();
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for name in [
+                "module_task_id",
+                "dedup_key",
+                "app_id",
+                "app_name",
+                "version",
+                "file_name",
+                "kind",
+                "resource_id",
+                "resource_version",
+                "url",
+                "dest_path",
+                "status",
+                "bytes_done",
+                "total",
+                "speed_bps",
+                "eta_sec",
+                "expected_sha256",
+                "install_after_download",
+                "last_started_at",
+            ] {
+                assert!(columns.iter().any(|column| column == name), "missing {name}");
+            }
+        }
+
+        let bridge = ReconcileBridge::with_task(43, 2, 33, "dedup:mirrored");
+        let port =
+            ModuleDownloadPort::new(bridge.clone(), conn.clone(), PathBuf::from("/tmp/core.db"));
+
+        // 2. `start` populates the authoritative core row.
+        let id = port.start(&request()).unwrap();
+        assert_eq!(id, 42);
+        {
+            let guard = conn.lock().unwrap();
+            let row = crate::download::load_task(&guard, "42").unwrap().unwrap();
+            assert_eq!(row.module_task_id.as_deref(), Some("42"));
+            assert_eq!(row.dedup_key.as_deref(), Some("dedup:example"));
+            assert_eq!(row.app_id.as_deref(), Some("com.example.app"));
+            assert_eq!(row.dest_path.as_deref(), Some("/tmp/example.apk"));
+            assert_eq!(row.status, "running");
+        }
+
+        // Starting the same dedup request again must not duplicate the row.
+        assert_eq!(port.start(&request()).unwrap(), 42);
+        assert_eq!(
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM download_task", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        // 3. `get` mirrors a module-only row into the core table.
+        let mirrored = port.get("43").unwrap();
+        println!("get mirrored module row: {mirrored:?}");
+        assert_eq!(mirrored.module_task_id.as_deref(), Some("43"));
+        assert_eq!(mirrored.status, "running");
+        assert_eq!(mirrored.bytes_done, 33);
+        assert_eq!(mirrored.app_name.as_deref(), Some("Example"));
+
+        // 4. Reconcile is idempotent: stable `checked`, no duplicate rows, and
+        // the schema's active-dedup uniqueness still holds.
+        let first = port.reconcile().unwrap();
+        let second = port.reconcile().unwrap();
+        println!("reconcile first={first:?} second={second:?}");
+        assert_eq!(first.checked, 2);
+        assert_eq!(second.checked, first.checked);
+        assert!(first.needs_restart.is_empty());
+        assert!(second.needs_restart.is_empty());
+        assert_eq!(
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM download_task", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "reconcile must not duplicate rows"
+        );
+        let duplicate_dedup_keys: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                     SELECT dedup_key FROM download_task
+                     WHERE dedup_key IS NOT NULL
+                     GROUP BY dedup_key HAVING COUNT(*) > 1
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(duplicate_dedup_keys, 0, "dedup_key must stay unique");
+
+        // 5. A missing module DB downgrades non-terminal rows to `needs_restart`
+        // without ever calling the bridge.
+        let calls_before = bridge.calls();
+        let missing = dir.path().join("module-db-does-not-exist.db");
+        let port = port.with_module_db_path(missing);
+        let report = port.reconcile().unwrap();
+        println!("missing module db reconcile -> {report:?}");
+        let mut restart_ids = report.needs_restart.clone();
+        restart_ids.sort();
+        assert_eq!(report.checked, 2);
+        assert_eq!(restart_ids, vec!["42".to_string(), "43".to_string()]);
+        assert_eq!(bridge.calls(), calls_before, "bridge must not be called");
+        let rows = port.snapshot().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.status == NEEDS_RESTART));
     }
 
     /// This test double performs the real HTTP GET only to prove the port

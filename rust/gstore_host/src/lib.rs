@@ -3,6 +3,7 @@ mod models;
 pub mod bridge;
 mod manager;
 mod repo_port;
+pub mod download_host;
 mod dl_adapter;
 mod jni_bridge;
 pub mod platform_host;
