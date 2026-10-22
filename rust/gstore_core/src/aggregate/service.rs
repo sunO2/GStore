@@ -21,8 +21,10 @@
 //! * A driver error other than [`crate::error::Error::NotFound`] marks the row
 //!   as [`crate::dto::ChannelKind::LocalDb`] and records the error string,
 //!   exactly like the Dart catch branch.
-//! * `aggregate_page` dedups inside the page only. Cross-page package dedup
-//!   requires `aggregate_all` (documented on [`AggregationService::aggregate_page`]).
+//! * Dart has no cross-channel package merge. [`AggregationService::aggregate_all`]
+//!   and [`AggregationService::aggregate_page`] are pure Dart parity and never
+//!   dedup; the `*_deduped` variants are explicit opt-in and apply the plan's
+//!   F-Droid package-priority rule over the full ordered list.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -100,7 +102,8 @@ impl AggregationService {
         })
     }
 
-    /// Aggregates every added app, preserving `add_time DESC` order.
+    /// Aggregates every added app without dedup, preserving `add_time DESC`
+    /// order.
     ///
     /// Unknown channels are skipped; a driver `NotFound` degrades to the cached
     /// placeholder without an error; any other driver error degrades the same
@@ -110,14 +113,25 @@ impl AggregationService {
         self.aggregate_slice(&added)
     }
 
-    /// Aggregates one page of the added-app list.
+    /// Aggregates every added app and then applies
+    /// [`dedup_channels_and_packages`].
+    ///
+    /// This is the opt-in variant for callers that want one representative per
+    /// non-empty package (F-Droid preferred) across the whole list. Dart's
+    /// `getAggregatedApps` does not dedup; use
+    /// [`AggregationService::aggregate_all`] for pure parity.
+    pub fn aggregate_all_deduped(&self) -> Result<Vec<AggregatedApp>, Error> {
+        Ok(dedup_channels_and_packages(self.aggregate_all()?))
+    }
+
+    /// Aggregates one page of the raw added-app list, without dedup.
     ///
     /// `total` is the number of raw `added_apps` rows (including unknown
     /// channels), so callers can build a correct scroll extent even when a page
-    /// yields fewer rows. Pages are deduplicated with
-    /// [`dedup_channels_and_packages`]; therefore package-level dedup only
-    /// applies within a page. Call [`AggregationService::aggregate_all`] when a
-    /// single representative per package is required across page boundaries.
+    /// yields fewer rows. Slicing happens before aggregation, so concatenating
+    /// pages of any size reproduces [`AggregationService::aggregate_all`]
+    /// exactly. Package dedup is opt-in via
+    /// [`AggregationService::aggregate_page_deduped`].
     pub fn aggregate_page(
         &self,
         offset: u32,
@@ -132,7 +146,28 @@ impl AggregationService {
         }
         let end = start.saturating_add(limit).min(total);
         let page = self.aggregate_slice(&added[start..end])?;
-        Ok((dedup_channels_and_packages(page), total))
+        Ok((page, total))
+    }
+
+    /// Dedups the full ordered list first, then returns one page of it.
+    ///
+    /// `total` is the deduped length, so pages are invariant to `limit` and
+    /// concatenating pages reproduces
+    /// [`AggregationService::aggregate_all_deduped`] exactly.
+    pub fn aggregate_page_deduped(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<AggregatedApp>, usize), Error> {
+        let deduped = self.aggregate_all_deduped()?;
+        let total = deduped.len();
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        if start >= total || limit == 0 {
+            return Ok((Vec::new(), total));
+        }
+        let end = start.saturating_add(limit).min(total);
+        Ok((deduped[start..end].to_vec(), total))
     }
 
     fn aggregate_slice(&self, added: &[AddedApp]) -> Result<Vec<AggregatedApp>, Error> {
@@ -201,14 +236,24 @@ impl AggregationService {
     }
 }
 
+/// Lowercases like Dart `String.toLowerCase()`: maps U+0130 to `i` and applies
+/// per-character lowercase (no Rust final-sigma context), so `ΟΔΟΣ` -> `οδοσ`.
+pub fn dart_lowercase(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c == '\u{0130}' { 'i' } else { c })
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// Sorts and filters an aggregated list, returning a new vector.
 ///
-/// `keyword` is lowercased and matched with `contains` against name,
+/// `keyword` is Dart-lowercased and matched with `contains` against name,
 /// description, and app id. `category` is an exact, trimmed membership test.
 /// Ties fall back to `add_time DESC` then `app_id ASC`, keeping every order
 /// deterministic.
 pub fn sort_filter(apps: &[AggregatedApp], filter: &AppFilter) -> Vec<AggregatedApp> {
-    let keyword = filter.keyword.as_deref().unwrap_or("").to_lowercase();
+    let keyword = dart_lowercase(filter.keyword.as_deref().unwrap_or(""));
     let category = filter
         .category
         .as_deref()
@@ -219,9 +264,9 @@ pub fn sort_filter(apps: &[AggregatedApp], filter: &AppFilter) -> Vec<Aggregated
         .iter()
         .filter(|app| {
             if !keyword.is_empty() {
-                let name = app.app.name.to_lowercase();
-                let description = app.app.des.to_lowercase();
-                let app_id = app.app.app_id.to_lowercase();
+                let name = dart_lowercase(&app.app.name);
+                let description = dart_lowercase(&app.app.des);
+                let app_id = dart_lowercase(&app.app.app_id);
                 if !name.contains(&keyword)
                     && !description.contains(&keyword)
                     && !app_id.contains(&keyword)
@@ -247,10 +292,8 @@ pub fn sort_filter(apps: &[AggregatedApp], filter: &AppFilter) -> Vec<Aggregated
     match filter.sort {
         AppSortMode::Recent => result.sort_by(compare_recent),
         AppSortMode::Name => result.sort_by(|left, right| {
-            left.app
-                .name
-                .to_lowercase()
-                .cmp(&right.app.name.to_lowercase())
+            dart_lowercase(&left.app.name)
+                .cmp(&dart_lowercase(&right.app.name))
                 .then_with(|| {
                     right
                         .added_app

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use gstore_core::added::apps::AddedAppsService;
 use gstore_core::aggregate::service::{
-    categories_from_apps, dedup_channels_and_packages, recent, sort_filter, AggregatedApp,
-    AggregationService, AppFilter, AppSortMode, ChannelResolver,
+    categories_from_apps, dart_lowercase, dedup_channels_and_packages, recent, sort_filter,
+    AggregatedApp, AggregationService, AppFilter, AppSortMode, ChannelResolver,
 };
 use gstore_core::channel::{ChannelDriver, InMemoryChannelDriver, LocalDbDriver};
 use gstore_core::db::DbHandle;
@@ -391,10 +391,53 @@ fn aggregation_fdroid_package_priority() {
     let all = service.aggregate_all().unwrap();
     assert_eq!(ids(&all), vec!["gh1", "fd1", "nopkg1", "nopkg2"]);
 
-    let deduped = dedup_channels_and_packages(all.clone());
+    let deduped = service.aggregate_all_deduped().unwrap();
     assert_eq!(ids(&deduped), vec!["fd1", "nopkg1", "nopkg2"]);
     assert_eq!(deduped[0].channel, ChannelKind::Fdroid);
     assert_eq!(deduped[0].app.package_name.as_deref(), Some("com.shared"));
+
+    // Pure paging: no dedup, so concatenation reproduces aggregate_all even
+    // though github/fdroid share a package.
+    let (first, first_total) = service.aggregate_page(0, 1).unwrap();
+    let (second, second_total) = service.aggregate_page(1, 1).unwrap();
+    let (pair, pair_total) = service.aggregate_page(0, 2).unwrap();
+    assert_eq!((first_total, second_total, pair_total), (4, 4, 4));
+    let mut one_by_one = ids(&first);
+    one_by_one.extend(ids(&second));
+    assert_eq!(one_by_one, ids(&pair));
+    assert_eq!(ids(&pair), vec!["gh1", "fd1"]);
+
+    let mut pure_pages = Vec::new();
+    for offset in 0..4_u32 {
+        let (page, total) = service.aggregate_page(offset, 1).unwrap();
+        assert_eq!(total, 4);
+        pure_pages.extend(ids(&page));
+    }
+    assert_eq!(pure_pages, ids(&all));
+
+    // Deduped paging: dedup the full list first, so pages are invariant to
+    // limit and their total is the deduped length.
+    let (d0, dt0) = service.aggregate_page_deduped(0, 1).unwrap();
+    let (d1, dt1) = service.aggregate_page_deduped(1, 1).unwrap();
+    let (d2, dt2) = service.aggregate_page_deduped(2, 1).unwrap();
+    assert_eq!((dt0, dt1, dt2), (3, 3, 3));
+    let mut limit_one = ids(&d0);
+    limit_one.extend(ids(&d1));
+    limit_one.extend(ids(&d2));
+
+    let (e0, et0) = service.aggregate_page_deduped(0, 2).unwrap();
+    let (e1, et1) = service.aggregate_page_deduped(2, 2).unwrap();
+    assert_eq!((et0, et1), (3, 3));
+    let mut limit_two = ids(&e0);
+    limit_two.extend(ids(&e1));
+
+    assert_eq!(limit_one, ids(&deduped));
+    assert_eq!(limit_two, ids(&deduped));
+    assert_eq!(limit_one, limit_two, "deduped pages are limit-invariant");
+
+    let (full, full_total) = service.aggregate_page_deduped(0, 100).unwrap();
+    assert_eq!(full_total, 3);
+    assert_eq!(full, deduped);
 
     let mut duplicated = all.clone();
     duplicated.push(all[0].clone());
@@ -554,6 +597,63 @@ fn aggregation_unicode() {
         },
     );
     assert_eq!(ids(&by_name), vec!["alp", "wx"]);
+}
+
+#[test]
+fn aggregation_dart_lowercase() {
+    let dir = TempDir::new("lowercase");
+    let db = DbHandle::open(dir.path()).unwrap();
+    add_added(&db, "github", "ist", 5000);
+    add_added(&db, "github", "file", 4000);
+    add_added(&db, "github", "greek", 3000);
+    add_added(&db, "github", "izmir", 2000);
+    add_added(&db, "github", "alpha", 1000);
+
+    let service = service(
+        &db,
+        vec![driver(
+            "github",
+            ChannelKind::Github,
+            vec![
+                summary("ist", Some("com.ist"), "İSTANBUL", "city", &["TOOLS"]),
+                summary("file", Some("com.file"), "FİLE", "docs", &["TOOLS"]),
+                summary("greek", Some("com.greek"), "ΟΔΟΣ", "street", &["TOOLS"]),
+                summary("izmir", Some("com.izmir"), "Izmir", "city", &["TOOLS"]),
+                summary("alpha", Some("com.alpha"), "Alpha", "ascii", &["TOOLS"]),
+            ],
+        )],
+    );
+
+    let all = service.aggregate_all().unwrap();
+    let keyword = |value: &str| AppFilter {
+        keyword: Some(value.to_string()),
+        ..AppFilter::default()
+    };
+    assert_eq!(ids(&sort_filter(&all, &keyword("istanbul"))), vec!["ist"]);
+    assert_eq!(ids(&sort_filter(&all, &keyword("file"))), vec!["file"]);
+    assert_eq!(ids(&sort_filter(&all, &keyword("οδοσ"))), vec!["greek"]);
+    assert_eq!(
+        ids(&sort_filter(&all, &keyword("city"))),
+        vec!["ist", "izmir"]
+    );
+    assert_eq!(ids(&sort_filter(&all, &keyword("ALPHA"))), vec!["alpha"]);
+
+    let by_name = sort_filter(
+        &all,
+        &AppFilter {
+            sort: AppSortMode::Name,
+            ..AppFilter::default()
+        },
+    );
+    assert_eq!(
+        ids(&by_name),
+        vec!["alpha", "file", "ist", "izmir", "greek"],
+        "Dart lowercase puts İstanbul before Izmir"
+    );
+
+    assert_eq!(dart_lowercase("İSTANBUL"), "istanbul");
+    assert_eq!(dart_lowercase("FİLE"), "file");
+    assert_eq!(dart_lowercase("ΟΔΟΣ"), "οδοσ");
 }
 
 #[test]
