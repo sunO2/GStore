@@ -73,7 +73,7 @@ Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 - Legacy Floor/module migration and path/status parity with real Dart; injected
   field/path drift fails the parity gate.
 
-## Commits (`e5692829..6ea4de02`)
+## Commits (`e5692829..8a9c759f`)
 
 | Commit | Plan-Todo | Subject |
 |---|---|---|
@@ -91,8 +91,8 @@ Evidence: `target/test-evidence/87-gate3.txt` (matrix) and
 | `6ea4de02e0acaa4b697d42746ca76d907020da70` | 7 fix | fix(download): import legacy before any core read |
 | `8a9c759f` | 8 | test(download): close Wave 3 Gate |
 
-The Todo 8 hash is not written into its own commit (self-reference); it is the
-`test(download): close Wave 3 Gate` commit on the same branch.
+`8a9c759f` is the Todo 8 Gate-3 docs commit; it could not name its own hash,
+so it is identified by its subject.
 
 ## Final-wave fix commits (post-Gate 3)
 
