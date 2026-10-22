@@ -1,13 +1,16 @@
--- Canonical Wave 0/1/2/3 schema for gstore_core.
+-- Canonical Wave 0/1/2/3/4 schema for gstore_core.
 --
 -- This file is the canonical DDL text. The embedded refinery migrations
 -- `rust/gstore_core/migrations/V1__core_schema.sql`,
--- `V2__catalog_update.sql`, and `V3__download_install.sql` must produce
+-- `V2__catalog_update.sql`, `V3__download_install.sql`, and
+-- `V4__inventory_facts.sql` must produce
 -- exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts
 -- that by normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
 -- foreign_key_list dumps for a migrated database and for a database created by
 -- executing this file. V3 adds the durable install-state columns and the
--- partial pending-install index on `download_task`.
+-- partial pending-install index on `download_task`; V4 adds installed-app
+-- inventory, the single-row platform facts, versioned frontend rules, and the
+-- five install-request columns on `download_task`.
 --
 -- refinery owns the `schema_migrations` ledger; its exact DDL is reproduced
 -- first so this file is self-contained.
@@ -174,7 +177,12 @@ CREATE TABLE IF NOT EXISTS download_task(
     install_session_id TEXT,
     install_error TEXT,
     installed_at INTEGER,
-    installed_version TEXT
+    installed_version TEXT,
+    package_name TEXT,
+    abi TEXT,
+    variant_url TEXT,
+    fallback_json TEXT,
+    install_requested_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS ix_download_task_status
@@ -190,6 +198,51 @@ CREATE INDEX IF NOT EXISTS ix_download_task_install_status
 CREATE UNIQUE INDEX IF NOT EXISTS ux_download_task_active_dedup
     ON download_task(dedup_key)
     WHERE dedup_key IS NOT NULL AND status IN ('queued', 'connecting', 'downloading', 'running');
+
+-- The timeout sweep only scans by request time.
+CREATE INDEX IF NOT EXISTS ix_download_task_install_requested_at
+    ON download_task(install_requested_at);
+
+-- Wave 4: frontend-pushed inventory and platform facts, plus versioned rules.
+CREATE TABLE IF NOT EXISTS installed_app(
+    source_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    app_name TEXT,
+    version_name TEXT NOT NULL,
+    version_code INTEGER NOT NULL,
+    signature_sha256 TEXT,
+    source_dir TEXT,
+    installer TEXT,
+    is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),
+    target_sdk INTEGER NOT NULL DEFAULT 0,
+    min_sdk INTEGER NOT NULL DEFAULT 0,
+    abis_json TEXT NOT NULL DEFAULT '[]',
+    captured_at INTEGER NOT NULL,
+    PRIMARY KEY(source_id, package_name)
+);
+
+CREATE INDEX IF NOT EXISTS ix_installed_app_package
+    ON installed_app(package_name);
+
+CREATE TABLE IF NOT EXISTS inventory_source(
+    source_id TEXT NOT NULL PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    captured_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_facts(
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    json TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    captured_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS frontend_rules(
+    kind TEXT NOT NULL PRIMARY KEY,
+    version INTEGER NOT NULL,
+    json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS core_writes(
     domain TEXT NOT NULL PRIMARY KEY,
@@ -255,4 +308,4 @@ CREATE TABLE IF NOT EXISTS outbox(
     updated_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

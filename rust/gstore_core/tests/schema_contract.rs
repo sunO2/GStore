@@ -55,6 +55,10 @@ const REQUIRED_TABLES: &[&str] = &[
     "download_task",
     "core_writes",
     "schema_migrations",
+    "installed_app",
+    "inventory_source",
+    "platform_facts",
+    "frontend_rules",
 ];
 
 fn table_exists(conn: &Connection, name: &str) -> bool {
@@ -270,6 +274,21 @@ fn schema_contract_required_tables_and_shape() {
         assert!(table_exists(&conn, table), "missing required table {table}");
     }
 
+    let download_columns = table_columns(&conn, "download_task");
+    println!("download_task columns = {download_columns:?}");
+    for required in [
+        "package_name",
+        "abi",
+        "variant_url",
+        "fallback_json",
+        "install_requested_at",
+    ] {
+        assert!(
+            download_columns.iter().any(|column| column == required),
+            "missing V4 download_task column {required}; columns={download_columns:?}"
+        );
+    }
+
     // Print the actual sqlite_master rows (misleading-success guard).
     let mut stmt = conn
         .prepare(
@@ -386,7 +405,7 @@ fn schema_contract_required_tables_and_shape() {
         })
         .unwrap();
     println!("schema_migrations rows = {migration_rows}");
-    assert_eq!(migration_rows, 3);
+    assert_eq!(migration_rows, 4);
 }
 
 #[test]
@@ -549,8 +568,8 @@ fn schema_contract_docs_sql_matches_migrated_schema() {
     let docs_version: i64 = docs
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(migrated_version, 3);
-    assert_eq!(docs_version, 3);
+    assert_eq!(migrated_version, 4);
+    assert_eq!(docs_version, 4);
     println!("schema dumps match ({} bytes)", migrated_dump.len());
 }
 
@@ -584,7 +603,7 @@ fn schema_contract_reopen_does_not_reapply_or_alter_schema() {
     };
 
     assert_eq!(count1, count2, "reopening must not re-apply migrations");
-    assert_eq!(count1, 3);
+    assert_eq!(count1, 4);
     assert_eq!(dump1, dump2, "reopening must not alter the schema");
 
     // Readers are separate read-only connections; the single writer stays guarded.

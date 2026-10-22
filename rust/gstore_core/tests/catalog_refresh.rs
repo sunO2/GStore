@@ -353,7 +353,7 @@ fn catalog_refresh_preserves_core_tables() {
     let user_version: i64 = reader
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(user_version, 3);
+    assert_eq!(user_version, 4);
 
     let found_backups = backups(dir.path());
     assert_eq!(found_backups.len(), 1, "expected one timestamped backup");

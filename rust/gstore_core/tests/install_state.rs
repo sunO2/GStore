@@ -125,7 +125,7 @@ fn install_state_contract() {
             "missing install column {required}; columns={columns:?}"
         );
     }
-    assert_eq!(user_version(&conn), 3, "V3 must stamp user_version=3");
+    assert_eq!(user_version(&conn), 4, "V4 must stamp user_version=4");
 
     let apk = make_apk(dir.path(), "demo.apk");
     seed_task(&conn, "task-ok", "completed", apk.to_str().unwrap(), false);

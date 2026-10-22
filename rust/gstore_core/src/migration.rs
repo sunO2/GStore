@@ -17,7 +17,7 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 }
 
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
-pub const CORE_SCHEMA_VERSION: i32 = 3;
+pub const CORE_SCHEMA_VERSION: i32 = 4;
 
 /// Name of the refinery ledger table.
 pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";

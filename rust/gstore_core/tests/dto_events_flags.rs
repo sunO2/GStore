@@ -8,6 +8,7 @@ use gstore_core::dto::{
 };
 use gstore_core::error::Error;
 use gstore_core::event::CoreEvent;
+use gstore_core::facts::{InstallRequest, VariantChoice};
 use gstore_core::flags::{flags, reset_flags, set_flags, Flags, FlagsApi, FlagsPatch};
 
 /// Serializes the global-flag tests. Cargo runs integration tests in parallel.
@@ -208,6 +209,39 @@ fn dto_events_flags_event_wire_names_are_exact() {
                 fields: vec![],
             },
             "script.ui_request",
+        ),
+        (
+            CoreEvent::InventoryChanged {
+                source_id: "android".to_string(),
+                seq: 7,
+                count: 3,
+            },
+            "inventory.changed",
+        ),
+        (
+            CoreEvent::InstallUnknown {
+                session_id: "session-1".to_string(),
+                module_task_id: Some("task-1".to_string()),
+            },
+            "install.unknown",
+        ),
+        (
+            CoreEvent::InstallRequested {
+                request: InstallRequest {
+                    module_task_id: "task-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    package_name: "com.example.demo".to_string(),
+                    version_name: "1.2.3".to_string(),
+                    apk_path: "/data/cache/demo.apk".to_string(),
+                    method: "shizuku".to_string(),
+                    variant: VariantChoice {
+                        abi: "arm64-v8a".to_string(),
+                        url: "https://example.com/demo-arm64.apk".to_string(),
+                        fallback_chain: vec!["https://example.com/demo.apk".to_string()],
+                    },
+                },
+            },
+            "install.requested",
         ),
     ];
 

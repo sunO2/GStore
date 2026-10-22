@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{AppUpdate, ChannelKey, ChannelKind};
 use crate::error::Error;
+use crate::facts::InstallRequest;
 
 /// Wire name for [`CoreEvent::ChannelChanged`].
 pub const EVT_CHANNEL_CHANGED: &str = "channel.changed";
@@ -22,6 +23,12 @@ pub const EVT_DOWNLOAD_DONE: &str = "download.done";
 pub const EVT_INSTALL_RESULT: &str = "install.result";
 /// Wire name for [`CoreEvent::ScriptUiRequest`].
 pub const EVT_SCRIPT_UI_REQUEST: &str = "script.ui_request";
+/// Wire name for [`CoreEvent::InventoryChanged`].
+pub const EVT_INVENTORY_CHANGED: &str = "inventory.changed";
+/// Wire name for [`CoreEvent::InstallUnknown`].
+pub const EVT_INSTALL_UNKNOWN: &str = "install.unknown";
+/// Wire name for [`CoreEvent::InstallRequested`].
+pub const EVT_INSTALL_REQUESTED: &str = "install.requested";
 
 /// One field requested by a channel script UI form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +139,30 @@ pub enum CoreEvent {
         /// Requested fields.
         fields: Vec<ScriptUiField>,
     },
+    /// An accepted inventory snapshot changed the stored app set.
+    #[serde(rename = "inventory.changed")]
+    InventoryChanged {
+        /// Inventory source identity.
+        source_id: String,
+        /// Accepted sequence number.
+        seq: i64,
+        /// Number of distinct packages stored for the source.
+        count: usize,
+    },
+    /// A pending install exhausted its timeout window.
+    #[serde(rename = "install.unknown")]
+    InstallUnknown {
+        /// Installer session id that never reported.
+        session_id: String,
+        /// Download task id, when known.
+        module_task_id: Option<String>,
+    },
+    /// The frontend must execute this install request.
+    #[serde(rename = "install.requested")]
+    InstallRequested {
+        /// Durable install request.
+        request: InstallRequest,
+    },
 }
 
 impl CoreEvent {
@@ -145,6 +176,9 @@ impl CoreEvent {
             Self::DownloadDone { .. } => EVT_DOWNLOAD_DONE,
             Self::InstallResult { .. } => EVT_INSTALL_RESULT,
             Self::ScriptUiRequest { .. } => EVT_SCRIPT_UI_REQUEST,
+            Self::InventoryChanged { .. } => EVT_INVENTORY_CHANGED,
+            Self::InstallUnknown { .. } => EVT_INSTALL_UNKNOWN,
+            Self::InstallRequested { .. } => EVT_INSTALL_REQUESTED,
         }
     }
 

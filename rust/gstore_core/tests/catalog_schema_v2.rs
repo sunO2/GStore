@@ -134,7 +134,7 @@ fn migration_v2_contract() {
     let dir = TempDir::new("contract");
     let conn = fresh_db(dir.path());
 
-    assert_eq!(user_version(&conn), 3, "fresh schema must be V3");
+    assert_eq!(user_version(&conn), 4, "fresh schema must be V4");
     println!("user_version = {}", user_version(&conn));
 
     assert_table(
@@ -767,7 +767,7 @@ fn catalog_schema_v2_backup_before_upgrade() {
 
     let conn = db::open_at(&db_path).expect("upgrade V1 database");
 
-    assert_eq!(user_version(&conn), 3);
+    assert_eq!(user_version(&conn), 4);
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM apps"), 3);
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM categories"), 2);
 
@@ -799,7 +799,7 @@ fn catalog_schema_v2_backup_before_upgrade() {
     drop(conn);
 
     let reopened = db::open_at(&db_path).expect("reopen at current version");
-    assert_eq!(user_version(&reopened), 3);
+    assert_eq!(user_version(&reopened), 4);
     let backups_after: Vec<PathBuf> = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|entry| entry.unwrap().path())
