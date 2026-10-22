@@ -1,5 +1,8 @@
 //! gstore_core — spike skeleton (channels/catalog/update land in the main migration plan).
 
+pub mod added;
+pub mod aggregate;
+pub mod catalog;
 pub mod channel;
 pub mod channel_migration;
 pub mod db;
@@ -10,6 +13,7 @@ pub mod event;
 pub mod flags;
 pub mod migration;
 pub mod ports;
+pub mod update;
 
 pub use channel::{
     validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,

@@ -297,7 +297,7 @@ fn schema_contract_required_tables_and_shape() {
         vec!["key", "pack_hash", "meta_json", "installed_at"]
     );
 
-    // FTS table + all three sync triggers exist.
+    // Contentless FTS table + all three sync triggers exist.
     assert!(table_exists(&conn, "apps_fts"));
     let triggers: Vec<String> = {
         let mut stmt = conn
@@ -312,7 +312,10 @@ fn schema_contract_required_tables_and_shape() {
             .collect()
     };
     println!("apps triggers = {triggers:?}");
-    assert_eq!(triggers, vec!["apps_ad", "apps_ai", "apps_au"]);
+    assert_eq!(
+        triggers,
+        vec!["apps_fts_delete", "apps_fts_insert", "apps_fts_update"]
+    );
 
     // FTS triggers actually index inserts/updates/deletes.
     conn.execute(
@@ -383,7 +386,7 @@ fn schema_contract_required_tables_and_shape() {
         })
         .unwrap();
     println!("schema_migrations rows = {migration_rows}");
-    assert_eq!(migration_rows, 1);
+    assert_eq!(migration_rows, 2);
 }
 
 #[test]
@@ -546,8 +549,8 @@ fn schema_contract_docs_sql_matches_migrated_schema() {
     let docs_version: i64 = docs
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(migrated_version, 1);
-    assert_eq!(docs_version, 1);
+    assert_eq!(migrated_version, 2);
+    assert_eq!(docs_version, 2);
     println!("schema dumps match ({} bytes)", migrated_dump.len());
 }
 
@@ -581,7 +584,7 @@ fn schema_contract_reopen_does_not_reapply_or_alter_schema() {
     };
 
     assert_eq!(count1, count2, "reopening must not re-apply migrations");
-    assert_eq!(count1, 1);
+    assert_eq!(count1, 2);
     assert_eq!(dump1, dump2, "reopening must not alter the schema");
 
     // Readers are separate read-only connections; the single writer stays guarded.

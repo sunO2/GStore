@@ -17,7 +17,7 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 }
 
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
-pub const CORE_SCHEMA_VERSION: i32 = 1;
+pub const CORE_SCHEMA_VERSION: i32 = 2;
 
 /// Name of the refinery ledger table.
 pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";
@@ -37,6 +37,23 @@ pub fn apply_core_schema(conn: &mut rusqlite::Connection) -> Result<(), DbError>
     conn.pragma_update(None, "user_version", CORE_SCHEMA_VERSION)
         .map_err(|e| DbError(format!("stamp user_version: {e}")))?;
     Ok(())
+}
+
+/// Reports whether the migrated database has the contentless `apps_fts`
+/// virtual table.
+///
+/// Catalog query code uses this at runtime to choose FTS5 `MATCH` over a
+/// `LIKE` scan: the bundled rusqlite always compiles FTS5, but a database
+/// opened by a build without it (or one where the virtual table could not be
+/// created) still yields a usable catalog through `LIKE`. A query failure is
+/// treated as "unavailable" so callers fall back rather than fail.
+pub fn catalog_fts_available(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apps_fts'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .is_ok_and(|count| count > 0)
 }
 
 /// Domains that, once written by the Rust core, block legacy Dart writes.

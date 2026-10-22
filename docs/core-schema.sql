@@ -1,8 +1,8 @@
--- Canonical Wave 0/1 schema for gstore_core.
+-- Canonical Wave 0/1/2 schema for gstore_core.
 --
--- This file is the canonical DDL text. The embedded refinery migration
--- `rust/gstore_core/migrations/V1__core_schema.sql` must produce exactly this
--- structure; `rust/gstore_core/tests/schema_contract.rs` asserts that by
+-- This file is the canonical DDL text. The embedded refinery migrations
+-- `rust/gstore_core/migrations/V1__core_schema.sql` +
+-- `V2__catalog_update.sql` must produce exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts that by
 -- normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
 -- foreign_key_list dumps for a migrated database and for a database created by
 -- executing this file.
@@ -99,28 +99,29 @@ CREATE TABLE IF NOT EXISTS apps(
 CREATE INDEX IF NOT EXISTS ix_apps_category
     ON apps(category);
 
--- External-content FTS5 index over apps(name, des). The triggers below keep it
--- in sync; searches can use `apps_fts MATCH ?`.
+-- Contentless FTS5 index mirroring the Dart `AppInfoDatabase._setupFts5`.
+-- Searches use `apps_fts MATCH ?`; the triggers below keep it in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
+    appId UNINDEXED,
     name,
     des,
-    content='apps',
-    content_rowid='rowid'
+    content='',
+    contentless_delete=1
 );
 
-CREATE TRIGGER IF NOT EXISTS apps_ai AFTER INSERT ON apps BEGIN
-    INSERT INTO apps_fts(rowid, name, des) VALUES (new.rowid, new.name, new.des);
+CREATE TRIGGER IF NOT EXISTS apps_fts_insert AFTER INSERT ON apps BEGIN
+    INSERT INTO apps_fts(rowid, appId, name, des)
+    VALUES (new.rowid, new.appId, new.name, new.des);
 END;
 
-CREATE TRIGGER IF NOT EXISTS apps_ad AFTER DELETE ON apps BEGIN
-    INSERT INTO apps_fts(apps_fts, rowid, name, des)
-        VALUES ('delete', old.rowid, old.name, old.des);
+CREATE TRIGGER IF NOT EXISTS apps_fts_delete AFTER DELETE ON apps BEGIN
+    DELETE FROM apps_fts WHERE rowid = old.rowid;
 END;
 
-CREATE TRIGGER IF NOT EXISTS apps_au AFTER UPDATE ON apps BEGIN
-    INSERT INTO apps_fts(apps_fts, rowid, name, des)
-        VALUES ('delete', old.rowid, old.name, old.des);
-    INSERT INTO apps_fts(rowid, name, des) VALUES (new.rowid, new.name, new.des);
+CREATE TRIGGER IF NOT EXISTS apps_fts_update AFTER UPDATE ON apps BEGIN
+    DELETE FROM apps_fts WHERE rowid = old.rowid;
+    INSERT INTO apps_fts(rowid, appId, name, des)
+    VALUES (new.rowid, new.appId, new.name, new.des);
 END;
 
 CREATE TABLE IF NOT EXISTS categories(
@@ -189,4 +190,56 @@ CREATE TABLE IF NOT EXISTS update_prefs(
     imported_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 1;
+-- Wave 2 catalog/update tables. These carry legacy flat ids and deliberately
+-- declare no foreign keys (compatibility with older app databases).
+CREATE TABLE IF NOT EXISTS added_apps(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    add_time INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(channel_id, app_id)
+);
+
+CREATE TABLE IF NOT EXISTS added_app_tags(
+    channel_id TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    add_time INTEGER NOT NULL,
+    PRIMARY KEY(channel_id, app_id, tag)
+);
+
+CREATE TABLE IF NOT EXISTS update_state(
+    app_id TEXT NOT NULL,
+    channel_key TEXT NOT NULL,
+    latest_version TEXT,
+    status TEXT NOT NULL,
+    checked_at INTEGER,
+    payload_json TEXT,
+    PRIMARY KEY(app_id, channel_key)
+);
+
+CREATE TABLE IF NOT EXISTS update_log(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    channel_key TEXT NOT NULL,
+    from_version TEXT,
+    to_version TEXT,
+    status TEXT NOT NULL,
+    checked_at INTEGER NOT NULL,
+    payload_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS outbox(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+PRAGMA user_version = 2;
