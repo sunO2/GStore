@@ -7,11 +7,11 @@
 - **Feature HEAD (before closeout fixes):**
   `3c59e5dc3e247f2d636002c9cb13302bd141998c`
   (`feat(catalog): expose catalog/added/update APIs behind flags`)
-- **Closeout fix commit:** `fix(test): align host bridge schema expectations with V2`
-  (`Plan-Todo: 11`; the commit that adds this line — resolve its hash with
-  `git log -1 --format=%H`)
-- **Commit count `9d5b41f3..HEAD`:** **16** (14 feature/fix + Gate closeout doc +
-  this schema-alignment fix)
+- **Closeout fix commit:**
+  `6906005fb7ff32826a0e54c199afc0142f35eae0`
+  (`fix(test): align host bridge schema expectations with V2`, `Plan-Todo: 11`)
+- **Commit count `9d5b41f3..6906005f`:** **16** (14 feature/fix + Gate closeout
+  doc + the schema-alignment fix)
 - **Date:** 2026-10-22
 - **Toolchain:** rustc/cargo 1.92.0, Flutter 3.44.8 (stable), FRB codegen 2.11.1
 
@@ -29,7 +29,7 @@
 - FRB/facades for catalog/added/update exposed **behind flags**; all flags
   remain disabled and the legacy Dart paths stay in place.
 
-## Commits (`9d5b41f3..HEAD`)
+## Commits (`9d5b41f3..6906005f`)
 
 | Commit | Todo | Subject |
 |---|---|---|
@@ -48,7 +48,7 @@
 | `1a55f535` | 3/5/6 fix | fix(test): align core api expectations with V2 schema |
 | `3c59e5dc` | 10 | feat(catalog): expose catalog/added/update APIs behind flags |
 | `12ca93e7` | 11 | test(catalog): close Wave 2 Gate |
-| closeout fix (this commit) | 11 fix | fix(test): align host bridge schema expectations with V2 |
+| `6906005f` | 11 fix | fix(test): align host bridge schema expectations with V2 |
 
 ## Gate 2 matrix
 
@@ -95,10 +95,10 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
    builds them). The 2 stale schema-v1 assertions in `bridge.rs`
    (`core_api_contract`, `core_writes_empty_after_init_and_migration`), which
    expected `schema_version`/`import_snapshot` to return `1`, were **fixed in the
-   closeout fix commit** `fix(test): align host bridge schema expectations with
-   V2` (`Plan-Todo: 11`; hash via `git log -1 --format=%H`). Host suite after the
-   fix: **76 passed / 8 failed** (the 2 repaired tests moved from failed to
-   passed).
+   closeout fix commit** `6906005fb7ff32826a0e54c199afc0142f35eae0`
+   (`fix(test): align host bridge schema expectations with V2`,
+   `Plan-Todo: 11`). Host suite after the fix: **76 passed / 8 failed** (the 2
+   repaired tests moved from failed to passed).
 4. **Stale native `.so` for Flutter native tests (resolved during the gate).**
    The first `update_prefs_migration_test.dart` run failed on an FRB content-hash
    mismatch because `rust/gstore_host/target/release/libgstore_host.so` predated
