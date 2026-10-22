@@ -10,11 +10,12 @@
 //! `signature_policy` — is [`Error::InvalidArgument`] with the stable
 //! `CORE_E_RULES_INVALID` prefix.
 
+use std::sync::MutexGuard;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 
-use crate::db::{DbError, DbHandle};
+use crate::db::{DbHandle, SharedConn};
 use crate::error::Error;
 use crate::facts::{InstallRules, UpdateRules};
 
@@ -38,8 +39,7 @@ pub const DEFAULT_TIMEOUT_SECS: i64 = 180;
 /// Default maximum inventory age in seconds (24 hours).
 pub const DEFAULT_MAX_INVENTORY_AGE_SECS: i64 = 86_400;
 /// Default ABI preference order.
-pub const DEFAULT_ABI_PRIORITY: [&str; 4] =
-    ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"];
+pub const DEFAULT_ABI_PRIORITY: [&str; 4] = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"];
 
 impl Default for InstallRules {
     fn default() -> Self {
@@ -73,7 +73,7 @@ impl Default for UpdateRules {
 
 /// Storage for the install and update rule documents.
 pub struct RuleStore {
-    db: DbHandle,
+    conn: SharedConn,
     clock: fn() -> i64,
 }
 
@@ -85,7 +85,22 @@ impl RuleStore {
 
     /// Creates a store with an injected millisecond clock for `updated_at`.
     pub fn with_clock(db: DbHandle, clock: fn() -> i64) -> Self {
-        Self { db, clock }
+        Self::from_shared_with_clock(db.shared_writer(), clock)
+    }
+
+    /// Creates a store over a shared writer connection using wall-clock time.
+    pub fn from_shared(conn: SharedConn) -> Self {
+        Self::from_shared_with_clock(conn, system_now_millis)
+    }
+
+    fn from_shared_with_clock(conn: SharedConn, clock: fn() -> i64) -> Self {
+        Self { conn, clock }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, Connection>, Error> {
+        self.conn.lock().map_err(|_| {
+            Error::Internal("CORE_E_RULES_DB: rules connection mutex poisoned".to_string())
+        })
     }
 
     /// Returns the stored install rules, or the pinned defaults.
@@ -147,7 +162,7 @@ impl RuleStore {
     }
 
     fn load(&self, kind: &str) -> Result<Option<String>, Error> {
-        let conn = self.db.reader().map_err(db_error)?;
+        let conn = self.lock()?;
         let row: Option<(i64, String)> = conn
             .query_row(
                 "SELECT version, json FROM frontend_rules WHERE kind=?1",
@@ -169,21 +184,18 @@ impl RuleStore {
         let json = serde_json::to_string(rules)
             .map_err(|e| invalid(format!("encode {kind} rules: {e}")))?;
         let updated_at = (self.clock)();
-        self.db
-            .with_writer(|conn| {
-                conn.execute(
-                    "INSERT INTO frontend_rules(kind, version, json, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4) \
-                     ON CONFLICT(kind) DO UPDATE SET \
-                         version = excluded.version, \
-                         json = excluded.json, \
-                         updated_at = excluded.updated_at",
-                    rusqlite::params![kind, version, json, updated_at],
-                )
-                .map_err(|e| DbError(format!("write {kind} rules: {e}")))?;
-                Ok(())
-            })
-            .map_err(db_error)
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO frontend_rules(kind, version, json, updated_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(kind) DO UPDATE SET \
+                 version = excluded.version, \
+                 json = excluded.json, \
+                 updated_at = excluded.updated_at",
+            rusqlite::params![kind, version, json, updated_at],
+        )
+        .map_err(|e| Error::Internal(format!("CORE_E_RULES_DB: write {kind} rules: {e}")))?;
+        Ok(())
     }
 }
 
@@ -245,10 +257,6 @@ fn system_now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis() as i64)
-}
-
-fn db_error(error: DbError) -> Error {
-    Error::Io(error.to_string())
 }
 
 fn sql_error(error: rusqlite::Error) -> Error {

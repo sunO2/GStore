@@ -1,5 +1,8 @@
 //! Update service parity: state/log persistence, exact version compare, ABI
 //! selection, the one-hour cache, preferred APKs, and `update.found`.
+//!
+//! Installed apps and device ABIs come from the stored `installed_app` /
+//! `platform_facts` tables (SQL fixtures below), never from a platform port.
 
 use std::cmp::Ordering as CmpOrdering;
 use std::path::{Path, PathBuf};
@@ -12,8 +15,8 @@ use gstore_core::dto::{
     AppDetail, AppDownload, AppUpdate, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
 };
 use gstore_core::error::Error;
+use gstore_core::facts::{CorePaths, DeviceFacts, InstalledApp, PlatformFacts};
 use gstore_core::migration::update_pref;
-use gstore_core::ports::{CapabilitySet, DeviceInfo, FakePlatformHost, InstalledApp, PlatformHost};
 use gstore_core::update::service::{
     asset_matches_abi, compare_versions, normalize_abi, pick_closest_apk, select_best_download,
     select_download_with_preference, AppUpdateInfo, ChannelResolver, CheckLogLevel, UpdateService,
@@ -21,6 +24,8 @@ use gstore_core::update::service::{
 };
 use rusqlite::params;
 use serde_json::{json, Value};
+
+const SOURCE: &str = "android";
 
 static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
 
@@ -131,12 +136,106 @@ fn update(
 fn installed(package: &str, version: &str) -> InstalledApp {
     InstalledApp {
         package_name: package.to_string(),
-        app_name: package.to_string(),
+        app_name: Some(package.to_string()),
         version_name: version.to_string(),
         version_code: 1,
-        icon: None,
-        system: false,
+        signature_sha256: None,
+        source_dir: None,
+        installer: None,
+        is_system: false,
+        target_sdk: 35,
+        min_sdk: 21,
+        abis: vec!["arm64-v8a".to_string()],
     }
+}
+
+fn facts(source: &str, captured_at: i64, abis: &[&str]) -> PlatformFacts {
+    PlatformFacts {
+        source_id: source.to_string(),
+        os: "android".to_string(),
+        arch: "aarch64".to_string(),
+        abis: abis.iter().map(|abi| (*abi).to_string()).collect(),
+        sdk: 35,
+        device: DeviceFacts {
+            model: "Fixture Phone".to_string(),
+            manufacturer: "Fixture".to_string(),
+        },
+        paths: CorePaths {
+            data: "/data/user/0/com.example.gstore".to_string(),
+            files: "/data/user/0/com.example.gstore/files".to_string(),
+            cache: "/data/user/0/com.example.gstore/cache".to_string(),
+        },
+        crypto_key: None,
+        captured_at,
+    }
+}
+
+fn seed_facts(db: &DbHandle, source: &str, captured_at: i64, abis: &[&str]) {
+    let remaining = facts(source, captured_at, abis);
+    let encoded = serde_json::to_string(&remaining).unwrap();
+    let conn = db.writer().unwrap();
+    conn.execute(
+        "INSERT INTO platform_facts(id, json, source_id, captured_at) VALUES (1, ?1, ?2, ?3) \
+         ON CONFLICT(id) DO UPDATE SET json=excluded.json, source_id=excluded.source_id, \
+             captured_at=excluded.captured_at",
+        params![encoded, source, captured_at],
+    )
+    .unwrap();
+}
+
+fn seed_inventory(db: &DbHandle, source: &str, captured_at: i64, apps: &[InstalledApp]) {
+    let conn = db.writer().unwrap();
+    conn.execute(
+        "INSERT INTO inventory_source(source_id, seq, captured_at) VALUES (?1, 1, ?2) \
+         ON CONFLICT(source_id) DO UPDATE SET seq=excluded.seq, captured_at=excluded.captured_at",
+        params![source, captured_at],
+    )
+    .unwrap();
+    for app in apps {
+        conn.execute(
+            "INSERT INTO installed_app(\
+                 source_id, package_name, app_name, version_name, version_code, signature_sha256, \
+                 source_dir, installer, is_system, target_sdk, min_sdk, abis_json, captured_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT(source_id, package_name) DO UPDATE SET \
+                 app_name=excluded.app_name, version_name=excluded.version_name, \
+                 version_code=excluded.version_code, abis_json=excluded.abis_json, \
+                 captured_at=excluded.captured_at",
+            params![
+                source,
+                app.package_name,
+                app.app_name,
+                app.version_name,
+                app.version_code,
+                app.signature_sha256,
+                app.source_dir,
+                app.installer,
+                i64::from(app.is_system),
+                app.target_sdk,
+                app.min_sdk,
+                serde_json::to_string(&app.abis).unwrap(),
+                captured_at,
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn set_inventory_version(db: &DbHandle, package: &str, version: &str) {
+    db.writer()
+        .unwrap()
+        .execute(
+            "UPDATE installed_app SET version_name=?1 WHERE package_name=?2",
+            params![version, package],
+        )
+        .unwrap();
+}
+
+fn remove_inventory_package(db: &DbHandle, package: &str) {
+    db.writer()
+        .unwrap()
+        .execute("DELETE FROM installed_app WHERE package_name=?1", [package])
+        .unwrap();
 }
 
 fn add_added(db: &DbHandle, channel: &str, app_id: &str, add_time: i64) {
@@ -165,17 +264,12 @@ fn clock_at(value: i64) -> (Arc<AtomicI64>, Arc<dyn Fn() -> i64 + Send + Sync>) 
     (cell, Arc::new(move || reader.load(Ordering::SeqCst)))
 }
 
-fn platform_with(installed_apps: Vec<InstalledApp>) -> Arc<FakePlatformHost> {
-    Arc::new(FakePlatformHost::new(CapabilitySet::all()).with_installed(installed_apps))
-}
-
 fn make_service(
     db: &DbHandle,
     drivers: Vec<Arc<dyn ChannelDriver>>,
-    platform: Arc<FakePlatformHost>,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 ) -> UpdateService {
-    UpdateService::with_clock(db.clone(), resolver(drivers), platform, clock)
+    UpdateService::with_clock(db.clone(), resolver(drivers), clock)
 }
 
 fn find<'a>(updates: &'a [AppUpdateInfo], app_id: &str) -> &'a AppUpdateInfo {
@@ -361,12 +455,15 @@ fn parity_fixture() -> (TempDir, DbHandle, Vec<Arc<dyn ChannelDriver>>) {
 #[test]
 fn update_parity() {
     let (_dir, db, drivers) = parity_fixture();
-    let platform = platform_with(vec![
-        installed("com.a", "1.0.0"),
-        installed("com.b", "1.0.0"),
-    ]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &[installed("com.a", "1.0.0"), installed("com.b", "1.0.0")],
+    );
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers, Arc::clone(&platform), clock);
+    let service = make_service(&db, drivers, clock);
 
     let report = service.check_all(false).expect("check_all");
     assert_eq!(report.total, 3);
@@ -386,7 +483,7 @@ fn update_parity() {
     assert_eq!(a.download.download_count, Some(7));
     assert!(a.detail.is_some());
     assert_eq!(find(&report.updates, "B").download.name, "b-universal.apk");
-    assert_eq!(skip_reason(&report.skipped, "C"), "not_installed");
+    assert_eq!(skip_reason(&report.skipped, "C"), "inventory_missing");
 
     assert_eq!(report.events.len(), 2);
     let event = serde_json::to_value(&report.events[0]).unwrap();
@@ -403,7 +500,7 @@ fn update_parity() {
     assert_eq!(db_count(&db, "update_log"), 3);
     assert_eq!(db_status(&db, "A"), "update_available");
     assert_eq!(db_status(&db, "B"), "update_available");
-    assert_eq!(db_status(&db, "C"), "not_installed");
+    assert_eq!(db_status(&db, "C"), "inventory_missing");
 
     let results_raw = pref(&db, "update_results_v1").expect("results pref");
     let results: Value = serde_json::from_str(&results_raw).unwrap();
@@ -478,20 +575,16 @@ fn update_parity() {
     }));
     write_db_snapshot(&db);
 
-    let gets = platform.calls("get_installed");
-    let device_calls = platform.calls("device_info");
     let cached = service.check_all(false).expect("cached check");
     assert!(cached.used_cache);
     assert_eq!(cached.checked_at, 1_000_000);
     assert_eq!(cached.updates.len(), 2);
     assert!(cached.events.is_empty());
-    assert_eq!(platform.calls("get_installed"), gets);
-    assert_eq!(platform.calls("device_info"), device_calls);
+    assert_eq!(db_count(&db, "update_log"), 3, "cache hit persists nothing");
 
     let forced = service.check_all(true).expect("forced check");
     assert!(!forced.used_cache);
     assert_eq!(forced.checked_at, 1_000_000);
-    assert!(platform.calls("get_installed") > gets);
     assert_eq!(db_count(&db, "update_log"), 6);
 }
 
@@ -618,9 +711,10 @@ fn update_abi_selection() {
 #[test]
 fn update_cache_ttl() {
     let (_dir, db, drivers) = parity_fixture();
-    let platform = platform_with(vec![installed("com.a", "1.0.0")]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
     let (clock, clock_fn) = clock_at(1_000_000);
-    let service = make_service(&db, drivers, platform, clock_fn);
+    let service = make_service(&db, drivers, clock_fn);
 
     let first = service.check_all(false).unwrap();
     assert!(!first.used_cache);
@@ -646,19 +740,18 @@ fn update_cache_ttl() {
 #[test]
 fn update_cache_timestamp_overflow_is_safe() {
     let (_dir, db, drivers) = parity_fixture();
-    let platform = platform_with(vec![installed("com.a", "1.0.0")]);
+    seed_facts(&db, SOURCE, i64::MAX, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, i64::MAX, &[installed("com.a", "1.0.0")]);
     let (clock, clock_fn) = clock_at(1_000_000);
-    let service = make_service(&db, drivers, Arc::clone(&platform), clock_fn);
+    let service = make_service(&db, drivers, clock_fn);
     assert!(!service.check_all(true).unwrap().updates.is_empty());
 
     insert_pref(&db, "update_last_checked_at", &i64::MIN.to_string());
     clock.store(i64::MAX, Ordering::SeqCst);
     assert!(!service.is_cache_valid().unwrap());
-    let gets = platform.calls("get_installed");
     let report = service.check_all(false).unwrap();
     assert!(!report.used_cache);
     assert_eq!(report.checked_at, i64::MAX);
-    assert!(platform.calls("get_installed") > gets);
 
     clock.store(i64::MIN, Ordering::SeqCst);
     let backwards = service.check_all(false).unwrap();
@@ -682,9 +775,10 @@ fn update_prefs_roundtrip() {
         "update_preferred_apk",
         r#"{"github:A":"app-arm64-v8a.apk"}"#,
     );
-    let platform = platform_with(vec![installed("com.a", "1.0.0")]);
+    seed_facts(&db, SOURCE, 1_234, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_234, &[installed("com.a", "1.0.0")]);
     let (_, clock) = clock_at(1234);
-    let service = make_service(&db, drivers, platform, clock);
+    let service = make_service(&db, drivers, clock);
 
     let report = service.check_all(true).unwrap();
     assert_eq!(
@@ -782,9 +876,10 @@ fn update_preferred_apk() {
         )],
     )];
     insert_pref(&db, "update_preferred_apk", r#"{"github:A":"chosen.apk"}"#);
-    let platform = platform_with(vec![installed("com.a", "1.0.0")]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers, platform, clock);
+    let service = make_service(&db, drivers, clock);
     let report = service.check_all(true).unwrap();
     assert_eq!(find(&report.updates, "A").download.name, "chosen.apk");
 }
@@ -808,9 +903,15 @@ fn updatable_fixture(
             None,
         )],
     )];
-    let platform = platform_with(vec![installed("com.a", installed_version)]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &[installed("com.a", installed_version)],
+    );
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers.clone(), platform, clock);
+    let service = make_service(&db, drivers.clone(), clock);
     service.check_all(true).unwrap();
     (dir, db, drivers)
 }
@@ -818,44 +919,36 @@ fn updatable_fixture(
 #[test]
 fn update_mark_updated() {
     let (_dir, db, drivers) = updatable_fixture("mark_removed", "1.0.0");
+    set_inventory_version(&db, "com.a", "2.0.0");
     let (_, clock) = clock_at(1_100_000);
-    let service = make_service(
-        &db,
-        drivers.clone(),
-        platform_with(vec![installed("com.a", "2.0.0")]),
-        clock,
-    );
+    let service = make_service(&db, drivers, clock);
     assert!(service.mark_updated("A").unwrap());
     assert!(service.list().unwrap().is_empty());
     assert!(!service.has_update("A").unwrap());
     assert_eq!(db_status(&db, "A"), "updated");
 
     let (_dir, db, drivers) = updatable_fixture("mark_kept", "1.0.0");
+    set_inventory_version(&db, "com.a", "1.5.0");
     let (_, clock) = clock_at(1_100_000);
-    let service = make_service(
-        &db,
-        drivers,
-        platform_with(vec![installed("com.a", "1.5.0")]),
-        clock,
-    );
+    let service = make_service(&db, drivers, clock);
     assert!(!service.mark_updated("A").unwrap());
     assert_eq!(service.count().unwrap(), 1);
 
     let (_dir, db, drivers) = updatable_fixture("mark_missing", "1.0.0");
     let (_, clock) = clock_at(1_100_000);
-    let service = make_service(
-        &db,
-        drivers,
-        platform_with(vec![installed("com.a", "2.0.0")]),
-        clock,
-    );
+    let service = make_service(&db, drivers, clock);
     assert!(!service.mark_updated("missing").unwrap());
+    assert_eq!(service.count().unwrap(), 1);
 
-    let (_dir, db, drivers) = updatable_fixture("mark_error", "1.0.0");
+    // An app absent from inventory keeps its cache entry: mark_updated never
+    // deletes on missing data (the update is simply still unverified).
+    let (_dir, db, drivers) = updatable_fixture("mark_absent", "1.0.0");
+    remove_inventory_package(&db, "com.a");
     let (_, clock) = clock_at(1_100_000);
-    let service = make_service(&db, drivers, Arc::new(FakePlatformHost::default()), clock);
-    assert!(service.mark_updated("A").unwrap());
-    assert!(service.list().unwrap().is_empty());
+    let service = make_service(&db, drivers, clock);
+    assert!(!service.mark_updated("A").unwrap());
+    assert_eq!(service.count().unwrap(), 1);
+    assert_eq!(db_status(&db, "A"), "update_available");
 }
 
 #[test]
@@ -888,20 +981,26 @@ fn update_invalid_version() {
 #[test]
 fn update_check_app_cache() {
     let (_dir, db, drivers) = parity_fixture();
-    let platform = platform_with(vec![
-        installed("com.a", "1.0.0"),
-        installed("com.b", "1.0.0"),
-        installed("com.d", "1.0.0"),
-    ]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &[
+            installed("com.a", "1.0.0"),
+            installed("com.b", "1.0.0"),
+            installed("com.d", "1.0.0"),
+        ],
+    );
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers.clone(), Arc::clone(&platform), clock);
+    let service = make_service(&db, drivers.clone(), clock);
     let report = service.check_all(true).unwrap();
     assert_eq!(report.updates.len(), 2);
 
-    let gets = platform.calls("get_installed");
+    let log_rows_before = db_count(&db, "update_log");
     let cached = service.check_app("A", None).unwrap().unwrap();
     assert_eq!(cached.latest_version, "2.0.0");
-    assert_eq!(platform.calls("get_installed"), gets);
+    assert_eq!(db_count(&db, "update_log"), log_rows_before);
     assert!(service.check_app("missing", None).unwrap().is_none());
     assert!(service
         .check_app("missing", Some("unknown"))
@@ -926,7 +1025,7 @@ fn update_check_app_cache() {
     };
     let before_checked = pref(&db, "update_last_checked_at");
     let before_states = db_count(&db, "update_state");
-    let service = make_service(&db, more_drivers, platform, Arc::new(|| 1_000_000_i64));
+    let service = make_service(&db, more_drivers, Arc::new(|| 1_000_000_i64));
     let single = service.check_app("D", Some("github")).unwrap().unwrap();
     assert_eq!(single.latest_version, "3.0.0");
     assert_eq!(service.count().unwrap(), 2);
@@ -1008,20 +1107,26 @@ fn update_skip_reasons() {
             )],
         ),
     ];
-    let platform = platform_with(vec![
-        installed("com.c", ""),
-        installed("com.d", "1.0.0"),
-        installed("com.e", "1.0.0"),
-        installed("com.f", "1.0.0"),
-    ]);
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &[
+            installed("com.c", ""),
+            installed("com.d", "1.0.0"),
+            installed("com.e", "1.0.0"),
+            installed("com.f", "1.0.0"),
+        ],
+    );
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers.clone(), Arc::clone(&platform), clock);
+    let service = make_service(&db, drivers.clone(), clock);
     let report = service.check_all(true).unwrap();
 
     assert_eq!(report.total, 7);
     assert!(report.updates.is_empty());
     assert_eq!(skip_reason(&report.skipped, "A"), "channel_error");
-    assert_eq!(skip_reason(&report.skipped, "B"), "not_installed");
+    assert_eq!(skip_reason(&report.skipped, "B"), "inventory_missing");
     assert_eq!(skip_reason(&report.skipped, "C"), "no_installed_version");
     assert_eq!(skip_reason(&report.skipped, "D"), "no_channel_version");
     assert_eq!(skip_reason(&report.skipped, "E"), "no_download");
@@ -1031,30 +1136,29 @@ fn update_skip_reasons() {
     assert_eq!(db_count(&db, "update_log"), 6);
     assert!(report.events.is_empty());
 
-    let bare = Arc::new(FakePlatformHost::default());
-    let service = make_service(&db, drivers, bare, Arc::new(|| 1_000_000_i64));
-    match service.check_all(true) {
-        Err(Error::Unsupported(_)) => {}
-        other => panic!("expected Unsupported inventory error, got {other:?}"),
-    }
+    // A stale source with `force = true` does not abort the batch; every app
+    // that needs inventory is skipped instead.
+    db.writer()
+        .unwrap()
+        .execute(
+            "UPDATE inventory_source SET captured_at = ?1 WHERE source_id = ?2",
+            params![1_000_000 - 86_400_000 - 1, SOURCE],
+        )
+        .unwrap();
+    let service = make_service(&db, drivers, Arc::new(|| 1_000_000_i64));
+    let stale = service.check_all(true).unwrap();
+    assert!(stale.updates.is_empty());
+    assert_eq!(skip_reason(&stale.skipped, "E"), "inventory_stale");
+    assert_eq!(skip_reason(&stale.skipped, "F"), "inventory_stale");
 }
 
 #[test]
-fn update_device_info_prefers_primary_abi() {
+fn update_variant_uses_fact_abis() {
     let (_dir, db, drivers) = parity_fixture();
-    let device = DeviceInfo {
-        abis: vec!["arm64-v8a".to_string(), "armeabi-v7a".to_string()],
-        ..FakePlatformHost::new(CapabilitySet::all())
-            .device_info()
-            .unwrap()
-    };
-    let platform = Arc::new(
-        FakePlatformHost::new(CapabilitySet::all())
-            .with_device(device)
-            .with_installed(vec![installed("com.a", "1.0.0")]),
-    );
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a", "armeabi-v7a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
     let (_, clock) = clock_at(1_000_000);
-    let service = make_service(&db, drivers, platform, clock);
+    let service = make_service(&db, drivers, clock);
     let report = service.check_all(true).unwrap();
     assert_eq!(
         find(&report.updates, "A").download.name,
@@ -1075,4 +1179,81 @@ fn update_check_log_levels_serialize() {
     for (level, wire) in levels {
         assert_eq!(serde_json::to_value(level).unwrap(), wire);
     }
+}
+
+#[test]
+fn update_uses_inventory_store() {
+    let (_dir, db, drivers) = parity_fixture();
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a", "armeabi-v7a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    let report = service.check_all(true).unwrap();
+    let update = find(&report.updates, "A");
+    assert_eq!(
+        update.installed_version, "1.0.0",
+        "installed version must come from installed_app"
+    );
+    assert_eq!(
+        update.download.name, "app-arm64-v8a.apk",
+        "variant must come from platform_facts.abis"
+    );
+
+    set_inventory_version(&db, "com.a", "2.0.0");
+    let refreshed = service.check_all(true).unwrap();
+    assert!(
+        refreshed.updates.iter().all(|info| info.app_id != "A"),
+        "a changed inventory row must change the decision"
+    );
+    assert_eq!(skip_reason(&refreshed.skipped, "A"), "up_to_date");
+}
+
+#[test]
+fn update_missing_facts_typed() {
+    let (_dir, db, drivers) = parity_fixture();
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    match service.check_all(true) {
+        Err(Error::Unsupported(message)) => {
+            assert!(message.contains("CORE_E_FACTS_MISSING"), "{message}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+    match service.run() {
+        Err(Error::Unsupported(message)) => {
+            assert!(message.contains("CORE_E_FACTS_MISSING"), "{message}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn update_stale_inventory_aborts_per_batch() {
+    let (_dir, db, drivers) = parity_fixture();
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000 - 86_400_000 - 1,
+        &[installed("com.a", "1.0.0")],
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    match service.check_all(false) {
+        Err(Error::Unsupported(message)) => {
+            assert!(message.contains("CORE_E_INVENTORY_STALE"), "{message}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+
+    let forced = service.check_all(true).unwrap();
+    assert!(
+        forced.updates.is_empty(),
+        "stale inventory yields no update"
+    );
+    assert_eq!(skip_reason(&forced.skipped, "A"), "inventory_stale");
 }

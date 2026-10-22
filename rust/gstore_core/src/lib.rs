@@ -39,16 +39,12 @@ pub use facts::{
 };
 pub use flags::{flags, reset_flags, set_flags, Flags, FlagsApi, FlagsPatch};
 pub use install::{
-    InstallAttempt, InstallReconcileReport, InstallRecord, InstallService, INSTALL_STATUS_DENIED,
-    INSTALL_STATUS_FAILED, INSTALL_STATUS_INSTALLED, INSTALL_STATUS_NONE, INSTALL_STATUS_PENDING,
-    INSTALL_STATUS_TIMEOUT, INSTALL_STATUS_UNKNOWN,
+    InstallRecord, InstallService, INSTALL_STATUS_DENIED, INSTALL_STATUS_FAILED,
+    INSTALL_STATUS_INSTALLED, INSTALL_STATUS_NONE, INSTALL_STATUS_PENDING, INSTALL_STATUS_TIMEOUT,
+    INSTALL_STATUS_UNKNOWN,
 };
 pub use inventory::InventoryStore;
+pub use ports::{CoreConfig, DownloadPort, FileSecretPort, HttpPort, MetadataPort, RepoPort};
 pub use rules::{
     RuleStore, RULES_VERSION, SIGNATURE_POLICY_OFF, SIGNATURE_POLICY_STRICT, SIGNATURE_POLICY_WARN,
-};
-pub use ports::{
-    Capability, CapabilitySet, CoreConfig, DownloadPort, FakeInstallerPort, FileSecretPort,
-    HttpPort, InstallMethod, InstallOutcome, InstallTicket, InstallerPort, MetadataPort,
-    PlatformHost, PlatformInstaller, RepoPort,
 };

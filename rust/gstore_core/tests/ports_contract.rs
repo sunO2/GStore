@@ -1,4 +1,5 @@
-//! Todo 6 contract: PlatformHost and the Wave 0/1 ports.
+//! Contract for the surviving Wave 0/1 ports (config, http, metadata, repo,
+//! secret). Platform and installer ports were removed with the core boundary.
 //!
 //! Every test name is prefixed with `ports_contract` so the plan's QA command
 //! (`cargo test --manifest-path rust/gstore_core/Cargo.toml ports_contract`)
@@ -10,35 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use gstore_core::ports::{
-    CachedMetadataPort, Capability, CapabilitySet, CoreConfig, FakeHttpPort, FakeMetadataPort,
-    FakePlatformHost, FakeRepoPort, FileSecretPort, FileSecretStore, HttpOptions, HttpPort,
-    InMemorySecretPort, InstalledApp, Notification, PackageMetadata, PlatformHost, RepoApp,
-    RepoMeta, RepoPort,
+    CachedMetadataPort, CoreConfig, FakeHttpPort, FakeMetadataPort, FakeRepoPort, FileSecretPort,
+    FileSecretStore, HttpOptions, HttpPort, InMemorySecretPort, PackageMetadata, RepoApp, RepoMeta,
+    RepoPort,
 };
-use gstore_core::Error;
-
-fn app(package_name: &str) -> InstalledApp {
-    InstalledApp {
-        package_name: package_name.to_string(),
-        app_name: format!("App {package_name}"),
-        version_name: "1.0.0".to_string(),
-        version_code: 1,
-        icon: None,
-        system: false,
-    }
-}
-
-fn notification() -> Notification {
-    Notification {
-        id: 1,
-        channel_id: "gstore.default".to_string(),
-        title: "GStore".to_string(),
-        body: "hello".to_string(),
-        progress: Some(50),
-        ongoing: false,
-        payload: Some("download_center".to_string()),
-    }
-}
 
 fn meta(package_name: &str, app_name: &str, icon: &str) -> PackageMetadata {
     PackageMetadata {
@@ -85,112 +61,6 @@ fn temp_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
-}
-
-#[test]
-fn ports_contract_capability_gating_fails_closed_before_work() {
-    let host = FakePlatformHost::new(CapabilitySet::empty())
-        .with_installed(vec![app("com.example.one")])
-        .with_online(true);
-
-    // Every capability-marked operation must fail closed with `Unsupported`
-    // BEFORE the underlying hook runs. The fake's call counter is the witness
-    // (stronger than merely observing an error).
-    let errors: Vec<(&str, Error)> = vec![
-        ("list_installed", host.list_installed().unwrap_err()),
-        (
-            "get_installed",
-            host.get_installed("com.example.one").unwrap_err(),
-        ),
-        (
-            "install",
-            host.install(Path::new("/tmp/demo.apk")).unwrap_err(),
-        ),
-        ("uninstall", host.uninstall("com.example.one").unwrap_err()),
-        ("launch", host.launch("com.example.one").unwrap_err()),
-        ("notify", host.notify(&notification()).unwrap_err()),
-        (
-            "start_foreground",
-            host.start_foreground(&notification()).unwrap_err(),
-        ),
-        ("stop_foreground", host.stop_foreground().unwrap_err()),
-        ("storage_paths", host.storage_paths().unwrap_err()),
-        ("connectivity", host.connectivity().unwrap_err()),
-        ("is_online", host.is_online().unwrap_err()),
-        ("device_info", host.device_info().unwrap_err()),
-        ("secret_get", host.secret_get("token").unwrap_err()),
-        ("secret_set", host.secret_set("token", "value").unwrap_err()),
-        ("secret_remove", host.secret_remove("token").unwrap_err()),
-        ("secret_list", host.secret_list().unwrap_err()),
-    ];
-
-    for (op, error) in &errors {
-        println!("{op} without capability -> {error}");
-        assert_eq!(error.code(), "unsupported", "{op} must be unsupported");
-        assert!(
-            matches!(error, Error::Unsupported(message) if message.contains("capability")),
-            "{op} returned the wrong typed error: {error:?}"
-        );
-        assert_eq!(
-            host.calls(op),
-            0,
-            "{op} must not reach the underlying operation when its capability is absent"
-        );
-    }
-    assert_eq!(host.calls("list_installed"), 0);
-    assert_eq!(host.calls("secret_set"), 0);
-    assert!(!host.foreground_running());
-    assert!(
-        host.notifications().is_empty(),
-        "a denied notify must not enqueue a notification"
-    );
-    println!(
-        "witness after denied batch: list_installed_calls={} install_calls={} secret_set_calls={} notifications={} foreground_running={}",
-        host.calls("list_installed"),
-        host.calls("install"),
-        host.calls("secret_set"),
-        host.notifications().len(),
-        host.foreground_running()
-    );
-
-    // Capabilities that are genuinely present are allowed to run.
-    host.set_capabilities(CapabilitySet::from_caps(Capability::ALL))
-        .expect("grant capabilities");
-    assert_eq!(host.list_installed().unwrap().len(), 1);
-    assert_eq!(host.calls("list_installed"), 1);
-    host.notify(&notification()).unwrap();
-    assert_eq!(host.notifications().len(), 1);
-    assert_eq!(host.calls("notify"), 1);
-
-    let bits = host.capabilities().bits();
-    println!("capabilities after grant: bits={bits:#x}");
-}
-
-#[test]
-fn ports_contract_capability_malformed_and_absent_ids_fail_closed() {
-    // A bogus capability id is a typed invalid-argument error, never a panic.
-    let bogus = Capability::from_id("not-a-capability").unwrap_err();
-    assert_eq!(bogus.code(), "invalid_argument");
-    let bogus_set = CapabilitySet::from_ids(["inventory", "nope"]).unwrap_err();
-    assert_eq!(bogus_set.code(), "invalid_argument");
-
-    // Unknown ids are not capabilities: `supports_id` answers false (fail closed).
-    let caps = CapabilitySet::from_caps([Capability::Inventory]);
-    assert!(caps.supports(Capability::Inventory));
-    assert!(!caps.supports(Capability::Install));
-    assert!(!caps.supports_id("install"));
-    assert!(!caps.supports_id("bogus-capability"));
-    assert!(!caps.supports_id(""));
-
-    // Bits outside the known capability set never turn into an accidental grant.
-    let truncated = CapabilitySet::from_bits_truncate(u64::MAX);
-    assert!(truncated.supports(Capability::Secrets));
-    assert!(!truncated.supports_id("capability-from-the-future"));
-
-    println!(
-        "bogus capability -> {bogus}; supports(bogus)={}",
-        caps.supports_id("bogus-capability")
-    );
 }
 
 #[test]

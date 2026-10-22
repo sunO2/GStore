@@ -1,35 +1,24 @@
-//! Wave 0/1 ports: platform host, HTTP, secrets, metadata, config, and F-Droid.
+//! Wave 0/1 ports: HTTP, secrets, metadata, config, and F-Droid.
 //!
 //! Traits are synchronous, matching the crate's existing port conventions. All
-//! fallible operations return the shared [`crate::error::Error`]; platform
-//! operations are capability-gated and fail closed before touching a driver.
+//! fallible operations return the shared [`crate::error::Error`]. The platform
+//! and installer ports were removed with the core boundary: the frontend pushes
+//! facts/inventory and executes installs, so no core edge calls platform code.
 
 pub mod config;
 pub mod fake;
 pub mod http;
-pub mod installer;
 pub mod metadata;
-pub mod platform;
 pub mod repo;
 pub mod secret;
 
 pub use config::CoreConfig;
-pub use fake::{
-    FakeHttpPort, FakeInstallerPort, FakeMetadataPort, FakePlatformHost, FakeRepoPort,
-    RecordedHttpCall, RecordedInstallCall,
-};
+pub use fake::{FakeHttpPort, FakeMetadataPort, FakeRepoPort, RecordedHttpCall};
 pub use http::{
     validate_http_url, validate_proxy_url, HttpOptions, HttpPort, HttpResponse, DEFAULT_TIMEOUT,
 };
-pub use installer::{
-    InstallMethod, InstallOutcome, InstallTicket, InstallerPort, PlatformInstaller,
-};
 pub use metadata::{
     CachedMetadataPort, ClockFn, MetadataPort, PackageMetadata, METADATA_CACHE_TTL,
-};
-pub use platform::{
-    Capability, CapabilitySet, Connectivity, DeviceInfo, InstalledApp, Notification, PlatformHost,
-    StoragePaths,
 };
 pub use repo::{validate_repo_source, RepoApp, RepoMeta, RepoPort};
 pub use secret::{

@@ -5,11 +5,17 @@
 //! ABI-aware download selection, preferred-APK matching, and the
 //! `update.found` event.
 //!
-//! Installed applications come from [`PlatformHost`], never from the Dart
-//! `installed_apps` plugin. A host that does not advertise
-//! [`Capability::Inventory`](crate::ports::Capability::Inventory) makes
-//! [`UpdateService::check_all`] fail with [`Error::Unsupported`]; the facade
-//! layer owns the `CoreFlags` gate, so this module never reads flags.
+//! Installed applications come from the core-maintained [`InventoryStore`] and
+//! device ABIs from the stored [`PlatformFacts`]; this module never calls
+//! platform code. A missing facts row aborts the batch with
+//! [`Error::Unsupported`] (`CORE_E_FACTS_MISSING`); a missing or stale
+//! inventory row skips only that app. Staleness is judged with
+//! [`UpdateRules::max_inventory_age_secs`] and [`InventoryStore::is_stale`].
+//!
+//! [`InventoryStore`]: crate::inventory::InventoryStore
+//! [`PlatformFacts`]: crate::facts::PlatformFacts
+//! [`UpdateRules`]: crate::facts::UpdateRules
+//! [`InventoryStore::is_stale`]: crate::inventory::InventoryStore::is_stale
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -24,7 +30,14 @@ use crate::db::{DbError, DbHandle};
 use crate::dto::{AppDetail, AppDownload, AppUpdate, ChannelKey};
 use crate::error::Error;
 use crate::event::CoreEvent;
-use crate::ports::platform::PlatformHost;
+use crate::facts::{FactStore, PlatformFacts};
+use crate::inventory::InventoryStore;
+use crate::rules::RuleStore;
+
+/// Stable message prefix for a missing `platform_facts` row.
+pub const FACTS_MISSING: &str = "CORE_E_FACTS_MISSING";
+/// Stable message prefix for inventory older than `max_inventory_age_secs`.
+pub const INVENTORY_STALE: &str = "CORE_E_INVENTORY_STALE";
 
 /// Resolves a channel code stored in `added_apps.channel_id` to its driver.
 pub type ChannelResolver =
@@ -132,7 +145,9 @@ pub struct UpdateService {
     db: DbHandle,
     added: AddedAppsService,
     channels: ChannelResolver,
-    platform: Arc<dyn PlatformHost>,
+    inventory: InventoryStore,
+    facts: FactStore,
+    rules: RuleStore,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
@@ -156,11 +171,10 @@ struct OneCheck {
 
 impl UpdateService {
     /// Creates a service using wall-clock time.
-    pub fn new(db: DbHandle, channels: ChannelResolver, platform: Arc<dyn PlatformHost>) -> Self {
+    pub fn new(db: DbHandle, channels: ChannelResolver) -> Self {
         Self::with_clock(
             db,
             channels,
-            platform,
             Arc::new(|| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -174,14 +188,15 @@ impl UpdateService {
     pub fn with_clock(
         db: DbHandle,
         channels: ChannelResolver,
-        platform: Arc<dyn PlatformHost>,
         clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Self {
         Self {
             added: AddedAppsService::new(db.clone()),
+            inventory: InventoryStore::new(db.clone()),
+            facts: FactStore::new(db.clone()),
+            rules: RuleStore::new(db.clone()),
             db,
             channels,
-            platform,
             clock,
         }
     }
@@ -208,7 +223,7 @@ impl UpdateService {
                 }
             }
         }
-        self.run_batch(now)
+        self.run_batch(now, force)
     }
 
     /// Forces a full update check.
@@ -231,7 +246,16 @@ impl UpdateService {
         let Some(channel) = (self.channels)(code) else {
             return Ok(None);
         };
-        let one = self.check_one(channel.as_ref(), code, app_id, (self.clock)())?;
+        let facts = self.required_facts()?;
+        let max_age = self.rules.effective_update()?.max_inventory_age_secs;
+        let one = self.check_one(
+            channel.as_ref(),
+            code,
+            app_id,
+            (self.clock)(),
+            &facts,
+            max_age,
+        )?;
         Ok(one.update)
     }
 
@@ -262,18 +286,20 @@ impl UpdateService {
         };
         let info = results[position].clone();
 
-        match self.platform.get_installed(&info.package_name) {
-            Ok(Some(installed)) => {
-                if installed.version_name.trim().is_empty()
-                    || compare_versions(&installed.version_name, &info.latest_version)
-                        == Ordering::Less
-                {
-                    return Ok(false);
-                }
+        // Mapping chosen here (parity with the old host-backed branch): a cache
+        // entry is dropped only when the stored install version has caught up.
+        // An absent inventory row keeps the entry, and an inventory read error
+        // propagates instead of silently deleting CORE_E_* state.
+        let caught_up = match self.inventory.get(&info.package_name)? {
+            Some(installed) => {
+                !installed.version_name.trim().is_empty()
+                    && compare_versions(&installed.version_name, &info.latest_version)
+                        != Ordering::Less
             }
-            Ok(None) => return Ok(false),
-            // Dart's catch branch removes the item when re-checking fails.
-            Err(_) => {}
+            None => false,
+        };
+        if !caught_up {
+            return Ok(false);
         }
 
         results.retain(|cached| cached.app_id != app_id);
@@ -320,7 +346,16 @@ impl UpdateService {
         Ok((self.clock)().saturating_sub(last) < UPDATE_CACHE_TTL_MS)
     }
 
-    fn run_batch(&self, now: i64) -> Result<UpdateCheckReport, Error> {
+    fn run_batch(&self, now: i64, force: bool) -> Result<UpdateCheckReport, Error> {
+        let facts = self.required_facts()?;
+        let max_age = self.rules.effective_update()?.max_inventory_age_secs;
+        if !force && self.inventory.is_stale(&facts.source_id, max_age, now)? {
+            return Err(Error::Unsupported(format!(
+                "{INVENTORY_STALE}: source {} is older than {max_age}s",
+                facts.source_id
+            )));
+        }
+
         let added = self.added.list()?;
         let total = added.len();
         let mut logs = vec![log_entry(CheckLogLevel::Info, "开始检测应用更新...", now)];
@@ -357,7 +392,14 @@ impl UpdateService {
                 ));
                 continue;
             };
-            let one = self.check_one(channel.as_ref(), &app.channel_id, &app.app_id, now)?;
+            let one = self.check_one(
+                channel.as_ref(),
+                &app.channel_id,
+                &app.app_id,
+                now,
+                &facts,
+                max_age,
+            )?;
             logs.push(log_entry(one.log_level, &one.log_text, now));
             if let Some(reason) = one.skip_reason {
                 skipped.push(UpdateSkip {
@@ -407,6 +449,8 @@ impl UpdateService {
         channel_code: &str,
         app_id: &str,
         now: i64,
+        facts: &PlatformFacts,
+        max_inventory_age_secs: i64,
     ) -> Result<OneCheck, Error> {
         let check = match channel.check_app_update(app_id) {
             Ok(check) => check,
@@ -456,16 +500,36 @@ impl UpdateService {
             ));
         }
 
-        let Some(installed) = self.platform.get_installed(&package_name)? else {
+        if self
+            .inventory
+            .is_stale(&facts.source_id, max_inventory_age_secs, now)?
+        {
             return Ok(rejection(
                 app_id,
                 channel_code,
                 None,
                 check.latest_version.clone(),
-                "not_installed",
-                &format!("{display_name}（{package_name}）：未安装，跳过"),
+                "inventory_stale",
+                &format!("{display_name}（{package_name}）：设备清单已过期，跳过"),
                 serde_json::json!({
-                    "reason": "not_installed",
+                    "reason": "inventory_stale",
+                    "appId": app_id,
+                    "channelKey": channel_code,
+                })
+                .to_string(),
+            ));
+        }
+
+        let Some(installed) = self.inventory.get(&package_name)? else {
+            return Ok(rejection(
+                app_id,
+                channel_code,
+                None,
+                check.latest_version.clone(),
+                "inventory_missing",
+                &format!("{display_name}（{package_name}）：清单中不存在，跳过"),
+                serde_json::json!({
+                    "reason": "inventory_missing",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
@@ -528,28 +592,25 @@ impl UpdateService {
 
         let fallback = match check.latest_download.clone() {
             Some(download) => download,
-            None => {
-                let device = self.platform.device_info()?;
-                match select_best_download(&check.detail.downloads, &device.abis) {
-                    Some(download) => download,
-                    None => {
-                        return Ok(rejection(
-                            app_id,
-                            channel_code,
-                            Some(installed_version.clone()),
-                            Some(latest_version.clone()),
-                            "no_download",
-                            &format!("{display_name}：有更新但无可下载文件"),
-                            serde_json::json!({
-                                "reason": "no_download",
-                                "appId": app_id,
-                                "channelKey": channel_code,
-                            })
-                            .to_string(),
-                        ));
-                    }
+            None => match select_best_download(&check.detail.downloads, &facts.abis) {
+                Some(download) => download,
+                None => {
+                    return Ok(rejection(
+                        app_id,
+                        channel_code,
+                        Some(installed_version.clone()),
+                        Some(latest_version.clone()),
+                        "no_download",
+                        &format!("{display_name}：有更新但无可下载文件"),
+                        serde_json::json!({
+                            "reason": "no_download",
+                            "appId": app_id,
+                            "channelKey": channel_code,
+                        })
+                        .to_string(),
+                    ));
                 }
-            }
+            },
         };
 
         let preferred = self.preferred_apk(channel_code, app_id)?;
@@ -593,6 +654,14 @@ impl UpdateService {
                 status: "update_available",
                 payload_json,
             }),
+        })
+    }
+
+    fn required_facts(&self) -> Result<PlatformFacts, Error> {
+        self.facts.get()?.ok_or_else(|| {
+            Error::Unsupported(format!(
+                "{FACTS_MISSING}: the frontend has not pushed platform facts"
+            ))
         })
     }
 
@@ -706,6 +775,8 @@ fn status_for_reason(reason: &str) -> &'static str {
     match reason {
         "channel_error" | "no_package" => "error",
         "not_installed" => "not_installed",
+        "inventory_missing" => "inventory_missing",
+        "inventory_stale" => "inventory_stale",
         "no_installed_version" | "no_channel_version" => "no_version",
         "up_to_date" => "up_to_date",
         "no_download" => "no_download",

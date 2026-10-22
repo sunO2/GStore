@@ -1,31 +1,39 @@
-//! SQLite-backed install service.
+//! SQLite-backed install request/response service.
 //!
 //! The service owns the durable install state machine on `download_task`:
 //!
 //! ```text
 //! none -> pending -> installed | failed | denied | timeout
+//!                            \-> unknown (timeout sweep)
 //! ```
 //!
-//! `pending` is written before the installer is asked to start, so a process
-//! death cannot lose the attempt. Reconciliation polls the installer for the
-//! persisted session id; an install is claimed with a single atomic `UPDATE`
-//! so `install_after_download` can never start two installs.
+//! `pending` and the request payload columns are written before the request is
+//! returned, so a process death cannot lose the attempt and
+//! [`InstallService::pending_requests`] can rebuild it from SQL. The frontend
+//! owns execution; it reports back through [`InstallService::on_result`].
+//! [`InstallService::sweep_timeouts`] is read-driven — it runs inside
+//! `install()` and `pending_requests()`, never on a background thread.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 
 use crate::db::SharedConn;
 use crate::error::Error;
 use crate::event::CoreEvent;
-use crate::ports::installer::{InstallOutcome, InstallerPort};
+use crate::facts::{
+    InstallReport, InstallReportStatus, InstallRequest, InstallResultAck, InstallStart,
+    VariantChoice,
+};
+use crate::rules::RuleStore;
 
 /// No install has been attempted.
 pub const INSTALL_STATUS_NONE: &str = "none";
-/// An install attempt is in flight (or awaiting reconciliation).
+/// An install request is pending (or the frontend is executing it).
 pub const INSTALL_STATUS_PENDING: &str = "pending";
 /// The package is installed.
 pub const INSTALL_STATUS_INSTALLED: &str = "installed";
@@ -33,24 +41,37 @@ pub const INSTALL_STATUS_INSTALLED: &str = "installed";
 pub const INSTALL_STATUS_FAILED: &str = "failed";
 /// The user rejected the install (terminal: no silent fallback).
 pub const INSTALL_STATUS_DENIED: &str = "denied";
-/// The install attempt timed out.
+/// The install attempt reported a timeout.
 pub const INSTALL_STATUS_TIMEOUT: &str = "timeout";
-/// The pending attempt lost its session id and cannot be reconciled.
+/// The pending attempt exhausted its timeout window or lost its session id.
 pub const INSTALL_STATUS_UNKNOWN: &str = "unknown";
 
 const APK_MISSING: &str = "CORE_E_INSTALL_APK_MISSING";
 const NOT_DOWNLOADED: &str = "CORE_E_INSTALL_NOT_DOWNLOADED";
-const UNSUPPORTED: &str = "CORE_E_INSTALL_UNSUPPORTED";
+const SESSION_ERROR: &str = "CORE_E_INSTALL_SESSION";
 const SESSION_MISSING: &str = "CORE_E_INSTALL_SESSION_MISSING";
+const TIMEOUT_ERROR: &str = "CORE_E_INSTALL_TIMEOUT";
 
-const ROW_SELECT: &str = "SELECT module_task_id, app_id, dest_path, status, install_status, \
-     install_method, install_session_id, install_error, installed_at, installed_version, \
-     install_after_download FROM download_task WHERE module_task_id = ?1";
+/// Method string persisted when the frontend has not chosen one yet.
+const DEFAULT_INSTALL_METHOD: &str = "platform";
 
-const SESSION_SELECT: &str = "SELECT module_task_id, app_id, dest_path, status, install_status, \
-     install_method, install_session_id, install_error, installed_at, installed_version, \
-     install_after_download FROM download_task WHERE install_session_id = ?1 \
-     ORDER BY id DESC LIMIT 1";
+const ROW_SELECT: &str =
+    "SELECT module_task_id, app_id, resource_id, app_name, version, file_name, \
+     url, dest_path, status, install_status, install_method, install_session_id, install_error, \
+     installed_at, installed_version, install_after_download, package_name, abi, variant_url, \
+     fallback_json FROM download_task WHERE module_task_id = ?1";
+
+const SESSION_SELECT: &str = "SELECT module_task_id, app_id, resource_id, app_name, version, \
+     file_name, url, dest_path, status, install_status, install_method, install_session_id, \
+     install_error, installed_at, installed_version, install_after_download, package_name, abi, \
+     variant_url, fallback_json FROM download_task \
+     WHERE install_session_id = ?1 ORDER BY id DESC LIMIT 1";
+
+const PENDING_SELECT: &str = "SELECT module_task_id, app_id, resource_id, app_name, version, \
+     file_name, url, dest_path, status, install_status, install_method, install_session_id, \
+     install_error, installed_at, installed_version, install_after_download, package_name, abi, \
+     variant_url, fallback_json FROM download_task \
+     WHERE install_status = 'pending' ORDER BY id";
 
 /// Durable install row projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,32 +96,14 @@ pub struct InstallRecord {
     pub install_after_download: bool,
 }
 
-/// Result of one install attempt.
-#[derive(Debug, Clone, PartialEq)]
-pub struct InstallAttempt {
-    /// Current durable record.
-    pub record: InstallRecord,
-    /// Exactly one event when this call produced a terminal result.
-    pub event: Option<CoreEvent>,
-}
-
-/// Summary of one reconciliation sweep.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct InstallReconcileReport {
-    /// Pending rows examined.
-    pub checked: usize,
-    /// Rows that reached a terminal (or `unknown`) state.
-    pub resolved: usize,
-    /// Rows that remain pending.
-    pub still_pending: usize,
-    /// Per-row installer failures (`task:session: error`); those rows stay pending.
-    pub errors: Vec<String>,
-}
-
 #[derive(Debug, Clone)]
 struct TaskRow {
     module_task_id: String,
     app_id: String,
+    resource_id: Option<String>,
+    version_name: Option<String>,
+    file_name: Option<String>,
+    url: Option<String>,
     dest_path: Option<String>,
     download_status: String,
     install_status: String,
@@ -110,6 +113,10 @@ struct TaskRow {
     installed_at: Option<i64>,
     installed_version: Option<String>,
     install_after_download: bool,
+    package_name: Option<String>,
+    abi: Option<String>,
+    variant_url: Option<String>,
+    fallback_json: Option<String>,
 }
 
 impl TaskRow {
@@ -132,24 +139,30 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
     Ok(TaskRow {
         module_task_id: row.get(0)?,
         app_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        dest_path: row.get(2)?,
-        download_status: row.get(3)?,
-        install_status: row.get(4)?,
-        install_method: row.get(5)?,
-        install_session_id: row.get(6)?,
-        install_error: row.get(7)?,
-        installed_at: row.get(8)?,
-        installed_version: row.get(9)?,
-        install_after_download: row.get::<_, i64>(10)? != 0,
+        resource_id: row.get(2)?,
+        version_name: row.get(4)?,
+        file_name: row.get(5)?,
+        url: row.get(6)?,
+        dest_path: row.get(7)?,
+        download_status: row.get(8)?,
+        install_status: row.get(9)?,
+        install_method: row.get(10)?,
+        install_session_id: row.get(11)?,
+        install_error: row.get(12)?,
+        installed_at: row.get(13)?,
+        installed_version: row.get(14)?,
+        install_after_download: row.get::<_, i64>(15)? != 0,
+        package_name: row.get(16)?,
+        abi: row.get(17)?,
+        variant_url: row.get(18)?,
+        fallback_json: row.get(19)?,
     })
 }
 
-fn now_ms() -> Result<i64, Error> {
-    let elapsed = SystemTime::now()
+fn system_now_millis() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Internal(format!("install clock: {e}")))?;
-    i64::try_from(elapsed.as_millis())
-        .map_err(|_| Error::Internal("install clock overflow".to_string()))
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 fn make_session_id(module_task_id: &str, now: i64) -> String {
@@ -171,36 +184,99 @@ fn terminal_fields(
     }
 }
 
-fn install_event(
-    row: &TaskRow,
-    success: bool,
-    package_name: Option<&str>,
-    message: Option<&str>,
-) -> CoreEvent {
-    CoreEvent::InstallResult {
-        app_id: row.app_id.clone(),
-        package_name: package_name.map(str::to_string),
-        success,
-        message: message.map(str::to_string),
-    }
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+fn infer_abi(file_name: &str, priority: &[String]) -> String {
+    let lower = file_name.to_lowercase();
+    priority
+        .iter()
+        .find(|abi| lower.contains(&abi.to_lowercase()))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn parse_fallback(raw: Option<&str>) -> Vec<String> {
+    raw.filter(|json| !json.trim().is_empty())
+        .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .unwrap_or_default()
+}
+
+fn rebuild_request(row: &TaskRow) -> Option<InstallRequest> {
+    let session_id = non_empty(&row.install_session_id)?;
+    let url = non_empty(&row.variant_url)
+        .or_else(|| non_empty(&row.url))
+        .unwrap_or_default();
+    Some(InstallRequest {
+        module_task_id: row.module_task_id.clone(),
+        session_id,
+        package_name: non_empty(&row.package_name)
+            .or_else(|| non_empty(&row.resource_id))
+            .unwrap_or_else(|| row.app_id.clone()),
+        version_name: row.version_name.clone().unwrap_or_default(),
+        apk_path: row.dest_path.clone().unwrap_or_default(),
+        method: non_empty(&row.install_method)
+            .unwrap_or_else(|| DEFAULT_INSTALL_METHOD.to_string()),
+        variant: VariantChoice {
+            abi: row.abi.clone().unwrap_or_default(),
+            url,
+            fallback_chain: parse_fallback(row.fallback_json.as_deref()),
+        },
+    })
 }
 
 /// Durable install service over the core database.
 pub struct InstallService {
     conn: SharedConn,
-    installer: Arc<dyn InstallerPort>,
+    rules: RuleStore,
+    events: Mutex<Vec<CoreEvent>>,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl InstallService {
-    /// Creates a service over `conn` using `installer` for every install call.
-    pub fn new(conn: SharedConn, installer: Arc<dyn InstallerPort>) -> Self {
-        Self { conn, installer }
+    /// Creates a service over `conn` using wall-clock time.
+    pub fn new(conn: SharedConn) -> Self {
+        Self::with_clock(conn, Arc::new(system_now_millis))
+    }
+
+    /// Creates a service with an injectable millisecond clock.
+    pub fn with_clock(conn: SharedConn, clock: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+        Self {
+            rules: RuleStore::from_shared(conn.clone()),
+            conn,
+            events: Mutex::new(Vec::new()),
+            clock,
+        }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, Error> {
         self.conn
             .lock()
             .map_err(|_| Error::Internal("install db mutex poisoned".to_string()))
+    }
+
+    fn push_events(&self, events: &[CoreEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(events.iter().cloned());
+    }
+
+    /// Drains queued `install.requested` / `install.unknown` events.
+    pub fn take_events(&self) -> Vec<CoreEvent> {
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     fn load(conn: &Connection, module_task_id: &str) -> Result<Option<TaskRow>, Error> {
@@ -228,30 +304,35 @@ impl InstallService {
 
     /// Starts (or observes) an install for `module_task_id`.
     ///
-    /// Idempotent: an `installed` row or an in-flight `pending` row returns the
-    /// existing record with no event and never calls the installer again.
+    /// Idempotent: an `installed` row returns no request; a `pending` row
+    /// returns its rebuilt request without a second event; a retryable row
+    /// (`none|failed|denied|timeout|unknown`) starts a new session.
     ///
     /// # Errors
     /// - [`Error::NotFound`] when the download task does not exist.
     /// - [`Error::InvalidArgument`] when `dest_path` is empty or not a file.
     /// - [`Error::Conflict`] when the download is not `completed`.
-    /// - [`Error::Unsupported`] when the installer cannot install.
     /// - [`Error::Internal`] when a durable write fails.
-    ///
-    /// A port-level `begin_install` failure is NOT an error: it is recorded as
-    /// `failed` and returned as one `install.result { success: false }` event.
-    pub fn install(&self, module_task_id: &str) -> Result<InstallAttempt, Error> {
+    pub fn install(&self, module_task_id: &str) -> Result<InstallStart, Error> {
+        let now = (self.clock)();
+        self.sweep_timeouts(now)?;
+
         let row = {
             let guard = self.lock()?;
             Self::required(&guard, module_task_id)?
         };
 
-        if row.install_status == INSTALL_STATUS_INSTALLED
-            || row.install_status == INSTALL_STATUS_PENDING
-        {
-            return Ok(InstallAttempt {
+        if row.install_status == INSTALL_STATUS_INSTALLED {
+            return Ok(InstallStart {
                 record: row.into_record(),
-                event: None,
+                request: None,
+            });
+        }
+        if row.install_status == INSTALL_STATUS_PENDING {
+            let request = rebuild_request(&row);
+            return Ok(InstallStart {
+                record: row.into_record(),
+                request,
             });
         }
 
@@ -272,342 +353,252 @@ impl InstallService {
                 module_task_id, row.download_status
             )));
         }
-        if !self.installer.can_install() {
-            return Err(Error::Unsupported(format!(
-                "{UNSUPPORTED}: no install capability"
-            )));
-        }
 
-        let now = now_ms()?;
+        let rules = self.rules.effective_install()?;
+        let file_name = non_empty(&row.file_name).unwrap_or_else(|| {
+            Path::new(&dest_path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+        let package_name = non_empty(&row.package_name)
+            .or_else(|| non_empty(&row.resource_id))
+            .unwrap_or_else(|| row.app_id.clone());
+        let abi = non_empty(&row.abi).unwrap_or_else(|| infer_abi(&file_name, &rules.abi_priority));
+        let variant_url = non_empty(&row.variant_url)
+            .or_else(|| non_empty(&row.url))
+            .unwrap_or_default();
+        let fallback_json = non_empty(&row.fallback_json).unwrap_or_else(|| {
+            serde_json::to_string(&vec![variant_url.clone()]).unwrap_or_else(|_| "[]".to_string())
+        });
+
         let session = make_session_id(module_task_id, now);
         let claimed = {
             let guard = self.lock()?;
             guard
                 .execute(
                     "UPDATE download_task SET install_status = 'pending', \
-                         install_session_id = ?1, install_method = NULL, install_error = NULL, \
-                         installed_at = NULL, installed_version = NULL, updated_at = ?2 \
-                     WHERE module_task_id = ?3 \
+                         install_session_id = ?1, install_requested_at = ?2, install_method = ?3, \
+                         package_name = ?4, abi = ?5, variant_url = ?6, fallback_json = ?7, \
+                         install_error = NULL, installed_at = NULL, installed_version = NULL, \
+                         updated_at = ?2 \
+                     WHERE module_task_id = ?8 \
                        AND install_status IN ('none', 'failed', 'denied', 'timeout', 'unknown')",
-                    rusqlite::params![session, now, module_task_id],
+                    rusqlite::params![
+                        session,
+                        now,
+                        DEFAULT_INSTALL_METHOD,
+                        package_name,
+                        abi,
+                        variant_url,
+                        fallback_json,
+                        module_task_id
+                    ],
                 )
                 .map_err(|e| {
                     Error::Internal(format!("CORE_E_INSTALL_WRITE: claim {module_task_id}: {e}"))
                 })?
         };
-        if claimed == 0 {
+
+        let row = {
             let guard = self.lock()?;
-            let current = Self::required(&guard, module_task_id)?;
-            return Ok(InstallAttempt {
-                record: current.into_record(),
-                event: None,
-            });
-        }
-
-        let ticket = match self
-            .installer
-            .begin_install(Path::new(&dest_path), &session)
-        {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                let guard = self.lock()?;
-                let changed = guard
-                    .execute(
-                        "UPDATE download_task SET install_status = 'failed', \
-                             install_error = ?1, updated_at = ?2 \
-                         WHERE module_task_id = ?3 AND install_session_id = ?4 \
-                           AND install_status = 'pending'",
-                        rusqlite::params![error.message(), now_ms()?, module_task_id, session],
-                    )
-                    .map_err(|e| {
-                        Error::Internal(format!(
-                            "CORE_E_INSTALL_WRITE: failure {module_task_id}: {e}"
-                        ))
-                    })?;
-                let current = Self::required(&guard, module_task_id)?;
-                let event = if changed > 0 {
-                    Some(install_event(&current, false, None, Some(error.message())))
-                } else {
-                    None
-                };
-                return Ok(InstallAttempt {
-                    record: current.into_record(),
-                    event,
-                });
-            }
+            Self::required(&guard, module_task_id)?
         };
-
-        let guard = self.lock()?;
-        let method_changed = guard
-            .execute(
-                "UPDATE download_task SET install_method = ?1, updated_at = ?2 \
-                 WHERE module_task_id = ?3 AND install_session_id = ?4 \
-                   AND install_status = 'pending'",
-                rusqlite::params![ticket.method.as_str(), now_ms()?, module_task_id, session],
-            )
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "CORE_E_INSTALL_WRITE: method {module_task_id}: {e}"
-                ))
-            })?;
-        if method_changed == 0 {
-            let current = Self::required(&guard, module_task_id)?;
-            return Ok(InstallAttempt {
-                record: current.into_record(),
-                event: None,
-            });
-        }
-
-        match ticket.outcome {
-            Some(outcome) => {
-                let changed = Self::transition_outcome(
-                    &guard,
-                    module_task_id,
-                    &session,
-                    &outcome,
-                    now_ms()?,
-                )?;
-                let current = Self::required(&guard, module_task_id)?;
-                let event = if changed {
-                    Some(install_event(
-                        &current,
-                        outcome.is_success(),
-                        outcome.package_name(),
-                        outcome.message(),
-                    ))
-                } else {
-                    None
-                };
-                Ok(InstallAttempt {
-                    record: current.into_record(),
-                    event,
-                })
-            }
-            None => {
-                let current = Self::required(&guard, module_task_id)?;
-                Ok(InstallAttempt {
-                    record: current.into_record(),
-                    event: None,
-                })
+        let request = if row.install_status == INSTALL_STATUS_INSTALLED {
+            None
+        } else {
+            rebuild_request(&row)
+        };
+        if claimed > 0 {
+            if let Some(request) = request.clone() {
+                self.push_events(&[CoreEvent::InstallRequested { request }]);
             }
         }
+        Ok(InstallStart {
+            record: row.into_record(),
+            request,
+        })
     }
 
-    fn transition_outcome(
-        conn: &Connection,
-        module_task_id: &str,
-        session: &str,
-        outcome: &InstallOutcome,
-        now: i64,
-    ) -> Result<bool, Error> {
-        let (installed_at, installed_version, install_error) = terminal_fields(
-            outcome.status_str(),
-            outcome.version_name(),
-            outcome.message(),
-            now,
-        );
-        let changed = conn
-            .execute(
-                "UPDATE download_task SET install_status = ?1, installed_at = ?2, \
-                     installed_version = ?3, install_error = ?4, updated_at = ?5 \
-                 WHERE module_task_id = ?6 AND install_session_id = ?7 \
-                   AND install_status = 'pending'",
-                rusqlite::params![
-                    outcome.status_str(),
-                    installed_at,
-                    installed_version,
-                    install_error,
-                    now,
-                    module_task_id,
-                    session
-                ],
-            )
-            .map_err(|e| {
-                Error::Internal(format!(
-                    "CORE_E_INSTALL_WRITE: outcome {module_task_id}: {e}"
-                ))
-            })?;
-        Ok(changed > 0)
-    }
-
-    /// Applies an asynchronous installer result.
+    /// Applies an install result reported by the frontend.
     ///
-    /// Only a `pending` row transitions; duplicates (including a terminal row)
-    /// return `Ok(None)` and never emit a second event.
+    /// Only a `pending` or `unknown` row transitions; a duplicate or late report
+    /// on a terminal row returns `changed: false` and mutates nothing.
     ///
     /// # Errors
-    /// - [`Error::InvalidArgument`] for an empty session id or unknown status.
-    /// - [`Error::NotFound`] when no row carries `session_id`.
-    pub fn on_result(
-        &self,
-        session_id: &str,
-        status: &str,
-        package_name: Option<&str>,
-        version_name: Option<&str>,
-        error: Option<&str>,
-    ) -> Result<Option<CoreEvent>, Error> {
+    /// - [`Error::InvalidArgument`] for an empty session id.
+    /// - [`Error::NotFound`] when no row carries `report.session_id`.
+    pub fn on_result(&self, report: InstallReport) -> Result<InstallResultAck, Error> {
+        let session_id = report.session_id;
         if session_id.trim().is_empty() {
-            return Err(Error::InvalidArgument(
-                "CORE_E_INSTALL_SESSION: session id must not be empty".to_string(),
-            ));
-        }
-        if !matches!(
-            status,
-            INSTALL_STATUS_INSTALLED
-                | INSTALL_STATUS_FAILED
-                | INSTALL_STATUS_DENIED
-                | INSTALL_STATUS_TIMEOUT
-        ) {
             return Err(Error::InvalidArgument(format!(
-                "CORE_E_INSTALL_STATUS: unexpected terminal status {status}"
+                "{SESSION_ERROR}: session id must not be empty"
             )));
         }
-
+        let status = match report.status {
+            InstallReportStatus::Installed => INSTALL_STATUS_INSTALLED,
+            InstallReportStatus::Failed => INSTALL_STATUS_FAILED,
+            InstallReportStatus::Denied => INSTALL_STATUS_DENIED,
+            InstallReportStatus::Timeout => INSTALL_STATUS_TIMEOUT,
+        };
+        let now = (self.clock)();
         let guard = self.lock()?;
-        let row = Self::load_by_session(&guard, session_id)?
-            .ok_or_else(|| Error::NotFound(format!("install session not found: {session_id}")))?;
-        if row.install_status != INSTALL_STATUS_PENDING {
-            return Ok(None);
+        let Some(row) = Self::load_by_session(&guard, &session_id)? else {
+            return Err(Error::NotFound(format!(
+                "{SESSION_ERROR}: install session not found: {session_id}"
+            )));
+        };
+        if row.install_status != INSTALL_STATUS_PENDING
+            && row.install_status != INSTALL_STATUS_UNKNOWN
+        {
+            return Ok(InstallResultAck {
+                session_id,
+                status: row.install_status,
+                changed: false,
+            });
         }
 
-        let now = now_ms()?;
-        let (installed_at, installed_version, install_error) =
-            terminal_fields(status, version_name, error, now);
+        let (installed_at, installed_version, install_error) = terminal_fields(
+            status,
+            report.installed_version.as_deref(),
+            report.error.as_deref(),
+            now,
+        );
+        let method = non_empty(&Some(report.method));
         let changed = guard
             .execute(
                 "UPDATE download_task SET install_status = ?1, installed_at = ?2, \
-                     installed_version = ?3, install_error = ?4, updated_at = ?5 \
-                 WHERE install_session_id = ?6 AND install_status = 'pending'",
+                     installed_version = ?3, install_error = ?4, updated_at = ?5, \
+                     install_method = COALESCE(?6, install_method) \
+                 WHERE install_session_id = ?7 \
+                   AND install_status IN ('pending', 'unknown')",
                 rusqlite::params![
                     status,
                     installed_at,
                     installed_version,
                     install_error,
                     now,
-                    session_id
+                    method,
+                    &session_id
                 ],
             )
             .map_err(|e| {
                 Error::Internal(format!("CORE_E_INSTALL_WRITE: result {session_id}: {e}"))
             })?;
         if changed == 0 {
-            return Ok(None);
+            let current = Self::load_by_session(&guard, &session_id)?.ok_or_else(|| {
+                Error::NotFound(format!(
+                    "{SESSION_ERROR}: install session not found: {session_id}"
+                ))
+            })?;
+            return Ok(InstallResultAck {
+                session_id,
+                status: current.install_status,
+                changed: false,
+            });
         }
-
-        let row = Self::load_by_session(&guard, session_id)?
-            .ok_or_else(|| Error::NotFound(format!("install session not found: {session_id}")))?;
-        Ok(Some(install_event(
-            &row,
-            status == INSTALL_STATUS_INSTALLED,
-            package_name,
-            error,
-        )))
+        Ok(InstallResultAck {
+            session_id,
+            status: status.to_string(),
+            changed: true,
+        })
     }
 
-    /// Reconciles every pending install session against the installer.
+    /// Moves expired or session-less `pending` rows to `unknown`.
     ///
-    /// Returns the sweep report together with every event produced by the
-    /// sweep, so callers cannot accidentally drop install results. A pending
-    /// row with an empty session id becomes `unknown`; a per-row installer
-    /// poll error is recorded in [`InstallReconcileReport::errors`] and that
-    /// row stays pending, so later rows still resolve and no event is lost.
+    /// A row expires when `install_requested_at` is missing or older than
+    /// `InstallRules::timeout_secs` at `now`. Every transitioned row queues a
+    /// [`CoreEvent::InstallUnknown`]; the same events are returned so a direct
+    /// caller does not have to drain the queue.
     ///
     /// # Errors
-    /// Propagates database failures that make the sweep impossible; installer
-    /// poll errors are reported per row instead.
-    pub fn reconcile(&self) -> Result<(InstallReconcileReport, Vec<CoreEvent>), Error> {
-        let pending: Vec<(String, Option<String>)> = {
-            let guard = self.lock()?;
-            let mut stmt = guard
+    /// Propagates database failures.
+    pub fn sweep_timeouts(&self, now: i64) -> Result<Vec<CoreEvent>, Error> {
+        let timeout_ms = self
+            .rules
+            .effective_install()?
+            .timeout_secs
+            .saturating_mul(1_000);
+        let mut guard = self.lock()?;
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+
+        let pending: Vec<(String, Option<String>, Option<i64>)> = {
+            let mut stmt = tx
                 .prepare(
-                    "SELECT module_task_id, install_session_id FROM download_task \
-                     WHERE install_status = 'pending' ORDER BY id",
+                    "SELECT module_task_id, install_session_id, install_requested_at \
+                     FROM download_task WHERE install_status = 'pending' ORDER BY id",
                 )
-                .map_err(|e| {
-                    Error::Internal(format!("CORE_E_INSTALL_READ: prepare reconcile: {e}"))
-                })?;
+                .map_err(sql_error)?;
             let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })
-                .map_err(|e| {
-                    Error::Internal(format!("CORE_E_INSTALL_READ: query reconcile: {e}"))
-                })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| Error::Internal(format!("CORE_E_INSTALL_READ: read reconcile: {e}")))?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(sql_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error)?;
+            rows
         };
 
-        let mut report = InstallReconcileReport::default();
         let mut events = Vec::new();
-        for (module_task_id, session_id) in pending {
-            report.checked += 1;
-            let session_id = session_id.unwrap_or_default();
-            if session_id.trim().is_empty() {
-                let guard = self.lock()?;
-                let changed = guard
-                    .execute(
-                        "UPDATE download_task SET install_status = 'unknown', \
-                             install_error = ?1, updated_at = ?2 \
-                         WHERE module_task_id = ?3 AND install_status = 'pending'",
-                        rusqlite::params![SESSION_MISSING, now_ms()?, module_task_id],
-                    )
-                    .map_err(|e| {
-                        Error::Internal(format!(
-                            "CORE_E_INSTALL_WRITE: unknown {module_task_id}: {e}"
-                        ))
-                    })?;
-                if changed > 0 {
-                    report.resolved += 1;
-                } else {
-                    report.still_pending += 1;
-                }
+        for (module_task_id, session, requested_at) in pending {
+            let session_missing = session
+                .as_deref()
+                .map(|text| text.trim().is_empty())
+                .unwrap_or(true);
+            let requested_at = requested_at.unwrap_or(0);
+            let expired = requested_at <= 0 || now.saturating_sub(requested_at) > timeout_ms;
+            if !session_missing && !expired {
                 continue;
             }
-
-            let outcome = match self.installer.install_result(&session_id) {
-                Ok(Some(outcome)) => outcome,
-                Ok(None) => {
-                    report.still_pending += 1;
-                    continue;
-                }
-                Err(error) => {
-                    report.errors.push(format!(
-                        "{module_task_id}:{session_id}: {}",
-                        error.message()
-                    ));
-                    report.still_pending += 1;
-                    continue;
-                }
+            let reason = if session_missing {
+                SESSION_MISSING
+            } else {
+                TIMEOUT_ERROR
             };
-
-            let guard = self.lock()?;
-            let changed = Self::transition_outcome(
-                &guard,
-                &module_task_id,
-                &session_id,
-                &outcome,
-                now_ms()?,
-            )?;
-            if !changed {
-                let current = Self::required(&guard, &module_task_id)?;
-                if current.install_status == INSTALL_STATUS_PENDING {
-                    report.still_pending += 1;
-                } else {
-                    report.resolved += 1;
-                }
-                continue;
+            let changed = tx
+                .execute(
+                    "UPDATE download_task SET install_status = 'unknown', install_error = ?1, \
+                         updated_at = ?2 \
+                     WHERE module_task_id = ?3 AND install_status = 'pending'",
+                    rusqlite::params![reason, now, module_task_id],
+                )
+                .map_err(sql_error)?;
+            if changed > 0 {
+                events.push(CoreEvent::InstallUnknown {
+                    session_id: session.unwrap_or_default(),
+                    module_task_id: Some(module_task_id),
+                });
             }
-            let current = Self::required(&guard, &module_task_id)?;
-            events.push(install_event(
-                &current,
-                outcome.is_success(),
-                outcome.package_name(),
-                outcome.message(),
-            ));
-            report.resolved += 1;
         }
+        tx.commit().map_err(sql_error)?;
+        self.push_events(&events);
+        Ok(events)
+    }
 
-        Ok((report, events))
+    /// Lists every still-pending request after sweeping expired rows.
+    ///
+    /// # Errors
+    /// Propagates database failures.
+    pub fn pending_requests(&self) -> Result<Vec<InstallStart>, Error> {
+        self.sweep_timeouts((self.clock)())?;
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare(PENDING_SELECT).map_err(sql_error)?;
+        let rows = stmt
+            .query_map([], row_from_sql)
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        let mut starts = Vec::with_capacity(rows.len());
+        for row in rows {
+            let request = rebuild_request(&row);
+            if request.is_some() {
+                starts.push(InstallStart {
+                    record: row.into_record(),
+                    request,
+                });
+            }
+        }
+        Ok(starts)
     }
 
     /// Installs exactly once after a completed download when requested.
@@ -620,7 +611,7 @@ impl InstallService {
     pub fn maybe_install_after_download(
         &self,
         module_task_id: &str,
-    ) -> Result<Option<InstallAttempt>, Error> {
+    ) -> Result<Option<InstallStart>, Error> {
         {
             let guard = self.lock()?;
             let row = Self::required(&guard, module_task_id)?;
@@ -634,37 +625,6 @@ impl InstallService {
         self.install(module_task_id).map(Some)
     }
 
-    /// Uninstalls `package_name` through the installer port.
-    ///
-    /// # Errors
-    /// [`Error::InvalidArgument`] for an empty name, plus port errors.
-    pub fn uninstall(&self, package_name: &str) -> Result<(), Error> {
-        if package_name.trim().is_empty() {
-            return Err(Error::InvalidArgument(
-                "CORE_E_INSTALL_PACKAGE: package name must not be empty".to_string(),
-            ));
-        }
-        self.installer.uninstall(package_name)
-    }
-
-    /// Launches `package_name` through the installer port.
-    ///
-    /// # Errors
-    /// [`Error::InvalidArgument`] for an empty name, plus port errors.
-    pub fn launch(&self, package_name: &str) -> Result<(), Error> {
-        if package_name.trim().is_empty() {
-            return Err(Error::InvalidArgument(
-                "CORE_E_INSTALL_PACKAGE: package name must not be empty".to_string(),
-            ));
-        }
-        self.installer.launch(package_name)
-    }
-
-    /// Whether the installer can install packages.
-    pub fn can_install(&self) -> bool {
-        self.installer.can_install()
-    }
-
     /// Reads the durable install record for `module_task_id`.
     ///
     /// # Errors
@@ -673,26 +633,8 @@ impl InstallService {
         let guard = self.lock()?;
         Ok(Self::required(&guard, module_task_id)?.into_record())
     }
+}
 
-    /// Lists every row currently pending reconciliation.
-    ///
-    /// # Errors
-    /// Propagates database read failures.
-    pub fn list_pending(&self) -> Result<Vec<InstallRecord>, Error> {
-        let guard = self.lock()?;
-        let mut stmt = guard
-            .prepare(
-                "SELECT module_task_id, app_id, dest_path, status, install_status, \
-                     install_method, install_session_id, install_error, installed_at, \
-                     installed_version, install_after_download \
-                 FROM download_task WHERE install_status = 'pending' ORDER BY id",
-            )
-            .map_err(|e| Error::Internal(format!("CORE_E_INSTALL_READ: prepare pending: {e}")))?;
-        let rows = stmt
-            .query_map([], row_from_sql)
-            .map_err(|e| Error::Internal(format!("CORE_E_INSTALL_READ: query pending: {e}")))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map(|rows| rows.into_iter().map(TaskRow::into_record).collect())
-            .map_err(|e| Error::Internal(format!("CORE_E_INSTALL_READ: read pending: {e}")))
-    }
+fn sql_error(error: rusqlite::Error) -> Error {
+    Error::Io(error.to_string())
 }
