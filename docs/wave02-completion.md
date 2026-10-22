@@ -10,8 +10,11 @@
 - **Closeout fix commit:**
   `6906005fb7ff32826a0e54c199afc0142f35eae0`
   (`fix(test): align host bridge schema expectations with V2`, `Plan-Todo: 11`)
-- **Commit count `9d5b41f3..6906005f`:** **16** (14 feature/fix + Gate closeout
-  doc + the schema-alignment fix)
+- **Final HEAD (closeout record):**
+  `e631ff4f8b29c4fd52f5cf00a1b4ab5756a30773`
+  (`docs(catalog): record Wave 2 closeout fix hash`, `Plan-Todo: 11`)
+- **Commit count `9d5b41f3..e631ff4f`:** **17** (14 feature/fix + Gate closeout
+  doc + the schema-alignment fix + the closeout record)
 - **Date:** 2026-10-22
 - **Toolchain:** rustc/cargo 1.92.0, Flutter 3.44.8 (stable), FRB codegen 2.11.1
 
@@ -24,21 +27,21 @@
 - Catalog queries, FTS5 + LIKE parity, category rows, app detail.
 - Added-apps/tags service and aggregation/paged queries.
 - Update state/service and update-prefs migration handoff.
-- Package inventory bridge (Android) + Rust contract/gating (Todo 8; device run
-  blocked — see residuals).
+- Package inventory bridge (Android) + Rust contract/gating (Todo 8 — **DEFERRED /
+  BLOCKED**, owner deferred; contract/device split; see residuals).
 - FRB/facades for catalog/added/update exposed **behind flags**; all flags
   remain disabled and the legacy Dart paths stay in place.
 
-## Commits (`9d5b41f3..6906005f`)
+## Commits (`9d5b41f3..e631ff4f`)
 
 | Commit | Todo | Subject |
 |---|---|---|
 | `5bf82aeb` | 1 | feat(core): add catalog/update V2 schema |
 | `7310d499` | 1 fix | fix(core): keep Dart FTS shape and back up before V2 |
-| `9a4e5c1f` | 2 | feat(core): add added-apps and tags service |
-| `b10749b0` | 3 | feat(core): import live/seed catalog with category/config mappings |
-| `27eabe43` | 4 | feat(core): add atomic catalog refresh |
-| `e8942d8f` | 5 | feat(core): add catalog queries and FTS parity |
+| `9a4e5c1f` | 5 | feat(core): add added-apps and tags service |
+| `b10749b0` | 2 | feat(core): import live/seed catalog with category/config mappings |
+| `27eabe43` | 3 | feat(core): add atomic catalog refresh |
+| `e8942d8f` | 4 | feat(core): add catalog queries and FTS parity |
 | `c36f3633` | 6 | feat(core): add aggregation and paged catalog queries |
 | `1362c9b9` | 6 fix | fix(core): make aggregation dedup opt-in and Dart-compatible |
 | `7f624d3e` | 7 | feat(core): add update state and service |
@@ -49,6 +52,7 @@
 | `3c59e5dc` | 10 | feat(catalog): expose catalog/added/update APIs behind flags |
 | `12ca93e7` | 11 | test(catalog): close Wave 2 Gate |
 | `6906005f` | 11 fix | fix(test): align host bridge schema expectations with V2 |
+| `e631ff4f` | 11 (record) | docs(catalog): record Wave 2 closeout fix hash |
 
 ## Gate 2 matrix
 
@@ -61,7 +65,7 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 | 2 | Refresh preserves core tables; corrupt-source injection keeps old catalog | **PASS** | 6 corrupt sources rejected with typed `CORE_E_CATALOG_REFRESH_*`; catalog/non-catalog snapshots unchanged |
 | 3 | Real-Dart parity `--catalog` and `--channel` (FTS5+LIKE, categories, detail) | **PASS** | both `parity OK: getAllApps=17 searchApps=2 getAppInfoMissing=None`; `catalog_query_parity` also passes |
 | 4 | Update service/prefs: `update_parity`, Flutter prefs migration, `update_prefs_roundtrip` | **PASS** | Flutter 10/10 after rebuilding a stale native `.so` (build-state only) |
-| 5 | Inventory contract + `package-inventory.sh` + `adb devices` | **PASS (contract)** / **BLOCKED (device)** | contract & visibility tests pass; script exits 3 `RESULT: BLOCKED (no device)`; `adb devices` empty |
+| 5 | Inventory contract + `package-inventory.sh` + `adb devices` | **DEFERRED / BLOCKED** (owner deferred; contract/device split) | contract & visibility tests pass at contract level only; script exits 3 `RESULT: BLOCKED (no device)`; `adb devices` empty; the Todo 8 outcome is deferred by the owner, so it is not a pass |
 | 6 | FRB/facades: Rust `catalog_update_api`, Flutter API test, codegen idempotency | **PASS** | 1/1 Rust, 4/4 Flutter, codegen + `git diff --exit-code` clean |
 | 7 | Flags all false; flag-off old path | **PASS** | `dto_events_flags_defaults_all_false` (6/6); “flag off” test routes to legacy backends only |
 | 8 | Release APK `android-arm64` | **BLOCKED (environment)** | `:integration_test:extractReleaseAnnotations` → `androidx.test:runner:1.2+` Maven/TLS handshake failure; not a code pass |
@@ -71,15 +75,16 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 | 9b | Full regression: `gstore_host` | **PASS except build-state modules** | `76 passed / 8 failed`; the 8 remaining failures are missing module `.so` files only. The 2 stale schema-v1 bridge assertions were fixed in the closeout fix commit. (The pre-fix run was 74/10.) |
 | 9c | Flutter regression (prefs + handoff + core API) | **PASS** | 18/18 |
 | 9d | `flutter analyze` on Wave 2 changed Dart | **PASS** | 13 items, “No issues found!” |
-| 10 | Scope fidelity (flags/version/deletions/Wave 3+) | **PASS** | no flag-default diff, version stays `1.0.34+1`, no deleted files, Android diff only Todo 8 inventory |
+| 10 | Scope fidelity (flags/version/deletions/Wave 3+) | **PASS** | no flag-default diff, version stays `1.0.34+1`, no deleted files, Android diff only the package-inventory bridge |
 
 ## Known residuals
 
-1. **Todo 8 device instrumentation — BLOCKED.** The Rust inventory contract,
-   visibility-denial mapping and cache-invalidation tests pass, but no ADB
-   device/emulator is attached (`adb devices` empty; `package-inventory.sh`
-   exits 3 with `RESULT: BLOCKED (no device)`). The on-device inventory run is
-   therefore **not** claimed as a pass.
+1. **Todo 8 — DEFERRED / BLOCKED (owner deferred; contract/device split).**
+   The owner deferred Todo 8, so the work splits in two. The Rust inventory
+   contract, visibility-denial mapping and cache-invalidation tests pass at the
+   contract level, but no ADB device/emulator run was performed (`adb devices`
+   empty; `package-inventory.sh` exits 3 with `RESULT: BLOCKED (no device)`).
+   Neither the on-device run nor Todo 8 as a whole is claimed as a pass.
 2. **Release APK — ENVIRONMENT BLOCKED.** `flutter build apk --release
    --target-platform android-arm64` fails while resolving
    `androidx.test:runner:1.2+` for `:integration_test` due to a Gradle/JVM
@@ -113,12 +118,15 @@ and `target/test-evidence/70-gate2-fail.txt` (failure injection + blocked text).
 
 ## Wave 2 code-level gate status
 
-**PASS at the code level, with one explicitly BLOCKED device check, one
+**PASS at the code level for Todos 1-7 and 9-11, with**
+**Todo 8 DEFERRED / BLOCKED** (owner deferred; contract/device split), one
 environment-blocked release build, and 8 documented build-state module-`.so`
-host failures.** Schema, refresh/rollback, parity, update/prefs,
-inventory-contract, FRB, flag and scope checks pass. `gstore_core` and the
-Flutter regression suites pass in full; `gstore_host` is **76 passed / 8 failed**
-and every remaining failure is the missing module `.so` build artifact (not a
-Wave 2 regression). Todo 8 on-device instrumentation remains BLOCKED (no ADB
-device), and the release APK could not be produced because the Gradle JVM could
-not complete the Maven TLS handshake; neither is reported as a pass.
+host failures. Schema,
+refresh/rollback, parity, update/prefs, inventory-contract, FRB, flag and scope
+checks pass. `gstore_core` and the Flutter regression suites pass in full;
+`gstore_host` is **76 passed / 8 failed** and every remaining failure is the
+missing module `.so` build artifact (not a Wave 2 regression). Todo 8 remains
+DEFERRED / BLOCKED because the owner deferred it: only the contract level passed
+and the on-device instrumentation was not run (no ADB device). The release APK
+could not be produced because the Gradle JVM could not complete the Maven TLS
+handshake. Neither Todo 8 nor the release build is reported as a pass.
