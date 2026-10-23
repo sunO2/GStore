@@ -6,7 +6,7 @@
 //!
 //! | capability | backing seam |
 //! |---|---|
-//! | `http` | any injected [`HttpPort`] (production: `ReqwestHttpPort`) |
+//! | `http` | any injected [`ScriptHttp`] (production: `ReqwestHttpPort` with per-request caps) |
 //! | `db_*` | core `channel_apps` rows via [`DbHandle`] |
 //! | `config_get` | channel config snapshot injected by `ScriptApi::set_config` (`null` when absent) |
 //! | `env_*` | shared channel env snapshot (hot-updated by `ScriptApi::set_env`) |
@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::http_port::ScriptHttp;
 use gstore_core::db::DbHandle;
 use gstore_core::inventory::InventoryStore;
-use gstore_core::ports::HttpPort;
 use gstore_script::{
     CheckVersionRequest, ConfigGetRequest, DatabaseAppRequest, DatabaseAppsRequest,
     DatabaseInsertRequest, EnvAllRequest, EnvGetRequest, EnvHasRequest, HttpRequest,
@@ -38,7 +38,7 @@ pub type ConfigMap = BTreeMap<String, JsonValue>;
 /// Host capabilities bound to one channel runtime.
 pub(crate) struct ScriptHostImpl {
     db: DbHandle,
-    http: Arc<dyn HttpPort>,
+    http: Arc<dyn ScriptHttp>,
     env: Arc<Mutex<EnvMap>>,
     app_id: Arc<Mutex<Option<String>>>,
     config: Arc<Mutex<ConfigMap>>,
@@ -48,7 +48,7 @@ pub(crate) struct ScriptHostImpl {
 impl ScriptHostImpl {
     pub(crate) fn new(
         db: DbHandle,
-        http: Arc<dyn HttpPort>,
+        http: Arc<dyn ScriptHttp>,
         env: Arc<Mutex<EnvMap>>,
         app_id: Arc<Mutex<Option<String>>>,
         config: Arc<Mutex<ConfigMap>>,

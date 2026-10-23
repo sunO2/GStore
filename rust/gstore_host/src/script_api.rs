@@ -34,9 +34,19 @@
 //!
 //! # Policy
 //!
-//! `import` is strict by default (Todo 9 behaviour). A previously installed key
-//! retries with [`PackPolicy::LegacyPermissive`] only when the strict decode
-//! fails, so a brand-new pack can never be imported permissively.
+//! `import` decodes strictly first (Todo 9 behaviour) and never reinterprets a
+//! strict success. Only when strict decoding fails does it retry with
+//! [`PackPolicy::LegacyPermissive`], including on a first import, and it logs the
+//! key plus the strict reason so a legacy acceptance is never silent. Path and
+//! size safety bounds are identical under both policies, so an unsafe or
+//! oversized pack still fails regardless of the retry.
+//!
+//! # Removal
+//!
+//! `remove` validates that the pack is installed, clears its env/secrets, and
+//! deletes the row + version directories. It deliberately does **not** load or
+//! spawn `entry.js`: a pack whose files are corrupt/unspawnable must still be
+//! removable.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -46,8 +56,14 @@ use std::time::Duration;
 use gstore_core::channel::{validate_channel_key, PackPolicy, PackStore, ScriptChannelStore};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
-use gstore_core::ports::{FileSecretStore, HttpPort};
+use gstore_core::ports::FileSecretStore;
+#[cfg(test)]
+use gstore_core::ports::HttpPort;
 use gstore_script::SandboxLimits;
+
+#[cfg(test)]
+use crate::http_port::BufferedScriptHttp;
+use crate::http_port::ScriptHttp;
 
 use crate::script_db::SqliteScriptChannelStore;
 use crate::script_env;
@@ -67,7 +83,7 @@ pub(crate) struct ScriptApiInner {
     strict: PackStore,
     legacy: PackStore,
     secrets: FileSecretStore,
-    http: Arc<dyn HttpPort>,
+    http: Arc<dyn ScriptHttp>,
     entries: Mutex<HashMap<String, Arc<ScriptEntry>>>,
     ui_budget: Duration,
     eval_timeout: Duration,
@@ -81,23 +97,45 @@ impl ScriptApiInner {
         files_dir: String,
         cache_dir: String,
     ) -> Result<Self, String> {
-        let http: Arc<dyn HttpPort> = Arc::new(crate::http_port::ReqwestHttpPort::new());
-        Self::init_with_ports(
+        Self::init_with_script_http(
             data_dir,
             files_dir,
             cache_dir,
-            http,
+            Arc::new(crate::http_port::ReqwestHttpPort::new()),
             DEFAULT_UI_BUDGET,
             DEFAULT_EVAL_TIMEOUT,
             SandboxLimits::default().cumulative_eval_budget,
         )
     }
 
+    /// Test seam: wraps an injected buffered [`HttpPort`] in the script adapter.
+    #[cfg(test)]
     pub(crate) fn init_with_ports(
         data_dir: String,
         files_dir: String,
         cache_dir: String,
         http: Arc<dyn HttpPort>,
+        ui_budget: Duration,
+        eval_timeout: Duration,
+        cumulative_budget: Duration,
+    ) -> Result<Self, String> {
+        let http: Arc<dyn ScriptHttp> = Arc::new(BufferedScriptHttp::new(http));
+        Self::init_with_script_http(
+            data_dir,
+            files_dir,
+            cache_dir,
+            http,
+            ui_budget,
+            eval_timeout,
+            cumulative_budget,
+        )
+    }
+
+    pub(crate) fn init_with_script_http(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        http: Arc<dyn ScriptHttp>,
         ui_budget: Duration,
         eval_timeout: Duration,
         cumulative_budget: Duration,
@@ -138,7 +176,6 @@ impl ScriptApiInner {
         let key = ChannelKey::new(format!("js_{stem}"))
             .map_err(|error| format!("invalid_argument: {error}"))?;
         validate_channel_key(&key).map_err(|error| format!("invalid_argument: {error}"))?;
-        let already_installed = self.strict.installed_pack(&key).is_ok();
         let dir = script_pack::temp_dir("import");
         std::fs::create_dir_all(&dir)
             .map_err(|error| format!("io: create pack temp dir {}: {error}", dir.display()))?;
@@ -147,16 +184,21 @@ impl ScriptApiInner {
             .map_err(|error| format!("io: write pack temp file {}: {error}", zip_path.display()))?;
         let result = match self.strict.import_pack(&zip_path) {
             Ok(installed) => Ok(installed),
-            Err(strict_error) if already_installed => {
-                self.legacy.import_pack(&zip_path).map_err(|legacy_error| {
-                    format!(
-                        "{}; legacy retry: {}",
-                        script_pack::pack_err(&strict_error),
+            Err(strict_error) => {
+                let reason = script_pack::pack_err(&strict_error);
+                match self.legacy.import_pack(&zip_path) {
+                    Ok(installed) => {
+                        log::warn!(
+                            "script pack: legacy-permissive import for {key} after strict decode failed: {reason}"
+                        );
+                        Ok(installed)
+                    }
+                    Err(legacy_error) => Err(format!(
+                        "{reason}; legacy retry: {}",
                         script_pack::pack_err(&legacy_error)
-                    )
-                })
+                    )),
+                }
             }
-            Err(error) => Err(script_pack::pack_err(&error)),
         };
         let _ = std::fs::remove_dir_all(&dir);
         let installed = result?;
@@ -165,9 +207,15 @@ impl ScriptApiInner {
     }
 
     /// Removes a pack: cached runtimes, env row/secrets, then the files and row.
+    ///
+    /// This must succeed even when the installed `entry.js` is corrupt or
+    /// missing, so it only checks that the pack row + directory exist; it never
+    /// loads the script or creates a runtime.
     pub(crate) fn remove(&self, key: &str) -> Result<(), String> {
         let key = self.channel_key(key)?;
-        self.ensure_entry(&key)?;
+        self.strict
+            .installed_pack(&key)
+            .map_err(|error| script_pack::pack_err(&error))?;
         script_env::clear(&self.db, &self.secrets, &key)?;
         self.strict
             .remove_pack(&key)

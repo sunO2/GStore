@@ -94,6 +94,13 @@ impl Engine {
 
     /// Invoke the registered host callback on the runtime thread with channel
     /// affinity. Used by the JS bridge and by `ScriptRuntime::send_message`.
+    ///
+    /// # Release-profile caveat
+    ///
+    /// The `catch_unwind` below cannot catch in a `panic = "abort"` artifact
+    /// (`gstore_host`/`gstore_core` release builds). Those builds abort on a
+    /// host panic; only unwind builds turn it into `CORE_E_SCRIPT_HOST`. Host
+    /// implementations must be panic-free.
     pub(crate) fn send_message(
         &self,
         method: &str,

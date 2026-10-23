@@ -31,9 +31,10 @@ pub trait ScriptHost: Send + Sync {
     /// capability method, and return the JSON envelope verbatim.
     ///
     /// Hosts normally leave this at the default and implement capabilities. An
-    /// `Err(ScriptError)` becomes `{ok:false, error:"<CODE>: <detail>"}`; a panic
-    /// is caught by the engine and reported as `CORE_E_SCRIPT_HOST` without
-    /// unwinding through QuickJS.
+    /// `Err(ScriptError)` becomes `{ok:false, error:"<CODE>: <detail>"}`. A panic
+    /// is caught as `CORE_E_SCRIPT_HOST` **only in unwind builds**; release
+    /// artifacts set `panic = "abort"`, so capabilities must be panic-free and
+    /// report failures through `Result` (see the README host contract).
     fn send_message(
         &self,
         channel: &ScriptChannel,

@@ -42,6 +42,11 @@ fn script_host_api_host_error_becomes_envelope() {
     println!("host error envelope: {out}");
 }
 
+// NOTE: proves the **unwind profile only** (`gstore_script` tests run with the
+// default `panic = "unwind"`). Release consumers (`gstore_host`/`gstore_core`)
+// use `panic = "abort"`, so a production host panic aborts instead of producing
+// this envelope. The assertion is kept, not weakened, and the distinction is
+// documented in the README host implementer contract.
 #[test]
 fn script_host_api_host_panic_becomes_typed_envelope() {
     let (host, _calls) = fake_host();

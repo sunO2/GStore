@@ -117,7 +117,11 @@ fn script_runtime_eval_dispatches_send_message() {
         .expect("error string")
         .contains(CODE_HOST));
 
-    // A host panic is contained and reported as the same typed envelope.
+    // A host panic is contained and reported as the same typed envelope **in
+    // this unwind-profile test build only**. The shipped `gstore_host` /
+    // `gstore_core` artifacts use `panic = "abort"`, where this same panic would
+    // abort the process before `catch_unwind` could run. Host implementers must
+    // therefore not rely on this net (see the README's host contract).
     let panicked = runtime
         .eval("sendMessage('panic', null)")
         .expect("host panic is contained");

@@ -838,6 +838,7 @@ dependencies = [
  "gstore_script",
  "jni",
  "libloading",
+ "log",
  "reqwest",
  "rusqlite",
  "serde",

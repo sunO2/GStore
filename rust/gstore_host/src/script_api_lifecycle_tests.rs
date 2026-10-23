@@ -1,11 +1,14 @@
 //! `ScriptApi` pack lifecycle: import/remove/refresh/env/run and policy.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use gstore_core::ports::{HttpOptions, HttpResponse};
 use serde_json::Value;
 
-use crate::script_api_test_support::{harness, zip_with};
+use crate::http_port::{ScriptHttp, ScriptHttpLimits, TransportError};
+use crate::script_api_test_support::{harness, harness_with_script_http, zip_with, zip_with_extra};
 use crate::TEST_SERIAL;
 
 const ENV_SCRIPT: &str = r#"
@@ -218,19 +221,29 @@ fn script_api_detail_runtimes_are_isolated_per_app() {
     harness
         .api
         .import(
-            zip_with("function main() { return null; }", Some(DETAIL_COUNTER_JS), None),
+            zip_with(
+                "function main() { return null; }",
+                Some(DETAIL_COUNTER_JS),
+                None,
+            ),
             Some("js_detail".to_string()),
         )
         .expect("import");
 
     assert_eq!(detail_count(&harness.api, "js_detail", "a"), 1);
     assert_eq!(detail_count(&harness.api, "js_detail", "a"), 2);
-    assert_eq!(detail_count(&harness.api, "js_detail", "b"), 1, "no bleed from a");
-    assert_eq!(detail_count(&harness.api, "js_detail", "b"), 2);
-    assert_eq!(detail_count(&harness.api, "js_detail", "a"), 3, "a keeps its state");
-    println!(
-        "PASS | detail isolation | a=1,2,3 b=1,2 | isolated per appId"
+    assert_eq!(
+        detail_count(&harness.api, "js_detail", "b"),
+        1,
+        "no bleed from a"
     );
+    assert_eq!(detail_count(&harness.api, "js_detail", "b"), 2);
+    assert_eq!(
+        detail_count(&harness.api, "js_detail", "a"),
+        3,
+        "a keeps its state"
+    );
+    println!("PASS | detail isolation | a=1,2,3 b=1,2 | isolated per appId");
 }
 
 #[test]
@@ -240,7 +253,11 @@ fn script_api_detail_release_and_lru_cap() {
     harness
         .api
         .import(
-            zip_with("function main() { return null; }", Some(DETAIL_COUNTER_JS), None),
+            zip_with(
+                "function main() { return null; }",
+                Some(DETAIL_COUNTER_JS),
+                None,
+            ),
             Some("js_release".to_string()),
         )
         .expect("import");
@@ -251,7 +268,11 @@ fn script_api_detail_release_and_lru_cap() {
         .api
         .release_detail("js_release", "a")
         .expect("release a");
-    assert_eq!(detail_count(&harness.api, "js_release", "a"), 1, "release resets state");
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "a"),
+        1,
+        "release resets state"
+    );
     harness
         .api
         .release_detail("js_release", "a")
@@ -269,9 +290,21 @@ fn script_api_detail_release_and_lru_cap() {
         assert_eq!(detail_count(&harness.api, "js_release", app), 1);
     }
     assert_eq!(detail_count(&harness.api, "js_release", "e"), 1);
-    assert_eq!(detail_count(&harness.api, "js_release", "a"), 1, "a was evicted");
-    assert_eq!(detail_count(&harness.api, "js_release", "d"), 2, "d stayed live");
-    assert_eq!(detail_count(&harness.api, "js_release", "e"), 2, "e stayed live");
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "a"),
+        1,
+        "a was evicted"
+    );
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "d"),
+        2,
+        "d stayed live"
+    );
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "e"),
+        2,
+        "e stayed live"
+    );
     println!("PASS | detail LRU       | cap=4 evicted oldest, release resets state");
 }
 
@@ -307,4 +340,151 @@ function main(method) {
     assert_eq!(value[0]["package_name"], "pkg.saved");
     assert_eq!(value[0]["category"], serde_json::json!(["a", "b"]));
     println!("PASS | stored_apps      | channel_apps round-trip via ScriptChannelStore");
+}
+
+#[test]
+fn script_api_legacy_first_import_is_accepted_with_strict_first_preference() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("legacy-first");
+    // An unknown root entry is a strict `pack_layout` failure but the exact
+    // shape LegacyPermissive was built for. A first import must accept it.
+    let zip = zip_with_extra(ENV_SCRIPT, &[("README.txt", b"legacy pack note")]);
+    let info = harness
+        .api
+        .import(zip, Some("js_legacy_first".to_string()))
+        .expect("legacy pack must import on first install");
+    assert_eq!(info.key, "js_legacy_first");
+    assert_eq!(
+        harness.api.list().expect("list").len(),
+        1,
+        "legacy pack is listed"
+    );
+    let run = harness
+        .api
+        .run("js_legacy_first", "getAllApps", "{}")
+        .expect("legacy pack runs");
+    let value: Value = serde_json::from_str(&run).expect("run json");
+    assert_eq!(value["marker"], "v1");
+    println!("PASS | legacy import | strict reject -> legacy accept on first import");
+}
+
+#[test]
+fn script_api_unsafe_pack_still_fails_under_both_policies() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("legacy-unsafe");
+    // Path traversal is rejected by strict AND legacy; the retry must not
+    // launder an unsafe archive into an install.
+    let zip = zip_with_extra(ENV_SCRIPT, &[("../escape.js", b"escape")]);
+    let error = harness
+        .api
+        .import(zip, Some("js_unsafe".to_string()))
+        .expect_err("unsafe pack must fail");
+    assert!(error.contains("pack_unsafe_entry"), "{error}");
+    assert!(
+        error.contains("legacy retry"),
+        "the failure names both policies: {error}"
+    );
+    assert!(harness.api.list().expect("list").is_empty());
+    println!("PASS | legacy import | unsafe path rejected by strict + legacy: {error}");
+}
+
+#[test]
+fn script_api_remove_succeeds_when_entry_js_is_corrupt() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("remove-broken");
+    harness
+        .api
+        .import(
+            zip_with(ENV_SCRIPT, None, None),
+            Some("js_broken".to_string()),
+        )
+        .expect("import");
+    let dir = harness
+        .root
+        .join("files/channel_packs/js_broken")
+        .read_dir()
+        .expect("pack root")
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .expect("version dir")
+        .path();
+    // Invalid UTF-8 is unreadable/unspawnable: the old remove (which loaded the
+    // pack first) failed here. Removal must not need to load entry.js at all.
+    std::fs::write(dir.join("entry.js"), [0xff_u8, 0xfe, 0x00]).expect("corrupt entry.js");
+    harness
+        .api
+        .remove("js_broken")
+        .expect("remove must succeed for a corrupt pack");
+    assert!(harness.api.list().expect("list").is_empty());
+    let missing = harness
+        .api
+        .run("js_broken", "getAllApps", "{}")
+        .expect_err("removed pack must fail");
+    assert!(missing.starts_with("pack_not_found:"), "{missing}");
+    println!("PASS | remove        | corrupt entry.js removed, list empty");
+}
+
+struct TooLargeHttp;
+
+impl ScriptHttp for TooLargeHttp {
+    fn get_bounded(
+        &self,
+        _url: &str,
+        _options: &HttpOptions,
+        _limits: ScriptHttpLimits,
+    ) -> Result<HttpResponse, TransportError> {
+        Err(TransportError::ResponseTooLarge {
+            limit: gstore_script::DEFAULT_MAX_RESPONSE_BYTES,
+            read: gstore_script::DEFAULT_MAX_RESPONSE_BYTES + 1,
+        })
+    }
+
+    fn post_bounded(
+        &self,
+        _url: &str,
+        _body: &[u8],
+        _options: &HttpOptions,
+        _limits: ScriptHttpLimits,
+    ) -> Result<HttpResponse, TransportError> {
+        Err(TransportError::ResponseTooLarge {
+            limit: gstore_script::DEFAULT_MAX_RESPONSE_BYTES,
+            read: gstore_script::DEFAULT_MAX_RESPONSE_BYTES + 1,
+        })
+    }
+}
+
+#[test]
+fn script_api_streamed_limit_surfaces_typed_envelope_without_data() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = harness_with_script_http(
+        "stream-limit",
+        Arc::new(TooLargeHttp),
+        Duration::from_millis(200),
+        Duration::from_millis(100),
+    );
+    const SCRIPT: &str = r#"
+function main() {
+  var res = host.network.get('http://127.0.0.1/too-big', {});
+  return { ok: true, data: {
+    ok: res.ok,
+    hasData: Object.prototype.hasOwnProperty.call(res, 'data'),
+    error: res.error
+  } };
+}
+"#;
+    harness
+        .api
+        .import(zip_with(SCRIPT, None, None), Some("js_stream".to_string()))
+        .expect("import");
+    let raw = harness
+        .api
+        .run("js_stream", "getAllApps", "{}")
+        .expect("run");
+    let value: Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["hasData"], false, "no partial data: {value}");
+    let error = value["error"].as_str().expect("error string");
+    assert!(error.contains("CORE_E_SCRIPT_LIMIT"), "{error}");
+    assert!(error.contains("aborted after"), "{error}");
+    println!("PASS | streamed limit | envelope={value}");
 }

@@ -75,6 +75,14 @@ fn install_bridge(
 }
 
 /// Run the dispatcher, contain panics, and serialise the envelope.
+///
+/// # Release-profile caveat
+///
+/// `gstore_host` and `gstore_core` ship with `panic = "abort"`. In that artifact
+/// a host panic aborts the process before `catch_unwind` can observe it, so this
+/// containment only has an effect in unwind builds (this crate's tests and any
+/// unwind-profile consumer). Host capability implementations must therefore be
+/// panic-free: return `Result` and never `unwrap`/`expect`/index-panic.
 fn envelope_json(
     host: &dyn ScriptHost,
     channel: &ScriptChannel,

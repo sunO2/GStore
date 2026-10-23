@@ -90,17 +90,20 @@ wall-clock budget), never a truncated success.
 | Eval wall-clock | 5 s | Dart `_awaitJsFuture` | QuickJS interrupt handler | `script_sandbox_limits_eval_and_long_budgets_both_timing_out` |
 | Long-operation wall-clock | 30 s | plan Todo 4 (UI budget) | interrupt handler via `eval_long` | same |
 | Eval result/output | 10 MB | plan Todo 4 | serialised JSON length checked in `Engine::eval_in_ctx` | `script_sandbox_limits_output_over_cap_is_typed_not_truncated` |
-| `host.network.*` response `data` | 20 MB | plan Todo 4 | bridge serialises `data` and rejects over-cap envelopes | `script_sandbox_limits_response_over_cap_is_typed_without_data` |
-| HTTP redirects | 5 | plan Todo 4 | `HttpRequest.max_redirects` = `min(script request, policy)`; policy > 5 rejected on spawn | `script_sandbox_limits_redirects_are_clamped_to_the_policy` |
+| `host.network.*` response `data` | 20 MB | plan Todo 4 | production transport streams the body and aborts at the cap with `CORE_E_SCRIPT_LIMIT`; the bridge still rejects an over-cap envelope as a belt-and-braces check | `streaming_response_cap_aborts_before_buffering_the_whole_body`, `script_sandbox_limits_response_over_cap_is_typed_without_data` |
+| HTTP redirects | 5 | plan Todo 4 | `HttpRequest.max_redirects` = `min(script request, policy)`; the production transport applies that exact count and returns the last `3xx` once reached; policy > 5 rejected on spawn | `script_redirect_policy_stops_after_five_follows_and_returns_the_302`, `script_sandbox_limits_redirects_are_clamped_to_the_policy` |
 | Live runtimes (process-wide) | 32 | plan Todo 4 "global runtime budget" | `budget::RuntimeSlot` acquired before the thread spawns | `script_sandbox_limits_concurrent_runtime_cap_is_typed` |
 | Cumulative eval time (per runtime) | 10 min | plan Todo 4 "global runtime budget" | engine clock; parked host waits are subtracted; remaining budget shortens the next eval and exhaustion refuses further evals | `script_sandbox_limits_cumulative_budget_is_typed`, `script_runtime_park_pauses_cumulative_budget_instead_of_resetting_it` |
 
-The redirect ceiling is a **request-shape contract**: the host transport owns
-actual redirect following. The bridge always constructs the host request with
-`max_redirects` (5 by default), and a script that passes a higher
-`opts.maxRedirects` is clamped down, never allowed to raise it. A host may
-tighten the policy to 0–5; anything above 5 is rejected before the runtime
-starts.
+The redirect ceiling is enforced by the production transport, not just shaped
+on the request. The bridge constructs `HttpRequest.max_redirects` as
+`min(script request, policy)` (5 by default), and `gstore_host` applies exactly
+that count with a custom reqwest policy that **stops** at the cap and returns
+the last `3xx` response. A script that passes a higher `opts.maxRedirects` is
+clamped down, never allowed to raise it. A host may tighten the policy to 0–5;
+anything above 5 is rejected before the runtime starts. The unbounded core
+`HttpPort` methods keep their historical `limited(10)` behaviour for non-script
+callers.
 
 The global runtime budget is deliberately two plain guards (a process-wide
 `AtomicUsize` of live runtimes and a per-runtime `Duration` clock) rather than an
@@ -141,14 +144,35 @@ Envelope/error rules:
 
 - A host `Err(ScriptError)` becomes `{ok:false, error:"<CODE>: <detail>"}` — an
   envelope, not a thrown JS exception.
-- A host panic is caught and becomes the same envelope with
-  `CORE_E_SCRIPT_HOST`; it never unwinds through QuickJS.
+- A host panic in an **unwind** build (this crate's tests, debug builds) is
+  caught and becomes the same envelope with `CORE_E_SCRIPT_HOST`; it never
+  unwinds through QuickJS. This is **not** true of the shipped artifact:
+  `gstore_host` and `gstore_core` build with `panic = "abort"`, so there a host
+  panic aborts the process before `catch_unwind` runs. See the host implementer
+  contract below.
 - `host.network.*` passes non-2xx responses through with their body and adds
   `error:"HTTP <status>"`.
 - DB writes ignore any script-supplied `channelCode`; reads are pinned to the
   runtime channel.
 - An unregistered `host.native.call` returns
   `{ok:false, error:"host.native.<ns>.<method> 未注册"}`.
+
+### Host implementer contract
+
+Release builds (`gstore_host`, `gstore_core`) use `panic = "abort"`, so the
+bridge cannot contain a panic in production. Host capability implementations
+MUST be panic-free:
+
+- return `Result<_, ScriptError>` for every failure; never signal failure by
+  panicking;
+- no `unwrap`, `expect`, slice indexing, integer division, or other panic paths
+  on values derived from a script payload;
+- validate at the capability boundary (the engine's `catch_unwind` is a
+  best-effort net for unwind builds only, not a production guarantee).
+
+The panic-containment tests (`script_runtime_eval_*`, `script_host_api_errors_*`)
+prove the **unwind profile only**; they must not be read as evidence that a
+release artifact survives a host panic.
 
 ## Error codes
 
@@ -161,7 +185,7 @@ Envelope/error rules:
 | `CORE_E_SCRIPT_TIMEOUT` | `Timeout` | wall-clock budget expired (interrupt fired) |
 | `CORE_E_SCRIPT_DISPOSED` | `Disposed` | call after the thread is gone |
 | `CORE_E_SCRIPT_LIMIT` | `Limit` | OOM, stack overflow, oversized output/response, or global runtime budget exhausted |
-| `CORE_E_SCRIPT_HOST` | `Host` | host capability failed or panicked (delivered as an envelope) |
+| `CORE_E_SCRIPT_HOST` | `Host` | host capability failed; a panic maps to this only in unwind builds (release is `panic=abort`) |
 | `CORE_E_SCRIPT_INTERNAL` | `Internal` | thread spawn / engine / JSON wiring failed |
 | `CORE_E_SCRIPT_INVALID_ARGUMENT` | `InvalidArgument` | invalid channel key, method, or `sendMessage` payload |
 

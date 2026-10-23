@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use gstore_core::ports::fake::FakeHttpPort;
 use serde_json::Value;
 
+use crate::http_port::ScriptHttp;
 use crate::script_api::ScriptApiInner;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -65,6 +66,34 @@ pub(crate) fn harness_with_cumulative(
     Harness { api, root }
 }
 
+/// Harness with a caller-supplied bounded script transport (transport-cap tests).
+pub(crate) fn harness_with_script_http(
+    tag: &str,
+    http: std::sync::Arc<dyn ScriptHttp>,
+    ui_budget: Duration,
+    eval_timeout: Duration,
+) -> Harness {
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "gstore-script-api-{tag}-{}-{seq}",
+        std::process::id()
+    ));
+    let data = root.join("data");
+    let files = root.join("files");
+    let cache = root.join("cache");
+    let api = ScriptApiInner::init_with_script_http(
+        data.to_string_lossy().into_owned(),
+        files.to_string_lossy().into_owned(),
+        cache.to_string_lossy().into_owned(),
+        http,
+        ui_budget,
+        eval_timeout,
+        gstore_script::SandboxLimits::default().cumulative_eval_budget,
+    )
+    .expect("init ScriptApi");
+    Harness { api, root }
+}
+
 /// Builds a legacy flat pack zip (`entry.js`, optional `detail.js`/`meta.json`).
 pub(crate) fn zip_with(entry: &str, detail: Option<&str>, meta: Option<&str>) -> Vec<u8> {
     let mut buffer = Cursor::new(Vec::new());
@@ -81,6 +110,25 @@ pub(crate) fn zip_with(entry: &str, detail: Option<&str>, meta: Option<&str>) ->
         if let Some(meta) = meta {
             writer.start_file("meta.json", options).expect("zip meta");
             writer.write_all(meta.as_bytes()).expect("zip write");
+        }
+        writer.finish().expect("zip finish");
+    }
+    buffer.into_inner()
+}
+
+/// Builds a pack zip with extra arbitrary entries (used to exercise the
+/// strict/legacy decode split and path-safety rejection).
+pub(crate) fn zip_with_extra(entry: &str, extra: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut buffer = Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("entry.js", options).expect("zip entry");
+        writer.write_all(entry.as_bytes()).expect("zip write");
+        for (name, bytes) in extra {
+            writer.start_file(*name, options).expect("zip extra entry");
+            writer.write_all(bytes).expect("zip extra write");
         }
         writer.finish().expect("zip finish");
     }

@@ -10,10 +10,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::http_port::ScriptHttp;
 use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
-use gstore_core::ports::HttpPort;
 use gstore_script::{
     SandboxLimits, ScriptChannel as EngineChannel, ScriptError, ScriptErrorKind, ScriptOptions,
     ScriptRuntime,
@@ -41,7 +41,7 @@ pub(crate) enum RuntimeKind {
 pub(crate) struct EntryDeps {
     pub db: DbHandle,
     pub store: Arc<dyn ScriptChannelStore>,
-    pub http: Arc<dyn HttpPort>,
+    pub http: Arc<dyn ScriptHttp>,
     pub ui_budget: Duration,
     pub eval_timeout: Duration,
     pub cumulative_budget: Duration,
@@ -58,7 +58,7 @@ pub(crate) struct ScriptEntry {
     runtimes: Mutex<RuntimeSlots>,
     store: Arc<dyn ScriptChannelStore>,
     db: DbHandle,
-    http: Arc<dyn HttpPort>,
+    http: Arc<dyn ScriptHttp>,
     ui_budget: Duration,
     eval_timeout: Duration,
     cumulative_budget: Duration,
