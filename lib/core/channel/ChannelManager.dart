@@ -55,6 +55,12 @@ class ChannelManager {
   /// 获取默认渠道类型
   ChannelType get defaultChannelType => _defaultChannelType;
 
+  /// Dart 脚本渠道是否启用（`CoreFlags.jsChannel == false`）。
+  ///
+  /// 该标志为 true 时 Rust `ScriptApi` 接管脚本渠道包，Dart `JsChannel`
+  /// 必须完全退出注册路径（含动态 key 索引）；为 false 时旧路径不变。
+  bool get dartScriptChannelsEnabled => !CoreFlags.jsChannel;
+
   /// 设置默认渠道
   void setDefaultChannel(ChannelType type) {
     if (_channels.containsKey(type)) {
@@ -67,7 +73,16 @@ class ChannelManager {
 
   /// 注册渠道
   /// 动态渠道（DynamicChannel）额外登记 _channelsByKey（后注册覆盖 custom 槽位）
+  ///
+  /// 结构门禁：`CoreFlags.jsChannel == true` 时拒绝任何 Dart 脚本渠道，
+  /// 内置枚举渠道不受影响（见 [dartScriptChannelsEnabled]）。
   void registerChannel(IChannel channel) {
+    if (channel is DynamicChannel && !dartScriptChannelsEnabled) {
+      final key = (channel as DynamicChannel).channelKey;
+      appLog.warning(
+          'ChannelManager: CoreFlags.jsChannel=true，拒绝注册 Dart 脚本渠道 $key（Rust ScriptApi 接管）');
+      return;
+    }
     _channels[channel.info.type] = channel;
     if (channel is DynamicChannel) {
       final dynamicChannel = channel as DynamicChannel;

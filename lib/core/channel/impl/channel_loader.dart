@@ -51,6 +51,9 @@ class ChannelLoader {
   /// 渠道包目录（默认 `文档目录/channels`）；注入可跳过 path_provider
   final Directory? _directoryOverride;
 
+  /// 门禁日志只打一次（每次 skip 都打会刷屏）。
+  static bool _disabledLogged = false;
+
   ChannelLoader({
     Dio? dio,
     ChannelAddedAppDao? appDao,
@@ -70,6 +73,17 @@ class ChannelLoader {
   /// 目录不存在或为空 → 返回空列表（不报错）；
   /// 单个渠道包无效/加载失败 → 跳过并日志，不阻塞其他。
   Future<List<JsChannel>> loadAndRegister() async {
+    // Rust ScriptApi 接管时（CoreFlags.jsChannel=true）不扫描、不构建、不初始化
+    // Dart JsChannel，返回空注册列表；旧路径（默认 false）逐字节不变。
+    if (!ChannelManager.instance.dartScriptChannelsEnabled) {
+      if (!_disabledLogged) {
+        _disabledLogged = true;
+        appLog.info(
+            'ChannelLoader: CoreFlags.jsChannel=true，Dart 脚本渠道由 Rust ScriptApi 接管，跳过扫描');
+      }
+      return const [];
+    }
+
     final directory = await _resolveDirectory();
     if (directory == null) return const [];
 

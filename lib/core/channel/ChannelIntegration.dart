@@ -1,11 +1,14 @@
+import 'dart:async' show unawaited;
+
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/script_ui_request_router.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
-import 'package:dio/dio.dart';
 
 /// 渠道系统初始化和配置
 class ChannelIntegration {
@@ -14,6 +17,20 @@ class ChannelIntegration {
   /// 幂等标志：首次初始化完成后置位，重复调用直接返回
   /// （防 channel 模块 re-enable 时重复 registerChannels / initializeAll）
   static bool _initialized = false;
+
+  /// `script.ui_request` 路由是否已挂到模块事件广播流。
+  static bool _scriptUiAttached = false;
+
+  /// 把 Rust `script.ui_request` 接到 [ScriptUiRequestRouter]（幂等）。
+  ///
+  /// 只订阅既有广播流，不新建全局事件总线，也不影响
+  /// [RustModuleManager.handleModuleEvent] 的既有处理器。
+  static void _attachScriptUiRouter() {
+    if (_scriptUiAttached) return;
+    _scriptUiAttached = true;
+    ScriptUiRequestRouter.instance
+        .attachToModuleEvents(RustModuleManager.instance.moduleEvents);
+  }
 
   static ChannelManager get manager {
     _manager ??= ChannelManager.instance;
@@ -27,6 +44,9 @@ class ChannelIntegration {
 
     final dbManager = DbManager.instance;
     final githubApi = ModuleManager.instance.require<GithubRestClient>();
+
+    // 0. Rust `script.ui_request` → UI handler 回包（与既有模块事件共用一条流）
+    _attachScriptUiRouter();
 
     // 1. 注册本地数据库渠道
     var localDbChannel = LocalDbChannel(
@@ -71,10 +91,16 @@ class ChannelIntegration {
 
     // 5. 加载并注册脚本渠道（用户渠道目录扫描；单个脚本失败跳过，不阻塞内置渠道）
     //    脚本渠道 initialize 在 JsChannel.initialize 内完成（失败降级 checkAvailable false）
-    try {
-      await ChannelLoader(dio: DioClient().get()).loadAndRegister();
-    } catch (e) {
-      appLog.error('ChannelIntegration: 脚本渠道加载失败（不影响内置渠道）: $e');
+    //    CoreFlags.jsChannel=true 时 Rust `ScriptApi` 拥有渠道包，Dart 侧整段跳过。
+    if (manager.dartScriptChannelsEnabled) {
+      try {
+        await ChannelLoader(dio: DioClient().get()).loadAndRegister();
+      } catch (e) {
+        appLog.error('ChannelIntegration: 脚本渠道加载失败（不影响内置渠道）: $e');
+      }
+    } else {
+      appLog.info(
+          'ChannelIntegration: CoreFlags.jsChannel=true，跳过 Dart 脚本渠道加载（Rust ScriptApi 接管）');
     }
 
     // 初始化所有启用的渠道
@@ -93,6 +119,10 @@ class ChannelIntegration {
   static void resetForTest() {
     _initialized = false;
     _manager = null;
+    if (_scriptUiAttached) {
+      _scriptUiAttached = false;
+      unawaited(ScriptUiRequestRouter.instance.detach());
+    }
   }
 }
 
