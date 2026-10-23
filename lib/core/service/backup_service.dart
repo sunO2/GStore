@@ -18,6 +18,7 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/service/core_snapshot_backup.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 备份/恢复进度日志回调（旁路输出，不影响返回/异常语义）
 typedef BackupLogCallback = void Function(String message, {bool isError});
@@ -683,6 +684,7 @@ class BackupService implements IBackupService {
     BackupImportMode mode = BackupImportMode.merge,
     BackupLogCallback? onLog,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     if (!_isInitialized) await initialize();
 
     final result = BackupImportResult();
@@ -1014,6 +1016,7 @@ class BackupService implements IBackupService {
 
   /// 批量添加应用到聚合数据库
   Future<void> _addAllAppsToAggregator(List<BackupAppItem> apps) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     debugPrint('BackupService: 开始添加 ${apps.length} 个应用到聚合数据库');
 
     final addedApps = apps.map((backupApp) {
@@ -1046,6 +1049,7 @@ class BackupService implements IBackupService {
     Map<String, List<ChannelAppBackupItem>> channelAppsMap,
     BackupImportMode mode,
   ) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     appLog.info('BackupService: ========== 开始导入渠道数据库 ==========');
     debugPrint('BackupService: 渠道数量: ${channelAppsMap.length}');
     debugPrint('BackupService: 渠道列表: ${channelAppsMap.keys.toList()}');

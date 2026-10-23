@@ -23,6 +23,7 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/think_parser.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/snapshot/snapshot_service.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart' as mt;
@@ -3205,6 +3206,7 @@ class AgentService {
           return '已恢复下载 $fileName';
 
         case 'cleanCompleted':
+          await LegacyWriteGuard.assertAllowed('download');
           final db = await downloadTaskDatabase;
           await db.database.delete(
             'DownloadTaskEntity',
@@ -3218,6 +3220,7 @@ class AgentService {
           return '已清理所有已完成下载记录';
 
         case 'clearAll':
+          await LegacyWriteGuard.assertAllowed('download');
           final db = await downloadTaskDatabase;
           await db.database.delete('DownloadTaskEntity');
           return '已清空所有下载记录';

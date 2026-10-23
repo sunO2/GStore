@@ -4,6 +4,7 @@ import 'dart:convert';
 import '../model/download_task.dart';
 import '../model/download_task_database.dart';
 import '../model/download_task_entity.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 class DownloadRepository {
   final Map<int, StreamController<DownloadTask>> _watchers = {};
@@ -21,6 +22,7 @@ class DownloadRepository {
   }
 
   Future<DownloadTask?> save(DownloadTask task) async {
+    await LegacyWriteGuard.assertAllowed('download');
     final dao = (await downloadTaskDatabase).downloadTaskDao;
     final entity = DownloadTaskEntity.fromTask(task);
     if (entity.id == null) {
@@ -37,6 +39,7 @@ class DownloadRepository {
 
   /// 删除任务记录（DAO 无 delete 方法 → 走底层库，与页面里既有做法一致）
   Future<void> deleteById(int id) async {
+    await LegacyWriteGuard.assertAllowed('download');
     final db = await downloadTaskDatabase;
     await db.database.delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
     await _watchers.remove(id)?.close();

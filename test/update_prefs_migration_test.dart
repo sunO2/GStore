@@ -276,22 +276,44 @@ void main() {
       LegacyWriteGuard.probeOverride = null;
     });
 
-    test('default flags (coreWrites false) keep the Dart prefs authoritative',
-        () async {
+    test('no update marker keeps the Dart prefs authoritative', () async {
       String? probed;
       LegacyWriteGuard.probeOverride = (String domain) async {
         probed = domain;
-        return true;
+        return false;
       };
 
       await UpdateCache.savePreferredApk('github', 'com.example', 'app.apk');
 
-      expect(probed, isNull,
-          reason: 'the probe must not run while coreWrites is false');
+      expect(probed, 'update',
+          reason: 'the marker probe runs even while coreWrites is false');
       final prefs = await SharedPreferences.getInstance();
       final stored =
           jsonDecode(prefs.getString('update_preferred_apk')!) as Map;
       expect(stored['github:com.example'], 'app.apk');
+    });
+
+    test('an update marker blocks the write while coreWrites stays false',
+        () async {
+      const seeded = '{"github:com.example":"old.apk"}';
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'update_preferred_apk': seeded,
+      });
+      final probed = <String>[];
+      LegacyWriteGuard.probeOverride = (String domain) async {
+        probed.add(domain);
+        return true;
+      };
+
+      await expectLater(
+        UpdateCache.savePreferredApk('github', 'com.example', 'new.apk'),
+        throwsA(isA<LegacyWriteBlocked>()),
+      );
+
+      expect(probed, <String>['update']);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('update_preferred_apk'), seeded,
+          reason: 'a blocked write must not touch the legacy map');
     });
 
     test('coreWrites on plus an update marker blocks the legacy write and '

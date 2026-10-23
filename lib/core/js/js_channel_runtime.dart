@@ -11,6 +11,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:quickjs_engine/quickjs_engine.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// JS 渠道运行时异常（JS 抛错 / 脚本加载失败 / Promise 超时）
 class JsChannelException implements Exception {
@@ -315,6 +316,7 @@ class JsChannelRuntime {
     });
 
     engine.onMessage('host.database.insertApps', (dynamic args) async {
+      await LegacyWriteGuard.assertAllowed('channel');
       try {
         final apps = _asList(_asMap(args)['apps']);
         // 强制 channelKey = 当前渠道（忽略脚本传入的 channelCode）

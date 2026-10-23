@@ -26,6 +26,7 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 脚本渠道 meta（脚本可选 `const CHANNEL_META = { name, description, icon }`）
 class _ChannelMeta {
@@ -528,6 +529,7 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   @override
   Future<ChannelResult<void>> removeApp(String appId) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     try {
       await (await _getAppDao()).removeApp(appId, channelKey);
       return ChannelResult.success(data: null, from: ChannelType.custom);
@@ -783,6 +785,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     List<AppSummary> apps, {
     Function(int current, int total)? onProgress,
   }) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     final dao = await _getAppDao();
     final entities = <ChannelAddedApp>[];
     for (var i = 0; i < apps.length; i++) {

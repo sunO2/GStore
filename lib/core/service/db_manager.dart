@@ -224,6 +224,7 @@ class DbManager {
 
   /// 检查数据库更新
   Future<int> _checkUpdateDBOfRepositroy(String target) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     DBRepository dbRepositroy = dbRepositroies[target]!;
     appLog.info('DbManager: ===== 开始下载数据库更新 ($target) =====');
     final info = await _getLatestReleaseInfo(target);

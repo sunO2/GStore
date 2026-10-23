@@ -65,20 +65,25 @@ void main() {
     expect(CoreFlags.snapshot, CoreFlagsSnapshot.disabled);
   });
 
-  test('legacy guard consumers still observe false', () async {
-    var probed = false;
+  test('legacy guard still probes and blocks on a marker while flags are off',
+      () async {
+    final probed = <String>[];
     LegacyWriteGuard.probeOverride = (domain) async {
-      probed = true;
+      probed.add(domain);
       return true;
     };
     addTearDown(() => LegacyWriteGuard.probeOverride = null);
 
     CoreFlags.installBackend(_FakeFlagsBackend(CoreFlagsSnapshot.disabled));
     await CoreFlags.refresh();
+    expect(CoreFlags.coreWrites, isFalse);
 
-    await LegacyWriteGuard.assertAllowed('channel');
+    await expectLater(
+      LegacyWriteGuard.assertAllowed('channel'),
+      throwsA(isA<LegacyWriteBlocked>()),
+    );
 
-    expect(probed, isFalse,
-        reason: 'the guard must not probe while coreWrites is false');
+    expect(probed, <String>['channel'],
+        reason: 'the per-domain marker is authoritative, not the global flag');
   });
 }

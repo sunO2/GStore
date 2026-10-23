@@ -10,6 +10,7 @@ import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/model/AppIdentity.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用聚合管理器
 /// 负责管理所有渠道已添加的应用
@@ -93,6 +94,7 @@ class AppAggregatorManager implements IAggregateService {
     required AppSummary appInfo,
     int? sortOrder,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     // 渠道自报规范化 appId（无感调用）
     final channelInstance = _channelManager.getChannelByCode(channelCode);
     final appId = channelInstance != null
@@ -154,6 +156,7 @@ class AppAggregatorManager implements IAggregateService {
     required String channelCode,
     required List<AppSummary> appInfos,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     final now = DateTime.now().millisecondsSinceEpoch;
     final channelInstance = _channelManager.getChannelByCode(channelCode);
     final addedApps = <AddedAppInfo>[];
@@ -218,6 +221,7 @@ class AppAggregatorManager implements IAggregateService {
     required String channelCode,
     required String appId,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.removeApp(channelCode, appId);
     // 联动清理该应用的用户标签（避免残留孤儿标签）
     try {
@@ -242,6 +246,7 @@ class AppAggregatorManager implements IAggregateService {
     required String oldAppId,
     required String newAppId,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     if (oldAppId == newAppId) return;
     final db = _database;
 
@@ -306,6 +311,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required List<String> tags,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     try {
       await _database.appTagDao.removeTagsOfApp(channelCode, appId);
       final deduped = tags.toSet().where((t) => t.trim().isNotEmpty).toList();
@@ -329,6 +335,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required String tag,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     final t = tag.trim();
     if (t.isEmpty) return;
     try {
@@ -346,6 +353,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required String tag,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     try {
       await _database.appTagDao.removeTag(channelCode, appId, tag);
     } catch (e) {
@@ -418,6 +426,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 清空指定渠道的所有应用
   @override
   Future<void> clearChannel(String channelCode) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.clearChannel(channelCode);
 
     _notifyAppsChanged();
@@ -427,6 +436,7 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 清空所有应用
   Future<void> clearAll() async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.clearAll();
 
     _notifyAppsChanged();

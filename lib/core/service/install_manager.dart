@@ -10,6 +10,7 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// pm 命令成功判定：输出以 "Success" 开头（pm install/uninstall/clear/disable 等）
 /// null（命令未执行）/ "Failure [...]" / 空输出 → false
@@ -669,11 +670,14 @@ class InstallManager implements IInstallService {
         'InstallManager: 模块 APK 不在内核下载任务中，使用模块安装路径: $filePath',
       );
     }
+    // Legacy dispatch: the core route above is not a legacy write.
+    await LegacyWriteGuard.assertAllowed('install');
     return _legacyInstallApk(filePath);
   }
 
   /// 旧 Shizuku/系统安装路径；仅 flag 关闭或显式模块 APK 时使用。
   Future<(bool, InstallMethod)> _legacyInstallApk(String filePath) async {
+    await LegacyWriteGuard.assertAllowed('install');
     if (!_isAndroid || !filePath.endsWith('.apk')) {
       return (false, _preferredMethod);
     }

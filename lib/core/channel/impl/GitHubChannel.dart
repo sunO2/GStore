@@ -21,6 +21,7 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// GitHub API 渠道实现
 /// 通过 GitHub API 获取应用数据
@@ -106,9 +107,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         throw Exception('数据库未初始化');
       }
       final channelApps = await _loadChannelApps();
-      final apps = channelApps
-          .map(AppSummary.fromChannelAddedApp)
-          .toList();
+      final apps = channelApps.map(AppSummary.fromChannelAddedApp).toList();
 
       _cachedApps = apps;
       return ChannelResult.success(
@@ -154,8 +153,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         // 渠道数据库未命中时，按 extra.packageName / apprepo 反查 owner/repo
         if (_database != null) {
           try {
-            final all = await _database!.dao
-                .getAppsByChannel(ChannelType.github.code);
+            final all =
+                await _database!.dao.getAppsByChannel(ChannelType.github.code);
             for (final record in all) {
               if (record.extra != null && record.extra!.contains(appId)) {
                 final matched = await _buildStoredAppInfo(record);
@@ -186,9 +185,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       final name = apiList.full_name?.split('/').last.isNotEmpty == true
           ? apiList.full_name!.split('/').last
           : repo;
-      final description = apiList.description?.isNotEmpty == true
-          ? apiList.description!
-          : '';
+      final description =
+          apiList.description?.isNotEmpty == true ? apiList.description! : '';
 
       // 优先读取仓库元数据（真实图标 / 包名 / 应用名），未收录时回退 GitHub API 数据
       String icon = '';
@@ -196,7 +194,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       String appName = '';
       final metadata = await MetadataRepository.instance.fetchInfo(user, repo);
       if (metadata != null) {
-        icon = await MetadataRepository.instance.resolveIconUrl(user, repo) ?? '';
+        icon =
+            await MetadataRepository.instance.resolveIconUrl(user, repo) ?? '';
         packageName = _validPackageName(metadata['packageName']?.toString());
         appName = metadata['appName']?.toString() ?? '';
       }
@@ -239,15 +238,13 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           'https://api.github.com/search/repositories?q=$query&per_page=30';
       final url = proxy.isNotEmpty ? '$proxy$searchUrl' : searchUrl;
 
-      final response = await _httpClient
-          .get(
-            Uri.parse(url),
-            headers: {
-              'Accept': 'application/vnd.github+json',
-              'User-Agent': 'GStore-App/1.0',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await _httpClient.get(
+        Uri.parse(url),
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'GStore-App/1.0',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
         return ChannelResult.failure(
@@ -314,6 +311,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
 
   @override
   Future<ChannelResult<void>> addApp(AppSummary app) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     try {
       if (_database == null) {
         throw Exception('数据库未初始化');
@@ -321,7 +319,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       // 拆分 owner/repo：app.user 存 owner，repositories 存 repo
       // （聚合层已通过 canonicalAppId 规范化 appId，可能为真实包名，owner/repo 从 user/repositories 解析）
       final parts = app.appId.split('/');
-      final owner = app.user.isNotEmpty ? app.user : (parts.isNotEmpty ? parts[0] : '');
+      final owner =
+          app.user.isNotEmpty ? app.user : (parts.isNotEmpty ? parts[0] : '');
       final repo = parts.length == 2 ? parts[1] : app.repositories;
 
       // 优先读取仓库元数据：已收录时用真实图标/包名/应用名（列表即时显示）
@@ -329,9 +328,12 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       String? packageName;
       String appName = app.name;
       if (owner.isNotEmpty && repo.isNotEmpty) {
-        final metadata = await MetadataRepository.instance.fetchInfo(owner, repo);
+        final metadata =
+            await MetadataRepository.instance.fetchInfo(owner, repo);
         if (metadata != null) {
-          icon = await MetadataRepository.instance.resolveIconUrl(owner, repo) ?? icon;
+          icon =
+              await MetadataRepository.instance.resolveIconUrl(owner, repo) ??
+                  icon;
           packageName = _validPackageName(metadata['packageName']?.toString());
           final metaAppName = metadata['appName']?.toString();
           if (metaAppName != null && metaAppName.isNotEmpty) {
@@ -345,12 +347,16 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         name: appName,
         user: owner,
         repositories: repo,
-        apprepo: parts.length == 2 ? app.appId : (app.appId.contains('/') ? app.appId : null),
+        apprepo: parts.length == 2
+            ? app.appId
+            : (app.appId.contains('/') ? app.appId : null),
         icon: icon,
         description: app.des,
         addTime: DateTime.now().millisecondsSinceEpoch,
         channel: ChannelType.github,
-        extra: packageName != null ? jsonEncode({'packageName': packageName}) : null,
+        extra: packageName != null
+            ? jsonEncode({'packageName': packageName})
+            : null,
       );
       await _database!.dao.insertApp(channelApp);
       appLog.info('GitHubChannel: 添加应用成功 - ${app.appId}');
@@ -366,6 +372,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
 
   @override
   Future<ChannelResult<void>> removeApp(String appId) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     try {
       if (_database == null) {
         throw Exception('数据库未初始化');
@@ -451,7 +458,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   Future<ChannelResult<bool>> checkUpdate() async {
     try {
       // 检查 GitHub releases 是否有新版本
-      var releasesJson = await _githubApi.releases(_user, _repository, 1, CancelToken());
+      var releasesJson =
+          await _githubApi.releases(_user, _repository, 1, CancelToken());
       var releases = List<dynamic>.from(
         jsonDecode(releasesJson) as List,
       );
@@ -568,7 +576,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       // 并发获取 API 信息和 Releases
       final results = await Future.wait([
         _githubApi.apiList(appInfo.user, appInfo.repositories, CancelToken()),
-        _githubApi.releases(appInfo.user, appInfo.repositories, 1, CancelToken()),
+        _githubApi.releases(
+            appInfo.user, appInfo.repositories, 1, CancelToken()),
       ]);
 
       // 优先读取仓库元数据（真实图标 / 包名 / 版本），未收录时回退默认数据
@@ -582,8 +591,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           ignoreNegativeCache: true,
         );
       }
-      final metadataIcon =
-          metadata != null ? await MetadataRepository.instance.resolveIconUrl(appInfo.user, appInfo.repositories) : null;
+      final metadataIcon = metadata != null
+          ? await MetadataRepository.instance
+              .resolveIconUrl(appInfo.user, appInfo.repositories)
+          : null;
 
       // apiList 返回 ApiList 对象（非 JSON 字符串）
       final ApiList apiList = results[0] as ApiList;
@@ -615,9 +626,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         'developer': appInfo.user,
         // 优先使用元数据的真实包名；否则回退 AppSummary.packageName（渠道显式提供的真实包名）；
         // 未收录时不用仓库名占位（repo 名不是包名，避免误用于安装检测）
-        'packageName': _validPackageName(metadata?['packageName']?.toString()).isNotEmpty
-            ? _validPackageName(metadata?['packageName']?.toString())
-            : _validPackageName(appInfo.packageName),
+        'packageName':
+            _validPackageName(metadata?['packageName']?.toString()).isNotEmpty
+                ? _validPackageName(metadata?['packageName']?.toString())
+                : _validPackageName(appInfo.packageName),
         'projectUrl': apiList.html_url?.toString(),
         'sections': _buildSections(downloads, readme, apiList),
         'downloads': downloads,
@@ -744,7 +756,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           appInfo.repositories,
           CancelToken(),
         ),
-        MetadataRepository.instance.fetchInfo(appInfo.user, appInfo.repositories),
+        MetadataRepository.instance
+            .fetchInfo(appInfo.user, appInfo.repositories),
       ]);
       final apiList = results[0] as ApiList;
       final metadata = results[1] as Map<String, dynamic>?;
@@ -812,7 +825,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       for (var asset in assets) {
         if (asset is Map<String, dynamic>) {
           final assetSize = asset['size'] as int?;
-          final assetPlatform = _parsePlatformFromAssetName(asset['name']?.toString() ?? '');
+          final assetPlatform =
+              _parsePlatformFromAssetName(asset['name']?.toString() ?? '');
           final assetDownloadCount = asset['download_count'] as int?;
           final downloadInfo = DownloadInfo(
             url: applyProxyIfNeeded(
@@ -900,8 +914,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         if (readme != null) {
           final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
           if (etag != null && etag.isNotEmpty) {
-            await ReadmeCache.instance.put(appInfo.user,
-                appInfo.repositories,
+            await ReadmeCache.instance.put(appInfo.user, appInfo.repositories,
                 etag: etag, readme: resolved);
             appLog.info('GitHubChannel: README 缓存写入', data: {
               'etag': etag,
@@ -940,8 +953,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         return cached.readme;
       }
       if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
-        final branch =
-            _extractBranchFromContentsJson(upperResp.body, appInfo);
+        final branch = _extractBranchFromContentsJson(upperResp.body, appInfo);
         final rawBaseUrl =
             'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/${branch ?? 'main'}/';
         final readme = decodeContentsReadme(upperResp.body);
@@ -949,8 +961,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         if (readme != null) {
           final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
           if (etag != null && etag.isNotEmpty) {
-            await ReadmeCache.instance.put(appInfo.user,
-                appInfo.repositories,
+            await ReadmeCache.instance.put(appInfo.user, appInfo.repositories,
                 etag: etag, readme: resolved);
             appLog.info('GitHubChannel: README 缓存写入', data: {
               'etag': etag,
@@ -972,8 +983,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       appLog.error('GitHubChannel: 获取 README 失败 - $e');
       // 请求失败（网络/限流/离线）：缓存仍显示，不随失败消失
       try {
-        final cached = await ReadmeCache.instance
-            .get(appInfo.user, appInfo.repositories);
+        final cached =
+            await ReadmeCache.instance.get(appInfo.user, appInfo.repositories);
         if (cached != null) {
           appLog.info('GitHubChannel: README 缓存兜底', data: {
             '原因': '请求异常',
@@ -1042,11 +1053,11 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   /// 读取渠道记录并做脏数据自愈（读取边界统一入口）
   /// 历史脏记录（repositories 含完整名）拆分修正后回写，一次后即净
   Future<List<ChannelAddedApp>> _loadChannelApps() async {
+    await LegacyWriteGuard.assertAllowed('channel');
     if (_database == null) {
       throw Exception('数据库未初始化');
     }
-    final apps = await _database!.dao
-        .getAppsByChannel(ChannelType.github.code);
+    final apps = await _database!.dao.getAppsByChannel(ChannelType.github.code);
     final corrected = <ChannelAddedApp>[];
     for (final record in apps) {
       final normalized = normalizeStoredRecord(record);
@@ -1075,7 +1086,9 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     String? name,
     String? icon,
   }) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     if (oldAppId == newPackageName || newPackageName.isEmpty) return null;
+
     final db = _database ?? await ChannelDatabaseManager.instance;
 
     // 精确 PK 匹配优先，未命中再按 apprepo 兜底（兼容重复下载/历史记录）
@@ -1134,6 +1147,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   /// 优先用 metadata 覆盖真实图标/应用名/包名；未收录回退数据库记录；
   /// 数据有变化时同步回写渠道数据库（保持最新）
   Future<AppSummary> _buildStoredAppInfo(ChannelAddedApp stored) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     // 历史脏数据自愈：repositories 误存完整名时拆分修正并回写
     // （须在 early-return 之前——脏记录 user 非空会绕过下方 guard；
     //   也须在 metadata fetch 之前——后续用修正后的 owner/repo 查询）
@@ -1164,7 +1178,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     final metadataIcon = await MetadataRepository.instance
         .resolveIconUrl(stored.user, stored.repositories);
     final displayName = metadataName.isNotEmpty ? metadataName : stored.name;
-    final icon = (metadataIcon?.isNotEmpty ?? false) ? metadataIcon! : stored.icon;
+    final icon =
+        (metadataIcon?.isNotEmpty ?? false) ? metadataIcon! : stored.icon;
 
     // 数据有变化：同步回写渠道数据库（避免每次覆盖，仅变化时写）
     if (icon != stored.icon || displayName != stored.name) {
@@ -1184,7 +1199,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
               ? jsonEncode({'packageName': packageName})
               : stored.extra,
         ));
-        appLog.info('GitHubChannel: 渠道记录已同步 metadata - ${stored.user}/${stored.repositories}');
+        appLog.info(
+            'GitHubChannel: 渠道记录已同步 metadata - ${stored.user}/${stored.repositories}');
       } catch (e) {
         appLog.error('GitHubChannel: 同步渠道记录失败 - $e');
       }
@@ -1193,7 +1209,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     final fromStored = AppSummary.fromChannelAddedApp(stored);
     return AppSummary(
       appId: stored.appId,
-      packageName: packageName.isNotEmpty ? packageName : fromStored.packageName,
+      packageName:
+          packageName.isNotEmpty ? packageName : fromStored.packageName,
       name: displayName,
       user: stored.user,
       repositories: stored.repositories,
@@ -1217,7 +1234,9 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   String? _parsePlatformFromAssetName(String fileName) {
     final lower = fileName.toLowerCase();
     if (lower.contains('universal')) return 'universal';
-    if (lower.contains('arm64') || lower.contains('arm64-v8a')) return 'arm64-v8a';
+    if (lower.contains('arm64') || lower.contains('arm64-v8a')) {
+      return 'arm64-v8a';
+    }
     if (lower.contains('armeabi-v7a')) return 'armeabi-v7a';
     if (lower.contains('x86_64')) return 'x86_64';
     if (lower.contains('x86')) return 'x86';
@@ -1278,8 +1297,6 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       category: null,
     );
   }
-
-  
 }
 
 /// 解析 GitHub contents API 响应（JSON: {content: base64, encoding}）→ markdown 文本

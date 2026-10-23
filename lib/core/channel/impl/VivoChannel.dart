@@ -18,6 +18,7 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// vivo 应用市场渠道实现
 /// 通过 vivo 应用市场 API 获取应用数据
@@ -606,6 +607,7 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 保存搜索结果到渠道数据库
   Future<void> saveSearchResult(AppSummary app) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     if (_database == null) {
       appLog.error('VivoChannel: 数据库未初始化');
       return;
@@ -630,6 +632,7 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 从渠道数据库删除搜索结果
   Future<void> deleteSearchResult(String appId) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     if (_database == null) {
       appLog.error('VivoChannel: 数据库未初始化');
       return;

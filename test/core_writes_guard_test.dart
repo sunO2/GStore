@@ -57,10 +57,20 @@ void main() {
     await LegacyWriteGuard.assertAllowed('channel');
   });
 
-  test('flags off keeps the old path authoritative', () async {
+  test('a domain marker blocks even while the global flag is false', () async {
     await _useCoreWrites(false);
-    LegacyWriteGuard.probeOverride = (domain) async => true;
+    expect(CoreFlags.coreWrites, isFalse);
+    final seen = <String>[];
+    LegacyWriteGuard.probeOverride = (domain) async {
+      seen.add(domain);
+      return true;
+    };
 
-    await LegacyWriteGuard.assertAllowed('channel');
+    await expectLater(
+      LegacyWriteGuard.assertAllowed('channel'),
+      throwsA(isA<LegacyWriteBlocked>()),
+    );
+    expect(seen, <String>['channel'],
+        reason: 'the per-domain marker, not the global flag, owns the decision');
   });
 }

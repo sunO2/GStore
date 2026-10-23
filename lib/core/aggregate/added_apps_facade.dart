@@ -13,6 +13,7 @@ import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// Injectable added-apps transport seam.
 abstract class AddedAppsBackend {
@@ -256,6 +257,7 @@ class LegacyAddedAppsBackend implements AddedAppsBackend {
 
   @override
   Future<void> setOrder(String channel, String appId, int sortOrder) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     final database = await _db();
     final existing = await database.addedAppDao.getApp(channel, appId);
     final id = existing?.id;

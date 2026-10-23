@@ -16,6 +16,7 @@ import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_native_service.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// APK 信息解析与更新服务
 /// 下载完成后解析 APK，用真实包名/应用名/图标更新渠道与聚合记录
@@ -93,7 +94,11 @@ class ApkInfoService {
     await _updatePackageName(appId, packageName);
 
     // 步骤 2：后台等待安装完成，通过包名判断已安装后获取应用名与图标
-    unawaited(_updateNameAndIconAfterInstall(appId, packageName));
+    unawaited(_updateNameAndIconAfterInstall(appId, packageName)
+        .catchError((Object error, StackTrace stackTrace) {
+      debugPrint('ApkInfoService: 安装后更新未完成（已记录） - $error');
+      debugPrint('$stackTrace');
+    }));
   }
 
   /// 将图标 PNG 字节保存到本地缓存
@@ -172,6 +177,9 @@ class ApkInfoService {
     String packageName,
   ) async {
     try {
+      // 归属检查放在 try 内：本方法是 unawaited 的后台任务，被标记拦截时
+      // 必须按本文件的错误策略记录，不能把拒绝的 Future 抛给根 zone。
+      await LegacyWriteGuard.assertAllowed('channel');
       // 等待安装完成（后台轮询，最多约 60s）
       final installedInfo = await _waitAndGetInstalledInfo(packageName);
 
@@ -183,8 +191,8 @@ class ApkInfoService {
       // 提取图标（需已安装）
       String? iconPath;
       try {
-        iconPath = await AppIconService.instance
-            .getInstalledAppIcon(packageName);
+        iconPath =
+            await AppIconService.instance.getInstalledAppIcon(packageName);
       } catch (e) {
         appLog.error('ApkInfoService: 提取已安装图标失败 - $e');
       }
@@ -239,7 +247,6 @@ class ApkInfoService {
     }
   }
 
-
   /// 等待应用安装完成，并获取已安装应用信息
   Future<ia.AppInfo?> _waitAndGetInstalledInfo(String packageName) async {
     for (var i = 0; i < 30; i++) {
@@ -256,5 +263,4 @@ class ApkInfoService {
     appLog.info('ApkInfoService: 等待安装超时 $packageName');
     return null;
   }
-
 }

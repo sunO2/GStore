@@ -13,6 +13,7 @@ import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 
 import 'download_status_utils.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用信息数据库（经模块注册表取 DbManager，避免 GetX 服务定位）。
 ///
@@ -483,6 +484,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 删除单个下载记录
   Future<void> deleteDownload(DownloadTask downStatus) async {
+    await LegacyWriteGuard.assertAllowed('download');
     try {
       final id = downStatus.id;
 
@@ -541,6 +543,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 删除指定应用的所有下载记录
   Future<void> deleteDownloadsByAppId(String appId) async {
+    await LegacyWriteGuard.assertAllowed('download');
     try {
       final db = await downloadTaskDatabase;
       await db.database
@@ -562,6 +565,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 清理已完成的下载记录
   Future<void> clearCompleted() async {
+    await LegacyWriteGuard.assertAllowed('download');
     try {
       final tasks = await _allTasks();
       final completed = tasks
@@ -616,6 +620,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 清空所有下载记录
   Future<void> clearAll() async {
+    await LegacyWriteGuard.assertAllowed('download');
     // 显示确认对话框
     final confirmed = await AppDialogs.showDialog(
       title: '确认清空',
