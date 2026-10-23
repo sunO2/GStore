@@ -18,7 +18,12 @@ const CI_DEADLINE: Duration = Duration::from_secs(3);
 struct NoHost;
 
 impl ScriptHost for NoHost {
-    fn send_message(&self, method: &str, _payload: &Value) -> Result<Value, ScriptError> {
+    fn send_message(
+        &self,
+        _channel: &ScriptChannel,
+        method: &str,
+        _payload: &Value,
+    ) -> Result<Value, ScriptError> {
         Err(ScriptError::host(format!(
             "unexpected host call `{method}`"
         )))

@@ -25,8 +25,11 @@
 mod script;
 
 pub use script::{
+    ChannelApp, CheckVersionRequest, ConfigGetRequest, DatabaseAppRequest, DatabaseAppsRequest,
+    DatabaseInsertRequest, EnvAllRequest, EnvGetRequest, EnvHasRequest, EnvSnapshot, HttpMethod,
+    HttpRequest, HttpResponse, InstalledInfo, LogLevel, LogRequest, NativeCallRequest,
     ScriptChannel, ScriptError, ScriptErrorKind, ScriptHost, ScriptOptions, ScriptRuntime,
-    UnsupportedHost, CODE_DISPOSED, CODE_EVAL, CODE_HOST, CODE_INTERNAL, CODE_INVALID_ARGUMENT,
-    CODE_LIMIT, CODE_TIMEOUT, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_MEMORY_LIMIT_BYTES,
-    DEFAULT_STACK_LIMIT_BYTES,
+    UiRequest, UnsupportedHost, CODE_DISPOSED, CODE_EVAL, CODE_HOST, CODE_INTERNAL,
+    CODE_INVALID_ARGUMENT, CODE_LIMIT, CODE_TIMEOUT, DEFAULT_EVAL_TIMEOUT_MS,
+    DEFAULT_MEMORY_LIMIT_BYTES, DEFAULT_STACK_LIMIT_BYTES,
 };

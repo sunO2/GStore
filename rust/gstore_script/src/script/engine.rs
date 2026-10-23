@@ -9,41 +9,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rquickjs::{Coerced, Context, Ctx, Function, Promise, Runtime, Value};
+use rquickjs::{Context, Ctx, Promise, Runtime, Value};
 use serde_json::Value as JsonValue;
 
-use super::error::{ScriptError, CODE_HOST};
+use super::bridge;
+use super::channel::ScriptChannel;
+use super::error::ScriptError;
 use super::host::ScriptHost;
 use super::interrupt::InterruptState;
+use super::js_error::{map_error, timeout_ms};
 use super::options::ScriptOptions;
-
-/// Native bridge installed as `globalThis.__gstoreSendMessage(method, payloadJson)`.
-const BRIDGE_FN: &str = "__gstoreSendMessage";
-
-/// Minimal prelude: exposes `sendMessage(method, payload)` to scripts while the
-/// richer `host.*` surface stays Todo 2's job.
-const PRELUDE: &str = r#"
-(function () {
-  'use strict';
-  var bridge = globalThis.__gstoreSendMessage;
-  function sendMessage(method, payload) {
-    var payloadJson = JSON.stringify(payload === undefined ? null : payload);
-    var envelope = JSON.parse(bridge(String(method), payloadJson));
-    if (!envelope || envelope.ok !== true) {
-      throw new Error(envelope && envelope.message
-        ? envelope.message
-        : 'CORE_E_SCRIPT_HOST: host call failed');
-    }
-    return envelope.data;
-  }
-  Object.defineProperty(globalThis, 'sendMessage', {
-    value: sendMessage,
-    writable: false,
-    enumerable: false,
-    configurable: false
-  });
-})();
-"#;
 
 /// A thread-confined QuickJS runtime.
 pub(crate) struct Engine {
@@ -52,6 +27,7 @@ pub(crate) struct Engine {
     ctx: Context,
     interrupt: Arc<InterruptState>,
     host: Arc<dyn ScriptHost>,
+    channel: ScriptChannel,
     eval_timeout: Duration,
 }
 
@@ -59,6 +35,7 @@ impl Engine {
     pub(crate) fn new(
         options: &ScriptOptions,
         host: Arc<dyn ScriptHost>,
+        channel: ScriptChannel,
     ) -> Result<Self, ScriptError> {
         let runtime = Runtime::new()
             .map_err(|err| ScriptError::internal(format!("create QuickJS runtime: {err}")))?;
@@ -72,12 +49,14 @@ impl Engine {
         let ctx = Context::full(&runtime)
             .map_err(|err| ScriptError::internal(format!("create QuickJS context: {err}")))?;
 
-        let bridge_host = Arc::clone(&host);
-        ctx.with(|ctx| -> Result<(), ScriptError> {
-            install_bridge(&ctx, bridge_host)?;
-            ctx.eval::<Value, _>(PRELUDE)
-                .map(|_| ())
-                .map_err(|err| map_error(&ctx, err, &interrupt, options.eval_timeout))
+        ctx.with(|ctx| {
+            bridge::install(
+                &ctx,
+                Arc::clone(&host),
+                channel.clone(),
+                &interrupt,
+                options.eval_timeout,
+            )
         })?;
 
         Ok(Self {
@@ -85,6 +64,7 @@ impl Engine {
             ctx,
             interrupt,
             host,
+            channel,
             eval_timeout: options.eval_timeout,
         })
     }
@@ -100,10 +80,8 @@ impl Engine {
         outcome
     }
 
-    /// Invoke the registered host callback on the runtime thread.
-    ///
-    /// Used both by the Rust-facing `ScriptRuntime::send_message` and by the JS
-    /// bridge. Panics are contained here rather than crossing an FFI frame.
+    /// Invoke the registered host callback on the runtime thread with channel
+    /// affinity. Used by the JS bridge and by `ScriptRuntime::send_message`.
     pub(crate) fn send_message(
         &self,
         method: &str,
@@ -114,7 +92,10 @@ impl Engine {
                 "sendMessage method must not be empty",
             ));
         }
-        match catch_unwind(AssertUnwindSafe(|| self.host.send_message(method, payload))) {
+        let channel = &self.channel;
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.host.send_message(channel, method, payload)
+        })) {
             Ok(result) => result,
             Err(_) => Err(ScriptError::host(format!(
                 "host callback for `{method}` panicked"
@@ -171,83 +152,4 @@ impl Engine {
             }
         }
     }
-}
-
-/// Install the native `__gstoreSendMessage` bridge and the `sendMessage` prelude.
-fn install_bridge(ctx: &Ctx<'_>, host: Arc<dyn ScriptHost>) -> Result<(), ScriptError> {
-    let bridge = Function::new(
-        ctx.clone(),
-        move |method: String, payload: String| -> rquickjs::Result<String> {
-            let payload: JsonValue = serde_json::from_str(&payload).unwrap_or(JsonValue::Null);
-            let envelope =
-                match catch_unwind(AssertUnwindSafe(|| host.send_message(&method, &payload))) {
-                    Ok(Ok(data)) => serde_json::json!({ "ok": true, "data": data }),
-                    Ok(Err(err)) => serde_json::json!({
-                        "ok": false,
-                        "code": err.code(),
-                        "message": err.to_string(),
-                    }),
-                    Err(_) => serde_json::json!({
-                        "ok": false,
-                        "code": CODE_HOST,
-                        "message": format!("{CODE_HOST}: host callback for `{method}` panicked"),
-                    }),
-                };
-            Ok(serde_json::to_string(&envelope)
-                .unwrap_or_else(|_| format!(r#"{{"ok":false,"code":"{CODE_HOST}"}}"#)))
-        },
-    )
-    .map_err(|err| ScriptError::internal(format!("create host bridge: {err}")))?;
-
-    ctx.globals()
-        .set(BRIDGE_FN, bridge)
-        .map_err(|err| ScriptError::internal(format!("install host bridge: {err}")))
-}
-
-/// Convert an `rquickjs` failure into a typed error without leaking its lifetime.
-fn map_error(
-    ctx: &Ctx<'_>,
-    err: rquickjs::Error,
-    interrupt: &InterruptState,
-    timeout: Duration,
-) -> ScriptError {
-    if interrupt.fired() {
-        return ScriptError::timeout(timeout_ms(timeout));
-    }
-    if matches!(err, rquickjs::Error::Allocation) {
-        return ScriptError::limit("QuickJS allocation failed (memory limit)");
-    }
-    let message = if matches!(err, rquickjs::Error::Exception) {
-        exception_message(ctx)
-    } else {
-        err.to_string()
-    };
-    let lowered = message.to_ascii_lowercase();
-    if lowered.contains("out of memory") || lowered.contains("stack overflow") {
-        return ScriptError::limit(message);
-    }
-    ScriptError::from_js_message(message)
-}
-
-/// Best-effort message from the pending JS exception (consumes it).
-fn exception_message(ctx: &Ctx<'_>) -> String {
-    let value = ctx.catch();
-    if value.is_uncatchable_error() {
-        return "interrupted".to_owned();
-    }
-    if let Some(object) = value.as_object() {
-        if let Ok(Coerced(message)) = object.get::<_, Coerced<String>>("message") {
-            return message;
-        }
-    }
-    if let Some(text) = value.as_string() {
-        if let Ok(text) = text.to_string() {
-            return text;
-        }
-    }
-    "JavaScript exception".to_owned()
-}
-
-fn timeout_ms(timeout: Duration) -> u64 {
-    u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
 }

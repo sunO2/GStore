@@ -32,7 +32,7 @@ impl ScriptRuntime {
         options: ScriptOptions,
         host: Arc<dyn ScriptHost>,
     ) -> Result<Self, ScriptError> {
-        let handle = thread::spawn(channel.as_str(), options, host)?;
+        let handle = thread::spawn(&channel, options, host)?;
         Ok(Self {
             channel,
             handle: Some(handle),

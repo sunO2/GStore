@@ -10,6 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use serde_json::Value as JsonValue;
 
+use super::channel::ScriptChannel;
 use super::engine::Engine;
 use super::error::ScriptError;
 use super::host::ScriptHost;
@@ -42,16 +43,17 @@ pub(crate) struct ThreadHandle {
 /// Initialisation failures (bad QuickJS build, OOM at startup) are reported here
 /// rather than surfacing later as a mysterious `Disposed`.
 pub(crate) fn spawn(
-    channel: &str,
+    channel: &ScriptChannel,
     options: ScriptOptions,
     host: Arc<dyn ScriptHost>,
 ) -> Result<ThreadHandle, ScriptError> {
     let (init_tx, init_rx) = mpsc::sync_channel(0);
     let (tx, rx) = mpsc::channel();
 
+    let thread_channel = channel.clone();
     let join = thread::Builder::new()
-        .name(format!("gstore-script:{channel}"))
-        .spawn(move || run(init_tx, rx, options, host))
+        .name(format!("gstore-script:{thread_channel}"))
+        .spawn(move || run(init_tx, rx, options, host, thread_channel))
         .map_err(|err| ScriptError::internal(format!("spawn script thread: {err}")))?;
 
     match init_rx.recv() {
@@ -74,8 +76,9 @@ fn run(
     rx: Receiver<Command>,
     options: ScriptOptions,
     host: Arc<dyn ScriptHost>,
+    channel: ScriptChannel,
 ) {
-    let engine = match Engine::new(&options, host) {
+    let engine = match Engine::new(&options, host, channel) {
         Ok(engine) => {
             if init_tx.send(Ok(())).is_err() {
                 return;

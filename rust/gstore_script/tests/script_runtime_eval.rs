@@ -14,9 +14,16 @@ use serde_json::{json, Value};
 struct EchoHost;
 
 impl ScriptHost for EchoHost {
-    fn send_message(&self, method: &str, payload: &Value) -> Result<Value, ScriptError> {
+    fn send_message(
+        &self,
+        _channel: &ScriptChannel,
+        method: &str,
+        payload: &Value,
+    ) -> Result<Value, ScriptError> {
         match method {
-            "echo" => Ok(json!({ "method": method, "payload": payload })),
+            // Overriding the dispatcher is allowed; the returned value must be
+            // the envelope, exactly like the default dispatcher's output.
+            "echo" => Ok(json!({ "ok": true, "data": { "method": method, "payload": payload } })),
             "boom" => Err(ScriptError::host("host refused the call")),
             "panic" => panic!("host callback panicked on purpose"),
             other => Err(ScriptError::host(format!("unknown method `{other}`"))),
@@ -96,25 +103,35 @@ fn script_runtime_eval_dispatches_send_message() {
     let result = runtime
         .eval("sendMessage('echo', {appId: 'org.example'})")
         .expect("host call returns");
-    assert_eq!(result["payload"]["appId"], json!("org.example"));
+    assert_eq!(result["ok"], json!(true));
+    assert_eq!(result["data"]["payload"]["appId"], json!("org.example"));
 
+    // A host error is an envelope, not a thrown JS exception.
     let denied = runtime
         .eval("sendMessage('boom', null)")
-        .expect_err("host error surfaces to JS");
-    assert_eq!(denied.kind(), ScriptErrorKind::Host);
-    assert_eq!(denied.code(), CODE_HOST);
+        .expect("host error degrades to an envelope");
+    assert_eq!(denied["ok"], json!(false));
+    assert!(denied["error"]
+        .as_str()
+        .expect("error string")
+        .contains(CODE_HOST));
 
+    // A host panic is contained and reported as the same typed envelope.
     let panicked = runtime
         .eval("sendMessage('panic', null)")
-        .expect_err("host panic becomes a typed error");
-    assert_eq!(panicked.kind(), ScriptErrorKind::Host);
+        .expect("host panic is contained");
+    assert_eq!(panicked["ok"], json!(false));
+    assert!(panicked["error"]
+        .as_str()
+        .expect("error string")
+        .contains(CODE_HOST));
 
     // Rust-side dispatch uses the same host path and channel affinity.
     assert_eq!(
         runtime
             .send_message("echo", json!({"a": 1}))
             .expect("rust-side dispatch"),
-        json!({"method": "echo", "payload": {"a": 1}})
+        json!({"ok": true, "data": {"method": "echo", "payload": {"a": 1}}})
     );
 
     runtime.dispose().expect("clean dispose");
