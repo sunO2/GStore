@@ -26,11 +26,10 @@
 //!
 //! The wait itself is wrapped in [`ScriptRuntime::begin_park`], so
 //! the leaf crate suspends both its interrupt deadline and its cumulative eval
-//! clock for exactly the parked interval. The long eval budget is still
-//! `UI budget + 5 s`, which keeps the UI timeout decisive, but the 5 s normal
-//! budget can never fire while parked. On unpark the deadline is extended by the
-//! exempted interval (never beyond the UI budget), so the remaining eval budget
-//! is charged normally — parking pauses accounting, it does not reset it.
+//! clock for exactly the parked interval. On unpark the deadline is extended by
+//! the exempted interval (never beyond the UI budget), so the remaining 5 s
+//! normal eval budget is charged normally — parking pauses accounting, it does
+//! not reset it, and the long-eval budget is not used for script dispatches.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -33,8 +33,10 @@ pub const DEFAULT_EVAL_TIMEOUT_MS: u64 = 5_000;
 /// Wall-clock budget for an explicitly long operation (30 s).
 ///
 /// Source: plan Todo 4 ("wall-clock 5 s/30 s") and Todo 5's 30 s UI budget.
-/// Why: UI round-trips and pack warm-up legitimately outlive a normal call while
-/// still being bounded.
+/// Why: a host may explicitly opt into a longer operation via `eval_long` while
+/// still being bounded. UI round-trips do not need it: they park (see
+/// `ScriptRuntime::begin_park`), which extends the normal deadline without
+/// granting extra JS execution time.
 pub const DEFAULT_LONG_EVAL_TIMEOUT_MS: u64 = 30_000;
 
 /// Maximum serialised size of an eval result / script output (10 MB).

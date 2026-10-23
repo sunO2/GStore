@@ -74,6 +74,17 @@ Some capabilities block the script thread while waiting for an external answer
 - Outside a channel thread the guard is inert, which keeps `ui_api` usable in
   tests and in the Rust-side `send_message` path.
 
+### Budget split as used by `ScriptApi.run`
+
+The host dispatch path uses the **normal** `eval` budget only: 5 s in
+production. A parked UI wait suspends that deadline and extends it by the parked
+interval on unpark (bounded by the UI budget), so a UI round-trip may outlive
+5 s while the JS thread is blocked — but **pure JS execution never gets the long
+budget on this path**, so an unparked loop is interrupted at 5 s with
+`CORE_E_SCRIPT_TIMEOUT`. The 30 s `long_eval_timeout` / `ScriptRuntime::eval_long`
+remains a public capability for hosts that explicitly opt into a long operation;
+`gstore_host` does not use it for `ScriptApi.run`.
+
 ## Sandbox limits
 
 One policy, `SandboxLimits`, is carried by `ScriptOptions`. Defaults are fixed

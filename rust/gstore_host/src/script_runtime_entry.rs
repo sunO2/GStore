@@ -3,8 +3,18 @@
 //!
 //! Both runtimes are created lazily on the same dedicated-thread machinery as
 //! `gstore_script::ScriptRuntime`, are serialised by `op`, and share the env,
-//! config, and app-id state that the host reads. Calls use `eval_long` because a
-//! script may park on a UI request (see `ui_api.rs`).
+//! config, and app-id state that the host reads.
+//!
+//! # Budgets
+//!
+//! Every dispatch uses the **normal** `eval` budget (5 s in production), never
+//! the long-eval budget. A script that parks on a UI request is covered by the
+//! park exemption in `ui_api.rs`: the deadline is suspended while parked and
+//! extended by the parked interval on unpark (clamped to the UI budget), so a UI
+//! round-trip may outlive 5 s without handing pure JS execution a 30 s budget.
+//! An unparked infinite loop therefore stops at 5 s with
+//! `CORE_E_SCRIPT_TIMEOUT`. The long-eval capability stays available in
+//! `gstore_script` for other hosts, but this path does not use it.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -22,10 +32,6 @@ use serde_json::{Map, Value as JsonValue};
 
 use crate::script_host_impl::{ConfigMap, EnvMap, ScriptHostImpl};
 use crate::script_pack::LoadedPack;
-
-/// Extra long-eval head-room granted so the UI timeout fires before QuickJS
-/// interrupts the evaluation.
-const UI_GRACE: Duration = Duration::from_secs(5);
 
 /// Maximum live `detail.js` runtimes per pack (Dart releases per page exit;
 /// the cap protects long-lived callers that never release).
@@ -178,9 +184,7 @@ impl ScriptEntry {
                     slots.entry = Some(self.spawn(&script)?);
                 }
                 match slots.entry.as_ref() {
-                    Some(runtime) => runtime
-                        .eval_long(source)
-                        .map_err(|error| map_script(&error)),
+                    Some(runtime) => runtime.eval(source).map_err(|error| map_script(&error)),
                     None => Err("internal: script runtime missing after spawn".to_string()),
                 }
             }
@@ -202,9 +206,7 @@ impl ScriptEntry {
                     Some(runtime) => runtime,
                     None => self.spawn(&script)?,
                 };
-                let result = runtime
-                    .eval_long(source)
-                    .map_err(|error| map_script(&error));
+                let result = runtime.eval(source).map_err(|error| map_script(&error));
                 let mut slots = self
                     .runtimes
                     .lock()
@@ -240,7 +242,6 @@ impl ScriptEntry {
     fn spawn(&self, script: &str) -> Result<ScriptRuntime, String> {
         let limits = SandboxLimits::default()
             .with_eval_timeout(self.eval_timeout)
-            .with_long_eval_timeout(self.ui_budget.saturating_add(UI_GRACE))
             .with_cumulative_eval_budget(self.cumulative_budget);
         let channel = EngineChannel::new(self.key.as_str()).map_err(|error| map_script(&error))?;
         let host = Arc::new(ScriptHostImpl::new(

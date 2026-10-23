@@ -1,6 +1,6 @@
 //! `ScriptApi` <-> `UiApi` round-trip tests (Todo 5 QA happy path).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -181,8 +181,8 @@ fn script_api_ui_roundtrip_all_eight_handlers() {
 #[test]
 fn script_api_ui_roundtrip_parked_wait_beats_normal_eval_budget() {
     // The normal eval budget (40 ms) is deliberately shorter than the parked
-    // wait (120 ms). Only `eval_long` can honour the 30 s UI contract, so a
-    // successful result proves the normal budget is not armed while parked.
+    // wait (120 ms). A successful result proves the park suspension extends the
+    // normal deadline; the dispatch does not fall back to the long budget.
     let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     clear_ui_state();
     let harness = harness(
@@ -201,12 +201,18 @@ fn script_api_ui_roundtrip_parked_wait_beats_normal_eval_budget() {
         Duration::from_millis(120),
         None,
     );
+    let started = Instant::now();
     let run = harness
         .api
         .run("js_parked", "getAllApps", "{}")
         .expect("parked run");
+    let elapsed = started.elapsed();
     responder.join().expect("responder").expect("respond");
     let value: Value = serde_json::from_str(&run).expect("run JSON");
+    println!(
+        "[budget-park] normal=40ms park=120ms elapsed={}ms run={run}",
+        elapsed.as_millis()
+    );
     assert_eq!(value["ui"]["ok"], true, "{run}");
 }
 

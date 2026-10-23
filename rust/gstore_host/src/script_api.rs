@@ -9,20 +9,22 @@
 //! re-created by `refresh`/`import`/`remove`; dropping them joins their thread.
 //!
 //! Every call evaluates `(typeof main === 'function' ? main(method, params) :
-//! null)` with [`ScriptRuntime::eval_long`](gstore_script::ScriptRuntime::eval_long)
-//! and unwraps the same envelope core's `ScriptChannel` uses (`null` -> `null`,
-//! `{ok:false}` -> typed error). Using the long budget is deliberate: a script
-//! may park on `host.ui.call` for up to the UI budget, and the normal 5 s
-//! deadline must not fire while parked. The long budget is set to
-//! `UI budget + 5 s` so the UI timeout wins first.
+//! null)` with [`ScriptRuntime::eval`](gstore_script::ScriptRuntime::eval) — the
+//! normal 5 s wall-clock budget — and unwraps the same envelope core's
+//! `ScriptChannel` uses (`null` -> `null`, `{ok:false}` -> typed error). The
+//! long-eval budget is deliberately **not** used on this path: pure JS gets at
+//! most 5 s, so an infinite loop is interrupted at the normal cap.
 //!
 //! # Parked wait / cumulative budget
 //!
-//! The UI wait is wrapped in [`ScriptRuntime::begin_park`](gstore_script::ScriptRuntime::begin_park):
+//! A script may still park on `host.ui.call` for up to the UI budget. The wait is
+//! wrapped in [`ScriptRuntime::begin_park`](gstore_script::ScriptRuntime::begin_park):
 //! the leaf crate suspends both the interrupt deadline and the cumulative eval
 //! clock for the parked interval, bounded by the same UI budget. Unparking
-//! extends the deadline by exactly the exempted interval, so the remaining
-//! budget is charged normally (parking pauses the clock, it does not reset it).
+//! extends the deadline by exactly the exempted interval, so a parked round-trip
+//! can outlive 5 s while JS execution still never receives the 30 s long budget,
+//! and the remaining budget is charged normally (parking pauses the clock, it
+//! does not reset it).
 //!
 //! # Config injection
 //!
