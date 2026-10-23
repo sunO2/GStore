@@ -1,8 +1,12 @@
 //! Rust-owned feature flags.
 //!
 //! The Rust core is the source of truth. Dart only mirrors the snapshot through
-//! `CoreFlags` and never writes it directly. Every flag defaults to `false`;
-//! `core_writes` is deliberately not armable in Wave 0/1.
+//! `CoreFlags` and never writes it directly. Every flag defaults to `false`.
+//!
+//! `core_writes` is a *projection* of the `core_writes` table, not an operator
+//! switch: [`set_flags`] still rejects `Some(true)`, while
+//! [`set_core_writes_armed`] is the internal setter used whenever the core
+//! writes a domain marker or hydrates the projection at init/snapshot restore.
 
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -25,7 +29,7 @@ pub struct Flags {
     pub install: bool,
     /// Local JavaScript channels are enabled.
     pub js_channel: bool,
-    /// Rust core writes are authoritative (never armed in Wave 0/1).
+    /// Rust core writes are authoritative (projected from `core_writes`).
     pub core_writes: bool,
 }
 
@@ -63,7 +67,8 @@ pub struct FlagsPatch {
     pub install: Option<bool>,
     /// New value for [`Flags::js_channel`].
     pub js_channel: Option<bool>,
-    /// New value for [`Flags::core_writes`]; `Some(true)` is rejected.
+    /// New value for [`Flags::core_writes`]; `Some(true)` is rejected by
+    /// [`set_flags`]. Only [`set_core_writes_armed`] may arm it.
     pub core_writes: Option<bool>,
 }
 
@@ -133,11 +138,13 @@ pub fn flags() -> Flags {
 /// Applies a partial update and returns the resulting snapshot.
 ///
 /// # Errors
-/// Returns [`Error::Unsupported`] when the patch tries to arm `core_writes`.
+/// Returns [`Error::Unsupported`] when the patch tries to arm `core_writes`;
+/// only the DB-backed projection may do that.
 pub fn set_flags(patch: FlagsPatch) -> Result<Flags, Error> {
     if patch.core_writes == Some(true) {
         return Err(Error::Unsupported(
-            "core_writes cannot be armed in Wave 0/1".to_string(),
+            "core_writes is projected from the core_writes table and cannot be set directly"
+                .to_string(),
         ));
     }
     if patch.is_empty() {
@@ -146,6 +153,35 @@ pub fn set_flags(patch: FlagsPatch) -> Result<Flags, Error> {
     let mut guard = write_guard();
     guard.apply(patch);
     Ok(*guard)
+}
+
+/// Arms or clears the `core_writes` projection directly.
+///
+/// Trusted core code calls this after a marker row is written and when the
+/// projection is hydrated from the database. It deliberately bypasses the
+/// [`set_flags`] rejection; Dart-facing patches never reach it.
+pub fn set_core_writes_armed(armed: bool) {
+    let mut guard = write_guard();
+    guard.core_writes = armed;
+}
+
+/// Whether the Rust core is authoritative for `domain` (its flag is flipped).
+///
+/// This gates the first-write marker so schema/apply/import paths that reuse
+/// store code before the cutover never arm the legacy-write guard. Reserved
+/// domains (currently `js_channel`) map to their own flag and stay inert until
+/// a writer exists.
+pub fn domain_authoritative(domain: &str) -> bool {
+    let snapshot = flags();
+    match domain {
+        "channel" => snapshot.channels,
+        "catalog" => snapshot.catalog,
+        "update" => snapshot.update,
+        "download" => snapshot.download,
+        "install" => snapshot.install,
+        "js_channel" => snapshot.js_channel,
+        _ => false,
+    }
 }
 
 /// Resets every flag to `false` and returns the resulting snapshot.

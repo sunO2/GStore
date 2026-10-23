@@ -520,10 +520,21 @@ pub struct CoreInitResult {
     pub cache_dir: String,
 }
 
-pub struct CoreWritesMarker {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreWritesMarkerDto {
     pub domain: String,
     pub first_write_at: i64,
     pub snapshot_id: Option<String>,
+}
+
+impl From<gstore_core::migration::CoreWriteMarker> for CoreWritesMarkerDto {
+    fn from(marker: gstore_core::migration::CoreWriteMarker) -> Self {
+        Self {
+            domain: marker.domain,
+            first_write_at: marker.first_write_at,
+            snapshot_id: marker.snapshot_id,
+        }
+    }
 }
 
 /// Rust-owned feature flag snapshot (FRB data class).
@@ -629,6 +640,35 @@ impl CoreApi {
             PathBuf::from(&data_dir),
             PathBuf::from(&cache_dir),
         );
+        Self::finish_init(data_dir, files_dir, cache_dir, handle, shared, download)
+    }
+
+    /// Test seam: the production init sequence with an injected download port.
+    #[frb(ignore)]
+    #[doc(hidden)]
+    pub fn init_with_download_port_for_test(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        download: crate::download_host::HostDownloadPort,
+    ) -> Result<CoreApi, String> {
+        for dir in [&data_dir, &files_dir, &cache_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("CORE_E_INIT: create dir {dir}: {e}"))?;
+        }
+        let handle = open_core_db(&data_dir).map_err(|error| format!("CORE_E_INIT: {error}"))?;
+        let shared = handle.shared_writer();
+        Self::finish_init(data_dir, files_dir, cache_dir, handle, shared, download)
+    }
+
+    fn finish_init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        handle: DbHandle,
+        shared: gstore_core::db::SharedConn,
+        download: crate::download_host::HostDownloadPort,
+    ) -> Result<CoreApi, String> {
         let api = CoreApi {
             paths: std::sync::Mutex::new(Some(CorePaths {
                 data_dir,
@@ -639,14 +679,21 @@ impl CoreApi {
             download,
             facts: gstore_core::facts::FactStore::new(handle.clone()),
             inventory: gstore_core::inventory::InventoryStore::new(handle.clone()),
-            rules: gstore_core::rules::RuleStore::new(handle),
+            rules: gstore_core::rules::RuleStore::new(handle.clone()),
         };
-        if let Err(error) = api.download.reconcile() {
-            crate::log_bridge::push_host_log(
-                2,
-                format!("download reconcile at init (non-fatal): {error}"),
-            );
+        {
+            let _suppression = core_migration::suppress_core_write_markers();
+            if let Err(error) = api.download.reconcile() {
+                crate::log_bridge::push_host_log(
+                    2,
+                    format!("download reconcile at init (non-fatal): {error}"),
+                );
+            }
         }
+        let armed = handle
+            .with_writer(|conn| core_migration::core_writes_present(conn))
+            .map_err(|error| format!("CORE_E_INIT: hydrate core_writes: {error}"))?;
+        gstore_core::flags::set_core_writes_armed(armed);
         Ok(api)
     }
 
@@ -763,6 +810,10 @@ impl CoreApi {
         let version = handle
             .replace_from_snapshot(std::path::Path::new(&path))
             .map_err(|e| e.0)?;
+        let armed = handle
+            .with_writer(|conn| core_migration::core_writes_present(conn))
+            .map_err(|e| format!("CORE_E_SNAPSHOT_RESTORE: hydrate core_writes: {}", e.0))?;
+        gstore_core::flags::set_core_writes_armed(armed);
         crate::log_bridge::push_host_log(
             1,
             format!(
@@ -890,7 +941,58 @@ impl CoreApi {
         }
     }
 
-    pub fn core_writes(&self, domain: String) -> Result<Option<CoreWritesMarker>, String> {
+    pub fn core_writes(&self, domain: String) -> Result<Option<CoreWritesMarkerDto>, String> {
+        self.core_write_marker_inner(domain, false)
+    }
+
+    /// Records the first core write for `domain` and returns its marker.
+    ///
+    /// Idempotent: a second call returns the original `first_write_at` and
+    /// `snapshot_id`. The call is rejected with `CORE_E_CORE_WRITE_DOMAIN` for
+    /// anything outside `CORE_WRITES_DOMAINS`.
+    pub fn arm_core_write(&self, domain: String) -> Result<CoreWritesMarkerDto, String> {
+        validate_core_write_domain(&domain)?;
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let db = db
+            .as_ref()
+            .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+        let mut db = db
+            .lock()
+            .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| format!("CORE_E_CORE_WRITE: begin {domain}: {e}"))?;
+        core_migration::mark_core_write(&tx, &domain, None)
+            .map_err(|e| format!("CORE_E_CORE_WRITE: arm {domain}: {}", e.0))?;
+        let marker = core_migration::core_write_marker(&tx, &domain)
+            .map_err(|e| format!("CORE_E_CORE_WRITE: read {domain}: {}", e.0))?
+            .ok_or_else(|| {
+                format!("CORE_E_CORE_WRITE: marker missing after arm for {domain}")
+            })?;
+        tx.commit()
+            .map_err(|e| format!("CORE_E_CORE_WRITE: commit {domain}: {e}"))?;
+        Ok(marker.into())
+    }
+
+    /// Reads the marker for `domain` without writing anything.
+    pub fn core_write_marker(
+        &self,
+        domain: String,
+    ) -> Result<Option<CoreWritesMarkerDto>, String> {
+        self.core_write_marker_inner(domain, true)
+    }
+
+    fn core_write_marker_inner(
+        &self,
+        domain: String,
+        validate_domain: bool,
+    ) -> Result<Option<CoreWritesMarkerDto>, String> {
+        if validate_domain {
+            validate_core_write_domain(&domain)?;
+        }
         let db = self
             .db
             .lock()
@@ -902,13 +1004,7 @@ impl CoreApi {
             .lock()
             .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
         core_migration::core_write_marker(&db, &domain)
-            .map(|marker| {
-                marker.map(|m| CoreWritesMarker {
-                    domain: m.domain,
-                    first_write_at: m.first_write_at,
-                    snapshot_id: m.snapshot_id,
-                })
-            })
+            .map(|marker| marker.map(CoreWritesMarkerDto::from))
             .map_err(|e| format!("CORE_E_WRITES: query {domain}: {}", e.0))
     }
 
@@ -1662,6 +1758,7 @@ mod core_api_tests {
         drop(api);
         std::fs::remove_dir_all(&root).unwrap();
     }
+
 }
 
 
@@ -2233,8 +2330,11 @@ impl ChannelApi {
                 repo,
             }),
         };
-        api.seed_builtin_records()?;
-        api.bind_registry_drivers()?;
+        {
+            let _suppression = core_migration::suppress_core_write_markers();
+            api.seed_builtin_records()?;
+            api.bind_registry_drivers()?;
+        }
         Ok(api)
     }
 
@@ -2708,6 +2808,14 @@ use gstore_core::added::apps::{AddedApp, AddedAppsService};
 use gstore_core::catalog::refresh::{catalog_changed_event, refresh_catalog};
 use gstore_core::catalog::service::CatalogService;
 use gstore_core::update::service::{UpdateCheckReport, UpdateService};
+
+fn validate_core_write_domain(domain: &str) -> Result<(), String> {
+    if core_migration::is_core_write_domain(domain) {
+        Ok(())
+    } else {
+        Err(format!("CORE_E_CORE_WRITE_DOMAIN: {domain:?}"))
+    }
+}
 
 fn open_core_db(data_dir: &str) -> Result<DbHandle, String> {
     std::fs::create_dir_all(data_dir)

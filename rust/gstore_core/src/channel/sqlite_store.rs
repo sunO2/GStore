@@ -115,6 +115,7 @@ impl SqliteChannelStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         f(&tx, self.now())?;
+        crate::migration::mark_core_write_if_flipped(&tx, "channel", None).map_err(db_error)?;
         #[cfg(test)]
         self.injected_failure()?;
         tx.commit().map_err(sql_error)

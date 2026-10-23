@@ -10,10 +10,10 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -25,18 +25,14 @@ Future<void> installHostPanicHook() =>
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>
 abstract class AddedAppsApi implements RustOpaqueInterface {
   /// Adds or refreshes one `(channel, app_id)` row.
-  Future<AddedAppEntry> add({
-    required String channel,
-    required String appId,
-    PlatformInt64? sortOrder,
-  });
+  Future<AddedAppEntry> add(
+      {required String channel,
+      required String appId,
+      PlatformInt64? sortOrder});
 
   /// Adds one tag (idempotent, trimmed; empty is a no-op).
-  Future<void> addTag({
-    required String channel,
-    required String appId,
-    required String tag,
-  });
+  Future<void> addTag(
+      {required String channel, required String appId, required String tag});
 
   /// Deletes every added row across all channels.
   Future<int> clearAll();
@@ -51,15 +47,12 @@ abstract class AddedAppsApi implements RustOpaqueInterface {
   Future<AddedAppEntry?> get_({required String channel, required String appId});
 
   /// Opens the core database and binds the added-apps service.
-  static Future<AddedAppsApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeAddedAppsApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<AddedAppsApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeAddedAppsApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Whether `(channel, app_id)` is in `added_apps`.
   Future<bool> isAdded({required String channel, required String appId});
@@ -74,32 +67,26 @@ abstract class AddedAppsApi implements RustOpaqueInterface {
   Future<bool> remove({required String channel, required String appId});
 
   /// Removes one tag; absent tags are a no-op.
-  Future<void> removeTag({
-    required String channel,
-    required String appId,
-    required String tag,
-  });
+  Future<void> removeTag(
+      {required String channel, required String appId, required String tag});
 
   /// Renames an app id inside one channel.
-  Future<bool> rename({
-    required String channel,
-    required String oldAppId,
-    required String newAppId,
-  });
+  Future<bool> rename(
+      {required String channel,
+      required String oldAppId,
+      required String newAppId});
 
   /// Sets one row's sort weight.
-  Future<void> setOrder({
-    required String channel,
-    required String appId,
-    required PlatformInt64 sortOrder,
-  });
+  Future<void> setOrder(
+      {required String channel,
+      required String appId,
+      required PlatformInt64 sortOrder});
 
   /// Replaces all tags for one app.
-  Future<void> setTags({
-    required String channel,
-    required String appId,
-    required List<String> tags,
-  });
+  Future<void> setTags(
+      {required String channel,
+      required String appId,
+      required List<String> tags});
 
   /// Returns one app's tags, earliest first.
   Future<List<String>> tags({required String channel, required String appId});
@@ -131,15 +118,12 @@ abstract class CatalogApi implements RustOpaqueInterface {
   /// Opens the core database and binds the local catalog service.
   ///
   /// Safe to call more than once against the same directories.
-  static Future<CatalogApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeCatalogApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<CatalogApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeCatalogApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Lists every imported app in `rowid` order.
   Future<List<ChannelAppInfo>> list();
@@ -164,10 +148,8 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<void> addApp({required String key, required ChannelAppInfo app});
 
   /// Returns the driver's canonical app id.
-  Future<String> canonicalAppId({
-    required String key,
-    required ChannelAppInfo app,
-  });
+  Future<String> canonicalAppId(
+      {required String key, required ChannelAppInfo app});
 
   /// Disables a registered channel without removing it.
   Future<ChannelEntry> disable({required String key});
@@ -183,11 +165,8 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<bool> envRemove({required String key, required String name});
 
   /// Writes one env value, routing sensitive names to the secret port.
-  Future<void> envSet({
-    required String key,
-    required String name,
-    required String value,
-  });
+  Future<void> envSet(
+      {required String key, required String name, required String value});
 
   /// Exports an installed pack as a flat zip at `path`; returns bytes written.
   Future<BigInt> exportPack({required String key, required String path});
@@ -196,30 +175,20 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<ChannelEntry> get_({required String key});
 
   /// Lists the channel's categories.
-  Future<List<ChannelCategoryInfo>> getAllCategories({
-    required String key,
-    required bool forceRefresh,
-  });
+  Future<List<ChannelCategoryInfo>> getAllCategories(
+      {required String key, required bool forceRefresh});
 
   /// Reads one app detail page.
-  Future<ChannelAppDetailInfo> getAppDetail({
-    required String key,
-    required String appId,
-    required bool forceRefresh,
-  });
+  Future<ChannelAppDetailInfo> getAppDetail(
+      {required String key, required String appId, required bool forceRefresh});
 
   /// Reads one app summary.
-  Future<ChannelAppInfo> getAppInfo({
-    required String key,
-    required String appId,
-    required bool forceRefresh,
-  });
+  Future<ChannelAppInfo> getAppInfo(
+      {required String key, required String appId, required bool forceRefresh});
 
   /// Reads the channel configuration row.
-  Future<ChannelConfigInfo?> getConfig({
-    required String key,
-    required bool forceRefresh,
-  });
+  Future<ChannelConfigInfo?> getConfig(
+      {required String key, required bool forceRefresh});
 
   /// Imports a legacy flat pack from `zip_path`.
   Future<ChannelPackInfo> importPack({required String path});
@@ -228,15 +197,12 @@ abstract class ChannelApi implements RustOpaqueInterface {
   ///
   /// Safe to call more than once against the same directories: registry rows
   /// and drivers are re-registered idempotently. No feature flag is armed.
-  static Future<ChannelApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeChannelApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<ChannelApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeChannelApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Lists every registered channel in deterministic key order.
   Future<List<ChannelEntry>> list();
@@ -255,18 +221,16 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<bool> removePack({required String key});
 
   /// Searches one channel by keyword.
-  Future<List<ChannelAppInfo>> search({
-    required String key,
-    required String keyword,
-    required bool forceRefresh,
-  });
+  Future<List<ChannelAppInfo>> search(
+      {required String key,
+      required String keyword,
+      required bool forceRefresh});
 
   /// Searches one channel by category id.
-  Future<List<ChannelAppInfo>> searchByCategory({
-    required String key,
-    required String categoryId,
-    required bool forceRefresh,
-  });
+  Future<List<ChannelAppInfo>> searchByCategory(
+      {required String key,
+      required String categoryId,
+      required bool forceRefresh});
 
   /// Removes a channel registration and its driver binding.
   Future<void> unregister({required String key});
@@ -274,7 +238,17 @@ abstract class ChannelApi implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CoreApi>>
 abstract class CoreApi implements RustOpaqueInterface {
-  Future<CoreWritesMarker?> coreWrites({required String domain});
+  /// Records the first core write for `domain` and returns its marker.
+  ///
+  /// Idempotent: a second call returns the original `first_write_at` and
+  /// `snapshot_id`. The call is rejected with `CORE_E_CORE_WRITE_DOMAIN` for
+  /// anything outside `CORE_WRITES_DOMAINS`.
+  Future<CoreWritesMarkerDto> armCoreWrite({required String domain});
+
+  /// Reads the marker for `domain` without writing anything.
+  Future<CoreWritesMarkerDto?> coreWriteMarker({required String domain});
+
+  Future<CoreWritesMarkerDto?> coreWrites({required String domain});
 
   Future<BigInt> exportSnapshot({required String path});
 
@@ -297,15 +271,12 @@ abstract class CoreApi implements RustOpaqueInterface {
 
   Future<int> importSnapshot({required String path});
 
-  static Future<CoreApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeCoreApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<CoreApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeCoreApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Reports the stored inventory sequence, capture time, size, and staleness.
   Future<InventoryStatusDto> inventoryStatus();
@@ -313,9 +284,8 @@ abstract class CoreApi implements RustOpaqueInterface {
   Future<CoreInitResult> migratePaths();
 
   /// Applies one inventory snapshot under the core stale-seq policy.
-  Future<InventoryPushResultDto> pushInventory({
-    required InventorySnapshotDto snapshot,
-  });
+  Future<InventoryPushResultDto> pushInventory(
+      {required InventorySnapshotDto snapshot});
 
   /// Stores the latest frontend-pushed platform facts.
   Future<void> pushPlatformFacts({required PlatformFactsDto facts});
@@ -341,24 +311,19 @@ abstract class DownloadApi implements RustOpaqueInterface {
   /// Missing databases are skipped and reported, never fatal. The core row
   /// always wins over a duplicate legacy row (`dedup_key`), so this is safe
   /// to call once per process before the first core-owned download.
-  Future<DownloadImportReportDto> importLegacy({
-    required String floorDbPath,
-    required String moduleDbPath,
-  });
+  Future<DownloadImportReportDto> importLegacy(
+      {required String floorDbPath, required String moduleDbPath});
 
   /// Opens the core database and binds the download port.
   ///
   /// The one reconcile sweep is best-effort: a missing module is logged and
   /// never fails initialization.
-  static Future<DownloadApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeDownloadApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<DownloadApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeDownloadApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   Future<List<DownloadTaskDto>> list();
 
@@ -444,15 +409,12 @@ abstract class InstallApi implements RustOpaqueInterface {
   ///
   /// The sweep is never fatal; a failure is logged and initialization still
   /// succeeds.
-  static Future<InstallApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeInstallApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<InstallApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeInstallApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Starts (or observes) an install for `module_task_id`.
   ///
@@ -488,6 +450,7 @@ abstract class InstanceHandle implements RustOpaqueInterface {
   Future<Uint8List> call({required String method, required List<int> payload});
 
   /// 显式释放实例（幂等）
+  @override
   Future<void> dispose();
 
   /// 实例句柄的字符串形式（信封 instance 字段用；Dart 侧拼 EnvelopeRequest 路由）
@@ -514,16 +477,12 @@ abstract class ModuleHandle implements RustOpaqueInterface {
   Future<Uint8List> callEnvelope({required List<int> requestBytes});
 
   /// 带超时的信封级调用（毫秒；0 = 不超时）。超时后尽力 cancel 并返回 504 信封。
-  Future<Uint8List> callEnvelopeTimed({
-    required List<int> requestBytes,
-    required BigInt timeoutMs,
-  });
+  Future<Uint8List> callEnvelopeTimed(
+      {required List<int> requestBytes, required BigInt timeoutMs});
 
   /// 模块级静态调用（不创建实例）
-  Future<Uint8List> callStatic({
-    required String method,
-    required List<int> payload,
-  });
+  Future<Uint8List> callStatic(
+      {required String method, required List<int> payload});
 
   /// 取消某次在途调用（按 request_id 路由到模块 cancel；模块未实现则无操作）
   Future<void> cancelCall({required String requestId});
@@ -532,6 +491,7 @@ abstract class ModuleHandle implements RustOpaqueInterface {
   Future<InstanceHandle> createInstance({required List<int> config});
 
   /// 释放模块引用（refcount-1；归零时回收模块状态）
+  @override
   Future<void> dispose();
 
   /// 是否已加载
@@ -563,12 +523,11 @@ abstract class TaskBridge implements RustOpaqueInterface {
   Future<int> runningCount();
 
   /// 启动长任务：**立即返回** task_id，工作在宿主自有线程执行（不占 FRB 任务池）
-  Future<String> start({
-    required String module,
-    BigInt? instance,
-    required String method,
-    required List<int> payload,
-  });
+  Future<String> start(
+      {required String module,
+      BigInt? instance,
+      required String method,
+      required List<int> payload});
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
@@ -594,15 +553,12 @@ abstract class UpdateApi implements RustOpaqueInterface {
 
   /// Opens the core database and binds the channel drivers. Update
   /// judgement reads the core-maintained inventory and facts.
-  static Future<UpdateApi> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) => RustLib.instance.api.crateBridgeUpdateApiInit(
-    dataDir: dataDir,
-    filesDir: filesDir,
-    cacheDir: cacheDir,
-  );
+  static Future<UpdateApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeUpdateApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
   /// Returns the cached updatable apps as a JSON array.
   Future<String> list();
@@ -659,7 +615,10 @@ class CatalogPage {
   final List<ChannelAppInfo> apps;
   final PlatformInt64 total;
 
-  const CatalogPage({required this.apps, required this.total});
+  const CatalogPage({
+    required this.apps,
+    required this.total,
+  });
 
   @override
   int get hashCode => apps.hashCode ^ total.hashCode;
@@ -937,7 +896,10 @@ class ChannelConfigInfo {
   final String version;
   final String? proxy;
 
-  const ChannelConfigInfo({required this.version, this.proxy});
+  const ChannelConfigInfo({
+    required this.version,
+    this.proxy,
+  });
 
   @override
   int get hashCode => version.hashCode ^ proxy.hashCode;
@@ -1143,12 +1105,12 @@ class CorePathsDto {
           cache == other.cache;
 }
 
-class CoreWritesMarker {
+class CoreWritesMarkerDto {
   final String domain;
   final PlatformInt64 firstWriteAt;
   final String? snapshotId;
 
-  const CoreWritesMarker({
+  const CoreWritesMarkerDto({
     required this.domain,
     required this.firstWriteAt,
     this.snapshotId,
@@ -1161,7 +1123,7 @@ class CoreWritesMarker {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is CoreWritesMarker &&
+      other is CoreWritesMarkerDto &&
           runtimeType == other.runtimeType &&
           domain == other.domain &&
           firstWriteAt == other.firstWriteAt &&
@@ -1173,7 +1135,10 @@ class DeviceFactsDto {
   final String model;
   final String manufacturer;
 
-  const DeviceFactsDto({required this.model, required this.manufacturer});
+  const DeviceFactsDto({
+    required this.model,
+    required this.manufacturer,
+  });
 
   @override
   int get hashCode => model.hashCode ^ manufacturer.hashCode;
@@ -1720,7 +1685,10 @@ class InstallStartDto {
   final InstallRecordDto record;
   final InstallRequestDto? request;
 
-  const InstallStartDto({required this.record, this.request});
+  const InstallStartDto({
+    required this.record,
+    this.request,
+  });
 
   @override
   int get hashCode => record.hashCode ^ request.hashCode;
@@ -1799,7 +1767,10 @@ class InventoryPushResultDto {
   final bool accepted;
   final String? reason;
 
-  const InventoryPushResultDto({required this.accepted, this.reason});
+  const InventoryPushResultDto({
+    required this.accepted,
+    this.reason,
+  });
 
   @override
   int get hashCode => accepted.hashCode ^ reason.hashCode;
@@ -1960,7 +1931,10 @@ class TagGroup {
   final String key;
   final List<String> tags;
 
-  const TagGroup({required this.key, required this.tags});
+  const TagGroup({
+    required this.key,
+    required this.tags,
+  });
 
   @override
   int get hashCode => key.hashCode ^ tags.hashCode;

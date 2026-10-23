@@ -466,6 +466,8 @@ fn write_catalog(conn: &mut Connection, snapshot: &SourceCatalog) -> Result<(), 
         }
     }
 
+    crate::migration::mark_core_write_if_flipped(&tx, "catalog", None)
+        .map_err(|e| Error::Io(format!("CORE_E_CATALOG_TX: marker: {}", e.0)))?;
     tx.commit()
         .map_err(|e| Error::Io(format!("CORE_E_CATALOG_TX: commit: {e}")))
 }

@@ -374,8 +374,11 @@ impl InstallService {
 
         let session = make_session_id(module_task_id, now);
         let claimed = {
-            let guard = self.lock()?;
-            guard
+            let mut guard = self.lock()?;
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(sql_error)?;
+            let changed = tx
                 .execute(
                     "UPDATE download_task SET install_status = 'pending', \
                          install_session_id = ?1, install_requested_at = ?2, install_method = ?3, \
@@ -397,7 +400,15 @@ impl InstallService {
                 )
                 .map_err(|e| {
                     Error::Internal(format!("CORE_E_INSTALL_WRITE: claim {module_task_id}: {e}"))
-                })?
+                })?;
+            if changed > 0 {
+                crate::migration::mark_core_write_if_flipped(&tx, "install", None)
+                    .map_err(|e| {
+                        Error::Internal(format!("CORE_E_INSTALL_WRITE: marker: {}", e.0))
+                    })?;
+            }
+            tx.commit().map_err(sql_error)?;
+            changed
         };
 
         let row = {
@@ -442,7 +453,7 @@ impl InstallService {
             InstallReportStatus::Timeout => INSTALL_STATUS_TIMEOUT,
         };
         let now = (self.clock)();
-        let guard = self.lock()?;
+        let mut guard = self.lock()?;
         let Some(row) = Self::load_by_session(&guard, &session_id)? else {
             return Err(Error::NotFound(format!(
                 "{SESSION_ERROR}: install session not found: {session_id}"
@@ -465,7 +476,10 @@ impl InstallService {
             now,
         );
         let method = non_empty(&Some(report.method));
-        let changed = guard
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let changed = tx
             .execute(
                 "UPDATE download_task SET install_status = ?1, installed_at = ?2, \
                      installed_version = ?3, install_error = ?4, updated_at = ?5, \
@@ -485,6 +499,11 @@ impl InstallService {
             .map_err(|e| {
                 Error::Internal(format!("CORE_E_INSTALL_WRITE: result {session_id}: {e}"))
             })?;
+        if changed > 0 {
+            crate::migration::mark_core_write_if_flipped(&tx, "install", None)
+                .map_err(|e| Error::Internal(format!("CORE_E_INSTALL_WRITE: marker: {}", e.0)))?;
+        }
+        tx.commit().map_err(sql_error)?;
         if changed == 0 {
             let current = Self::load_by_session(&guard, &session_id)?.ok_or_else(|| {
                 Error::NotFound(format!(

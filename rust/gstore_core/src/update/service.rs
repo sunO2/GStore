@@ -321,6 +321,7 @@ impl UpdateService {
         .map_err(sql_error)?;
         let encoded = serde_json::to_string(&results)?;
         upsert_pref(&tx, KEY_RESULTS, &encoded, now)?;
+        crate::migration::mark_core_write_if_flipped(&tx, "update", None).map_err(db_error)?;
         tx.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -715,6 +716,7 @@ impl UpdateService {
         upsert_pref(&tx, KEY_LAST_CHECKED, &now.to_string(), now)?;
         upsert_pref(&tx, KEY_RESULTS, &serde_json::to_string(updates)?, now)?;
         upsert_pref(&tx, KEY_LOGS, &serde_json::to_string(logs)?, now)?;
+        crate::migration::mark_core_write_if_flipped(&tx, "update", None).map_err(db_error)?;
         tx.commit().map_err(sql_error)?;
         Ok(())
     }

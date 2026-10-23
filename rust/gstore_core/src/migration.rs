@@ -1,6 +1,7 @@
 //! Core schema migration helpers.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::db::DbError;
 
@@ -57,7 +58,18 @@ pub fn catalog_fts_available(conn: &rusqlite::Connection) -> bool {
 }
 
 /// Domains that, once written by the Rust core, block legacy Dart writes.
-pub const CORE_WRITES_DOMAINS: [&str; 3] = ["channel", "update", "download"];
+///
+/// `js_channel` is RESERVED: it is declared here now so the guard and the FRB
+/// surface are complete, but no Rust writer marks it until Wave 5. Declaring a
+/// domain does not arm it; only a first post-flip write (or an explicit
+/// `armCoreWrite`) creates a marker.
+pub const CORE_WRITES_DOMAINS: [&str; 6] =
+    ["channel", "catalog", "update", "download", "install", "js_channel"];
+
+/// Whether `domain` is one of the declared [`CORE_WRITES_DOMAINS`].
+pub fn is_core_write_domain(domain: &str) -> bool {
+    CORE_WRITES_DOMAINS.contains(&domain)
+}
 
 /// Maximum supported version of the Dart→Rust migration document format.
 pub const MIGRATION_DOC_VERSION: i64 = 1;
@@ -204,7 +216,11 @@ pub struct CoreWriteMarker {
 /// Records the first core write for `domain` and returns its timestamp.
 ///
 /// Idempotent: a later call keeps the original `first_write_at` and
-/// `snapshot_id` (first write wins).
+/// `snapshot_id` (first write wins). Once the marker row is confirmed present
+/// the process-global [`crate::flags::core_writes`] projection is armed.
+///
+/// This writes unconditionally; callers on a mutation path use
+/// [`mark_core_write_if_flipped`] so pre-flip store code never arms the guard.
 pub fn mark_core_write(
     conn: &rusqlite::Connection,
     domain: &str,
@@ -216,12 +232,98 @@ pub fn mark_core_write(
         rusqlite::params![domain, snapshot_id],
     )
     .map_err(|e| DbError(format!("mark core write {domain}: {e}")))?;
+    let first_write_at = conn
+        .query_row(
+            "SELECT first_write_at FROM core_writes WHERE domain=?1",
+            [domain],
+            |row| row.get(0),
+        )
+        .map_err(|e| DbError(format!("read first_write_at {domain}: {e}")))?;
+    crate::flags::set_core_writes_armed(true);
+    Ok(first_write_at)
+}
+
+static MARKER_SUPPRESSION_DEPTH: Mutex<u32> = Mutex::new(0);
+
+fn suppression_depth() -> MutexGuard<'static, u32> {
+    match MARKER_SUPPRESSION_DEPTH.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// RAII guard that suppresses automatic core-write markers while alive.
+///
+/// Nested guards are supported: the counter only returns to "active" after the
+/// outermost guard drops.
+pub struct MarkerSuppression {
+    _private: (),
+}
+
+impl MarkerSuppression {
+    fn new() -> Self {
+        let mut depth = suppression_depth();
+        let next = depth.saturating_add(1);
+        *depth = next;
+        Self { _private: () }
+    }
+}
+
+impl Drop for MarkerSuppression {
+    fn drop(&mut self) {
+        let mut depth = suppression_depth();
+        let next = depth.saturating_sub(1);
+        *depth = next;
+    }
+}
+
+/// Suppresses automatic markers for the returned guard's lifetime.
+///
+/// Init-time work that reuses domain mutation helpers (download reconcile,
+/// builtin channel seeding) runs inside this guard so bootstrapping a clean
+/// database never arms `core_writes`, regardless of flag state. Explicit
+/// [`mark_core_write`] / `armCoreWrite` calls are not suppressed.
+pub fn suppress_core_write_markers() -> MarkerSuppression {
+    MarkerSuppression::new()
+}
+
+fn core_write_markers_suppressed() -> bool {
+    *suppression_depth() > 0
+}
+
+/// Marks the first core write for `domain` when its feature flag is on and
+/// automatic markers are not suppressed.
+///
+/// The flag gate keeps pre-flip store code inert. Init-time work additionally
+/// runs inside [`suppress_core_write_markers`], so bootstrapping never creates
+/// a marker even when the flag is already true. Schema/apply/import/snapshot
+/// paths write raw SQL and therefore never reach this helper.
+pub fn mark_core_write_if_flipped(
+    conn: &rusqlite::Connection,
+    domain: &str,
+    snapshot_id: Option<&str>,
+) -> Result<(), DbError> {
+    if core_write_markers_suppressed() {
+        return Ok(());
+    }
+    if crate::flags::domain_authoritative(domain) {
+        mark_core_write(conn, domain, snapshot_id)?;
+    }
+    Ok(())
+}
+
+/// Whether the database contains any `core_writes` row.
+///
+/// Used by `CoreApi::init` and snapshot restore to hydrate the projection so it
+/// always follows the database, including a deliberate reset to `false`.
+pub fn core_writes_present(conn: &rusqlite::Connection) -> Result<bool, DbError> {
     conn.query_row(
-        "SELECT first_write_at FROM core_writes WHERE domain=?1",
-        [domain],
-        |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM core_writes)",
+        [],
+        |row| row.get::<_, i64>(0),
     )
-    .map_err(|e| DbError(format!("read first_write_at {domain}: {e}")))
+    .map(|present| present != 0)
+    .map_err(|e| DbError(format!("read core_writes presence: {e}")))
 }
 
 /// Returns the write marker for `domain`, if the core has written it.

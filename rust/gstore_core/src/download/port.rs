@@ -146,8 +146,15 @@ impl<B: ModuleBridge> ModuleDownloadPort<B> {
     }
 
     fn upsert(&self, record: &TaskRecord) -> Result<(), PortError> {
-        let conn = self.lock()?;
-        upsert_record(&conn, record, now_secs())
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| PortError::Db(format!("begin download upsert: {e}")))?;
+        upsert_record(&tx, record, now_secs())?;
+        crate::migration::mark_core_write_if_flipped(&tx, "download", None)
+            .map_err(|e| PortError::Db(e.0))?;
+        tx.commit()
+            .map_err(|e| PortError::Db(format!("commit download upsert: {e}")))
     }
 
     fn mark_needs_restart(&self, id: &str) -> Result<(), PortError> {

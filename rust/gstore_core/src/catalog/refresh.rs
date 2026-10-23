@@ -568,9 +568,12 @@ fn replace_in_transaction(conn: &mut Connection, shape: &SourceShape) -> Result<
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| Error::Io(format!("CORE_E_CATALOG_REFRESH_TX: begin: {e}")))?;
     match write_projection(&tx, shape) {
-        Ok(()) => tx
-            .commit()
-            .map_err(|e| Error::Io(format!("CORE_E_CATALOG_REFRESH_TX: commit: {e}"))),
+        Ok(()) => {
+            crate::migration::mark_core_write_if_flipped(&tx, "catalog", None)
+                .map_err(|e| Error::Io(format!("CORE_E_CATALOG_REFRESH_TX: marker: {}", e.0)))?;
+            tx.commit()
+                .map_err(|e| Error::Io(format!("CORE_E_CATALOG_REFRESH_TX: commit: {e}")))
+        }
         Err(error) => {
             drop(tx);
             Err(error)
