@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/manager/download_manager.dart';
@@ -10,8 +11,7 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/rust/ModuleBootstrap.dart';
-import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// Wave 6B-B1 binding contract.
 ///
@@ -55,6 +55,39 @@ class _FakeDartDownloadManager implements DownloadManager {
 
   @override
   Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
+}
+
+/// Silent backend for binding-only tests: module registration subscribes the
+/// watcher, and a real FRB backend would try to load the native bridge.
+class _InertDownloadBackend implements DownloadBackend {
+  @override
+  Stream<rust.DownloadTaskDto> watchAll() =>
+      const Stream<rust.DownloadTaskDto>.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
+}
+
+/// Backend whose only failure mode is "the Rust download module is not
+/// mounted", mirroring the production FRB error text.
+class _UnavailableDownloadBackend implements DownloadBackend {
+  @override
+  Future<int> start(rust.DownloadStartRequest request) async {
+    throw Exception(
+      'CORE_E_DOWNLOAD_MODULE_UNAVAILABLE: download module is not mounted',
+    );
+  }
+
+  /// The watcher subscribes on module registration; an unmounted core simply
+  /// has no events to relay.
+  @override
+  Stream<rust.DownloadTaskDto> watchAll() =>
+      const Stream<rust.DownloadTaskDto>.empty();
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -107,14 +140,16 @@ void main() {
     DownloadTaskWatcher.instance.dispose();
     DownloadTaskWatcher.instance.debugStartCount = 0;
     CoreFlags.installBackend(_DisabledFlagsBackend());
-    ModuleBootstrap.instance.debugReset();
+    DownloadFacade.backendOverride = null;
+    RustDownloadService.instance.resetCoreReadyForTest();
   });
 
   tearDown(() async {
     DownloadTaskWatcher.instance.dispose();
     DownloadTaskWatcher.instance.debugStartCount = 0;
     CoreFlags.resetBackend();
-    ModuleBootstrap.instance.debugReset();
+    DownloadFacade.backendOverride = null;
+    RustDownloadService.instance.resetCoreReadyForTest();
     manager.injectContext(null);
     await manager.clear();
   });
@@ -122,6 +157,9 @@ void main() {
   /// Drives the real `ModuleManager` registration path:
   /// register (no-op deps) -> initializeModule -> onInit/onRegister.
   Future<IDownloadService> registerDownloadModule() async {
+    // Registration subscribes DownloadTaskWatcher to the real service; keep
+    // that stream inert so no FFI/network is touched.
+    DownloadFacade.backendOverride = _InertDownloadBackend();
     // Pre-change wiring needs a Dart implementation to resolve; post-change it
     // must be ignored. Keeping it bound also proves it is not what gets bound.
     manager.bind<DownloadManager>(_FakeDartDownloadManager());
@@ -157,17 +195,9 @@ void main() {
       final bound = await registerDownloadModule();
       final dartFallback = manager.get<DownloadManager>();
 
-      // Force the bootstrap gate to fail without FFI/network.
-      ModuleBootstrap.instance.debugConfigure(
-        ensureOverride: (
-          String module, {
-          required bool allowDownload,
-          ModuleProgressCallback? onProgress,
-        }) async {
-          return false;
-        },
-        delayOverride: (Duration duration) async {},
-      );
+      // The facade backend is the only FFI boundary: make it report the core
+      // module as unmounted, exactly like the Rust error code would.
+      DownloadFacade.backendOverride = _UnavailableDownloadBackend();
 
       Object? thrown;
       try {
@@ -187,6 +217,11 @@ void main() {
         thrown,
         isNotNull,
         reason: 'module-unavailable must not silently succeed or fall back',
+      );
+      expect(
+        thrown,
+        isA<DownloadModuleUnavailableException>(),
+        reason: 'the facade must map the core code onto the typed exception',
       );
       expect(
         '$thrown',

@@ -5,6 +5,7 @@
 /// `RustDownloadService` / install paths yet.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -12,6 +13,7 @@ import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
@@ -386,10 +388,10 @@ class DownloadFacade {
     final target = _target;
     if (target is DownloadLegacyImport) {
       final legacy = target as DownloadLegacyImport;
-      await legacy.importLegacyOnce(
-        floorDbPath: floorDbPath,
-        moduleDbPath: moduleDbPath,
-      );
+      await _guard(() => legacy.importLegacyOnce(
+            floorDbPath: floorDbPath,
+            moduleDbPath: moduleDbPath,
+          ));
     }
   }
 
@@ -402,34 +404,76 @@ class DownloadFacade {
   Future<rust.ResyncReportDto> resyncDownloads({
     bool apply = false,
     String? floorDbPath,
-  }) async {
+  }) {
     final target = _target;
     if (target is DownloadResync) {
       final resync = target as DownloadResync;
-      return resync.resyncDownloads(apply: apply, floorDbPath: floorDbPath);
+      return _guard(
+        () => resync.resyncDownloads(apply: apply, floorDbPath: floorDbPath),
+      );
     }
     throw UnsupportedError('backend does not support download resync');
   }
 
   Future<int> start(rust.DownloadStartRequest request) =>
-      _target.start(request);
+      _guard(() => _target.start(request));
 
-  Future<List<rust.DownloadTaskDto>> list() => _target.list();
+  Future<List<rust.DownloadTaskDto>> list() =>
+      _guard(() => _target.list());
 
   Future<rust.DownloadTaskDto?> get(String moduleTaskId) =>
-      _target.get(moduleTaskId);
+      _guard(() => _target.get(moduleTaskId));
 
-  Future<void> pause(String moduleTaskId) => _target.pause(moduleTaskId);
+  Future<void> pause(String moduleTaskId) =>
+      _guard(() => _target.pause(moduleTaskId));
 
-  Future<void> resume(String moduleTaskId) => _target.resume(moduleTaskId);
+  Future<void> resume(String moduleTaskId) =>
+      _guard(() => _target.resume(moduleTaskId));
 
-  Future<void> cancel(String moduleTaskId) => _target.cancel(moduleTaskId);
+  Future<void> cancel(String moduleTaskId) =>
+      _guard(() => _target.cancel(moduleTaskId));
 
-  Future<void> retry(String moduleTaskId) => _target.retry(moduleTaskId);
+  Future<void> retry(String moduleTaskId) =>
+      _guard(() => _target.retry(moduleTaskId));
 
-  Future<void> restart(String moduleTaskId) => _target.restart(moduleTaskId);
+  Future<void> restart(String moduleTaskId) =>
+      _guard(() => _target.restart(moduleTaskId));
 
-  Future<void> remove(String moduleTaskId) => _target.remove(moduleTaskId);
+  Future<void> remove(String moduleTaskId) =>
+      _guard(() => _target.remove(moduleTaskId));
 
-  Stream<rust.DownloadTaskDto> watchAll() => _target.watchAll();
+  /// Core event relay. A stream error carrying
+  /// [DownloadModuleUnavailableException.code] becomes the typed exception;
+  /// every other error is forwarded unchanged (including its stack trace).
+  Stream<rust.DownloadTaskDto> watchAll() =>
+      _target.watchAll().transform(
+        StreamTransformer<rust.DownloadTaskDto, rust.DownloadTaskDto>
+            .fromHandlers(
+          handleError: (error, stackTrace, sink) {
+            if ('$error'.contains(DownloadModuleUnavailableException.code)) {
+              sink.addError(
+                DownloadModuleUnavailableException(error),
+                stackTrace,
+              );
+            } else {
+              sink.addError(error, stackTrace);
+            }
+          },
+        ),
+      );
+
+  /// Single boundary where a backend's raw unavailability becomes the typed
+  /// download-layer failure. Other errors rethrow unchanged so callers keep
+  /// their existing error handling.
+  Future<T> _guard<T>(Future<T> Function() action) async {
+    try {
+      return await action();
+    } catch (error) {
+      if (error is DownloadModuleUnavailableException) rethrow;
+      if ('$error'.contains(DownloadModuleUnavailableException.code)) {
+        throw DownloadModuleUnavailableException(error);
+      }
+      rethrow;
+    }
+  }
 }

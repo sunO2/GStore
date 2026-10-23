@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
-import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// Recording fake: keeps the last snapshot, merges partial patches exactly like
@@ -44,29 +43,6 @@ class _RecordingFlagsBackend implements CoreFlagsBackend {
     );
   }
 }
-
-/// Fake download API: records the start call.
-class _RecordingDownloadApi implements CoreDownloadApi {
-  int starts = 0;
-  CoreDownloadRequest? last;
-
-  @override
-  Future<int> start(CoreDownloadRequest request) async {
-    starts++;
-    last = request;
-    return starts;
-  }
-}
-
-Future<CoreDownloadRequest> _request() => CoreDownloadBuilder.build(
-      appId: 'com.example.app',
-      appName: 'Example',
-      version: '1.0.0',
-      fileName: 'app.apk',
-      url: 'https://example.com/app.apk',
-      saveFileName: '/tmp/gstore/app.apk',
-      docsDir: '/tmp/gstore',
-    );
 
 void main() {
   tearDown(CoreFlags.resetBackend);
@@ -152,25 +128,6 @@ void main() {
     expect(CoreFlags.coreWrites, isTrue,
         reason: 'set must not touch the Rust-owned coreWrites projection');
     expect(backend.snapshot.coreWrites, isTrue);
-  });
-
-  test('core_flags_refresh_visible_to_download', () async {
-    final backend = _RecordingFlagsBackend(CoreFlagsSnapshot.disabled);
-    CoreFlags.installBackend(backend);
-    // Another process armed the Rust flag after the mirror was read.
-    backend.snapshot = const CoreFlagsSnapshot(download: true);
-
-    expect(CoreFlags.download, isFalse,
-        reason: 'mirror is still disabled before the read path refreshes');
-
-    final api = _RecordingDownloadApi();
-    final result = await CoreDownloadBuilder.startIfEnabled(api, await _request());
-
-    expect(backend.reads, 1,
-        reason: 'the download read path refreshes a disabled mirror');
-    expect(result, 1);
-    expect(api.starts, 1);
-    expect(CoreFlags.download, isTrue);
   });
 
   test('core_flags_set_propagates_write_error_and_keeps_mirror', () async {

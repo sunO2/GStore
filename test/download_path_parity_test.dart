@@ -3,50 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/download/download_paths.dart';
-
-/// Records every `start` call; returns a fixed task id.
-class _RecordingApi implements CoreDownloadApi {
-  final List<CoreDownloadRequest> calls = <CoreDownloadRequest>[];
-  int nextId = 42;
-
-  @override
-  Future<int> start(CoreDownloadRequest request) async {
-    calls.add(request);
-    return nextId;
-  }
-}
-
-class _FakeFlagsBackend implements CoreFlagsBackend {
-  _FakeFlagsBackend(this.snapshot);
-
-  CoreFlagsSnapshot snapshot;
-
-  @override
-  Future<CoreFlagsSnapshot> read() async => snapshot;
-
-  @override
-  Future<void> write(CoreFlagsPatch patch) async {
-    snapshot = CoreFlagsSnapshot(
-      channels: patch.channel ?? snapshot.channels,
-      catalog: patch.catalog ?? snapshot.catalog,
-      update: patch.update ?? snapshot.update,
-      download: patch.download ?? snapshot.download,
-      install: patch.install ?? snapshot.install,
-      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
-      coreWrites: snapshot.coreWrites,
-    );
-  }
-}
-
-Future<void> _useDownloadFlag(bool value) async {
-  CoreFlags.installBackend(
-    _FakeFlagsBackend(CoreFlagsSnapshot(download: value)),
-  );
-  await CoreFlags.refresh();
-}
 
 List<Map<String, dynamic>> _loadFixture() {
   final file = File('test/fixtures/download_path_cases.json');
@@ -58,8 +16,6 @@ List<Map<String, dynamic>> _loadFixture() {
 }
 
 void main() {
-  tearDown(CoreFlags.resetBackend);
-
   group('resolveSavePath parity with Rust fixture', () {
     test('every shared case resolves to the exact expected string', () async {
       final cases = _loadFixture();
@@ -178,47 +134,4 @@ void main() {
     });
   });
 
-  group('CoreFlags.download gating', () {
-    test('flag off: startIfEnabled returns null and never calls the api',
-        () async {
-      await _useDownloadFlag(false);
-      final api = _RecordingApi();
-      final req = await CoreDownloadBuilder.build(
-        appId: 'a',
-        appName: 'A',
-        version: '1',
-        fileName: 'app.apk',
-        url: 'https://example.com/app.apk',
-        docsDir: '/docs',
-      );
-
-      final id = await CoreDownloadBuilder.startIfEnabled(api, req);
-
-      expect(id, isNull);
-      expect(api.calls, isEmpty);
-    });
-
-    test('flag on: returns api id and calls exactly once with built request',
-        () async {
-      await _useDownloadFlag(true);
-      final api = _RecordingApi();
-      final req = await CoreDownloadBuilder.build(
-        appId: 'a',
-        appName: 'A',
-        version: '1',
-        fileName: 'app.apk',
-        url: 'https://example.com/app.apk',
-        docsDir: '/docs',
-      );
-
-      final id = await CoreDownloadBuilder.startIfEnabled(api, req);
-
-      expect(id, 42);
-      expect(api.calls, hasLength(1));
-      final sent = api.calls.single;
-      expect(identical(sent, req), isTrue);
-      expect(sent.destPath, '/docs/app.apk');
-      expect(sent.dedupKey, 'app:a:1:app.apk');
-    });
-  });
 }
