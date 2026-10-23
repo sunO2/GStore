@@ -13,7 +13,8 @@
 #   - An unchecked item that still has evidence is stale state and fails.
 #   - No `CoreFlags`/Dart flag default may be `true`, except the flag names
 #     explicitly listed by `--allow-flags` (Wave 6 cutover allowance).
-#   - The branch range must not delete any file.
+#   - The branch range must not delete any file, except the exact repo-relative
+#     paths listed by `--allow-deletions` (Wave 6 intentional removals).
 #
 # Exit codes:
 #   0  audit passed
@@ -23,7 +24,7 @@
 # Usage:
 #   scripts/qa/f1-plan-audit.sh [--self-test] [--plan PATH] [--base REF]
 #       [--range A..B] [--repo-root DIR] [--evidence-dir DIR]
-#       [--allow-flags download,install] [--verbose]
+#       [--allow-flags download,install] [--allow-deletions PATH,...] [--verbose]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +35,7 @@ BASE_REF=""
 RANGE=""
 EVIDENCE_DIR=""
 ALLOW_FLAGS=""
+ALLOW_DELETIONS=""
 VERBOSE=0
 SELF_TEST=0
 
@@ -56,6 +58,9 @@ Options:
   --allow-flags LIST     comma-separated flag names whose `true` default is
                          allowed (Wave 6 cutover: download,install). Every
                          other flag default is still rejected.
+  --allow-deletions LIST comma-separated exact repo-relative paths whose
+                         deletion is intentional (Wave 6 legacy removal). Any
+                         other deleted path still fails the audit.
   --verbose              print extra detail
   -h | --help            show this help
 USAGE
@@ -71,6 +76,8 @@ while [ "$#" -gt 0 ]; do
     --evidence-dir) EVIDENCE_DIR="$2"; shift 2 ;;
     --allow-flags) ALLOW_FLAGS="$2"; shift 2 ;;
     --allow-flags=*) ALLOW_FLAGS="${1#*=}"; shift ;;
+    --allow-deletions) ALLOW_DELETIONS="$2"; shift 2 ;;
+    --allow-deletions=*) ALLOW_DELETIONS="${1#*=}"; shift ;;
     --verbose) VERBOSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -193,6 +200,7 @@ class CoreFlagsSnapshot {
 }
 DART
   printf 'old writer placeholder\n' > "$dir/old_writer.dart"
+  printf 'second old writer placeholder\n' > "$dir/old_writer_two.dart"
 
   printf 'evidence 1\n' > "$dir/target/test-evidence/01-fixture.txt"
   printf 'evidence 2\n' > "$dir/target/test-evidence/02-fixture.txt"
@@ -378,6 +386,37 @@ self_test() {
     fi
   done
 
+  rc="$(run_fixture_audit "$tmp/deleted_file" --allow-deletions old_writer.dart)"
+  case_no=$((case_no + 1))
+  if [ "$rc" -eq 0 ]; then
+    echo "[PASS] allowed deletion accepted with --allow-deletions (rc=0)"
+  else
+    echo "[FAIL] allowed deletion rejected with --allow-deletions (rc=$rc)" >&2
+    sed 's/^/    /' "$tmp/deleted_file/audit.log" >&2
+    failures=$((failures + 1))
+  fi
+
+  rc="$(run_fixture_audit "$tmp/deleted_file" --allow-deletions some_other.dart)"
+  case_no=$((case_no + 1))
+  if [ "$rc" -ne 0 ]; then
+    echo "[PASS] deletion not named by --allow-deletions still rejected (rc=$rc)"
+  else
+    echo "[FAIL] non-allowed deletion accepted" >&2
+    failures=$((failures + 1))
+  fi
+
+  git -C "$tmp/deleted_file" rm -q old_writer_two.dart
+  git -C "$tmp/deleted_file" commit -q -m "delete second writer" -m "Plan-Todo: 3"
+  rc="$(run_fixture_audit "$tmp/deleted_file" --allow-deletions old_writer.dart)"
+  case_no=$((case_no + 1))
+  if [ "$rc" -ne 0 ] && grep -q 'old_writer_two.dart' "$tmp/deleted_file/audit.log"; then
+    echo "[PASS] allowance names one deletion; the second still fails (rc=$rc)"
+  else
+    echo "[FAIL] allowance suppressed an unnamed deletion (rc=$rc)" >&2
+    sed 's/^/    /' "$tmp/deleted_file/audit.log" >&2
+    failures=$((failures + 1))
+  fi
+
   if [ "$failures" -ne 0 ]; then
     echo "SELF-TEST FAIL: $failures failing case(s) out of $case_no" >&2
     return 1
@@ -405,15 +444,21 @@ echo "evidence: $EVIDENCE_DIR"
 echo "range:    $RANGE"
 
 set +e
-python3 - "$ROOT" "$PLAN" "$EVIDENCE_DIR" "$RANGE" "$ALLOW_FLAGS" "$VERBOSE" <<'PY'
+python3 - "$ROOT" "$PLAN" "$EVIDENCE_DIR" "$RANGE" "$ALLOW_FLAGS" "$ALLOW_DELETIONS" "$VERBOSE" <<'PY'
 import os
 import re
 import subprocess
 import sys
 
-repo_root, plan_path, evidence_dir, commit_range, allow_flags, verbose = sys.argv[1:7]
+(repo_root, plan_path, evidence_dir, commit_range, allow_flags, allow_deletions,
+ verbose) = sys.argv[1:8]
 verbose = verbose == "1"
 allowed_flags = {name.strip() for name in allow_flags.split(",") if name.strip()}
+allowed_deletions = {
+    os.path.normpath(name.strip())
+    for name in allow_deletions.split(",")
+    if name.strip()
+}
 
 
 def fail(msg):
@@ -559,7 +604,12 @@ if deleted.returncode != 0:
     problems.append("git diff failed for range %s: %s" % (commit_range, deleted.stderr.strip()))
     deleted_files = []
 else:
-    deleted_files = [x for x in deleted.stdout.splitlines() if x.strip()]
+    deleted_files = [os.path.normpath(x) for x in deleted.stdout.splitlines() if x.strip()]
+
+unallowed_deletions = [f for f in deleted_files if f not in allowed_deletions]
+allowed_deletion_hits = [f for f in deleted_files if f in allowed_deletions]
+if allowed_deletion_hits and verbose:
+    print("NOTE: intentional deletion(s) allowed: %s" % ", ".join(allowed_deletion_hits))
 
 # ---- flag defaults ----
 flag_files = [
@@ -619,13 +669,13 @@ for it in items:
         detail = " evidence=%s commit=%s" % (",".join(ev) if ev else "-", ",".join(sha) if sha else "-")
     print("%s %-3s %-34s%s" % (mark, label, status, detail))
 
-if deleted_files:
-    problems.append("branch range deletes file(s): %s" % ", ".join(deleted_files))
+if unallowed_deletions:
+    problems.append("branch range deletes file(s): %s" % ", ".join(unallowed_deletions))
 if flag_findings:
     problems.append("flag default is true: %s" % "; ".join(flag_findings))
 
 print()
-print("deleted files: %d" % len(deleted_files))
+print("deleted files: %d (allowed: %d)" % (len(deleted_files), len(allowed_deletion_hits)))
 print("flag default findings: %d" % len(flag_findings))
 
 if problems:

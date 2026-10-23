@@ -3,7 +3,26 @@
 #
 # Checks (all issued through `adb`):
 #   install -> launch -> process alive -> channel list -> search -> detail ->
-#   local pack -> env migration -> parity -> flags-off (core_writes empty).
+#   local pack -> env migration -> parity -> flags (see modes below).
+#
+# Two matrix modes:
+#   (default, pre-removal)   the legacy route is still reachable and the
+#                            core-write guard must stay untouched:
+#                              flags-off  core_writes rows == 0
+#   --post-removal           the download/install cutover has happened.  The
+#                            download+install flags are ON, the other four stay
+#                            OFF, and the core mirror owns every live row:
+#                              core-ownership  non-terminal download_task rows
+#                                              exist and all carry
+#                                              module_task_id; install attempts
+#                                              carry install_session_id;
+#                                              core_writes == {download,install}
+#                              flags-on        core_writes has download+install
+#                                              and none of
+#                                              channel/catalog/update/js_channel
+#
+# `flags-off` is deliberately NOT part of the post-removal set (a post-removal
+# device legitimately has core_writes rows), so the two modes cannot contradict.
 #
 # Deep channel probes assert the debug CoreSmoke fixtures, never mere table
 # existence:
@@ -14,8 +33,12 @@
 #   env-migration   channel_env.channel_key='js_smoke'             >= 1
 #   parity          PRAGMA user_version >= 1 and integrity_check = ok
 #   flags-off       core_writes rows                                == 0
+#   core-ownership  download_task/module_task_id/install_session_id + core_writes
+#   flags-on        core_writes domains == {download,install}
 #
-# A zero/missing row or column is FAIL (exit 1), never SKIP and never PASS.
+# A zero/missing row or column is FAIL (exit 1), never SKIP and never PASS
+# (post-removal: zero non-terminal mirror rows and zero install attempts are
+# failures, because the matrix has just downloaded and installed an app).
 # SKIP is reserved for genuinely unavailable probes (no adb/device, non-ARM64,
 # release APK not debuggable, DB not found, host sqlite3 missing).
 #
@@ -30,9 +53,12 @@
 # Test without a phone:
 #   scripts/qa/device-smoke.sh --self-test
 #       builds one valid and several broken sqlite fixtures in a temp dir and
-#       asserts valid=PASS, broken=FAIL/exit 1.
+#       asserts valid=PASS, broken=FAIL/exit 1.  The post-removal fixtures are
+#       exercised with --post-removal semantics too.
 #   scripts/qa/device-smoke.sh --db PATH
 #       runs the same deep SQL checks against a local database file.
+#   scripts/qa/device-smoke.sh --self-test --post-removal
+#       self-test only the post-removal check set.
 #
 # Exit-code contract (a skipped check is never a pass):
 #   0  every check ran and passed
@@ -44,7 +70,7 @@
 # Usage:
 #   scripts/qa/device-smoke.sh [--apk PATH] [--package PKG]
 #       [--instrumentation PKG/RUNNER] [--timeout SECONDS] [--no-install]
-#       [--db PATH | --self-test]
+#       [--post-removal] [--db PATH | --self-test]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,8 +84,10 @@ TIMEOUT=120
 DO_INSTALL=1
 DB_PATH=""
 SELFTEST=0
+POST_REMOVAL=0
 
-DEEP_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity flags-off"
+PRE_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity flags-off"
+POST_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity core-ownership flags-on"
 
 usage() {
   cat <<'EOF'
@@ -71,6 +99,8 @@ usage: scripts/qa/device-smoke.sh [options]
                             use `am instrument` deep probes instead of sqlite
   --timeout SECONDS         bound for each adb/sqlite call (default: 120)
   --no-install              skip the install step
+  --post-removal            assert the post-cutover matrix: core ownership +
+                            flags-on instead of flags-off (see header)
   --db PATH                 run only the deep SQL checks against a local DB
   --self-test               build valid/broken fixtures and assert PASS/FAIL
   -h, --help                show this help
@@ -84,12 +114,19 @@ while [ "$#" -gt 0 ]; do
     --instrumentation) INSTRUMENTATION="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --no-install) DO_INSTALL=0; shift ;;
+    --post-removal) POST_REMOVAL=1; shift ;;
     --db) DB_PATH="$2"; shift 2 ;;
     --self-test) SELFTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "$POST_REMOVAL" -eq 1 ]; then
+  DEEP_CHECKS="$POST_CHECKS"
+else
+  DEEP_CHECKS="$PRE_CHECKS"
+fi
 
 if [ "$SELFTEST" -eq 1 ] && [ -n "$DB_PATH" ]; then
   echo "ERROR: --self-test and --db are mutually exclusive" >&2
@@ -157,6 +194,9 @@ is_uint() { printf '%s' "$1" | grep -Eq '^[0-9]+$'; }
 db_check_one() {
   local db="$1" check="$2"
   local sql cols cols_rc version version_rc integrity integrity_rc
+  local nonterminal nonterminal_rc orphan orphan_rc
+  local install_total install_rc install_orphan install_orphan_rc
+  local domains domains_rc armed armed_rc other other_rc
 
   echo
   echo "== probe (sqlite): $check =="
@@ -233,6 +273,53 @@ db_check_one() {
         pass "flags-off (core_writes empty; legacy-write guard stays disabled)"
       else
         fail "flags-off (expected core_writes=0; rc=$SQL_RC value='${SQL_OUT:-<empty>}')"
+      fi
+      ;;
+    core-ownership)
+      sql="SELECT COUNT(*) FROM download_task WHERE status NOT IN ('completed','cancelled','removed','failed');"
+      sql_value "$db" "$sql"
+      nonterminal="$SQL_OUT"
+      nonterminal_rc="$SQL_RC"
+      sql="SELECT COUNT(*) FROM download_task WHERE status NOT IN ('completed','cancelled','removed','failed') AND (module_task_id IS NULL OR module_task_id='');"
+      sql_value "$db" "$sql"
+      orphan="$SQL_OUT"
+      orphan_rc="$SQL_RC"
+      sql="SELECT COUNT(*) FROM download_task WHERE install_status IN ('pending','installed');"
+      sql_value "$db" "$sql"
+      install_total="$SQL_OUT"
+      install_rc="$SQL_RC"
+      sql="SELECT COUNT(*) FROM download_task WHERE install_status IN ('pending','installed') AND (install_session_id IS NULL OR install_session_id='');"
+      sql_value "$db" "$sql"
+      install_orphan="$SQL_OUT"
+      install_orphan_rc="$SQL_RC"
+      sql="SELECT COALESCE(group_concat(domain, ','), '') FROM (SELECT domain FROM core_writes ORDER BY domain);"
+      sql_value "$db" "$sql"
+      domains="$SQL_OUT"
+      domains_rc="$SQL_RC"
+      if [ "$nonterminal_rc" -eq 0 ] && is_uint "$nonterminal" && [ "$nonterminal" -ge 1 ] \
+        && [ "$orphan_rc" -eq 0 ] && [ "$orphan" = "0" ] \
+        && [ "$install_rc" -eq 0 ] && is_uint "$install_total" && [ "$install_total" -ge 1 ] \
+        && [ "$install_orphan_rc" -eq 0 ] && [ "$install_orphan" = "0" ] \
+        && [ "$domains_rc" -eq 0 ] && [ "$domains" = "download,install" ]; then
+        pass "core ownership (non-terminal=$nonterminal all module_task_id; install-attempts=$install_total all install_session_id; core_writes=$domains)"
+      else
+        fail "core ownership (need non-terminal>=1 with module_task_id, install-attempts>=1 with install_session_id, core_writes=download,install; non-terminal='${nonterminal:-<empty>}' rc=$nonterminal_rc orphan='${orphan:-<empty>}' rc=$orphan_rc install='${install_total:-<empty>}' rc=$install_rc install-orphan='${install_orphan:-<empty>}' rc=$install_orphan_rc domains='${domains:-<empty>}' rc=$domains_rc)"
+      fi
+      ;;
+    flags-on)
+      sql="SELECT COUNT(*) FROM core_writes WHERE domain IN ('download','install');"
+      sql_value "$db" "$sql"
+      armed="$SQL_OUT"
+      armed_rc="$SQL_RC"
+      sql="SELECT COUNT(*) FROM core_writes WHERE domain IN ('channel','catalog','update','js_channel');"
+      sql_value "$db" "$sql"
+      other="$SQL_OUT"
+      other_rc="$SQL_RC"
+      if [ "$armed_rc" -eq 0 ] && [ "$armed" = "2" ] \
+        && [ "$other_rc" -eq 0 ] && [ "$other" = "0" ]; then
+        pass "flags-on (download+install armed; channel/catalog/update/js_channel off)"
+      else
+        fail "flags-on (expected download+install=2 and other-four=0; armed='${armed:-<empty>}' rc=$armed_rc other='${other:-<empty>}' rc=$other_rc)"
       fi
       ;;
     *)
@@ -374,15 +461,73 @@ PRAGMA user_version = 1;
 SQL
 }
 
-# selftest_expect <label> <db> <pass|fail>
+make_post_removal_fixture() {
+  local db="$1"
+  make_valid_fixture "$db"
+  run_bounded sqlite3 "$db" <<'SQL'
+CREATE TABLE download_task(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_task_id TEXT UNIQUE,
+    dedup_key TEXT,
+    app_id TEXT,
+    app_name TEXT,
+    version TEXT,
+    file_name TEXT,
+    kind TEXT,
+    resource_id TEXT,
+    resource_version TEXT,
+    url TEXT,
+    dest_path TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    bytes_done INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    speed_bps INTEGER NOT NULL DEFAULT 0,
+    eta_sec INTEGER,
+    segments_json TEXT,
+    retries INTEGER NOT NULL DEFAULT 0,
+    server_meta TEXT,
+    priority INTEGER NOT NULL DEFAULT 0,
+    headers_json TEXT,
+    expected_sha256 TEXT,
+    install_after_download INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    last_started_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    install_status TEXT NOT NULL DEFAULT 'none',
+    install_method TEXT,
+    install_session_id TEXT,
+    install_error TEXT,
+    installed_at INTEGER,
+    installed_version TEXT
+);
+INSERT INTO download_task(module_task_id, app_id, status, install_status, install_session_id, installed_at)
+    VALUES ('mod-completed', 'com.example.one', 'completed', 'installed', 'sess-1', 100);
+INSERT INTO download_task(module_task_id, app_id, status, install_status)
+    VALUES ('mod-live', 'com.example.two', 'downloading', 'none');
+INSERT INTO download_task(module_task_id, app_id, status, install_status, install_session_id)
+    VALUES ('mod-pending', 'com.example.three', 'completed', 'pending', 'sess-2');
+INSERT INTO core_writes(domain, first_write_at) VALUES
+    ('download', 10),
+    ('install', 20);
+PRAGMA user_version = 4;
+SQL
+}
+
+# selftest_expect <label> <db> <pass|fail> [pre|post]
 selftest_expect() {
-  local label="$1" db="$2" want="$3"
+  local label="$1" db="$2" want="$3" mode="${4:-pre}"
   local out rc verdict ok
   set +e
   out="$(
     PASSED=0
     FAILED=0
     SKIPPED=0
+    if [ "$mode" = "post" ]; then
+      DEEP_CHECKS="$POST_CHECKS"
+    else
+      DEEP_CHECKS="$PRE_CHECKS"
+    fi
     run_db_checks "$db"
   )" 2>&1
   rc=$?
@@ -405,32 +550,34 @@ run_self_test() {
   local tmp st_failed=0 broken_total=0
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-device-smoke-selftest.XXXXXX")"
   echo "== device-smoke self-test =="
+  echo "mode: $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal+post-removal)"
   echo "fixtures: $tmp"
 
-  make_valid_fixture "$tmp/valid.db"
-  selftest_expect "valid smoke DB" "$tmp/valid.db" pass || st_failed=1
+  if [ "$POST_REMOVAL" -eq 0 ]; then
+    make_valid_fixture "$tmp/valid.db"
+    selftest_expect "valid smoke DB" "$tmp/valid.db" pass || st_failed=1
 
-  make_valid_fixture "$tmp/missing-row.db"
-  run_bounded sqlite3 "$tmp/missing-row.db" \
-    "DELETE FROM channel_apps WHERE channel_key='smoke_github';"
-  broken_total=$((broken_total + 1))
-  selftest_expect "missing smoke row (table exists, row gone)" \
-    "$tmp/missing-row.db" fail || st_failed=1
+    make_valid_fixture "$tmp/missing-row.db"
+    run_bounded sqlite3 "$tmp/missing-row.db" \
+      "DELETE FROM channel_apps WHERE channel_key='smoke_github';"
+    broken_total=$((broken_total + 1))
+    selftest_expect "missing smoke row (table exists, row gone)" \
+      "$tmp/missing-row.db" fail || st_failed=1
 
-  make_valid_fixture "$tmp/renamed-table.db"
-  run_bounded sqlite3 "$tmp/renamed-table.db" \
-    "ALTER TABLE channel_packs RENAME TO channel_packs_renamed;"
-  broken_total=$((broken_total + 1))
-  selftest_expect "renamed channel_packs table" "$tmp/renamed-table.db" fail || st_failed=1
+    make_valid_fixture "$tmp/renamed-table.db"
+    run_bounded sqlite3 "$tmp/renamed-table.db" \
+      "ALTER TABLE channel_packs RENAME TO channel_packs_renamed;"
+    broken_total=$((broken_total + 1))
+    selftest_expect "renamed channel_packs table" "$tmp/renamed-table.db" fail || st_failed=1
 
-  make_valid_fixture "$tmp/missing-column.db"
-  run_bounded sqlite3 "$tmp/missing-column.db" \
-    "ALTER TABLE channel_apps RENAME COLUMN name TO label;"
-  broken_total=$((broken_total + 1))
-  selftest_expect "missing channel_apps.name column" "$tmp/missing-column.db" fail || st_failed=1
+    make_valid_fixture "$tmp/missing-column.db"
+    run_bounded sqlite3 "$tmp/missing-column.db" \
+      "ALTER TABLE channel_apps RENAME COLUMN name TO label;"
+    broken_total=$((broken_total + 1))
+    selftest_expect "missing channel_apps.name column" "$tmp/missing-column.db" fail || st_failed=1
 
-  make_valid_fixture "$tmp/null-app-id.db"
-  run_bounded sqlite3 "$tmp/null-app-id.db" <<'SQL'
+    make_valid_fixture "$tmp/null-app-id.db"
+    run_bounded sqlite3 "$tmp/null-app-id.db" <<'SQL'
 ALTER TABLE channel_apps RENAME TO channel_apps_old;
 CREATE TABLE channel_apps(
     channel_key TEXT,
@@ -441,23 +588,64 @@ INSERT INTO channel_apps(channel_key, app_id, name) VALUES
     ('smoke_github', NULL, 'Smoke App');
 DROP TABLE channel_apps_old;
 SQL
-  broken_total=$((broken_total + 1))
-  selftest_expect "NULL app_id row" "$tmp/null-app-id.db" fail || st_failed=1
+    broken_total=$((broken_total + 1))
+    selftest_expect "NULL app_id row" "$tmp/null-app-id.db" fail || st_failed=1
 
-  make_valid_fixture "$tmp/stale-schema.db"
-  run_bounded sqlite3 "$tmp/stale-schema.db" "PRAGMA user_version = 0;"
-  broken_total=$((broken_total + 1))
-  selftest_expect "stale schema (user_version=0)" "$tmp/stale-schema.db" fail || st_failed=1
+    make_valid_fixture "$tmp/stale-schema.db"
+    run_bounded sqlite3 "$tmp/stale-schema.db" "PRAGMA user_version = 0;"
+    broken_total=$((broken_total + 1))
+    selftest_expect "stale schema (user_version=0)" "$tmp/stale-schema.db" fail || st_failed=1
 
-  make_valid_fixture "$tmp/dirty-writes.db"
-  run_bounded sqlite3 "$tmp/dirty-writes.db" \
-    "INSERT INTO core_writes(domain, first_write_at) VALUES('apps', 1);"
-  broken_total=$((broken_total + 1))
-  selftest_expect "dirty core_writes row" "$tmp/dirty-writes.db" fail || st_failed=1
+    make_valid_fixture "$tmp/dirty-writes.db"
+    run_bounded sqlite3 "$tmp/dirty-writes.db" \
+      "INSERT INTO core_writes(domain, first_write_at) VALUES('apps', 1);"
+    broken_total=$((broken_total + 1))
+    selftest_expect "dirty core_writes row" "$tmp/dirty-writes.db" fail || st_failed=1
 
-  printf 'this is not a sqlite database\n' > "$tmp/corrupt.db"
+    printf 'this is not a sqlite database\n' > "$tmp/corrupt.db"
+    broken_total=$((broken_total + 1))
+    selftest_expect "corrupt database file" "$tmp/corrupt.db" fail || st_failed=1
+  fi
+
+  make_post_removal_fixture "$tmp/post-valid.db"
+  selftest_expect "valid post-removal DB (core ownership + flags-on)" \
+    "$tmp/post-valid.db" pass post || st_failed=1
+
+  make_post_removal_fixture "$tmp/post-missing-module-id.db"
+  run_bounded sqlite3 "$tmp/post-missing-module-id.db" \
+    "UPDATE download_task SET module_task_id=NULL WHERE module_task_id='mod-live';"
   broken_total=$((broken_total + 1))
-  selftest_expect "corrupt database file" "$tmp/corrupt.db" fail || st_failed=1
+  selftest_expect "post-removal non-terminal row without module_task_id" \
+    "$tmp/post-missing-module-id.db" fail post || st_failed=1
+
+  make_post_removal_fixture "$tmp/post-missing-session.db"
+  run_bounded sqlite3 "$tmp/post-missing-session.db" \
+    "UPDATE download_task SET install_session_id=NULL WHERE module_task_id='mod-completed';"
+  broken_total=$((broken_total + 1))
+  selftest_expect "post-removal install without install_session_id" \
+    "$tmp/post-missing-session.db" fail post || st_failed=1
+
+  make_post_removal_fixture "$tmp/post-wrong-writes.db"
+  run_bounded sqlite3 "$tmp/post-wrong-writes.db" \
+    "INSERT INTO core_writes(domain, first_write_at) VALUES('channel', 30);"
+  broken_total=$((broken_total + 1))
+  selftest_expect "post-removal core_writes with a non-flipped domain" \
+    "$tmp/post-wrong-writes.db" fail post || st_failed=1
+
+  make_post_removal_fixture "$tmp/post-no-install-columns.db"
+  run_bounded sqlite3 "$tmp/post-no-install-columns.db" <<'SQL'
+ALTER TABLE download_task RENAME TO download_task_old;
+CREATE TABLE download_task(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_task_id TEXT,
+    status TEXT NOT NULL DEFAULT 'queued'
+);
+INSERT INTO download_task(module_task_id, status) VALUES ('mod-live', 'downloading');
+DROP TABLE download_task_old;
+SQL
+  broken_total=$((broken_total + 1))
+  selftest_expect "post-removal DB missing install ownership columns" \
+    "$tmp/post-no-install-columns.db" fail post || st_failed=1
 
   echo
   echo "== self-test summary =="
@@ -466,7 +654,7 @@ SQL
     echo "RESULT: FAIL"
     return 1
   fi
-  echo "RESULT: PASS (valid fixture passed; $broken_total broken fixtures failed)"
+  echo "RESULT: PASS (valid fixtures passed; $broken_total broken fixtures failed)"
   return 0
 }
 
@@ -487,6 +675,7 @@ fi
 
 if [ -n "$DB_PATH" ]; then
   echo "== device smoke (local DB) =="
+  echo "mode: $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal)"
   echo "db: $DB_PATH"
   if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "ERROR: --db requires host sqlite3" >&2
@@ -513,6 +702,7 @@ if [ -n "$DB_PATH" ]; then
 fi
 
 echo "== device smoke =="
+echo "mode:    $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal)"
 echo "package: $PKG"
 
 if ! command -v adb >/dev/null 2>&1; then
