@@ -20,11 +20,12 @@ pub mod rules;
 pub mod update;
 
 pub use channel::{
-    validate_channel_key, ChannelCategory, ChannelConfig, ChannelDriver, ChannelPack,
-    ChannelRecord, ChannelRegistry, ChannelStore, FdroidDriver, GitHubDriver,
-    InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore, InstalledPack,
-    LocalDbDriver, PackError, PackIconSource, PackLimits, PackStore, SqliteChannelRegistry,
-    SqliteChannelStore, VivoDriver,
+    validate_channel_key, BuildHistoryQuery, ChannelCategory, ChannelConfig, ChannelDriver,
+    ChannelPack, ChannelRecord, ChannelRegistry, ChannelStore, DetailAction, FdroidDriver,
+    GitHubDriver, InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore,
+    InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits, PackStore, ScriptChannel,
+    ScriptChannelConfig, ScriptDetail, ScriptDetailConfig, SqliteChannelRegistry,
+    SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
