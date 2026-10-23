@@ -12,6 +12,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CRATES=(
   "gstore_contract"
+  # Wave 5 leaf crate: member of the rust/ workspace (see rust/Cargo.toml).
+  "gstore_script"
   "gstore_core"
   "gstore_mod_qr"
   "gstore_mod_analyzer"

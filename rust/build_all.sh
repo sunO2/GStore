@@ -21,6 +21,8 @@ fi
 
 CRATES=(
   "gstore_contract"
+  # Wave 5 leaf crate: member of the rust/ workspace (see rust/Cargo.toml).
+  "gstore_script"
   "gstore_core"
   "gstore_host"
   "gstore_mod_qr"
