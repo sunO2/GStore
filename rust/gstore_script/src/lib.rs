@@ -17,7 +17,8 @@
 //! - [`ScriptRuntime::eval`] — JSON completion value, Promise-aware
 //! - [`ScriptRuntime::send_message`] — the `sendMessage` host bridge
 //! - [`ScriptHost`] — implemented by the host layer (Todo 2)
-//! - [`ScriptOptions`] — eval budget, heap/stack ceilings
+//! - [`ScriptOptions`] / [`SandboxLimits`] — the single sandbox policy
+//!   (heap, stack, wall-clock, output/response size, redirects, global budget)
 //! - [`ScriptError`] / [`ScriptErrorKind`] — `CORE_E_SCRIPT_*` typed errors
 //!
 //! See `README.md` for the contract and out-of-scope notes.
@@ -28,8 +29,10 @@ pub use script::{
     ChannelApp, CheckVersionRequest, ConfigGetRequest, DatabaseAppRequest, DatabaseAppsRequest,
     DatabaseInsertRequest, EnvAllRequest, EnvGetRequest, EnvHasRequest, EnvSnapshot, HttpMethod,
     HttpRequest, HttpResponse, InstalledInfo, LogLevel, LogRequest, NativeCallRequest,
-    ScriptChannel, ScriptError, ScriptErrorKind, ScriptHost, ScriptOptions, ScriptRuntime,
-    UiRequest, UnsupportedHost, CODE_DISPOSED, CODE_EVAL, CODE_HOST, CODE_INTERNAL,
-    CODE_INVALID_ARGUMENT, CODE_LIMIT, CODE_TIMEOUT, DEFAULT_EVAL_TIMEOUT_MS,
+    SandboxLimits, ScriptChannel, ScriptError, ScriptErrorKind, ScriptHost, ScriptOptions,
+    ScriptRuntime, UiRequest, UnsupportedHost, CODE_DISPOSED, CODE_EVAL, CODE_HOST, CODE_INTERNAL,
+    CODE_INVALID_ARGUMENT, CODE_LIMIT, CODE_TIMEOUT, DEFAULT_CUMULATIVE_EVAL_BUDGET_MS,
+    DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_LONG_EVAL_TIMEOUT_MS, DEFAULT_MAX_CONCURRENT_RUNTIMES,
+    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_REDIRECTS, DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_MEMORY_LIMIT_BYTES, DEFAULT_STACK_LIMIT_BYTES,
 };

@@ -23,6 +23,7 @@ impl ScriptHost for NoHost {
         _channel: &ScriptChannel,
         method: &str,
         _payload: &Value,
+        _limits: &gstore_script::SandboxLimits,
     ) -> Result<Value, ScriptError> {
         Err(ScriptError::host(format!(
             "unexpected host call `{method}`"

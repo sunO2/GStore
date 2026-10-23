@@ -23,8 +23,8 @@ pub use channel::{
     validate_channel_key, BuildHistoryQuery, ChannelCategory, ChannelConfig, ChannelDriver,
     ChannelPack, ChannelRecord, ChannelRegistry, ChannelStore, DetailAction, FdroidDriver,
     GitHubDriver, InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore,
-    InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits, PackStore, ScriptChannel,
-    ScriptChannelConfig, ScriptDetail, ScriptDetailConfig, SqliteChannelRegistry,
+    InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits, PackPolicy, PackStore,
+    ScriptChannel, ScriptChannelConfig, ScriptDetail, ScriptDetailConfig, SqliteChannelRegistry,
     SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
 };
 pub use dto::{

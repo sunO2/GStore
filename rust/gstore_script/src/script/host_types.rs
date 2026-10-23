@@ -21,19 +21,36 @@ pub enum HttpMethod {
 
 /// One `host.network.*` call. `opts` is kept exactly as the script produced it
 /// (`{params, headers, body|json}`), mirroring the Dart prefix byte-for-byte.
+///
+/// `max_redirects` is added by the bridge, not by the script: the effective
+/// value is `min(script request, runtime policy)` and the runtime policy can
+/// never exceed [`DEFAULT_MAX_REDIRECTS`](super::DEFAULT_MAX_REDIRECTS). The
+/// host transport owns actual redirect following; this field is the contract.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub url: String,
     pub opts: JsonValue,
+    pub max_redirects: u32,
 }
 
 impl HttpRequest {
-    pub(crate) fn parse(method: HttpMethod, payload: &JsonValue) -> Self {
+    pub(crate) fn parse(method: HttpMethod, payload: &JsonValue, policy_max: u32) -> Self {
+        let opts = object_field(payload, "opts");
+        // A script may tighten the hop count, never raise it.
+        let requested = opts
+            .get("maxRedirects")
+            .or_else(|| opts.get("max_redirects"))
+            .and_then(JsonValue::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(policy_max);
         Self {
             method,
             url: string_field(payload, "url"),
-            opts: object_field(payload, "opts"),
+            opts,
+            max_redirects: requested
+                .min(policy_max)
+                .min(super::limits::DEFAULT_MAX_REDIRECTS),
         }
     }
 }

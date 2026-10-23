@@ -39,7 +39,7 @@ pub use fdroid::FdroidDriver;
 pub use github::GitHubDriver;
 pub use localdb::LocalDbDriver;
 pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
-pub use pack_loader::{InstalledPack, PackError, PackLimits, PackStore};
+pub use pack_loader::{InstalledPack, PackError, PackLimits, PackPolicy, PackStore};
 pub use registry::ChannelRegistry;
 pub use script::{
     BuildHistoryQuery, DetailAction, ScriptChannel, ScriptChannelConfig, ScriptDetail,

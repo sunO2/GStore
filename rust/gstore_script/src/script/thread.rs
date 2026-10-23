@@ -10,6 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use serde_json::Value as JsonValue;
 
+use super::budget::RuntimeSlot;
 use super::channel::ScriptChannel;
 use super::engine::Engine;
 use super::error::ScriptError;
@@ -19,6 +20,10 @@ use super::options::ScriptOptions;
 /// One unit of work for the engine thread.
 pub(crate) enum Command {
     Eval {
+        source: String,
+        reply: SyncSender<Result<JsonValue, ScriptError>>,
+    },
+    EvalLong {
         source: String,
         reply: SyncSender<Result<JsonValue, ScriptError>>,
     },
@@ -40,20 +45,24 @@ pub(crate) struct ThreadHandle {
 
 /// Spawn the channel thread and wait for engine construction to finish.
 ///
-/// Initialisation failures (bad QuickJS build, OOM at startup) are reported here
-/// rather than surfacing later as a mysterious `Disposed`.
+/// Initialisation failures (bad QuickJS build, OOM at startup, an invalid or
+/// exhausted runtime budget) are reported here rather than surfacing later as a
+/// mysterious `Disposed`. The process-wide live-runtime slot is acquired before
+/// the thread exists and released when it exits.
 pub(crate) fn spawn(
     channel: &ScriptChannel,
     options: ScriptOptions,
     host: Arc<dyn ScriptHost>,
 ) -> Result<ThreadHandle, ScriptError> {
+    options.limits.validate()?;
+    let slot = RuntimeSlot::acquire(options.limits.max_concurrent_runtimes)?;
     let (init_tx, init_rx) = mpsc::sync_channel(0);
     let (tx, rx) = mpsc::channel();
 
     let thread_channel = channel.clone();
     let join = thread::Builder::new()
         .name(format!("gstore-script:{thread_channel}"))
-        .spawn(move || run(init_tx, rx, options, host, thread_channel))
+        .spawn(move || run(init_tx, rx, options, host, thread_channel, slot))
         .map_err(|err| ScriptError::internal(format!("spawn script thread: {err}")))?;
 
     match init_rx.recv() {
@@ -77,8 +86,10 @@ fn run(
     options: ScriptOptions,
     host: Arc<dyn ScriptHost>,
     channel: ScriptChannel,
+    slot: RuntimeSlot,
 ) {
-    let engine = match Engine::new(&options, host, channel) {
+    let _slot = slot;
+    let mut engine = match Engine::new(&options, host, channel) {
         Ok(engine) => {
             if init_tx.send(Ok(())).is_err() {
                 return;
@@ -95,6 +106,9 @@ fn run(
         match command {
             Command::Eval { source, reply } => {
                 let _ = reply.send(engine.eval(&source));
+            }
+            Command::EvalLong { source, reply } => {
+                let _ = reply.send(engine.eval_long(&source));
             }
             Command::SendMessage {
                 method,

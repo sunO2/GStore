@@ -19,6 +19,7 @@ impl ScriptHost for EchoHost {
         _channel: &ScriptChannel,
         method: &str,
         payload: &Value,
+        _limits: &gstore_script::SandboxLimits,
     ) -> Result<Value, ScriptError> {
         match method {
             // Overriding the dispatcher is allowed; the returned value must be

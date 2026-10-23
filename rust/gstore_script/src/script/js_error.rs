@@ -26,7 +26,10 @@ pub(crate) fn map_error(
         err.to_string()
     };
     let lowered = message.to_ascii_lowercase();
-    if lowered.contains("out of memory") || lowered.contains("stack overflow") {
+    if lowered.contains("out of memory")
+        || lowered.contains("stack overflow")
+        || lowered.contains("call stack")
+    {
         return ScriptError::limit(message);
     }
     ScriptError::from_js_message(message)

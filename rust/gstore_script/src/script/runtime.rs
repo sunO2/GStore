@@ -46,15 +46,30 @@ impl ScriptRuntime {
 
     /// Evaluate a script and return its JSON completion value.
     ///
-    /// A Promise result is drained until settled (bounded by
-    /// [`ScriptOptions::eval_timeout`]); an infinite loop is interrupted and
-    /// reported as [`ScriptErrorKind::Timeout`](super::ScriptErrorKind::Timeout).
+    /// A Promise result is drained until settled (bounded by the policy's
+    /// `eval_timeout`); an infinite loop is interrupted and reported as
+    /// [`ScriptErrorKind::Timeout`](super::ScriptErrorKind::Timeout).
     pub fn eval(&self, source: &str) -> Result<JsonValue, ScriptError> {
+        self.eval_command(source, false)
+    }
+
+    /// Evaluate a long-running script under the policy's `long_eval_timeout`.
+    ///
+    /// This is the 30 s side of the 5 s/30 s split (UI round-trips, pack
+    /// warm-up); it is still bounded and still fails closed.
+    pub fn eval_long(&self, source: &str) -> Result<JsonValue, ScriptError> {
+        self.eval_command(source, true)
+    }
+
+    fn eval_command(&self, source: &str, long: bool) -> Result<JsonValue, ScriptError> {
         let (reply, rx) = mpsc::sync_channel(1);
-        self.send(Command::Eval {
-            source: source.to_owned(),
-            reply,
-        })?;
+        let source = source.to_owned();
+        let command = if long {
+            Command::EvalLong { source, reply }
+        } else {
+            Command::Eval { source, reply }
+        };
+        self.send(command)?;
         rx.recv().map_err(|_| ScriptError::Disposed)?
     }
 

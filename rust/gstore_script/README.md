@@ -46,12 +46,49 @@ ScriptRuntime::spawn(channel, options, host)
 | `ScriptRuntime::eval(source)` | Returns `serde_json::Value`. Promise results are drained until settled. |
 | `ScriptRuntime::send_message(method, payload)` | Rust-side dispatch through the host with channel affinity. Same envelope path as JS `sendMessage`. |
 | `ScriptRuntime::dispose()` | Stops the thread; consumes the handle. |
-| `ScriptOptions` | `eval_timeout` (default 5 s), `memory_limit_bytes` (64 MB), `stack_limit_bytes` (1 MB). |
+| `ScriptOptions` | Wraps the single `SandboxLimits` policy (see below); `with_eval_timeout` / `with_memory_limit` are convenience setters. |
 | `ScriptHost::send_message(channel, method, payload)` | Default bridge dispatcher. Hosts normally implement capabilities instead. |
 | `ScriptHost` capabilities | `http`, `db_get_apps`, `db_get_app`, `db_insert_apps`, `config_get`, `env_get`, `env_all`, `env_has`, `check_version`, `log`, `native_call`, `ui_request`. Every capability takes `&ScriptChannel` and defaults to `ScriptError::host("not implemented")`. |
 
 A host implements only the capabilities it needs; they run on the script thread
 and must be bounded and thread-safe.
+
+## Sandbox limits
+
+One policy, `SandboxLimits`, is carried by `ScriptOptions`. Defaults are fixed
+by the Wave 5 plan/Dart contract; a host may tighten a value, and
+`SandboxLimits::validate` **rejects** values that would silently disable a guard
+(zero heap/stack/output/response/timeout/concurrency, or redirects above 5).
+Every breach is a typed `CORE_E_SCRIPT_LIMIT` (or `CORE_E_SCRIPT_TIMEOUT` for a
+wall-clock budget), never a truncated success.
+
+| Limit | Default | Source | Enforcement point | Test |
+| --- | --- | --- | --- | --- |
+| Heap | 64 MB | plan Todo 4 | `Runtime::set_memory_limit`; QuickJS OOM maps to `Limit` | `script_sandbox_limits_memory_bomb_is_typed` |
+| Stack | 1 MB | plan Todo 4 | `Runtime::set_max_stack_size`; "call stack" exception maps to `Limit` | `script_sandbox_limits_deep_recursion_is_typed` |
+| Eval wall-clock | 5 s | Dart `_awaitJsFuture` | QuickJS interrupt handler | `script_sandbox_limits_eval_and_long_budgets_both_timing_out` |
+| Long-operation wall-clock | 30 s | plan Todo 4 (UI budget) | interrupt handler via `eval_long` | same |
+| Eval result/output | 10 MB | plan Todo 4 | serialised JSON length checked in `Engine::eval_in_ctx` | `script_sandbox_limits_output_over_cap_is_typed_not_truncated` |
+| `host.network.*` response `data` | 20 MB | plan Todo 4 | bridge serialises `data` and rejects over-cap envelopes | `script_sandbox_limits_response_over_cap_is_typed_without_data` |
+| HTTP redirects | 5 | plan Todo 4 | `HttpRequest.max_redirects` = `min(script request, policy)`; policy > 5 rejected on spawn | `script_sandbox_limits_redirects_are_clamped_to_the_policy` |
+| Live runtimes (process-wide) | 32 | plan Todo 4 "global runtime budget" | `budget::RuntimeSlot` acquired before the thread spawns | `script_sandbox_limits_concurrent_runtime_cap_is_typed` |
+| Cumulative eval time (per runtime) | 10 min | plan Todo 4 "global runtime budget" | engine clock; remaining budget shortens the next eval and exhaustion refuses further evals | `script_sandbox_limits_cumulative_budget_is_typed` |
+
+The redirect ceiling is a **request-shape contract**: the host transport owns
+actual redirect following. The bridge always constructs the host request with
+`max_redirects` (5 by default), and a script that passes a higher
+`opts.maxRedirects` is clamped down, never allowed to raise it. A host may
+tighten the policy to 0–5; anything above 5 is rejected before the runtime
+starts.
+
+The global runtime budget is deliberately two plain guards (a process-wide
+`AtomicUsize` of live runtimes and a per-runtime `Duration` clock) rather than an
+async limiter, so it is easy to review and cannot deadlock.
+
+Legacy host defaults are explicit: `host.utils.<unknown>` returns
+`{ok:false,error:"host.utils.<unknown> 未注册"}`; `host.ui.*` goes through
+`host.native.call`, so an unregistered namespace/method returns
+`{ok:false,error:"host.native.ui.<method> 未注册"}` when the host has no handler.
 
 ## JS surface
 
@@ -102,7 +139,7 @@ Envelope/error rules:
 | `CORE_E_SCRIPT_EVAL` | `Eval` | script threw / syntax error |
 | `CORE_E_SCRIPT_TIMEOUT` | `Timeout` | wall-clock budget expired (interrupt fired) |
 | `CORE_E_SCRIPT_DISPOSED` | `Disposed` | call after the thread is gone |
-| `CORE_E_SCRIPT_LIMIT` | `Limit` | QuickJS OOM / stack overflow |
+| `CORE_E_SCRIPT_LIMIT` | `Limit` | OOM, stack overflow, oversized output/response, or global runtime budget exhausted |
 | `CORE_E_SCRIPT_HOST` | `Host` | host capability failed or panicked (delivered as an envelope) |
 | `CORE_E_SCRIPT_INTERNAL` | `Internal` | thread spawn / engine / JSON wiring failed |
 | `CORE_E_SCRIPT_INVALID_ARGUMENT` | `InvalidArgument` | invalid channel key, method, or `sendMessage` payload |
@@ -113,12 +150,16 @@ Envelope/error rules:
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_runtime_eval
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_runtime_timeout
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_host_api
+cargo test --manifest-path rust/gstore_script/Cargo.toml script_sandbox_limits
 ```
 
 The timeout tests use an 80 ms budget so a regression hangs for milliseconds,
 not CI. `script_host_api_*` covers envelope shapes, all 13 host methods, channel
 isolation, typed failure paths, and a parity run of the unmodified
-`assets/channels/example.js`.
+`assets/channels/example.js`. `script_sandbox_limits` is split across two files
+(all tests carry the same prefix) and proves every limit above with a
+fail-closed assertion; it runs in well under a second because every budget is
+overridden to tens of milliseconds.
 
 ## Android
 
@@ -147,7 +188,6 @@ override.
 - `ScriptChannel`/`ScriptDetail` dispatch (Todo 3).
 - Real HTTP/database/device I/O: the host is injected; this crate only defines
   the bridge and contract (no `reqwest`/`rusqlite`).
-- Sandbox hardening beyond eval budget + heap/stack ceilings (Todo 4).
 - Timers / host I/O event loop: a Promise that only settles via an external
   event currently times out. Promise chains that settle through microtasks work.
 - Module loading (`loader` feature is enabled but no resolver is installed yet).

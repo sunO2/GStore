@@ -29,6 +29,15 @@
 //! or marketplace surface here. `meta.json` is opaque JSON: extra v2-style
 //! fields round-trip in the `meta_json` column and `ChannelPack::meta_json`,
 //! but no field is interpreted beyond `requiredEnvVars`.
+//!
+//! ## Decode policy
+//!
+//! [`PackPolicy::Strict`] (the default) keeps the Todo 9 behaviour. Historical
+//! packs produced by the old Dart `ChannelPackage.decode` can be loaded with
+//! [`PackPolicy::LegacyPermissive`], which tolerates unknown root entries,
+//! directories, empty `entry.js`, malformed UTF-8, and invalid `meta.json` —
+//! each with a `log::warn!` naming the pack key and the reason. Path and size
+//! safety bounds apply to both policies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -40,6 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
@@ -54,6 +64,28 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 /// True when the bytes start with a ZIP local/central/end/spanned signature.
 const ZIP_MAGICS: [&[u8; 4]; 4] = [b"PK\x03\x04", b"PK\x05\x06", b"PK\x06\x06", b"PK\x07\x08"];
+
+/// Decode policy for a local pack.
+///
+/// [`PackPolicy::Strict`] is the default and keeps the historical Todo 9
+/// behaviour: layout surprises, malformed UTF-8, and invalid metadata are typed
+/// errors. [`PackPolicy::LegacyPermissive`] is the explicit opt-in for packs
+/// produced by the old Dart `ChannelPackage.decode`, which ignored unknown root
+/// entries, skipped directories, accepted empty `entry.js`, decoded UTF-8
+/// leniently, and ignored malformed `meta.json`. Every tolerance is logged with
+/// the pack key and the reason so a legacy load is never silent. Size/path
+/// safety bounds apply to both policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackPolicy {
+    Strict,
+    LegacyPermissive,
+}
+
+impl PackPolicy {
+    const fn is_legacy(self) -> bool {
+        matches!(self, Self::LegacyPermissive)
+    }
+}
 
 /// Bounds applied while inspecting and extracting a pack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +216,7 @@ pub struct PackStore {
     root: PathBuf,
     db: DbHandle,
     limits: PackLimits,
+    policy: PackPolicy,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
@@ -202,6 +235,7 @@ impl PackStore {
             root: root.into(),
             db,
             limits: PackLimits::default(),
+            policy: PackPolicy::Strict,
             clock: Arc::new(clock),
         }
     }
@@ -210,6 +244,17 @@ impl PackStore {
     pub fn with_limits(mut self, limits: PackLimits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Selects the decode policy. The default is [`PackPolicy::Strict`].
+    pub fn with_policy(mut self, policy: PackPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Decode policy currently in effect.
+    pub fn policy(&self) -> PackPolicy {
+        self.policy
     }
 
     /// Root directory containing installed packs and transient `.tmp-*` dirs.
@@ -232,7 +277,7 @@ impl PackStore {
         let key = legacy_key_from_path(zip_path)?;
         let artifact = read_bounded_file(zip_path, self.limits.max_pack_bytes)?;
         let pack_hash = sha256_hex(&artifact);
-        let inspected = InspectedPack::from_zip(&key, &artifact, &self.limits)?;
+        let inspected = InspectedPack::from_zip(&key, &artifact, &self.limits, self.policy)?;
         let installed_at = (self.clock)();
 
         let _install_guard = INSTALL_LOCK
@@ -297,13 +342,9 @@ impl PackStore {
     /// Reads the currently installed pack row for `key`.
     ///
     /// Returns [`PackError::NotFound`] when no row exists.
-    pub fn installed_pack(
-        &self,
-        key: &ChannelKey,
-    ) -> Result<(String, i64, PathBuf), PackError> {
-        validate_channel_key(key).map_err(|error| {
-            PackError::InvalidKey(error.message().to_string())
-        })?;
+    pub fn installed_pack(&self, key: &ChannelKey) -> Result<(String, i64, PathBuf), PackError> {
+        validate_channel_key(key)
+            .map_err(|error| PackError::InvalidKey(error.message().to_string()))?;
         let conn = self
             .db
             .reader()
@@ -317,9 +358,7 @@ impl PackStore {
             .optional()
             .map_err(|error| PackError::Db(error.to_string()))?;
         let Some((pack_hash, installed_at)) = row else {
-            return Err(PackError::NotFound(format!(
-                "pack not installed: {key}"
-            )));
+            return Err(PackError::NotFound(format!("pack not installed: {key}")));
         };
         let dir = self.root.join(key.as_str()).join(&pack_hash);
         if !dir.is_dir() {
@@ -338,11 +377,7 @@ impl PackStore {
     /// export is written to a sibling temp file and renamed into place, so a
     /// failed export never leaves a partial destination. Returns the number of
     /// bytes written.
-    pub fn export_pack(
-        &self,
-        key: &ChannelKey,
-        dest: impl AsRef<Path>,
-    ) -> Result<u64, PackError> {
+    pub fn export_pack(&self, key: &ChannelKey, dest: impl AsRef<Path>) -> Result<u64, PackError> {
         let (_hash, _installed_at, dir) = self.installed_pack(key)?;
         let dest = dest.as_ref();
         if let Some(parent) = dest.parent() {
@@ -351,10 +386,7 @@ impl PackStore {
             })?;
         }
         let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temp = dest.with_file_name(format!(
-            ".tmp-export-{}-{n}.zip",
-            std::process::id()
-        ));
+        let temp = dest.with_file_name(format!(".tmp-export-{}-{n}.zip", std::process::id()));
         let result = (|| -> Result<u64, PackError> {
             let file = File::create(&temp).map_err(|error| {
                 PackError::Io(format!("create export {}: {error}", temp.display()))
@@ -365,9 +397,7 @@ impl PackStore {
             for entry in collect_pack_files(&dir)? {
                 let name = entry
                     .strip_prefix(&dir)
-                    .map_err(|_| {
-                        PackError::Io("export entry escaped pack root".to_string())
-                    })?
+                    .map_err(|_| PackError::Io("export entry escaped pack root".to_string()))?
                     .to_string_lossy()
                     .replace('\\', "/");
                 let bytes = fs::read(&entry).map_err(|error| {
@@ -418,14 +448,12 @@ impl PackStore {
             .map_err(|error| PackError::Db(error.to_string()))?;
         tx.execute("DELETE FROM channel_packs WHERE key=?1", [key.as_str()])
             .map_err(|error| PackError::Db(error.to_string()))?;
-        tx.commit().map_err(|error| PackError::Db(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| PackError::Db(error.to_string()))?;
         let key_dir = self.root.join(key.as_str());
         if key_dir.exists() {
             fs::remove_dir_all(&key_dir).map_err(|error| {
-                PackError::Io(format!(
-                    "remove pack dir {}: {error}",
-                    key_dir.display()
-                ))
+                PackError::Io(format!("remove pack dir {}: {error}", key_dir.display()))
             })?;
         }
         Ok(())
@@ -475,7 +503,12 @@ struct InspectedPack {
 }
 
 impl InspectedPack {
-    fn from_zip(key: &ChannelKey, artifact: &[u8], limits: &PackLimits) -> Result<Self, PackError> {
+    fn from_zip(
+        key: &ChannelKey,
+        artifact: &[u8],
+        limits: &PackLimits,
+        policy: PackPolicy,
+    ) -> Result<Self, PackError> {
         if !has_zip_magic(artifact) {
             return Err(PackError::NotZip(
                 "pack is not a zip archive (missing PK signature)".to_string(),
@@ -513,6 +546,10 @@ impl InspectedPack {
 
             if file.is_dir() {
                 if name != "icons" && !name.starts_with("icons/") {
+                    if policy.is_legacy() {
+                        warn_legacy(key, &format!("skipping directory entry {raw_name:?}"));
+                        continue;
+                    }
                     return Err(PackError::Layout(format!(
                         "unexpected directory entry: {raw_name:?}"
                     )));
@@ -527,7 +564,14 @@ impl InspectedPack {
             if !seen.insert(name.clone()) {
                 return Err(PackError::Layout(format!("duplicate entry: {raw_name:?}")));
             }
-            let kind = classify(&name)?;
+            let kind = match classify(&name) {
+                Ok(kind) => kind,
+                Err(error) if policy.is_legacy() => {
+                    warn_legacy(key, &format!("ignoring unknown entry: {}", error.message()));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
 
             let declared = file.size();
             if declared > limits.max_entry_bytes {
@@ -579,26 +623,27 @@ impl InspectedPack {
 
         let entry = entry
             .ok_or_else(|| PackError::MissingEntry("pack is missing root entry.js".to_string()))?;
-        let entry_text = String::from_utf8(entry.clone())
-            .map_err(|_| PackError::Corrupt("entry.js is not valid UTF-8".to_string()))?;
+        let entry_text = decode_text(key, &entry, "entry.js", policy)?;
         if entry_text.trim().is_empty() {
-            return Err(PackError::MissingEntry(
-                "entry.js must not be empty".to_string(),
-            ));
+            if policy.is_legacy() {
+                warn_legacy(key, "entry.js is empty; loading it like the Dart decoder");
+            } else {
+                return Err(PackError::MissingEntry(
+                    "entry.js must not be empty".to_string(),
+                ));
+            }
         }
         let detail_text = match &detail {
-            Some(bytes) => Some(
-                String::from_utf8(bytes.clone())
-                    .map_err(|_| PackError::Corrupt("detail.js is not valid UTF-8".to_string()))?,
-            ),
+            Some(bytes) => Some(decode_text(key, bytes, "detail.js", policy)?),
             None => None,
         };
         let (meta_text, meta_json_column) = match &meta {
             Some(bytes) if !bytes.iter().all(u8::is_ascii_whitespace) => {
-                let text = std::str::from_utf8(bytes).map_err(|_| {
-                    PackError::InvalidMeta("meta.json is not valid UTF-8".to_string())
-                })?;
-                (Some(text.to_string()), text.to_string())
+                let text = decode_meta_text(key, bytes, policy)?;
+                match text.and_then(|text| sanitize_meta(key, &text, policy)) {
+                    Some(text) => (Some(text.clone()), text),
+                    None => (None, "{}".to_string()),
+                }
             }
             Some(_) => (None, "{}".to_string()),
             None => (None, "{}".to_string()),
@@ -656,6 +701,69 @@ impl InspectedPack {
     }
 }
 
+fn warn_legacy(key: &ChannelKey, reason: &str) {
+    log::warn!("pack: legacy-permissive {key}: {reason}");
+}
+
+fn decode_text(
+    key: &ChannelKey,
+    bytes: &[u8],
+    name: &str,
+    policy: PackPolicy,
+) -> Result<String, PackError> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(text.to_string()),
+        Err(_) if policy.is_legacy() => {
+            warn_legacy(key, &format!("{name} is not valid UTF-8; decoding lossily"));
+            Ok(String::from_utf8_lossy(bytes).into_owned())
+        }
+        Err(_) => Err(PackError::Corrupt(format!("{name} is not valid UTF-8"))),
+    }
+}
+
+fn decode_meta_text(
+    key: &ChannelKey,
+    bytes: &[u8],
+    policy: PackPolicy,
+) -> Result<Option<String>, PackError> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(Some(text.to_string())),
+        Err(_) if policy.is_legacy() => {
+            warn_legacy(key, "meta.json is not valid UTF-8; ignoring it");
+            Ok(None)
+        }
+        Err(_) => Err(PackError::InvalidMeta(
+            "meta.json is not valid UTF-8".to_string(),
+        )),
+    }
+}
+
+/// Under the legacy policy, Dart ignored a non-object/invalid `meta.json` and a
+/// malformed `requiredEnvVars`. Both are tolerated here with a warning; the
+/// strict policy keeps the typed error from `ChannelPack::new`.
+fn sanitize_meta(key: &ChannelKey, text: &str, policy: PackPolicy) -> Option<String> {
+    if !policy.is_legacy() {
+        return Some(text.to_string());
+    }
+    let Ok(JsonValue::Object(mut map)) = serde_json::from_str::<JsonValue>(text) else {
+        warn_legacy(key, "meta.json is not a JSON object; ignoring it");
+        return None;
+    };
+    if let Some(value) = map.get("requiredEnvVars") {
+        let valid = value
+            .as_array()
+            .is_some_and(|items| items.iter().all(JsonValue::is_string));
+        if !valid {
+            warn_legacy(
+                key,
+                "requiredEnvVars is malformed; ignoring that metadata field",
+            );
+            map.remove("requiredEnvVars");
+        }
+    }
+    Some(JsonValue::Object(map).to_string())
+}
+
 /// Removes its directory on drop unless [`TempInstall::disarm`] was called.
 struct TempInstall {
     path: PathBuf,
@@ -710,8 +818,8 @@ fn collect_pack_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), P
     let entries = fs::read_dir(dir)
         .map_err(|error| PackError::Io(format!("read pack dir {}: {error}", dir.display())))?;
     for entry in entries {
-        let entry = entry
-            .map_err(|error| PackError::Io(format!("read pack dir entry: {error}")))?;
+        let entry =
+            entry.map_err(|error| PackError::Io(format!("read pack dir entry: {error}")))?;
         let path = entry.path();
         let file_type = entry
             .file_type()

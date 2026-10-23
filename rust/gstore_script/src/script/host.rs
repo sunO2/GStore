@@ -20,6 +20,7 @@ use super::host_types::{
     DatabaseInsertRequest, EnvAllRequest, EnvGetRequest, EnvHasRequest, EnvSnapshot, HttpMethod,
     HttpRequest, HttpResponse, InstalledInfo, LogLevel, LogRequest, NativeCallRequest, UiRequest,
 };
+use super::limits::SandboxLimits;
 
 /// Host callbacks reachable from scripts through `sendMessage(method, payload)`.
 ///
@@ -38,8 +39,9 @@ pub trait ScriptHost: Send + Sync {
         channel: &ScriptChannel,
         method: &str,
         payload: &JsonValue,
+        limits: &SandboxLimits,
     ) -> Result<JsonValue, ScriptError> {
-        dispatch(self, channel, method, payload)
+        dispatch(self, channel, method, payload, limits)
     }
 
     /// `host.network.get` / `host.network.post` (status + decoded body).
@@ -159,14 +161,15 @@ fn dispatch<H: ScriptHost + ?Sized>(
     channel: &ScriptChannel,
     method: &str,
     payload: &JsonValue,
+    limits: &SandboxLimits,
 ) -> Result<JsonValue, ScriptError> {
     match method {
         "host.network.get" => {
-            let request = HttpRequest::parse(HttpMethod::Get, payload);
+            let request = HttpRequest::parse(HttpMethod::Get, payload, limits.max_redirects);
             Ok(http_envelope(host.http(channel, request)?))
         }
         "host.network.post" => {
-            let request = HttpRequest::parse(HttpMethod::Post, payload);
+            let request = HttpRequest::parse(HttpMethod::Post, payload, limits.max_redirects);
             Ok(http_envelope(host.http(channel, request)?))
         }
         "host.database.getAppsByChannel" => {
@@ -237,6 +240,12 @@ fn dispatch<H: ScriptHost + ?Sized>(
             let request = UiRequest::parse(payload);
             Ok(ok_data(host.ui_request(channel, request)?))
         }
+        // Legacy default: an unknown `host.utils.<method>` is an envelope, not
+        // a thrown error, and names the missing method exactly like natives do.
+        other if other.starts_with("host.utils.") => Ok(json!({
+            "ok": false,
+            "error": format!("{other} 未注册"),
+        })),
         other => Err(ScriptError::host(format!(
             "unsupported host method `{other}`"
         ))),
