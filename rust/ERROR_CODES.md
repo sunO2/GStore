@@ -159,3 +159,7 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `CORE_E_DOWNLOAD_RESYNC_CONFLICT` | core | `PortError::ResyncConflict` | 三路下载 resync 发现身份冲突：同一 `(app_id, version, file_name)` 的既有 `dedup_key` 不一致，或核心行带有模块库中不存在的 `module_task_id` 且状态非终态（`completed`/`cancelled`/`removed`/`failed`）。`apply=true` 时也**零写入**（不建快照、不改核心/模块库） |
 | `CORE_E_DOWNLOAD_RESYNC_DB` | core | `PortError::Db` | resync 读取/写入数据库失败：模块库或 Floor 库存在但不可读（非 SQLite、缺 `download_task`、截断）、快照 `VACUUM INTO` 失败，或应用事务失败（事务回滚，已建快照保留） |
 | `CORE_E_DOWNLOAD_RESYNC_INTERNAL` | core | `PortError::Module`/`UnknownTask`/`NeedsRestart` | resync 不会经模块桥；出现这些变体说明内部契约被破坏，按内部错误处理 |
+| `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` | core / host（`bridge.rs::download_err`） | `PortError::Module`（`download-module-unavailable: ` 标记） | 下载模块未挂载或不可用（未打包、ABI 不符、实例创建失败）：宿主 `HostDownloadPort` 取不到 `download` 模块时写入标记，`download_err` 剥离标记后改写成该码；Dart 侧映射为 `DownloadModuleUnavailableException`。这是**类型化失败**，不存在 Dart 回落：调用方应提示重试或重装，而不是切回旧内核 |
+| `CORE_E_INSTALL_NOT_FOUND` | host（`bridge.rs::install_err`） | `CoreError::NotFound` | 安装域找不到任务或镜像行（未知 `module_task_id`，或按 `dest_path` 查不到核心下载行）；非 `CORE_E_INSTALL_SESSION` 的 `NotFound` 都映射到该码。`installTask` 自 Wave 6B 起只走 core，无 legacy 分支；调用方应重新枚举/对账后再重试 |
+| `CORE_E_SNAPSHOT_DISK` | core（`db.rs`） | `DbError`（`SNAPSHOT_DISK` 前缀） | 快照恢复预检失败：目标盘剩余空间不足 `2 ×` 快照大小，或 `stat` 剩余空间失败。在任何写入前拒绝，live DB 保持不变；释放空间后重试即可 |
+| `CORE_E_SNAPSHOT_BACKUP` | core（`db.rs`） | `DbError`（`SNAPSHOT_BACKUP` 前缀） | 恢复前 live DB 备份失败（创建 `migration/backups`、取时钟或 `VACUUM INTO` 失败）。失败时不产生备份也不触碰 live DB；修复目录/磁盘后重试 |

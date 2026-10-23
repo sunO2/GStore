@@ -34,6 +34,18 @@ core 的任何一条边都不得调用平台代码。
   Wave 04 删除的 8 个文件（platform/installer/notification 宿主、四个能力 bridge 与平台上下文）
   的完整清单就是 `scripts/qa/boundary-check.sh` 的规则 2。
 
+**Wave 6B 下载/安装 cutover（2026-10-23）**：`download` + `install` 已由 core 拥有，Dart 侧
+无回落、无运行时内核选择器（`DownloadCoreConfig` / `LazyDownloadService` 已删除，
+`IDownloadService` 恒为 `RustDownloadService`）。下载是两层模型：Dart `RustDownloadService`
+→ `DownloadFacade`（类型化边界）→ FRB `DownloadApi` → `gstore_core` 下载端口 →
+`gstore_mod_download` 模块。core 拥有镜像库 `gstore_core.db`，模块拥有
+`gstore_mods/download/download.db`；core 只在 parity/reconcile 时**只读**打开模块库
+（`legacy::open_read_only`），从不改写模块行，模块对实时进度保持权威。安装为 core-only
+（`installTask` → core 安装域；缺镜像行为 `CORE_E_INSTALL_NOT_FOUND`），手动选包走
+`_installApkDirect` 且不产生 core 状态。进程默认 flags 来自 `Flags::WAVE06B_CUTOVER`
+（download+install=true，其余五项 false），`Flags::DISABLED`/`Default` 仍是全关退路；
+`CoreFlags.set` 是唯一的部分翻转 API（Rust 为权威，`core_writes` 永不由操作者设置）。
+
 **仅有的两个模块级例外**（均在 core 之外，且显式列在允许清单上）：
 
 1. `protect_fd(fd) -> bool` —— `gstore_mod_proxy` 在 Rust 内创建 socket 并交宿主保护，

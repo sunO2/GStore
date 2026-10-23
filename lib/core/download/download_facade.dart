@@ -1,8 +1,10 @@
 /// Flag-free facade over the Rust `DownloadApi`.
 ///
 /// Tests install a fake [DownloadBackend] through the constructor, so no
-/// native library is required. This file deliberately does not wire into
-/// `RustDownloadService` / install paths yet.
+/// native library is required. `RustDownloadService` is the only production
+/// caller: it forwards headers and `forceDownload`, and maps this facade's
+/// typed errors onto `DownloadModuleUnavailableException`. There is no Dart
+/// fallback and no runtime kernel selector.
 library;
 
 import 'dart:async';

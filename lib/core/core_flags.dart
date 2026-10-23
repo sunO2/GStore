@@ -3,7 +3,10 @@ import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// Immutable snapshot of the Rust-owned feature flags.
 ///
-/// Every field defaults to `false`, matching the Rust `Flags::DISABLED` default.
+/// This Dart mirror starts all-false until the first successful
+/// [CoreFlags.refresh]. The Rust process default is `Flags::WAVE06B_CUTOVER`
+/// (download + install true, the other five flags false); `Flags::DISABLED`
+/// remains the all-off opt-out used by tests.
 class CoreFlagsSnapshot {
   const CoreFlagsSnapshot({
     this.channels = false,
@@ -150,9 +153,12 @@ class FrbCoreFlagsBackend implements CoreFlagsBackend {
 
 /// Dart mirror of the Rust-owned feature flags.
 ///
-/// Call [refresh] to pull a new snapshot from the backend. The only explicit
-/// way to change a flag is [set], which forwards a *partial* patch (only the
-/// supplied flags) and then refreshes. Rust remains the source of truth and
+/// The Rust process default is `Flags::WAVE06B_CUTOVER` (download + install
+/// true, the other five flags false); `Flags::DISABLED` / `Default` remain the
+/// all-off opt-out. Call [refresh] to pull a new snapshot from the backend.
+///
+/// [set] is the **only** partial-flip path: it forwards a *partial* patch (only
+/// the supplied flags) and then refreshes. Rust remains the source of truth and
 /// validates every value; the `coreWrites` projection is never operator-
 /// settable (the patch type has no such field). Direct field assignment is a
 /// compile error.
@@ -194,6 +200,7 @@ class CoreFlags {
 
   /// Applies a partial flip and returns the refreshed snapshot.
   ///
+  /// This is the only partial-flip path; there is no whole-snapshot setter.
   /// Only the non-null arguments are forwarded; every omitted flag is left
   /// untouched by Rust (they are sent as `null`, never `false`). An all-null
   /// call writes nothing and only performs a [refresh]. `coreWrites` is never

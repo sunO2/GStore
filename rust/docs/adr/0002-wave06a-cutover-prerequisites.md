@@ -49,16 +49,23 @@ When the module DB is absent, non-terminal core rows are marked `needs_restart` 
 fresh, empty module DB later appears, those rows still carry their old `module_task_id`, and the
 absent-task conflict rule aborts subsequent runs.
 
+- This is permanent for that lineage: every later reconcile sees the same absent ids and marks
+  the rows `needs_restart` again. There is no automatic repair.
 - Recovery requires clearing/null-ing those `module_task_id`s or restoring a module DB with
   matching ids.
+- Wave 6B does not change this behaviour; the cutover makes the module path production, so the
+  door now guards real user data rather than an opt-in experiment.
 
 ### 5. Snapshot restore is failure-safe, not crash-safe
 
 `DbHandle::replace_from_snapshot` validates before touching the live DB, takes a
 `files_dir/migration/backups/pre-restore-*.db` backup, swaps under the writer mutex, and
-compensates on any error path. It does not fsync directories, so a process death mid-swap is not
-covered.
+compensates on any error path. Failures are typed (`CORE_E_SNAPSHOT_DISK`,
+`CORE_E_SNAPSHOT_BACKUP`, `CORE_E_SNAPSHOT_RESTORE`) and a successful restore removes
+`.restore-old`.
 
+- It does **not** fsync directories. A process death mid-swap is not covered, so the restore is
+  **failure-safe but NOT crash-safe**. Wave 6B adds no directory fsync.
 - Recovery points after a crash are the `.restore-old` file and the pre-restore backup.
 
 ### 6. The per-domain marker is authoritative, the global flag is advisory
@@ -73,14 +80,29 @@ mirror, not a gate.
 - Init-time reconcile/seeding runs under a suppression guard so no marker is written during
   `init`, matching the migration/import/snapshot rule.
 
-### 7. Wave 6A flips nothing
+### 7. Wave 6A flips nothing (historical)
 
-`CoreFlags.set(...)` exists and forwards a partial patch, but 6A has no production call site.
-`DownloadCoreConfig.resolve` still ignores `CoreFlags.download`, and `LazyDownloadService` remains
-the bound download implementation. A flag flip alone cannot switch behaviour until 6B changes the
-binding.
+`CoreFlags.set(...)` exists and forwards a partial patch, but 6A had no production call site.
+`DownloadCoreConfig.resolve` still ignored `CoreFlags.download`, and `LazyDownloadService`
+remained the bound download implementation. That was the 6A state only; Wave 6B changed the
+binding (see below).
+
+## Wave 6B cutover (2026-10-23)
+
+The binding has changed: `download` and `install` are core-only, with no Dart fallback and no
+runtime kernel selector. `DownloadCoreConfig` / `LazyDownloadService` are deleted and
+`RustDownloadService` is the only `IDownloadService`.
+
+- The process default is `Flags::WAVE06B_CUTOVER` (download + install true, the other five
+  flags false). `Flags::DISABLED` / `Default` remain the all-off opt-out.
+- `CoreFlags.set` is the only partial-flip path; Rust stays the source of truth and
+  `core_writes` is never operator-settable.
+- The consequences above still hold unchanged: resync reads the module DB read-only, the mirror
+  lags by one sweep, divergent dedup lineage is a hard conflict, `needs_restart` is a one-way
+  door, and snapshot restore is failure-safe but not crash-safe.
 
 ## Next step
 
-Wave 5 (`gstore-rust-core-android-wave05`) must complete first. 6B
-(`gstore-rust-core-wave06b`) is blocked until the Wave 5 closeout tag exists.
+Wave 5 (`gstore-rust-core-android-wave05`) completed on `wave05-script`, and Wave 6B ran on
+`wave06b/cutover` (see the cutover section above). This section is kept as the historical 6A
+handoff, not as an open blocker.
