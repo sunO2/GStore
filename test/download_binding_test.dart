@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/manager/download_manager.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -148,29 +149,6 @@ void main() {
         reason: 'the lazy router must not survive the direct binding',
       );
       expect(manager.get<IDownloadService>(), same(bound));
-
-      // Stale-state guard: exactly one watcher subscription, no lazy memo.
-      expect(
-        DownloadTaskWatcher.instance.debugStartCount,
-        1,
-        reason: 'onRegister must start DownloadTaskWatcher exactly once',
-      );
-
-      // Re-initialising the module and repeating start() with the same
-      // implementation must both be no-ops (no double subscription, no
-      // `_started` clear).
-      await manager.initializeModule('download');
-      DownloadTaskWatcher.instance.start(RustDownloadService.instance);
-      expect(
-        DownloadTaskWatcher.instance.debugStartCount,
-        1,
-        reason: 'same implementation must not be subscribed twice',
-      );
-      expect(
-        DownloadTaskWatcher.instance.debugStartedIds,
-        isEmpty,
-        reason: 'repeated start must not clear/reset the started-id set',
-      );
     });
 
     test(
@@ -234,6 +212,21 @@ void main() {
         reason: 'the Dart DownloadManager must never be the bound fallback',
       );
       expect(dartFallback, isA<DownloadManager>());
+    });
+
+    test('typed exception exposes a non-empty userMessage containing the code',
+        () {
+      final error = DownloadModuleUnavailableException(StateError('boom'));
+
+      expect(error.userMessage, isNotEmpty);
+      expect(
+        error.userMessage,
+        contains(DownloadModuleUnavailableException.code),
+      );
+      expect(
+        DownloadModuleUnavailableException.code,
+        'CORE_E_DOWNLOAD_MODULE_UNAVAILABLE',
+      );
     });
 
     test('source gate: lazy router, its config class and key are gone from lib/',

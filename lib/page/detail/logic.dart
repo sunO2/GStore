@@ -13,6 +13,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
@@ -195,21 +196,27 @@ class DetailLogic
       return;
     }
     unawaited(() async {
-      final task = await service.download(
-        appId, appName, version, downloadUrl, fileName,
-        downloadSize: download.size ?? downloadSize,
-      );
-      state.currentDownload = task;
-      counterController.sink.add(task);
-      final id = task.id;
-      if (id != null) {
-        downloadListenerSubscription?.cancel();
-        downloadListenerSubscription = service.watch(id).listen((da) {
-          state.currentDownload = da;
-          // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
-          state.refresh();
-          counterController.sink.add(da);
-        });
+      try {
+        final task = await service.download(
+          appId, appName, version, downloadUrl, fileName,
+          downloadSize: download.size ?? downloadSize,
+        );
+        state.currentDownload = task;
+        counterController.sink.add(task);
+        final id = task.id;
+        if (id != null) {
+          downloadListenerSubscription?.cancel();
+          downloadListenerSubscription = service.watch(id).listen((da) {
+            state.currentDownload = da;
+            // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
+            state.refresh();
+            counterController.sink.add(da);
+          });
+        }
+      } on DownloadModuleUnavailableException catch (e) {
+        AppDialogs.showError(e.userMessage, title: '下载失败');
+      } catch (e) {
+        appLog.error('DetailLogic: startDownload 失败 - $e');
       }
     }());
   }
@@ -473,6 +480,8 @@ class DetailLogic
             counterController.sink.add(da);
           });
         }
+      } on DownloadModuleUnavailableException catch (e) {
+        appLog.error('DetailLogic: syncDownloadToFB 失败 - ${e.userMessage}');
       } catch (e) {
         appLog.error('DetailLogic: syncDownloadToFB 失败 - $e');
       }

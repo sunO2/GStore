@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/model/download_task_database.dart';
@@ -349,6 +350,30 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     }
   }
 
+  /// 统一包一层变更类服务调用：类型化内核不可用 → 用户可见提示，
+  /// 其它错误只记日志。返回是否真正执行成功（失败分支不继续刷新/提示成功）。
+  Future<bool> _runServiceAction(
+    String label,
+    Future<void> Function(IDownloadService service) action, {
+    IDownloadService? service,
+  }) async {
+    final target = service ?? ModuleManager.instance.get<IDownloadService>();
+    if (target == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return false;
+    }
+    try {
+      await action(target);
+      return true;
+    } on DownloadModuleUnavailableException catch (e) {
+      AppDialogs.showError(e.userMessage, title: '下载失败');
+      return false;
+    } catch (e) {
+      appLog.error('下载面板: $label 失败 - $e');
+      return false;
+    }
+  }
+
   /// 安装应用（Shizuku 静默安装优先，回退系统安装）
   Future<void> installApp(DownloadTask downStatus) async {
     // 安装模块下线 → 注册表取不到服务，降级提示不抛
@@ -366,12 +391,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   Future<void> resumeDownload(DownloadTask downStatus) async {
     debugPrint('DownloadPanel.action: 继续 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
-    final service = ModuleManager.instance.get<IDownloadService>();
-    if (id == null || service == null) {
+    if (id == null) {
       AppDialogs.showWarning('下载模块未启用');
       return;
     }
-    await service.resume(id);
+    if (!await _runServiceAction('继续', (service) => service.resume(id))) {
+      return;
+    }
     await loadTasks();
   }
 
@@ -379,12 +405,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   Future<void> retryDownload(DownloadTask downStatus) async {
     debugPrint('DownloadPanel.action: 重试/重新下载 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
-    final service = ModuleManager.instance.get<IDownloadService>();
-    if (id == null || service == null) {
+    if (id == null) {
       AppDialogs.showWarning('下载模块未启用');
       return;
     }
-    await service.retry(id);
+    if (!await _runServiceAction('重试', (service) => service.retry(id))) {
+      return;
+    }
     await loadTasks();
   }
 
@@ -392,12 +419,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   Future<void> restartDownload(DownloadTask downStatus) async {
     debugPrint('DownloadPanel.action: 重新下载 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
-    final service = ModuleManager.instance.get<IDownloadService>();
-    if (id == null || service == null) {
+    if (id == null) {
       AppDialogs.showWarning('下载模块未启用');
       return;
     }
-    await service.restart(id);
+    if (!await _runServiceAction('重新下载', (service) => service.restart(id))) {
+      return;
+    }
     await loadTasks();
   }
 
@@ -405,12 +433,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   Future<void> pauseDownload(DownloadTask downStatus) async {
     debugPrint('DownloadPanel.action: 暂停 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
-    final service = ModuleManager.instance.get<IDownloadService>();
-    if (id == null || service == null) {
+    if (id == null) {
       AppDialogs.showWarning('下载模块未启用');
       return;
     }
-    await service.pause(id);
+    if (!await _runServiceAction('暂停', (service) => service.pause(id))) {
+      return;
+    }
     await loadTasks();
     AppDialogs.showSuccess(
       '已暂停 ${downStatus.appName} 的下载',
@@ -426,7 +455,11 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       AppDialogs.showWarning('下载模块未启用');
       return;
     }
-    service.cancel(id);
+    unawaited(_runServiceAction(
+      '取消',
+      (target) => target.cancel(id),
+      service: service,
+    ));
     AppDialogs.showSuccess(
       '已取消 ${downStatus.appName} 的下载',
       title: '已取消',
@@ -445,7 +478,11 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     for (final item in downloading) {
       final id = item.id;
       if (id != null && service != null) {
-        service.pause(id);
+        unawaited(_runServiceAction(
+          '批量暂停',
+          (target) => target.pause(id),
+          service: service,
+        ));
       }
     }
     AppDialogs.showSuccess('已暂停 ${downloading.length} 个下载');
@@ -460,7 +497,11 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     for (final item in queued) {
       final id = item.id;
       if (id != null && service != null) {
-        service.cancel(id);
+        unawaited(_runServiceAction(
+          '批量取消',
+          (target) => target.cancel(id),
+          service: service,
+        ));
       }
     }
     if (queued.isNotEmpty) {
@@ -477,7 +518,11 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     for (final item in failed) {
       final id = item.id;
       if (id != null && service != null) {
-        service.retry(id);
+        unawaited(_runServiceAction(
+          '批量重试',
+          (target) => target.retry(id),
+          service: service,
+        ));
       }
     }
   }
@@ -491,7 +536,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       // 1. 取消正在下载的任务
       final service = ModuleManager.instance.get<IDownloadService>();
       if (downStatus.isActive && id != null && service != null) {
-        await service.cancel(id);
+        if (!await _runServiceAction(
+          '删除前取消',
+          (target) => target.cancel(id),
+          service: service,
+        )) {
+          return;
+        }
       }
 
       // 2. 删除已下载的文件
@@ -518,7 +569,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       //    Rust 内核的任务存在模块自己的库里，只删 Floor 是删不掉的（列表会"复活"）
       if (id != null) {
         if (service != null) {
-          await service.remove(id);
+          if (!await _runServiceAction(
+            '删除记录',
+            (target) => target.remove(id),
+            service: service,
+          )) {
+            return;
+          }
         } else {
           final db = await downloadTaskDatabase;
           await db.database
@@ -641,7 +698,13 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         if (item.isActive) {
           final id = item.id;
           if (id != null && service != null) {
-            await service.cancel(id);
+            if (!await _runServiceAction(
+              '清空前取消',
+              (target) => target.cancel(id),
+              service: service,
+            )) {
+              return;
+            }
           }
         }
       }

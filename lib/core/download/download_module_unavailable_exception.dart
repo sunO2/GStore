@@ -17,6 +17,9 @@ class DownloadModuleUnavailableException extends StateError {
   DownloadModuleUnavailableException([this.cause])
       : super('RustDownloadService: download 模块不可用');
 
+  /// User-facing text for UI layers (single source of truth, includes [code]).
+  String get userMessage => '下载内核不可用（$code），请重试或重新安装应用';
+
   @override
   String toString() =>
       '$code: $message${cause == null ? '' : ' ($cause)'}';
