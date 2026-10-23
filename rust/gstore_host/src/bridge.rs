@@ -4275,6 +4275,22 @@ impl ScriptApi {
         self.inner.set_env(&key, env)
     }
 
+    /// Replaces the channel config snapshot read by `host.config.get`.
+    ///
+    /// Mirrors [`Self::set_env`]: the snapshot is scoped to `key` (the channel /
+    /// pack instance) and hot-updates live runtimes. Each map value is a JSON
+    /// document, so a string value is passed quoted (`"\"sit\""`), a number as
+    /// `"42"`, and an object as `"{\"a\":1}"`. A key that was never injected (or
+    /// was injected as JSON `null`) resolves to `null`, never a fabricated value.
+    /// Invalid JSON is rejected as `invalid_argument` without changing the map.
+    pub fn set_config(
+        &self,
+        key: String,
+        config: std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        self.inner.set_config(&key, config)
+    }
+
     /// Runs `main(method, params)` and returns the JSON result as a string.
     ///
     /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,

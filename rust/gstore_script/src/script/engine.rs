@@ -20,6 +20,7 @@ use super::interrupt::InterruptState;
 use super::js_error::{map_error, timeout_ms};
 use super::limits::SandboxLimits;
 use super::options::ScriptOptions;
+use super::park;
 
 /// A thread-confined QuickJS runtime.
 pub(crate) struct Engine {
@@ -49,6 +50,9 @@ impl Engine {
         let interrupt = Arc::new(InterruptState::new());
         let handler_state = Arc::clone(&interrupt);
         runtime.set_interrupt_handler(Some(Box::new(move || handler_state.on_interrupt())));
+        // Host capabilities run on this thread; give them a way to park without
+        // charging the eval clocks.
+        park::install(Arc::clone(&interrupt));
 
         let ctx = Context::full(&runtime)
             .map_err(|err| ScriptError::internal(format!("create QuickJS context: {err}")))?;
@@ -121,12 +125,18 @@ impl Engine {
         requested: Duration,
     ) -> Result<JsonValue, ScriptError> {
         let effective = self.begin_budget(requested)?;
+        let exempted_before = self.interrupt.exempted();
         let started = Instant::now();
         let outcome = self
             .ctx
             .with(|ctx| self.eval_in_ctx(&ctx, source, effective));
         self.interrupt.disarm();
-        self.spent_eval = self.spent_eval.saturating_add(started.elapsed());
+        // Host parks (UI round-trips) are not script work: charge only the
+        // unparked wall-clock to the cumulative eval budget.
+        let exempted = self.interrupt.exempted().saturating_sub(exempted_before);
+        self.spent_eval = self
+            .spent_eval
+            .saturating_add(started.elapsed().saturating_sub(exempted));
         match outcome {
             // A timeout caused by the cumulative cap (rather than by the call's
             // own budget) is a budget breach, not a normal slow call.

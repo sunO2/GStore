@@ -45,6 +45,7 @@ ScriptRuntime::spawn(channel, options, host)
 | `ScriptRuntime::spawn(channel, options, host)` | Starts the channel thread and builds the engine. |
 | `ScriptRuntime::eval(source)` | Returns `serde_json::Value`. Promise results are drained until settled. |
 | `ScriptRuntime::send_message(method, payload)` | Rust-side dispatch through the host with channel affinity. Same envelope path as JS `sendMessage`. |
+| `ScriptRuntime::begin_park(bound)` | Host-only: suspends the eval deadline and cumulative clock while a capability blocks; returns a `ParkGuard` that restores accounting on drop. |
 | `ScriptRuntime::dispose()` | Stops the thread; consumes the handle. |
 | `ScriptOptions` | Wraps the single `SandboxLimits` policy (see below); `with_eval_timeout` / `with_memory_limit` are convenience setters. |
 | `ScriptHost::send_message(channel, method, payload)` | Default bridge dispatcher. Hosts normally implement capabilities instead. |
@@ -52,6 +53,26 @@ ScriptRuntime::spawn(channel, options, host)
 
 A host implements only the capabilities it needs; they run on the script thread
 and must be bounded and thread-safe.
+
+## Parked host waits
+
+Some capabilities block the script thread while waiting for an external answer
+(the Todo 5 UI round-trip). That wait is not script work, so a host wraps it in
+`ScriptRuntime::begin_park(bound)`:
+
+- While the returned `ParkGuard` is alive, QuickJS' interrupt handler reports
+  "not expired" and the engine subtracts the interval from the cumulative eval
+  clock, so neither the 5 s normal deadline nor the per-runtime budget is spent.
+- On drop, the armed deadline is pushed forward by the exempted interval and the
+  cumulative clock resumes from where it paused. Parking is a **pause, not a
+  reset**: the remaining budget is exactly what it was before the park.
+- The exemption is clamped to `bound` (hosts pass the UI budget), so an over-long
+  park only exempts its bound and charges the excess to the evaluation.
+- `ParkGuard` is the only way to end a park, so early returns and panics restore
+  accounting via `Drop`. The API is Rust-only — JavaScript cannot reach it, so a
+  script cannot extend its own budget.
+- Outside a channel thread the guard is inert, which keeps `ui_api` usable in
+  tests and in the Rust-side `send_message` path.
 
 ## Sandbox limits
 
@@ -72,7 +93,7 @@ wall-clock budget), never a truncated success.
 | `host.network.*` response `data` | 20 MB | plan Todo 4 | bridge serialises `data` and rejects over-cap envelopes | `script_sandbox_limits_response_over_cap_is_typed_without_data` |
 | HTTP redirects | 5 | plan Todo 4 | `HttpRequest.max_redirects` = `min(script request, policy)`; policy > 5 rejected on spawn | `script_sandbox_limits_redirects_are_clamped_to_the_policy` |
 | Live runtimes (process-wide) | 32 | plan Todo 4 "global runtime budget" | `budget::RuntimeSlot` acquired before the thread spawns | `script_sandbox_limits_concurrent_runtime_cap_is_typed` |
-| Cumulative eval time (per runtime) | 10 min | plan Todo 4 "global runtime budget" | engine clock; remaining budget shortens the next eval and exhaustion refuses further evals | `script_sandbox_limits_cumulative_budget_is_typed` |
+| Cumulative eval time (per runtime) | 10 min | plan Todo 4 "global runtime budget" | engine clock; parked host waits are subtracted; remaining budget shortens the next eval and exhaustion refuses further evals | `script_sandbox_limits_cumulative_budget_is_typed`, `script_runtime_park_pauses_cumulative_budget_instead_of_resetting_it` |
 
 The redirect ceiling is a **request-shape contract**: the host transport owns
 actual redirect following. The bridge always constructs the host request with
@@ -151,6 +172,7 @@ cargo test --manifest-path rust/gstore_script/Cargo.toml script_runtime_eval
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_runtime_timeout
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_host_api
 cargo test --manifest-path rust/gstore_script/Cargo.toml script_sandbox_limits
+cargo test --manifest-path rust/gstore_script/Cargo.toml script_runtime_park
 ```
 
 The timeout tests use an 80 ms budget so a regression hangs for milliseconds,

@@ -1,9 +1,9 @@
 //! One installed pack's QuickJS runtimes (`entry.js` and `detail.js`).
 //!
 //! Both runtimes are created lazily on the same dedicated-thread machinery as
-//! `gstore_script::ScriptRuntime`, are serialised by `op`, and share the env and
-//! app-id state that the host reads. Calls use `eval_long` because a script may
-//! park on a UI request (see `ui_api.rs`).
+//! `gstore_script::ScriptRuntime`, are serialised by `op`, and share the env,
+//! config, and app-id state that the host reads. Calls use `eval_long` because a
+//! script may park on a UI request (see `ui_api.rs`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,7 +17,7 @@ use gstore_script::{
 };
 use serde_json::{Map, Value as JsonValue};
 
-use crate::script_host_impl::{EnvMap, ScriptHostImpl};
+use crate::script_host_impl::{ConfigMap, EnvMap, ScriptHostImpl};
 use crate::script_pack::LoadedPack;
 
 /// Extra long-eval head-room granted so the UI timeout fires before QuickJS
@@ -36,6 +36,7 @@ pub(crate) struct EntryDeps {
     pub http: Arc<dyn HttpPort>,
     pub ui_budget: Duration,
     pub eval_timeout: Duration,
+    pub cumulative_budget: Duration,
 }
 
 pub(crate) struct ScriptEntry {
@@ -43,6 +44,7 @@ pub(crate) struct ScriptEntry {
     entry_js: String,
     detail_js: Option<String>,
     env: Arc<Mutex<EnvMap>>,
+    config: Arc<Mutex<ConfigMap>>,
     app_id: Arc<Mutex<Option<String>>>,
     op: Mutex<()>,
     runtimes: Mutex<RuntimeSlots>,
@@ -50,6 +52,7 @@ pub(crate) struct ScriptEntry {
     http: Arc<dyn HttpPort>,
     ui_budget: Duration,
     eval_timeout: Duration,
+    cumulative_budget: Duration,
 }
 
 #[derive(Default)]
@@ -65,6 +68,7 @@ impl ScriptEntry {
             entry_js: loaded.entry_js,
             detail_js: loaded.detail_js,
             env: Arc::new(Mutex::new(env)),
+            config: Arc::new(Mutex::new(ConfigMap::new())),
             app_id: Arc::new(Mutex::new(None)),
             op: Mutex::new(()),
             runtimes: Mutex::new(RuntimeSlots::default()),
@@ -72,12 +76,19 @@ impl ScriptEntry {
             http: deps.http,
             ui_budget: deps.ui_budget,
             eval_timeout: deps.eval_timeout,
+            cumulative_budget: deps.cumulative_budget,
         }
     }
 
     pub(crate) fn replace_env(&self, env: EnvMap) {
         if let Ok(mut guard) = self.env.lock() {
             *guard = env;
+        }
+    }
+
+    pub(crate) fn replace_config(&self, config: ConfigMap) {
+        if let Ok(mut guard) = self.config.lock() {
+            *guard = config;
         }
     }
 
@@ -142,13 +153,15 @@ impl ScriptEntry {
     fn spawn(&self, script: &str) -> Result<ScriptRuntime, String> {
         let limits = SandboxLimits::default()
             .with_eval_timeout(self.eval_timeout)
-            .with_long_eval_timeout(self.ui_budget.saturating_add(UI_GRACE));
+            .with_long_eval_timeout(self.ui_budget.saturating_add(UI_GRACE))
+            .with_cumulative_eval_budget(self.cumulative_budget);
         let channel = EngineChannel::new(self.key.as_str()).map_err(|error| map_script(&error))?;
         let host = Arc::new(ScriptHostImpl::new(
             self.db.clone(),
             Arc::clone(&self.http),
             Arc::clone(&self.env),
             Arc::clone(&self.app_id),
+            Arc::clone(&self.config),
             self.ui_budget,
         ));
         let runtime = ScriptRuntime::spawn(channel, ScriptOptions::new(limits), host)

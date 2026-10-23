@@ -16,6 +16,8 @@
 //! - [`ScriptRuntime::spawn`] / [`ScriptRuntime::dispose`]
 //! - [`ScriptRuntime::eval`] — JSON completion value, Promise-aware
 //! - [`ScriptRuntime::send_message`] — the `sendMessage` host bridge
+//! - [`ScriptRuntime::begin_park`] / [`ParkGuard`] — host-only pause of the eval
+//!   clocks while a capability blocks (UI round-trips)
 //! - [`ScriptHost`] — implemented by the host layer (Todo 2)
 //! - [`ScriptOptions`] / [`SandboxLimits`] — the single sandbox policy
 //!   (heap, stack, wall-clock, output/response size, redirects, global budget)
@@ -28,7 +30,7 @@ mod script;
 pub use script::{
     ChannelApp, CheckVersionRequest, ConfigGetRequest, DatabaseAppRequest, DatabaseAppsRequest,
     DatabaseInsertRequest, EnvAllRequest, EnvGetRequest, EnvHasRequest, EnvSnapshot, HttpMethod,
-    HttpRequest, HttpResponse, InstalledInfo, LogLevel, LogRequest, NativeCallRequest,
+    HttpRequest, HttpResponse, InstalledInfo, LogLevel, LogRequest, NativeCallRequest, ParkGuard,
     SandboxLimits, ScriptChannel, ScriptError, ScriptErrorKind, ScriptHost, ScriptOptions,
     ScriptRuntime, UiRequest, UnsupportedHost, CODE_DISPOSED, CODE_EVAL, CODE_HOST, CODE_INTERNAL,
     CODE_INVALID_ARGUMENT, CODE_LIMIT, CODE_TIMEOUT, DEFAULT_CUMULATIVE_EVAL_BUDGET_MS,

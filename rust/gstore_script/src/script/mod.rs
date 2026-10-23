@@ -11,6 +11,7 @@
 //! - `bridge`     — native bridge + prelude installation
 //! - `js_error`   — rquickjs error -> typed error mapping
 //! - `interrupt`  — wall-clock budget shared with QuickJS
+//! - `park`       — host park accounting (suspends deadlines, guard-restored)
 //! - `budget`     — process-wide live-runtime admission
 //! - `engine`     — one thread-confined QuickJS runtime/context
 //! - `thread`     — command loop on the dedicated OS thread
@@ -27,6 +28,7 @@ mod interrupt;
 mod js_error;
 mod limits;
 mod options;
+mod park;
 mod runtime;
 mod thread;
 
@@ -48,4 +50,5 @@ pub use limits::{
     DEFAULT_STACK_LIMIT_BYTES,
 };
 pub use options::ScriptOptions;
+pub use park::ParkGuard;
 pub use runtime::ScriptRuntime;

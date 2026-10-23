@@ -572,6 +572,17 @@ abstract class ScriptApi implements RustOpaqueInterface {
       required String method,
       required String paramsJson});
 
+  /// Replaces the channel config snapshot read by `host.config.get`.
+  ///
+  /// Mirrors [`Self::set_env`]: the snapshot is scoped to `key` (the channel /
+  /// pack instance) and hot-updates live runtimes. Each map value is a JSON
+  /// document, so a string value is passed quoted (`"\"sit\""`), a number as
+  /// `"42"`, and an object as `"{\"a\":1}"`. A key that was never injected (or
+  /// was injected as JSON `null`) resolves to `null`, never a fabricated value.
+  /// Invalid JSON is rejected as `invalid_argument` without changing the map.
+  Future<void> setConfig(
+      {required String key, required Map<String, String> config});
+
   /// Replaces the channel env snapshot and hot-updates live runtimes.
   Future<void> setEnv({required String key, required Map<String, String> env});
 }

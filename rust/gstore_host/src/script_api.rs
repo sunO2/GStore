@@ -18,13 +18,19 @@
 //!
 //! # Parked wait / cumulative budget
 //!
-//! The leaf crate tracks cumulative eval wall-clock across calls and has no
-//! public "pause the clock while a host callback is parked" primitive. This
-//! module therefore keeps the parked interval inside `eval_long` (safe, bounded,
-//! and it preserves the 30 s UI contract) but **cannot** exempt that interval
-//! from the per-runtime cumulative clock. The correct fix is an engine-level
-//! park/unpark accounting hook in `gstore_script`; it is reported as an open
-//! dependency instead of being faked here.
+//! The UI wait is wrapped in [`ScriptRuntime::begin_park`](gstore_script::ScriptRuntime::begin_park):
+//! the leaf crate suspends both the interrupt deadline and the cumulative eval
+//! clock for the parked interval, bounded by the same UI budget. Unparking
+//! extends the deadline by exactly the exempted interval, so the remaining
+//! budget is charged normally (parking pauses the clock, it does not reset it).
+//!
+//! # Config injection
+//!
+//! `set_config(key, values)` populates the channel-scoped snapshot read by
+//! `host.config.get`. Each value is a JSON document (for example `"\"sit\""`
+//! for the string `sit`, `42` for a number), parsed at this boundary; a miss
+//! returns `null`. The snapshot lives on the API instance's entry for that pack,
+//! like the cached runtimes and env hot-updates.
 //!
 //! # Policy
 //!
@@ -32,7 +38,7 @@
 //! retries with [`PackPolicy::LegacyPermissive`] only when the strict decode
 //! fails, so a brand-new pack can never be imported permissively.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,6 +47,7 @@ use gstore_core::channel::{validate_channel_key, PackPolicy, PackStore};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
 use gstore_core::ports::{FileSecretStore, HttpPort};
+use gstore_script::SandboxLimits;
 
 use crate::script_env;
 use crate::script_pack;
@@ -62,6 +69,7 @@ pub(crate) struct ScriptApiInner {
     entries: Mutex<HashMap<String, Arc<ScriptEntry>>>,
     ui_budget: Duration,
     eval_timeout: Duration,
+    cumulative_budget: Duration,
 }
 
 impl ScriptApiInner {
@@ -79,6 +87,7 @@ impl ScriptApiInner {
             http,
             DEFAULT_UI_BUDGET,
             DEFAULT_EVAL_TIMEOUT,
+            SandboxLimits::default().cumulative_eval_budget,
         )
     }
 
@@ -89,6 +98,7 @@ impl ScriptApiInner {
         http: Arc<dyn HttpPort>,
         ui_budget: Duration,
         eval_timeout: Duration,
+        cumulative_budget: Duration,
     ) -> Result<Self, String> {
         for dir in [&data_dir, &files_dir, &cache_dir] {
             std::fs::create_dir_all(dir)
@@ -106,6 +116,7 @@ impl ScriptApiInner {
             entries: Mutex::new(HashMap::new()),
             ui_budget,
             eval_timeout,
+            cumulative_budget,
         })
     }
 
@@ -178,6 +189,30 @@ impl ScriptApiInner {
         Ok(())
     }
 
+    /// Replaces the channel config snapshot read by `host.config.get`.
+    ///
+    /// Values are channel-scoped and hot-updated on the live entry (the same
+    /// lifetime as the cached runtimes). Each value must be a JSON document;
+    /// `host.config.get` returns it verbatim, or `null` for a key that was never
+    /// injected.
+    pub(crate) fn set_config(
+        &self,
+        key: &str,
+        values: HashMap<String, String>,
+    ) -> Result<(), String> {
+        let key = self.channel_key(key)?;
+        let mut config = BTreeMap::new();
+        for (name, text) in values {
+            let value = serde_json::from_str(&text).map_err(|error| {
+                format!("invalid_argument: config `{name}` is not valid JSON: {error}")
+            })?;
+            config.insert(name, value);
+        }
+        let entry = self.ensure_entry(&key)?;
+        entry.replace_config(config);
+        Ok(())
+    }
+
     /// Runs `main(method, params)` and returns the raw JSON result as a string.
     pub(crate) fn run(&self, key: &str, method: &str, params_json: &str) -> Result<String, String> {
         let key = self.channel_key(key)?;
@@ -244,6 +279,7 @@ impl ScriptApiInner {
                 http: Arc::clone(&self.http),
                 ui_budget: self.ui_budget,
                 eval_timeout: self.eval_timeout,
+                cumulative_budget: self.cumulative_budget,
             },
         ));
         entries.insert(key.as_str().to_owned(), Arc::clone(&entry));

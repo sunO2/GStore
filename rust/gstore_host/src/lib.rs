@@ -36,6 +36,10 @@ mod script_api_test_support;
 mod script_api_lifecycle_tests;
 #[cfg(test)]
 mod script_api_roundtrip_tests;
+#[cfg(test)]
+mod script_api_config_tests;
+#[cfg(test)]
+mod script_api_park_tests;
 
 /// 单进程测试共享 `jni_bridge::TUN_FD` 等全局态，相关用例须串行执行。
 #[cfg(test)]

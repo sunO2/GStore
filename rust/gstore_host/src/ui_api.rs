@@ -24,13 +24,13 @@
 //!
 //! # Parked wait vs. eval budgets
 //!
-//! The script runs under `ScriptRuntime::eval_long`, so the normal 5 s eval
-//! deadline is not armed at all while the thread is parked. The long budget is
-//! configured as `UI budget + 5 s`, which guarantees the UI timeout is produced
-//! by this module before QuickJS interrupts the evaluation. The leaf crate's
-//! cumulative eval clock still counts parked time (it measures wall-clock around
-//! the whole eval); excluding it needs an engine-level park primitive. The host
-//! reports that gap instead of faking an exemption (see `script_api.rs`).
+//! The wait itself is wrapped in [`ScriptRuntime::begin_park`], so
+//! the leaf crate suspends both its interrupt deadline and its cumulative eval
+//! clock for exactly the parked interval. The long eval budget is still
+//! `UI budget + 5 s`, which keeps the UI timeout decisive, but the 5 s normal
+//! budget can never fire while parked. On unpark the deadline is extended by the
+//! exempted interval (never beyond the UI budget), so the remaining eval budget
+//! is charged normally — parking pauses accounting, it does not reset it.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,7 +40,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gstore_core::dto::ChannelKey;
 use gstore_core::CoreEvent;
-use gstore_script::{ScriptChannel, ScriptError};
+use gstore_script::{ScriptChannel, ScriptError, ScriptRuntime};
 use serde_json::Value as JsonValue;
 
 /// Stable code returned by [`respond`] for unknown or expired request ids.
@@ -132,6 +132,7 @@ pub fn request(
     }
     crate::event_bridge::push_event(0, 0, wire, body.into_bytes());
 
+    let _parked = ScriptRuntime::begin_park(budget);
     match rx.recv_timeout(budget) {
         Ok(value) => Ok(value),
         Err(mpsc::RecvTimeoutError::Disconnected) => {

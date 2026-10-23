@@ -30,6 +30,20 @@ impl Drop for Harness {
 }
 
 pub(crate) fn harness(tag: &str, ui_budget: Duration, eval_timeout: Duration) -> Harness {
+    harness_with_cumulative(
+        tag,
+        ui_budget,
+        eval_timeout,
+        gstore_script::SandboxLimits::default().cumulative_eval_budget,
+    )
+}
+
+pub(crate) fn harness_with_cumulative(
+    tag: &str,
+    ui_budget: Duration,
+    eval_timeout: Duration,
+    cumulative_budget: Duration,
+) -> Harness {
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
         "gstore-script-api-{tag}-{}-{seq}",
@@ -45,6 +59,7 @@ pub(crate) fn harness(tag: &str, ui_budget: Duration, eval_timeout: Duration) ->
         std::sync::Arc::new(FakeHttpPort::new()),
         ui_budget,
         eval_timeout,
+        cumulative_budget,
     )
     .expect("init ScriptApi");
     Harness { api, root }

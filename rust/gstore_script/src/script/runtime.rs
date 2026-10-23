@@ -2,6 +2,7 @@
 
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value as JsonValue;
 
@@ -9,6 +10,7 @@ use super::channel::ScriptChannel;
 use super::error::ScriptError;
 use super::host::ScriptHost;
 use super::options::ScriptOptions;
+use super::park::ParkGuard;
 use super::thread::{self, Command, ThreadHandle};
 
 /// Handle to one channel's dedicated QuickJS runtime.
@@ -42,6 +44,20 @@ impl ScriptRuntime {
     /// Channel key this runtime is bound to.
     pub fn channel(&self) -> &ScriptChannel {
         &self.channel
+    }
+
+    /// Begin a host-side park on the current channel thread.
+    ///
+    /// Call this from a [`ScriptHost`] capability before blocking on an external
+    /// answer (the UI round-trip does). The returned [`ParkGuard`] suspends the
+    /// wall-clock deadline and the cumulative eval clock until it is dropped, and
+    /// exempts at most `bound` — a longer wait charges its excess to the eval.
+    ///
+    /// This is deliberately a Rust API: JavaScript cannot reach it, so a script
+    /// cannot extend its own budget. When called outside a channel thread (for
+    /// example by `ui_api` in a unit test) the returned guard is inert.
+    pub fn begin_park(bound: Duration) -> ParkGuard {
+        ParkGuard::begin(bound)
     }
 
     /// Evaluate a script and return its JSON completion value.

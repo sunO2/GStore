@@ -8,7 +8,7 @@
 //! |---|---|
 //! | `http` | any injected [`HttpPort`] (production: `ReqwestHttpPort`) |
 //! | `db_*` | core `channel_apps` rows via [`DbHandle`] |
-//! | `config_get` | host-injected snapshot (`null` when absent) |
+//! | `config_get` | channel config snapshot injected by `ScriptApi::set_config` (`null` when absent) |
 //! | `env_*` | shared channel env snapshot (hot-updated by `ScriptApi::set_env`) |
 //! | `check_version` | core installed-app inventory |
 //! | `log` | the host LogBridge ring |
@@ -32,13 +32,16 @@ use serde_json::Value as JsonValue;
 /// Shared, hot-updatable env snapshot type.
 pub type EnvMap = BTreeMap<String, String>;
 
+/// Shared, hot-updatable config snapshot type (JSON values, `null` on a miss).
+pub type ConfigMap = BTreeMap<String, JsonValue>;
+
 /// Host capabilities bound to one channel runtime.
 pub(crate) struct ScriptHostImpl {
     db: DbHandle,
     http: Arc<dyn HttpPort>,
     env: Arc<Mutex<EnvMap>>,
     app_id: Arc<Mutex<Option<String>>>,
-    config: Arc<BTreeMap<String, JsonValue>>,
+    config: Arc<Mutex<ConfigMap>>,
     ui_budget: Duration,
 }
 
@@ -48,6 +51,7 @@ impl ScriptHostImpl {
         http: Arc<dyn HttpPort>,
         env: Arc<Mutex<EnvMap>>,
         app_id: Arc<Mutex<Option<String>>>,
+        config: Arc<Mutex<ConfigMap>>,
         ui_budget: Duration,
     ) -> Self {
         Self {
@@ -55,7 +59,7 @@ impl ScriptHostImpl {
             http,
             env,
             app_id,
-            config: Arc::new(BTreeMap::new()),
+            config,
             ui_budget,
         }
     }
@@ -110,11 +114,10 @@ impl ScriptHost for ScriptHostImpl {
         _channel: &ScriptChannel,
         request: ConfigGetRequest,
     ) -> Result<JsonValue, ScriptError> {
-        Ok(self
-            .config
-            .get(&request.key)
-            .cloned()
-            .unwrap_or(JsonValue::Null))
+        self.config
+            .lock()
+            .map(|config| config.get(&request.key).cloned().unwrap_or(JsonValue::Null))
+            .map_err(|_| ScriptError::host("channel config snapshot is poisoned"))
     }
 
     fn env_get(
@@ -130,7 +133,7 @@ impl ScriptHost for ScriptHostImpl {
         _channel: &ScriptChannel,
         _request: EnvAllRequest,
     ) -> Result<gstore_script::EnvSnapshot, ScriptError> {
-        Ok(self.env_map()?)
+        self.env_map()
     }
 
     fn env_has(
