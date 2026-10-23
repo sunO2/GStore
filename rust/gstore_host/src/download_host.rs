@@ -20,6 +20,11 @@ use gstore_core::download::DownloadTaskRow;
 
 use crate::bridge::DownloadTaskDto;
 
+/// Marker prefixed to the "module not mounted" error so the FRB bridge can map
+/// it to `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` (and strip the marker) without a
+/// new port-error variant, ABI change, or schema change.
+pub(crate) const DOWNLOAD_MODULE_UNAVAILABLE_MARKER: &str = "download-module-unavailable: ";
+
 /// `ModuleBridge` that dispatches to the global module manager.
 #[derive(Debug, Clone, Copy)]
 pub struct HostModuleBridge {
@@ -254,10 +259,10 @@ impl HostDownloadPort {
         if guard.is_none() {
             let manager = crate::manager::ModuleManager::global();
             let module_id = manager.module_id_by_name("download").ok_or_else(|| {
-                PortError::Module(
-                    "download module is not mounted (download unavailable until it is)"
-                        .to_string(),
-                )
+                PortError::Module(format!(
+                    "{DOWNLOAD_MODULE_UNAVAILABLE_MARKER}download module is not mounted \
+                     (download unavailable until it is)"
+                ))
             })?;
             let config = serde_json::json!({
                 "data_dir": self.data_dir.to_string_lossy(),

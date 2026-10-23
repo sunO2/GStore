@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/core_download_builder.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/rust_download_mapper.dart';
@@ -48,7 +49,7 @@ class RustDownloadService implements IDownloadService {
   ///
   /// [isAvailable] 与所有 `_invoke` 共用此路径：首次真实使用即触发一次门的
   /// 安装确保（on-use install），并发调用由门的两级单飞去重；失败抛出
-  /// [StateError]（download 模块不可用）。
+  /// [DownloadModuleUnavailableException]（`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`）。
   ///
   /// **不显式传 `factory`**：门在未显式指定工厂时，默认即用
   /// `RustModuleInstance.createWithContext(module, handle)`（与 download 所需完全
@@ -59,8 +60,9 @@ class RustDownloadService implements IDownloadService {
   Future<RustModuleInstance> _ensureInstance() async {
     try {
       return await ModuleBootstrap.instance.acquire(moduleName);
-    } on ModuleInstallFailedException {
-      throw StateError('RustDownloadService: download 模块不可用');
+    } on ModuleInstallFailedException catch (error) {
+      // 下载内核只有 Rust 一个实现：模块不可用是**类型化失败**，不是静默回落。
+      throw DownloadModuleUnavailableException(error);
     }
   }
 

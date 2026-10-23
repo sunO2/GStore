@@ -44,9 +44,9 @@ class DownloadTaskWatcher {
 
   /// 绑定到某个下载实现。
   ///
-  /// [LazyDownloadService.watchAll] 是"先 Dart、解析后原地切 Rust"的**单条长期流**，
-  /// 所以同一个实现重复调用 [start] 是空操作——既不重订阅，也不清空已发过的
-  /// "开始"通知标记；只有换成**另一个**实现时才替换订阅（模块真正重绑内核的场景）。
+  /// 生产只绑定 `RustDownloadService`：`watchAll` 是一条长期流，所以同一个实现
+  /// 重复调用 [start] 是空操作——既不重订阅，也不清空已发过的"开始"通知标记；
+  /// 只有换成**另一个**实现时才替换订阅（模块真正重绑内核的场景）。
   void start(IDownloadService service) {
     if (identical(_service, service) && _sub != null) {
       debugPrint('DownloadTaskWatcher: 同一实现已订阅，跳过重绑');

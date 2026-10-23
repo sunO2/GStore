@@ -1,0 +1,268 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
+import 'package:gstore/core/download/manager/download_manager.dart';
+import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/rust/rust_download_service.dart';
+import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+
+/// Wave 6B-B1 binding contract.
+///
+/// This file is deliberately written against the *public* surface only: the
+/// typed exception is asserted by its observable code string (and runtime type
+/// name) so the failing-first run against the lazy router is a real assertion
+/// failure, not a compile break caused by importing a not-yet-created class.
+
+/// Minimal module used to satisfy `DownloadModule.dependencies`.
+class _NoopModule extends AppModule {
+  _NoopModule(this.moduleName);
+
+  @override
+  final String moduleName;
+}
+
+/// The Dart fallback that must never be reached or bound after B1.
+///
+/// It claims to be a [DownloadManager] so the pre-change wiring (which did
+/// `require<DownloadManager>()`) can resolve it; `download` would silently
+/// succeed, which is exactly the degradation B1 removes.
+class _FakeDartDownloadManager implements DownloadManager {
+  int downloadCalls = 0;
+
+  @override
+  Future<DownloadTask> download(
+    String appid,
+    String appName,
+    String version,
+    String url,
+    String fileName, {
+    int? downloadSize,
+    bool breakPoint = true,
+    String? saveFileName,
+    bool forceDownload = false,
+    bool installAfterDownload = true,
+  }) async {
+    downloadCalls++;
+    return _task(1);
+  }
+
+  @override
+  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
+}
+
+/// All-flags-off backend: keeps `CoreFlags.refresh()` hermetic (no FFI) without
+/// changing any flag value.
+class _DisabledFlagsBackend implements CoreFlagsBackend {
+  @override
+  Future<CoreFlagsSnapshot> read() async => CoreFlagsSnapshot.disabled;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {}
+}
+
+DownloadTask _task(int id) => DownloadTask(
+      id: id,
+      appId: 'app$id',
+      appName: 'App $id',
+      version: '1.0.0',
+      fileName: 'file$id.apk',
+      url: 'https://example.com/file$id.apk',
+      filePath: '/tmp/file$id.apk',
+      total: 100,
+      received: 0,
+      status: DownloadStatusEnum.queued,
+      speedBps: 0,
+      etaSec: null,
+      error: null,
+      segments: null,
+      installAfterDownload: false,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  final manager = ModuleManager.instance;
+
+  setUp(() async {
+    await manager.clear();
+    manager.injectContext(ModuleContext(
+      config: null,
+      bindService: (type, impl) => manager.bindByType(type, impl),
+      unbindService: (type) => manager.unbindByType(type),
+      manager: manager,
+    ));
+    DownloadTaskWatcher.instance.dispose();
+    DownloadTaskWatcher.instance.debugStartCount = 0;
+    CoreFlags.installBackend(_DisabledFlagsBackend());
+    ModuleBootstrap.instance.debugReset();
+  });
+
+  tearDown(() async {
+    DownloadTaskWatcher.instance.dispose();
+    DownloadTaskWatcher.instance.debugStartCount = 0;
+    CoreFlags.resetBackend();
+    ModuleBootstrap.instance.debugReset();
+    manager.injectContext(null);
+    await manager.clear();
+  });
+
+  /// Drives the real `ModuleManager` registration path:
+  /// register (no-op deps) -> initializeModule -> onInit/onRegister.
+  Future<IDownloadService> registerDownloadModule() async {
+    // Pre-change wiring needs a Dart implementation to resolve; post-change it
+    // must be ignored. Keeping it bound also proves it is not what gets bound.
+    manager.bind<DownloadManager>(_FakeDartDownloadManager());
+    await manager.registerModule(_NoopModule('channel'));
+    await manager.registerModule(_NoopModule('config'));
+    await manager.registerModule(DownloadModule());
+    await manager.initializeModule('download');
+    return manager.require<IDownloadService>();
+  }
+
+  group('B1 download binding', () {
+    test('real ModuleManager registration binds RustDownloadService.instance',
+        () async {
+      final bound = await registerDownloadModule();
+
+      expect(
+        identical(bound, RustDownloadService.instance),
+        isTrue,
+        reason: 'DownloadModule.onRegister must bind RustDownloadService.instance '
+            'directly, got ${bound.runtimeType}',
+      );
+      expect(
+        bound.runtimeType.toString(),
+        isNot(contains('Lazy')),
+        reason: 'the lazy router must not survive the direct binding',
+      );
+      expect(manager.get<IDownloadService>(), same(bound));
+
+      // Stale-state guard: exactly one watcher subscription, no lazy memo.
+      expect(
+        DownloadTaskWatcher.instance.debugStartCount,
+        1,
+        reason: 'onRegister must start DownloadTaskWatcher exactly once',
+      );
+
+      // Re-initialising the module and repeating start() with the same
+      // implementation must both be no-ops (no double subscription, no
+      // `_started` clear).
+      await manager.initializeModule('download');
+      DownloadTaskWatcher.instance.start(RustDownloadService.instance);
+      expect(
+        DownloadTaskWatcher.instance.debugStartCount,
+        1,
+        reason: 'same implementation must not be subscribed twice',
+      );
+      expect(
+        DownloadTaskWatcher.instance.debugStartedIds,
+        isEmpty,
+        reason: 'repeated start must not clear/reset the started-id set',
+      );
+    });
+
+    test(
+        'module unavailable fails typed with CORE_E_DOWNLOAD_MODULE_UNAVAILABLE '
+        'and no Dart fallback', () async {
+      final bound = await registerDownloadModule();
+      final dartFallback = manager.get<DownloadManager>();
+
+      // Force the bootstrap gate to fail without FFI/network.
+      ModuleBootstrap.instance.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          return false;
+        },
+        delayOverride: (Duration duration) async {},
+      );
+
+      Object? thrown;
+      try {
+        await bound.download(
+          'com.example.app',
+          'App',
+          '1.0.0',
+          'https://example.com/app.apk',
+          'app.apk',
+          saveFileName: '/tmp/app.apk',
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(
+        thrown,
+        isNotNull,
+        reason: 'module-unavailable must not silently succeed or fall back',
+      );
+      expect(
+        '$thrown',
+        contains('CORE_E_DOWNLOAD_MODULE_UNAVAILABLE'),
+        reason: 'the Dart-observable error code must reach the caller',
+      );
+      expect(
+        thrown.runtimeType.toString(),
+        'DownloadModuleUnavailableException',
+        reason: 'the failure must be the typed download-layer exception',
+      );
+
+      // No fallback binding: the interface still points at the Rust service,
+      // never at the Dart implementation.
+      expect(
+        identical(manager.get<IDownloadService>(), RustDownloadService.instance),
+        isTrue,
+        reason: 'a failed acquire must not rebind a Dart implementation',
+      );
+      expect(
+        identical(manager.get<IDownloadService>(), dartFallback),
+        isFalse,
+        reason: 'the Dart DownloadManager must never be the bound fallback',
+      );
+      expect(dartFallback, isA<DownloadManager>());
+    });
+
+    test('source gate: lazy router, its config class and key are gone from lib/',
+        () {
+      const needles = <String>[
+        'DownloadCoreConfig',
+        'LazyDownloadService',
+        'download.core',
+      ];
+      final hits = <String>[];
+      final root = Directory('lib');
+      for (final entity in root.listSync(recursive: true)) {
+        if (entity is! File) continue;
+        if (!entity.path.endsWith('.dart') && !entity.path.endsWith('.md')) {
+          continue;
+        }
+        final content = entity.readAsStringSync();
+        for (final needle in needles) {
+          if (content.contains(needle)) {
+            hits.add('${entity.path}: $needle');
+          }
+        }
+      }
+      expect(
+        hits,
+        isEmpty,
+        reason: 'the lazy router and its config key must be deleted:\n'
+            '${hits.join('\n')}',
+      );
+    });
+  });
+}

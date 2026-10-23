@@ -3480,12 +3480,15 @@ impl UpdateApi {
 // DownloadApi (Wave 3 Todo 2)
 // ===========================================================================
 
-use crate::download_host::{DownloadWatchState, HostDownloadPort};
+use crate::download_host::{
+    DownloadWatchState, HostDownloadPort, DOWNLOAD_MODULE_UNAVAILABLE_MARKER,
+};
 use gstore_core::download::port::{DownloadRequest, PortError};
 use gstore_core::download::DownloadTaskRow;
 
 const CORE_E_DOWNLOAD_INVALID_ARG: &str = "CORE_E_DOWNLOAD_INVALID_ARG";
 const CORE_E_DOWNLOAD_MODULE: &str = "CORE_E_DOWNLOAD_MODULE";
+const CORE_E_DOWNLOAD_MODULE_UNAVAILABLE: &str = "CORE_E_DOWNLOAD_MODULE_UNAVAILABLE";
 const CORE_E_DOWNLOAD_DB: &str = "CORE_E_DOWNLOAD_DB";
 const CORE_E_DOWNLOAD_UNKNOWN_TASK: &str = "CORE_E_DOWNLOAD_UNKNOWN_TASK";
 const CORE_E_DOWNLOAD_NEEDS_RESTART: &str = "CORE_E_DOWNLOAD_NEEDS_RESTART";
@@ -3699,7 +3702,12 @@ fn import_err(error: PortError) -> String {
 
 fn download_err(error: PortError) -> String {
     match error {
-        PortError::Module(message) => format!("{CORE_E_DOWNLOAD_MODULE}: {message}"),
+        PortError::Module(message) => {
+            match message.strip_prefix(DOWNLOAD_MODULE_UNAVAILABLE_MARKER) {
+                Some(detail) => format!("{CORE_E_DOWNLOAD_MODULE_UNAVAILABLE}: {detail}"),
+                None => format!("{CORE_E_DOWNLOAD_MODULE}: {message}"),
+            }
+        }
         PortError::Db(message) => format!("{CORE_E_DOWNLOAD_DB}: {message}"),
         PortError::UnknownTask(id) => format!("{CORE_E_DOWNLOAD_UNKNOWN_TASK}: {id}"),
         PortError::NeedsRestart(id) => format!("{CORE_E_DOWNLOAD_NEEDS_RESTART}: {id}"),

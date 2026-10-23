@@ -6,8 +6,13 @@
 
 - **DownloadEngine（可替换核心）**：纯传输内核，只负责把一个 `DownloadRequest` 的字节流落到磁盘，
   内部自含 Range 探测 / 多段并发 / 单段回退，不做队列、并发上限、持久化。
-- **DownloadManager（编排）**：`IDownloadService` 的唯一实现，负责队列调度、并发控制、
+- **DownloadManager（Dart 编排，历史实现）**：负责队列调度、并发控制、
   断点续传、状态机（queued/downloading/paused/completed/failed/cancelled）与 APK 完整性校验。
+  **自 Wave 6B 起不再绑定到 `IDownloadService`**，仅保留给既有 Dart 侧测试/对照使用。
+- **RustDownloadService（当前唯一绑定）**：`IDownloadService` 由 `DownloadModule.onRegister`
+  直接绑定到 `RustDownloadService.instance`；下载任务与传输由 `gstore_mod_download` 核心承载。
+  模块不可用是**类型化失败**（`DownloadModuleUnavailableException`，错误码
+  `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`），不存在惰性路由、运行时内核选择或 Dart 回落。
 - **DownloadTask / DownloadRepository**：持久化模型与仓库。`DownloadTask` 是全新的状态模型
   （`DownloadStatusEnum` 枚举 + 进度/速度/ETA/分段），`DownloadRepository` 基于 Floor 的
   `GStoreDownloadDatabase`（`download_task.db`）读写，并提供 `watch(id)` 流实时推送进度。
@@ -24,8 +29,8 @@
 └─────────────────────────────────────────────────────────┘
                            ↓ Get<IDownloadService>()
 ┌─────────────────────────────────────────────────────────┐
-│              DownloadManager（编排 / GetxService）       │
-│  队列 + 并发上限 + 状态机 + 断点续传 + 文件校验 + 安装钩子   │
+│         RustDownloadService（IDownloadService 绑定）      │
+│   直接转到 gstore_mod_download 核心；无 Dart 回落          │
 └─────────────────────────────────────────────────────────┘
                            ↓ DownloadRequest + CancelToken
 ┌─────────────────────────────────────────────────────────┐
@@ -65,7 +70,9 @@
 
 ## 使用方式
 
-业务代码一律经 `ModuleManager.instance.get<IDownloadService>()` 取 `DownloadManager`：
+业务代码一律经 `ModuleManager.instance.get<IDownloadService>()` 取当前内核；自 Wave 6B
+起它**恒为** `RustDownloadService`（模块不可用时为 `null` 或调用抛类型化
+`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`，绝不静默回落到 Dart `DownloadManager`）：
 
 ```dart
 final service = ModuleManager.instance.get<IDownloadService>();
