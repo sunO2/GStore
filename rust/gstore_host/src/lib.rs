@@ -22,6 +22,20 @@ mod trust;
 pub mod log_bridge;
 mod event_bridge;
 mod task_bridge;
+mod script_api;
+mod script_env;
+mod script_host_impl;
+mod script_http;
+mod script_db;
+mod script_pack;
+mod script_runtime_entry;
+mod ui_api;
+#[cfg(test)]
+mod script_api_test_support;
+#[cfg(test)]
+mod script_api_lifecycle_tests;
+#[cfg(test)]
+mod script_api_roundtrip_tests;
 
 /// 单进程测试共享 `jni_bridge::TUN_FD` 等全局态，相关用例须串行执行。
 #[cfg(test)]

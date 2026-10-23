@@ -12,6 +12,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 gstore_contract = { path = "../gstore_contract" }
 # Rust 核心层（spike：CoreApi 宿主门面）
 gstore_core = { path = "../gstore_core" }
+# Rust-hosted QuickJS lane (ScriptApi / ScriptHost implementation).
+gstore_script = { path = "../gstore_script" }
 # CoreApi 持有核心库连接（与 gstore_core 同版本；仅宿主内部使用，不进 FRB 签名）
 rusqlite = { version = "0.32", features = ["bundled"] }
 # 动态加载模块 .so（dlopen/dlsym）

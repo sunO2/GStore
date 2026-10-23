@@ -8,6 +8,7 @@ import 'frb_generated.dart';
 import 'log_bridge.dart';
 import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'script_pack.dart';
 import 'task_bridge.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
@@ -528,6 +529,53 @@ abstract class ModuleHandle implements RustOpaqueInterface {
       RustLib.instance.api.crateBridgeModuleHandleMountFromSo(soPath: soPath);
 }
 
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ScriptApi>>
+abstract class ScriptApi implements RustOpaqueInterface {
+  /// Installs one legacy flat pack from zip bytes.
+  ///
+  /// New packs are decoded with [`gstore_core::channel::PackPolicy::Strict`].
+  /// Only a key that is already installed may retry with the legacy-permissive
+  /// policy after a strict decode failure. `expected_key` is the channel key
+  /// (`js_<stem>`); a bare `<stem>` is accepted too. When omitted, a stable
+  /// content-hash key is generated.
+  Future<ScriptPackInfo> import_(
+      {required List<int> packZipBytes, String? expectedKey});
+
+  /// Opens the core database and binds the pack store.
+  ///
+  /// Safe to call more than once against the same directories.
+  static Future<ScriptApi> init(
+          {required String dataDir,
+          required String filesDir,
+          required String cacheDir}) =>
+      RustLib.instance.api.crateBridgeScriptApiInit(
+          dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
+
+  /// Lists installed packs in deterministic key order (diagnostics).
+  Future<List<ScriptPackInfo>> list();
+
+  /// Reloads a pack from its installed directory and rebuilds its runtimes.
+  Future<ScriptPackInfo> refresh({required String key});
+
+  /// Removes an installed pack, its cached runtimes, and its channel env.
+  Future<void> remove({required String key});
+
+  /// Runs `main(method, params)` and returns the JSON result as a string.
+  ///
+  /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
+  /// `getAppDetail`, `checkAppUpdate`, `checkUpdate`, `doUpdate` (entry
+  /// script) and `versionOptions`, `switchVersion`, `buildHistory`,
+  /// `detailMenu` (detail script). The string is the same JSON the Dart
+  /// runtime would receive, so callers `jsonDecode` it.
+  Future<String> run(
+      {required String key,
+      required String method,
+      required String paramsJson});
+
+  /// Replaces the channel env snapshot and hot-updates live runtimes.
+  Future<void> setEnv({required String key, required Map<String, String> env});
+}
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<TaskBridge>>
 abstract class TaskBridge implements RustOpaqueInterface {
   /// 取消任务（协作式：模块在检查点退出）
@@ -552,6 +600,24 @@ abstract class TaskBridge implements RustOpaqueInterface {
 
   /// 订阅任务事件流（先补发缓冲，再转实时）
   Stream<TaskEvent> watch({required String taskId});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<UiApi>>
+abstract class UiApi implements RustOpaqueInterface {
+  static Future<UiApi> default_() =>
+      RustLib.instance.api.crateBridgeUiApiDefault();
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<UiApi> newInstance() =>
+      RustLib.instance.api.crateBridgeUiApiNew();
+
+  /// Delivers the UI answer for `request_id`.
+  ///
+  /// `payload_json` is the JSON value the script's `host.ui.call` resolves to
+  /// (`null` is valid). Unknown or expired ids return the typed
+  /// `CORE_E_SCRIPT_UI_UNKNOWN_REQUEST` error.
+  Future<void> respond(
+      {required String requestId, required String payloadJson});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<UpdateApi>>

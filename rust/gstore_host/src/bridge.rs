@@ -4210,6 +4210,119 @@ impl InstallApi {
     }
 }
 
+// ===========================================================================
+// ScriptApi / UiApi (Wave 5 Todo 5)
+// ===========================================================================
+
+pub use crate::script_pack::ScriptPackInfo;
+
+/// FRB facade for the Rust-hosted JS channel lane.
+///
+/// Owns the local pack store and a per-channel runtime cache. The Dart lane is
+/// responsible for gating this API behind `CoreFlags.jsChannel`; this facade
+/// never flips a flag and never touches Dart channel wiring.
+#[frb(opaque)]
+pub struct ScriptApi {
+    inner: std::sync::Arc<crate::script_api::ScriptApiInner>,
+}
+
+impl ScriptApi {
+    /// Opens the core database and binds the pack store.
+    ///
+    /// Safe to call more than once against the same directories.
+    pub fn init(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+    ) -> Result<ScriptApi, String> {
+        crate::script_api::ScriptApiInner::init(data_dir, files_dir, cache_dir)
+            .map(|inner| Self {
+                inner: std::sync::Arc::new(inner),
+            })
+    }
+
+    /// Installs one legacy flat pack from zip bytes.
+    ///
+    /// New packs are decoded with [`gstore_core::channel::PackPolicy::Strict`].
+    /// Only a key that is already installed may retry with the legacy-permissive
+    /// policy after a strict decode failure. `expected_key` is the channel key
+    /// (`js_<stem>`); a bare `<stem>` is accepted too. When omitted, a stable
+    /// content-hash key is generated.
+    pub fn import(
+        &self,
+        pack_zip_bytes: Vec<u8>,
+        expected_key: Option<String>,
+    ) -> Result<ScriptPackInfo, String> {
+        self.inner.import(pack_zip_bytes, expected_key)
+    }
+
+    /// Removes an installed pack, its cached runtimes, and its channel env.
+    pub fn remove(&self, key: String) -> Result<(), String> {
+        self.inner.remove(&key)
+    }
+
+    /// Reloads a pack from its installed directory and rebuilds its runtimes.
+    pub fn refresh(&self, key: String) -> Result<ScriptPackInfo, String> {
+        self.inner.refresh(&key)
+    }
+
+    /// Replaces the channel env snapshot and hot-updates live runtimes.
+    pub fn set_env(
+        &self,
+        key: String,
+        env: std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        self.inner.set_env(&key, env)
+    }
+
+    /// Runs `main(method, params)` and returns the JSON result as a string.
+    ///
+    /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
+    /// `getAppDetail`, `checkAppUpdate`, `checkUpdate`, `doUpdate` (entry
+    /// script) and `versionOptions`, `switchVersion`, `buildHistory`,
+    /// `detailMenu` (detail script). The string is the same JSON the Dart
+    /// runtime would receive, so callers `jsonDecode` it.
+    pub fn run(
+        &self,
+        key: String,
+        method: String,
+        params_json: String,
+    ) -> Result<String, String> {
+        self.inner.run(&key, &method, &params_json)
+    }
+
+    /// Lists installed packs in deterministic key order (diagnostics).
+    pub fn list(&self) -> Result<Vec<ScriptPackInfo>, String> {
+        self.inner.list()
+    }
+}
+
+/// FRB facade for answering `script.ui_request`.
+#[frb(opaque)]
+pub struct UiApi;
+
+impl UiApi {
+    #[frb(init)]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Delivers the UI answer for `request_id`.
+    ///
+    /// `payload_json` is the JSON value the script's `host.ui.call` resolves to
+    /// (`null` is valid). Unknown or expired ids return the typed
+    /// `CORE_E_SCRIPT_UI_UNKNOWN_REQUEST` error.
+    pub fn respond(&self, request_id: String, payload_json: String) -> Result<(), String> {
+        crate::ui_api::respond(&request_id, &payload_json)
+    }
+}
+
+impl Default for UiApi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod channel_api_tests {
     use super::*;
