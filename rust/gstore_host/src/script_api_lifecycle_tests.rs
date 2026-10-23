@@ -157,6 +157,61 @@ fn script_api_run_rejects_unsupported_methods_and_bad_params() {
 }
 
 #[test]
+fn script_api_run_matches_dart_no_result_envelopes() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("envelopes");
+    const SCRIPT: &str = r#"
+function main(method) {
+  switch (method) {
+    case 'getAllApps': return { ok: false, error: 'script failed' };
+    case 'searchApps': throw new Error('boom');
+    case 'getAppInfo': return { ok: 'yes', data: { leaked: true } };
+    case 'checkUpdate': return { ok: true, data: { kept: true } };
+    default: return null;
+  }
+}
+"#;
+    harness
+        .api
+        .import(
+            zip_with(SCRIPT, None, None),
+            Some("js_envelope".to_string()),
+        )
+        .expect("import");
+
+    let ok_false = harness
+        .api
+        .run("js_envelope", "getAllApps", "{}")
+        .expect("ok:false is not a typed error");
+    let threw = harness
+        .api
+        .run("js_envelope", "searchApps", "{}")
+        .expect("throw is not a typed error");
+    let malformed = harness
+        .api
+        .run("js_envelope", "getAppInfo", "{}")
+        .expect("non-boolean ok is not a typed error");
+    let null_result = harness
+        .api
+        .run("js_envelope", "doUpdate", "{}")
+        .expect("null result");
+    let ok_true = harness
+        .api
+        .run("js_envelope", "checkUpdate", "{}")
+        .expect("ok:true still returns data");
+
+    println!(
+        "PASS | run envelope    | ok:false={ok_false} throw={threw} malformed={malformed} \
+         null={null_result} ok:true={ok_true}"
+    );
+    assert_eq!(ok_false, "null", "{ok_false}");
+    assert_eq!(threw, "null", "{threw}");
+    assert_eq!(malformed, "null", "{malformed}");
+    assert_eq!(null_result, "null", "{null_result}");
+    assert_eq!(ok_true, r#"{"kept":true}"#, "{ok_true}");
+}
+
+#[test]
 fn script_api_detail_method_requires_detail_js() {
     let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let harness = fast_harness("nodetail");
@@ -286,26 +341,28 @@ fn script_api_detail_release_and_lru_cap() {
         .release_detail("js_absent", "a")
         .expect("unknown pack is a no-op");
 
-    for app in ["b", "c", "d"] {
-        assert_eq!(detail_count(&harness.api, "js_release", app), 1);
-    }
-    assert_eq!(detail_count(&harness.api, "js_release", "e"), 1);
+    assert_eq!(detail_count(&harness.api, "js_release", "b"), 1);
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "c"),
+        1,
+        "the 3rd distinct appId evicts the oldest (a)"
+    );
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "c"),
+        2,
+        "the newest runtime stayed live"
+    );
+    assert_eq!(
+        detail_count(&harness.api, "js_release", "b"),
+        2,
+        "b stayed live"
+    );
     assert_eq!(
         detail_count(&harness.api, "js_release", "a"),
         1,
-        "a was evicted"
+        "a was evicted, so it got a fresh runtime"
     );
-    assert_eq!(
-        detail_count(&harness.api, "js_release", "d"),
-        2,
-        "d stayed live"
-    );
-    assert_eq!(
-        detail_count(&harness.api, "js_release", "e"),
-        2,
-        "e stayed live"
-    );
-    println!("PASS | detail LRU       | cap=4 evicted oldest, release resets state");
+    println!("PASS | detail LRU       | cap=2 evicted the oldest, newest stayed; release resets state");
 }
 
 #[test]
@@ -340,6 +397,57 @@ function main(method) {
     assert_eq!(value[0]["package_name"], "pkg.saved");
     assert_eq!(value[0]["category"], serde_json::json!(["a", "b"]));
     println!("PASS | stored_apps      | channel_apps round-trip via ScriptChannelStore");
+}
+
+#[test]
+fn script_api_stored_apps_survives_a_corrupt_pack() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("stored-apps-broken");
+    const STORE_JS: &str = r#"
+function main(method) {
+  if (method === 'doUpdate') {
+    host.database.insertApps([{
+      appId: 'app.saved', name: 'Saved', user: 'team', repositories: 'saved',
+      icon: 'i', description: 'desc', category: 'a,b',
+      extra: { packageName: 'pkg.saved' }
+    }]);
+    return { ok: true, data: true };
+  }
+  return null;
+}
+"#;
+    harness
+        .api
+        .import(zip_with(STORE_JS, None, None), Some("js_broken_store".to_string()))
+        .expect("import");
+    harness
+        .api
+        .run("js_broken_store", "doUpdate", "{}")
+        .expect("persist via host.database");
+
+    let dir = harness
+        .root
+        .join("files/channel_packs/js_broken_store")
+        .read_dir()
+        .expect("pack root")
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .expect("version dir")
+        .path();
+    std::fs::write(dir.join("entry.js"), [0xff_u8, 0xfe, 0x00]).expect("corrupt entry.js");
+    harness
+        .api
+        .refresh("js_broken_store")
+        .expect("refresh drops the cached runtime");
+
+    let raw = harness
+        .api
+        .stored_apps("js_broken_store")
+        .expect("stored apps must not need a loadable pack");
+    let value: Value = serde_json::from_str(&raw).expect("apps json");
+    assert_eq!(value[0]["app_id"], "app.saved");
+    assert_eq!(value[0]["package_name"], "pkg.saved");
+    println!("PASS | stored_apps      | corrupt entry.js still lists saved rows");
 }
 
 #[test]

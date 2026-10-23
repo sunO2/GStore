@@ -4244,10 +4244,12 @@ impl ScriptApi {
     /// Installs one legacy flat pack from zip bytes.
     ///
     /// New packs are decoded with [`gstore_core::channel::PackPolicy::Strict`].
-    /// Only a key that is already installed may retry with the legacy-permissive
-    /// policy after a strict decode failure. `expected_key` is the channel key
-    /// (`js_<stem>`); a bare `<stem>` is accepted too. When omitted, a stable
-    /// content-hash key is generated.
+    /// When strict decoding fails — including on a first import — the pack is
+    /// retried with the legacy-permissive policy, and the accepted key plus the
+    /// strict failure reason are logged so the fallback is never silent. Unsafe
+    /// paths and oversized packs still fail under both policies. `expected_key`
+    /// is the channel key (`js_<stem>`); a bare `<stem>` is accepted too. When
+    /// omitted, a stable content-hash key is generated.
     pub fn import(
         &self,
         pack_zip_bytes: Vec<u8>,

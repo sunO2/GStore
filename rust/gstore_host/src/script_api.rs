@@ -10,10 +10,12 @@
 //!
 //! Every call evaluates `(typeof main === 'function' ? main(method, params) :
 //! null)` with [`ScriptRuntime::eval`](gstore_script::ScriptRuntime::eval) — the
-//! normal 5 s wall-clock budget — and unwraps the same envelope core's
-//! `ScriptChannel` uses (`null` -> `null`, `{ok:false}` -> typed error). The
-//! long-eval budget is deliberately **not** used on this path: pure JS gets at
-//! most 5 s, so an infinite loop is interrupted at the normal cap.
+//! normal 5 s wall-clock budget — and applies the same "no result" envelope
+//! rules as core's `ScriptChannel`: `{ok:true,data}` yields `data`, while
+//! `{ok:false}`, a JS throw, or a malformed envelope yields JSON `null`. Only
+//! malformed params/JSON, transport faults, and timeouts surface as typed
+//! errors. The long-eval budget is deliberately **not** used on this path: pure
+//! JS gets at most 5 s, so an infinite loop is interrupted at the normal cap.
 //!
 //! # Parked wait / cumulative budget
 //!
@@ -305,9 +307,8 @@ impl ScriptApiInner {
     /// Returns the saved app rows for `key` as a JSON array string.
     pub(crate) fn stored_apps(&self, key: &str) -> Result<String, String> {
         let key = self.channel_key(key)?;
-        let entry = self.ensure_entry(&key)?;
-        let apps = entry
-            .store()
+        let apps = self
+            .store
             .list_apps(&key)
             .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
         serde_json::to_string(&apps)
@@ -359,7 +360,6 @@ impl ScriptApiInner {
             env,
             EntryDeps {
                 db: self.db.clone(),
-                store: Arc::clone(&self.store),
                 http: Arc::clone(&self.http),
                 ui_budget: self.ui_budget,
                 eval_timeout: self.eval_timeout,

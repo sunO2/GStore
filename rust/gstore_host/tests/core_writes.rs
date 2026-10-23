@@ -9,11 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
 use gstore_core::download::port::{DownloadRequest, ModuleBridge};
+use gstore_core::dto::{AppSummary, ChannelKey};
 use gstore_core::flags::{reset_flags, set_flags, FlagsPatch};
 use gstore_host::bridge::CoreApi;
 use gstore_host::download_host::HostDownloadPort;
+use gstore_host::SqliteScriptChannelStore;
 
 static FLAG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -46,6 +49,20 @@ fn core_writes_count(db_path: &str) -> i64 {
     .expect("open live db read-only");
     conn.query_row("SELECT COUNT(*) FROM core_writes", [], |row| row.get(0))
         .expect("count core_writes")
+}
+
+fn core_writes_domain_count(db_path: &Path, domain: &str) -> i64 {
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open live db read-only");
+    conn.query_row(
+        "SELECT COUNT(*) FROM core_writes WHERE domain=?1",
+        [domain],
+        |row| row.get(0),
+    )
+    .expect("count domain core_writes")
 }
 
 #[test]
@@ -434,5 +451,51 @@ fn core_writes_init_reconcile_does_not_arm() {
 
     reset_flags();
     drop(api);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn js_channel_store_write_marks_core_writes_once() {
+    let _guard = FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    gstore_core::flags::reset_flags();
+    let root = temp_root("js_channel_marker");
+    let db = DbHandle::open(&root.join("data")).expect("open core db");
+    let store = SqliteScriptChannelStore::new(db.clone());
+    let key = ChannelKey::new("js_marker").expect("channel key");
+    let app = AppSummary {
+        app_id: "app.marker".to_string(),
+        package_name: None,
+        name: "Marker".to_string(),
+        user: "team".to_string(),
+        repositories: "marker".to_string(),
+        icon: String::new(),
+        des: "desc".to_string(),
+        readme: None,
+        category: None,
+        extra: None,
+    };
+
+    store
+        .insert_apps(&key, std::slice::from_ref(&app))
+        .expect("first js_channel insert");
+    let first = core_writes_domain_count(db.path(), "js_channel");
+    assert_eq!(first, 1, "one js_channel marker row after insert");
+
+    store
+        .insert_apps(&key, std::slice::from_ref(&app))
+        .expect("second js_channel insert");
+    let second = core_writes_domain_count(db.path(), "js_channel");
+    assert_eq!(second, 1, "second write is idempotent");
+
+    store.remove_app(&key, "app.marker").expect("js_channel remove");
+    let after_remove = core_writes_domain_count(db.path(), "js_channel");
+    assert_eq!(after_remove, 1, "remove reuses the same marker row");
+
+    println!(
+        "PASS | js_channel core_writes | insert={first} second={second} remove={after_remove}"
+    );
+
+    gstore_core::flags::reset_flags();
+    drop(db);
     std::fs::remove_dir_all(&root).unwrap();
 }

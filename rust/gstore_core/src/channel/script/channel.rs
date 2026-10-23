@@ -120,12 +120,21 @@ impl ChannelDriver for ScriptChannel {
     }
 
     fn get_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error> {
+        self.get_app_info_versioned(app_id, force_refresh, None)
+    }
+
+    fn get_app_info_versioned(
+        &self,
+        app_id: &str,
+        force_refresh: bool,
+        version: Option<&str>,
+    ) -> Result<AppSummary, Error> {
         if !force_refresh {
             if let Some(app) = self.saved_app(app_id)? {
                 return Ok(app);
             }
         }
-        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+        let params = params_for_app(app_id, version);
         if let Some(data) = self.call("getAppInfo", &params)? {
             if data.is_object() {
                 if let Some(app) = convert::summary(&data, &self.key)? {
@@ -137,8 +146,17 @@ impl ChannelDriver for ScriptChannel {
             .ok_or_else(|| self.missing_app(app_id))
     }
 
-    fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
-        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+    fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error> {
+        self.get_app_detail_versioned(app_id, force_refresh, None)
+    }
+
+    fn get_app_detail_versioned(
+        &self,
+        app_id: &str,
+        _force_refresh: bool,
+        version: Option<&str>,
+    ) -> Result<AppDetail, Error> {
+        let params = params_for_app(app_id, version);
         match self.call("getAppDetail", &params)? {
             Some(data) if data.is_object() => convert::detail(&data),
             _ => Err(Error::NotFound(MISSING_DETAIL.to_string())),
@@ -241,6 +259,14 @@ impl ChannelDriver for ScriptChannel {
         self.initialized.store(false, Ordering::SeqCst);
         Ok(())
     }
+}
+
+fn params_for_app(app_id: &str, version: Option<&str>) -> Map<String, JsonValue> {
+    let mut params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+    if let Some(version) = version {
+        params.insert("version".to_owned(), JsonValue::String(version.to_owned()));
+    }
+    params
 }
 
 fn matches_keyword(app: &AppSummary, needle: &str) -> bool {

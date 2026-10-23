@@ -1,6 +1,14 @@
 //! One installed pack's QuickJS runtimes: `entry.js` plus one `detail.js`
 //! runtime per `appId` (Dart `JsChannel.getDetailChannel` / `releaseDetailChannel`).
 //!
+//! # Runtime budget
+//!
+//! `DETAIL_RUNTIME_CAP` is 2 detail runtimes per pack; with the single
+//! `entry.js` runtime a pack holds at most 3 of the process-wide 32 live
+//! runtimes. The cap is sized so the 32-runtime budget covers ~10 packs
+//! (32 / 3); the previous cap of 4 meant entry (1) + details (4) = 5/pack and
+//! only ~6 packs before `CORE_E_SCRIPT_LIMIT`.
+//!
 //! Both runtimes are created lazily on the same dedicated-thread machinery as
 //! `gstore_script::ScriptRuntime`, are serialised by `op`, and share the env,
 //! config, and app-id state that the host reads.
@@ -21,7 +29,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::http_port::ScriptHttp;
-use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
 use gstore_script::{
@@ -34,8 +41,9 @@ use crate::script_host_impl::{ConfigMap, EnvMap, ScriptHostImpl};
 use crate::script_pack::LoadedPack;
 
 /// Maximum live `detail.js` runtimes per pack (Dart releases per page exit;
-/// the cap protects long-lived callers that never release).
-const DETAIL_RUNTIME_CAP: usize = 4;
+/// the cap protects long-lived callers that never release). Entry (1) + details
+/// (2) = 3 of the process-wide 32 live runtimes per pack.
+const DETAIL_RUNTIME_CAP: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeKind {
@@ -46,7 +54,6 @@ pub(crate) enum RuntimeKind {
 /// Infrastructure a pack runtime needs from the facade.
 pub(crate) struct EntryDeps {
     pub db: DbHandle,
-    pub store: Arc<dyn ScriptChannelStore>,
     pub http: Arc<dyn ScriptHttp>,
     pub ui_budget: Duration,
     pub eval_timeout: Duration,
@@ -62,7 +69,6 @@ pub(crate) struct ScriptEntry {
     app_id: Arc<Mutex<Option<String>>>,
     op: Mutex<()>,
     runtimes: Mutex<RuntimeSlots>,
-    store: Arc<dyn ScriptChannelStore>,
     db: DbHandle,
     http: Arc<dyn ScriptHttp>,
     ui_budget: Duration,
@@ -114,7 +120,6 @@ impl ScriptEntry {
             app_id: Arc::new(Mutex::new(None)),
             op: Mutex::new(()),
             runtimes: Mutex::new(RuntimeSlots::default()),
-            store: deps.store,
             db: deps.db,
             http: deps.http,
             ui_budget: deps.ui_budget,
@@ -158,11 +163,14 @@ impl ScriptEntry {
         let source =
             format!("(typeof main === 'function' ? main({method_json}, {params_json}) : null)");
         let app_id = params.get("appId").and_then(JsonValue::as_str);
-        let raw = self.eval(kind, &source, app_id)?;
+        let raw = self.eval(kind, &source, app_id);
         if let Ok(mut app_id) = self.app_id.lock() {
             *app_id = None;
         }
-        let data = unwrap_envelope(method, raw)?;
+        let Some(raw) = raw? else {
+            return Ok(JsonValue::Null.to_string());
+        };
+        let data = unwrap_envelope(raw);
         serde_json::to_string(&data)
             .map_err(|error| format!("internal: serialise script result: {error}"))
     }
@@ -172,7 +180,7 @@ impl ScriptEntry {
         kind: RuntimeKind,
         source: &str,
         app_id: Option<&str>,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<Option<JsonValue>, String> {
         match kind {
             RuntimeKind::Entry => {
                 let script = self.entry_js.clone();
@@ -184,7 +192,7 @@ impl ScriptEntry {
                     slots.entry = Some(self.spawn(&script)?);
                 }
                 match slots.entry.as_ref() {
-                    Some(runtime) => runtime.eval(source).map_err(|error| map_script(&error)),
+                    Some(runtime) => eval_no_result_on_throw(runtime.eval(source)),
                     None => Err("internal: script runtime missing after spawn".to_string()),
                 }
             }
@@ -206,7 +214,7 @@ impl ScriptEntry {
                     Some(runtime) => runtime,
                     None => self.spawn(&script)?,
                 };
-                let result = runtime.eval(source).map_err(|error| map_script(&error));
+                let result = eval_no_result_on_throw(runtime.eval(source));
                 let mut slots = self
                     .runtimes
                     .lock()
@@ -233,10 +241,6 @@ impl ScriptEntry {
             runtime.dispose().map_err(|error| map_script(&error))?;
         }
         Ok(())
-    }
-
-    pub(crate) fn store(&self) -> &Arc<dyn ScriptChannelStore> {
-        &self.store
     }
 
     fn spawn(&self, script: &str) -> Result<ScriptRuntime, String> {
@@ -284,29 +288,24 @@ pub(crate) fn parse_params(raw: &str) -> Result<Map<String, JsonValue>, String> 
     }
 }
 
-fn unwrap_envelope(method: &str, raw: JsonValue) -> Result<JsonValue, String> {
+fn eval_no_result_on_throw(
+    result: Result<JsonValue, ScriptError>,
+) -> Result<Option<JsonValue>, String> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == ScriptErrorKind::Eval => Ok(None),
+        Err(error) => Err(map_script(&error)),
+    }
+}
+
+fn unwrap_envelope(raw: JsonValue) -> JsonValue {
     let JsonValue::Object(map) = raw else {
-        return Ok(raw);
+        return raw;
     };
     match map.get("ok") {
-        None => Ok(JsonValue::Object(map)),
-        Some(JsonValue::Bool(true)) => Ok(map
-            .get("data")
-            .filter(|value| !value.is_null())
-            .cloned()
-            .unwrap_or(JsonValue::Null)),
-        Some(JsonValue::Bool(false)) => {
-            let detail = map
-                .get("error")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("unknown error");
-            Err(format!(
-                "internal: script `{method}` returned ok:false: {detail}"
-            ))
-        }
-        Some(_) => Err(format!(
-            "internal: script `{method}` returned a non-boolean `ok`"
-        )),
+        Some(JsonValue::Bool(true)) => map.get("data").cloned().unwrap_or(JsonValue::Null),
+        Some(_) => JsonValue::Null,
+        None => JsonValue::Object(map),
     }
 }
 

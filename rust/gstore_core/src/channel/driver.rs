@@ -80,8 +80,39 @@ pub trait ChannelDriver: sealed::Sealed + Send + Sync {
     /// [`Error::NotFound`].
     fn get_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error>;
 
+    /// Reads one app with Dart's optional `version` hint.
+    ///
+    /// Defaults to [`ChannelDriver::get_app_info`] and ignores `version`, so
+    /// drivers whose protocol has no version selector are unaffected. A
+    /// script-backed driver forwards the hint to the script's `main` params
+    /// only when it is present, matching Dart `JsChannel.getAppInfo`.
+    fn get_app_info_versioned(
+        &self,
+        app_id: &str,
+        force_refresh: bool,
+        version: Option<&str>,
+    ) -> Result<AppSummary, Error> {
+        let _ = version;
+        self.get_app_info(app_id, force_refresh)
+    }
+
     /// Reads one app's detail page payload.
     fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error>;
+
+    /// Reads one app's detail with Dart's optional `version` hint.
+    ///
+    /// Defaults to [`ChannelDriver::get_app_detail`] and ignores `version`; a
+    /// script-backed driver forwards it to the script's `main` params only when
+    /// it is present, matching Dart `JsChannel.getAppDetail`.
+    fn get_app_detail_versioned(
+        &self,
+        app_id: &str,
+        force_refresh: bool,
+        version: Option<&str>,
+    ) -> Result<AppDetail, Error> {
+        let _ = version;
+        self.get_app_detail(app_id, force_refresh)
+    }
 
     /// Whether the detail page may load downloads/readme/statistics separately.
     fn supports_progressive_loading(&self) -> Result<bool, Error> {

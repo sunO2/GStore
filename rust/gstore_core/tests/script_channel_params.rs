@@ -52,8 +52,20 @@ fn script_channel_example_param_maps_match_dart() {
         .get_app_info("org.example.dolphin", false)
         .expect("getAppInfo");
     channel
+        .get_app_info_versioned("org.example.dolphin", false, Some("2.1.0"))
+        .expect("getAppInfo versioned");
+    channel
+        .get_app_info_versioned("org.example.dolphin", false, None)
+        .expect("getAppInfo versioned without version");
+    channel
         .get_app_detail("org.example.dolphin", true)
         .expect("getAppDetail");
+    channel
+        .get_app_detail_versioned("org.example.dolphin", false, Some("3.0.1"))
+        .expect("getAppDetail versioned");
+    channel
+        .get_app_detail_versioned("org.example.dolphin", false, None)
+        .expect("getAppDetail versioned without version");
     channel
         .check_app_update("org.example.dolphin")
         .expect("checkAppUpdate");
@@ -69,11 +81,16 @@ fn script_channel_example_param_maps_match_dart() {
             _ => None,
         })
         .collect();
+    println!("PASS | params | {messages:?}");
     assert_eq!(
         messages,
         vec![
             "searchApps|{\"keyword\":\"dolphin\"}",
             "getAppInfo|{\"appId\":\"org.example.dolphin\"}",
+            "getAppInfo|{\"appId\":\"org.example.dolphin\",\"version\":\"2.1.0\"}",
+            "getAppInfo|{\"appId\":\"org.example.dolphin\"}",
+            "getAppDetail|{\"appId\":\"org.example.dolphin\"}",
+            "getAppDetail|{\"appId\":\"org.example.dolphin\",\"version\":\"3.0.1\"}",
             "getAppDetail|{\"appId\":\"org.example.dolphin\"}",
             "checkAppUpdate|{\"appId\":\"org.example.dolphin\"}",
             "checkUpdate|{}",

@@ -3,7 +3,9 @@
 //! Reads/writes the core `channel_apps` table, always pinned to the runtime
 //! channel. Script-supplied `channelCode` is ignored: the channel passed by the
 //! engine is the only write authority. Row JSON mirrors Dart
-//! `_channelAppToJson` / `_toChannelAddedApp`.
+//! `_channelAppToJson` / `_toChannelAddedApp`. Every successful write also
+//! records the `js_channel` core-write marker in the same transaction, so this
+//! lane's provenance is visible without inventing a new domain.
 
 use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
@@ -66,11 +68,15 @@ pub(crate) fn remove_app(
     app_id: &str,
 ) -> Result<(), ScriptError> {
     db.with_writer(|conn| {
-        conn.execute(
-            "DELETE FROM channel_apps WHERE channel_key=?1 AND app_id=?2",
-            rusqlite::params![channel.as_str(), app_id],
-        )
-        .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        let changed = conn
+            .execute(
+                "DELETE FROM channel_apps WHERE channel_key=?1 AND app_id=?2",
+                rusqlite::params![channel.as_str(), app_id],
+            )
+            .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        if changed > 0 {
+            gstore_core::migration::mark_core_write(conn, "js_channel", None)?;
+        }
         Ok(())
     })
     .map_err(|error| host("remove channel app", error.0))
@@ -117,6 +123,7 @@ pub(crate) fn insert_apps(
                 ])
                 .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
         }
+        gstore_core::migration::mark_core_write(conn, "js_channel", None)?;
         Ok(())
     })
     .map_err(|error| host("insert channel apps", error.0))?;
