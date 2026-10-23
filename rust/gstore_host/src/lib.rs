@@ -1,3 +1,6 @@
+// FRB codegen emits `UiApi::default()` for the Wave-5 opaque unit struct, which
+// trips clippy::default_constructed_unit_structs at the generated call site.
+#[allow(clippy::default_constructed_unit_structs)]
 mod frb_generated; /* AUTO INJECTED BY flutter_rust_bridge. This line may not be accurate, and you can change it according to your needs. */
 // Retained for the FRB-generated Dart types; the reduced host does not call it.
 #[allow(dead_code)]
