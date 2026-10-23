@@ -5,6 +5,12 @@
 
 set -e
 
+# Rust 交叉编译环境助手（bindgen 需要 NDK sysroot + clang 内建头）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=rust/android_env.sh
+source "$SCRIPT_DIR/rust/android_env.sh"
+NDK_PATH="${GSTORE_NDK_PATH:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
+
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -61,6 +67,11 @@ for arch_config in "${ARCHS[@]}"; do
 
     # 构建
     echo "  正在编译..."
+    if [ -n "$NDK_PATH" ]; then
+        android_env "$NDK_PATH" "$target" 33
+    else
+        echo_warning "未设置 GSTORE_NDK_PATH/ANDROID_NDK_HOME：bindgen 可能因缺少 NDK sysroot 失败"
+    fi
     if cargo build --release --target "$target" 2>&1 | grep -E "Compiling|Finished"; then
         # 复制 so 文件
         so_file="target/$target/release/libgstore_host.so"

@@ -124,18 +124,23 @@ isolation, typed failure paths, and a parity run of the unmodified
 
 `rquickjs-sys` ships no pre-generated bindings for Android, so the manifest
 enables its `bindgen` feature only under `cfg(target_os = "android")`; host
-builds never need libclang. Example check (NDK 27):
+builds never need libclang. On a cold build, bindgen also needs the NDK sysroot
+and clang builtin headers — `rust/android_env.sh` exports them:
 
 ```bash
 NDK=/home/hezhihu89/develop/android/sdk/ndk/27.0.12077973
-BIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
-CC_aarch64_linux_android=$BIN/aarch64-linux-android21-clang \
-AR_aarch64_linux_android=$BIN/llvm-ar \
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android21-clang \
-LIBCLANG_PATH=$NDK/toolchains/llvm/prebuilt/linux-x86_64/musl/lib \
+source rust/android_env.sh "$NDK" aarch64-linux-android
 cargo check --target aarch64-linux-android \
   --manifest-path rust/gstore_script/Cargo.toml
 ```
+
+The helper computes `CC_<triple>`, `AR_<triple>`, `CARGO_TARGET_<TRIPLE>_LINKER`,
+`LIBCLANG_PATH`, and `BINDGEN_EXTRA_CLANG_ARGS` (`--sysroot`, `--target=<triple><api>`,
+dynamically discovered `lib/clang/*/include`). Supported triples:
+`aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`,
+`x86_64-linux-android`. API level defaults to 33 (matching
+`build_android_rust.sh`); pass a third argument or `GSTORE_ANDROID_API` to
+override.
 
 ## Out of scope (later todos)
 
