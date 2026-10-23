@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use gstore_script::ScriptHost;
 
-use crate::channel::ChannelDriver;
 use crate::dto::ChannelKey;
 use crate::error::Error;
+
+use super::store::ScriptChannelStore;
 
 /// Inputs for one [`ScriptChannel`](super::ScriptChannel).
 pub struct ScriptChannelConfig {
@@ -21,12 +22,12 @@ pub struct ScriptChannelConfig {
     pub script: String,
     /// Host capabilities injected by the device layer.
     pub host: Arc<dyn ScriptHost>,
-    /// Optional same-key driver used when the script returns `null`.
+    /// Optional local store used when the script returns no result.
     ///
-    /// This mirrors Dart `JsChannel`'s "script returned null -> query this
-    /// channel's local database" fallback. The fallback must never be allowed
-    /// to change the script channel's identity.
-    pub fallback: Option<Arc<dyn ChannelDriver>>,
+    /// This mirrors Dart `JsChannel`'s "script returned nothing -> query this
+    /// channel's own database" fallback. Every store call is pinned to the
+    /// channel key, so the store can never address another channel.
+    pub store: Option<Arc<dyn ScriptChannelStore>>,
     /// Pack key when the script came from a zip pack.
     ///
     /// When present it must equal [`Self::key`]; otherwise construction fails
@@ -41,15 +42,15 @@ impl ScriptChannelConfig {
             key,
             script: script.into(),
             host,
-            fallback: None,
+            store: None,
             pack_key: None,
         }
     }
 
-    /// Attaches the same-key fallback driver.
+    /// Attaches the same-key local app store used by Dart's fallbacks.
     #[must_use]
-    pub fn with_fallback(mut self, fallback: Arc<dyn ChannelDriver>) -> Self {
-        self.fallback = Some(fallback);
+    pub fn with_store(mut self, store: Arc<dyn ScriptChannelStore>) -> Self {
+        self.store = Some(store);
         self
     }
 

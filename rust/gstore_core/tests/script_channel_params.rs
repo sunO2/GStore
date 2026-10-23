@@ -12,7 +12,6 @@ async function main(method, params) {
   params = params || {};
   host.log.info(method + '|' + JSON.stringify(params));
   switch (method) {
-    case 'getAllApps':
     case 'searchApps':
       return { ok: true, data: [] };
     case 'getAppInfo':
@@ -73,7 +72,6 @@ fn script_channel_example_param_maps_match_dart() {
     assert_eq!(
         messages,
         vec![
-            "getAllApps|{\"forceRefresh\":true}",
             "searchApps|{\"keyword\":\"dolphin\"}",
             "getAppInfo|{\"appId\":\"org.example.dolphin\"}",
             "getAppDetail|{\"appId\":\"org.example.dolphin\"}",

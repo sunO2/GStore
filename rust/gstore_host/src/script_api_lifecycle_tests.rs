@@ -194,3 +194,117 @@ function main(method, params) {
     assert_eq!(value["apps"], serde_json::json!([]));
     assert_eq!(value["env"], serde_json::json!({}));
 }
+
+const DETAIL_COUNTER_JS: &str = r#"
+let __count = 0;
+async function main(method, params) {
+  __count = __count + 1;
+  return { ok: true, data: { appId: params.appId, count: __count } };
+}
+"#;
+
+fn detail_count(api: &crate::script_api::ScriptApiInner, key: &str, app_id: &str) -> u64 {
+    let raw = api
+        .run(key, "versionOptions", &format!(r#"{{"appId":"{app_id}"}}"#))
+        .expect("detail run");
+    let value: Value = serde_json::from_str(&raw).expect("detail json");
+    value["count"].as_u64().expect("count")
+}
+
+#[test]
+fn script_api_detail_runtimes_are_isolated_per_app() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("detail-isolation");
+    harness
+        .api
+        .import(
+            zip_with("function main() { return null; }", Some(DETAIL_COUNTER_JS), None),
+            Some("js_detail".to_string()),
+        )
+        .expect("import");
+
+    assert_eq!(detail_count(&harness.api, "js_detail", "a"), 1);
+    assert_eq!(detail_count(&harness.api, "js_detail", "a"), 2);
+    assert_eq!(detail_count(&harness.api, "js_detail", "b"), 1, "no bleed from a");
+    assert_eq!(detail_count(&harness.api, "js_detail", "b"), 2);
+    assert_eq!(detail_count(&harness.api, "js_detail", "a"), 3, "a keeps its state");
+    println!(
+        "PASS | detail isolation | a=1,2,3 b=1,2 | isolated per appId"
+    );
+}
+
+#[test]
+fn script_api_detail_release_and_lru_cap() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("detail-release");
+    harness
+        .api
+        .import(
+            zip_with("function main() { return null; }", Some(DETAIL_COUNTER_JS), None),
+            Some("js_release".to_string()),
+        )
+        .expect("import");
+
+    assert_eq!(detail_count(&harness.api, "js_release", "a"), 1);
+    assert_eq!(detail_count(&harness.api, "js_release", "a"), 2);
+    harness
+        .api
+        .release_detail("js_release", "a")
+        .expect("release a");
+    assert_eq!(detail_count(&harness.api, "js_release", "a"), 1, "release resets state");
+    harness
+        .api
+        .release_detail("js_release", "a")
+        .expect("release is idempotent");
+    harness
+        .api
+        .release_detail("js_release", "never-created")
+        .expect("unknown app is a no-op");
+    harness
+        .api
+        .release_detail("js_absent", "a")
+        .expect("unknown pack is a no-op");
+
+    for app in ["b", "c", "d"] {
+        assert_eq!(detail_count(&harness.api, "js_release", app), 1);
+    }
+    assert_eq!(detail_count(&harness.api, "js_release", "e"), 1);
+    assert_eq!(detail_count(&harness.api, "js_release", "a"), 1, "a was evicted");
+    assert_eq!(detail_count(&harness.api, "js_release", "d"), 2, "d stayed live");
+    assert_eq!(detail_count(&harness.api, "js_release", "e"), 2, "e stayed live");
+    println!("PASS | detail LRU       | cap=4 evicted oldest, release resets state");
+}
+
+#[test]
+fn script_api_stored_apps_reads_the_shared_channel_apps_table() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("stored-apps");
+    const STORE_JS: &str = r#"
+function main(method) {
+  if (method === 'doUpdate') {
+    host.database.insertApps([{
+      appId: 'app.saved', name: 'Saved', user: 'team', repositories: 'saved',
+      icon: 'i', description: 'desc', category: 'a,b',
+      extra: { packageName: 'pkg.saved' }
+    }]);
+    return { ok: true, data: true };
+  }
+  return null;
+}
+"#;
+    harness
+        .api
+        .import(zip_with(STORE_JS, None, None), Some("js_store".to_string()))
+        .expect("import");
+    harness
+        .api
+        .run("js_store", "doUpdate", "{}")
+        .expect("persist via host.database");
+
+    let raw = harness.api.stored_apps("js_store").expect("stored apps");
+    let value: Value = serde_json::from_str(&raw).expect("apps json");
+    assert_eq!(value[0]["app_id"], "app.saved");
+    assert_eq!(value[0]["package_name"], "pkg.saved");
+    assert_eq!(value[0]["category"], serde_json::json!(["a", "b"]));
+    println!("PASS | stored_apps      | channel_apps round-trip via ScriptChannelStore");
+}

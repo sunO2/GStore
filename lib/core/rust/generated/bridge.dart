@@ -557,6 +557,12 @@ abstract class ScriptApi implements RustOpaqueInterface {
   /// Reloads a pack from its installed directory and rebuilds its runtimes.
   Future<ScriptPackInfo> refresh({required String key});
 
+  /// Releases the `detail.js` runtime bound to `(key, app_id)`.
+  ///
+  /// Mirrors Dart `JsChannel.releaseDetailChannel`: idempotent, and the next
+  /// detail call for that app gets a fresh, isolated runtime.
+  Future<void> releaseDetail({required String key, required String appId});
+
   /// Removes an installed pack, its cached runtimes, and its channel env.
   Future<void> remove({required String key});
 
@@ -585,6 +591,12 @@ abstract class ScriptApi implements RustOpaqueInterface {
 
   /// Replaces the channel env snapshot and hot-updates live runtimes.
   Future<void> setEnv({required String key, required Map<String, String> env});
+
+  /// Returns the saved `channel_apps` rows for `key` as a JSON array string.
+  ///
+  /// Store-only: this is Dart `JsChannel.getAllApps` semantics and never calls
+  /// the script or the network.
+  Future<String> storedApps({required String key});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<TaskBridge>>

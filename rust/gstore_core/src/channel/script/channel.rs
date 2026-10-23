@@ -12,16 +12,21 @@ use crate::dto::{AppDetail, AppSummary, AppUpdate, ChannelKey, ChannelMeta};
 use crate::error::Error;
 
 use super::config::ScriptChannelConfig;
-use super::convert;
-use super::dispatch;
-use super::meta;
+use super::store::{self, ScriptChannelStore, StoreSlot};
+use super::{convert, dispatch, meta};
+
+const MISSING_DETAIL: &str = "脚本未返回详情数据（脚本未实现或数据获取失败）";
+const MISSING_UPDATE: &str = "脚本未返回更新信息且渠道库无该应用";
+const MISSING_UPDATE_DATA: &str = "脚本未返回更新数据（脚本未实现或数据获取失败）";
+const MISSING_CONFIG: &str = "脚本未返回配置数据（脚本未实现或数据获取失败）";
+const MISSING_SEARCH: &str = "脚本未实现 searchApps 和 getAllApps";
 
 /// Script-backed [`ChannelDriver`]; one QuickJS runtime per channel.
 pub struct ScriptChannel {
     key: ChannelKey,
     meta: ChannelMeta,
     icon: Option<String>,
-    fallback: Option<Arc<dyn ChannelDriver>>,
+    store: Option<Arc<dyn ScriptChannelStore>>,
     runtime: Mutex<Option<ScriptRuntime>>,
     initialized: AtomicBool,
 }
@@ -37,7 +42,7 @@ impl ScriptChannel {
             key,
             script,
             host,
-            fallback,
+            store,
             pack_key: _,
         } = config;
         let runtime = dispatch::spawn(&key, &script, host)?;
@@ -47,7 +52,7 @@ impl ScriptChannel {
             key,
             meta,
             icon: script_meta.icon,
-            fallback,
+            store,
             runtime: Mutex::new(Some(runtime)),
             initialized: AtomicBool::new(true),
         })
@@ -66,8 +71,19 @@ impl ScriptChannel {
         dispatch::call_main(runtime, method, params)
     }
 
-    fn fallback(&self) -> Option<&dyn ChannelDriver> {
-        self.fallback.as_deref()
+    fn store_slot(&self) -> StoreSlot<'_> {
+        self.store.as_ref()
+    }
+
+    fn saved_app(&self, app_id: &str) -> Result<Option<AppSummary>, Error> {
+        store::get(self.store_slot(), &self.key, app_id)
+    }
+
+    fn missing_app(&self, app_id: &str) -> Error {
+        Error::NotFound(format!(
+            "script channel `{}` returned no app `{app_id}` and has no saved row",
+            self.key
+        ))
     }
 }
 
@@ -99,172 +115,125 @@ impl ChannelDriver for ScriptChannel {
         self.is_initialized()
     }
 
-    fn get_all_apps(&self, force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
-        let call = self.call(
-            "getAllApps",
-            &dispatch::params(&[("forceRefresh", JsonValue::Bool(force_refresh))]),
-        )?;
-        match call {
-            Some(data) => convert::apps(&data, &self.key),
-            None => match self.fallback() {
-                Some(fallback) => fallback.get_all_apps(force_refresh),
-                None => Err(Error::NotFound(format!(
-                    "script channel `{}` returned no app list and has no fallback",
-                    self.key
-                ))),
-            },
-        }
+    fn get_all_apps(&self, _force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
+        store::list(self.store_slot(), &self.key)
     }
 
     fn get_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error> {
-        let call = self.call(
-            "getAppInfo",
-            &dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]),
-        )?;
-        match call {
-            Some(data) => match convert::summary(&data, &self.key)? {
-                Some(app) => Ok(app),
-                None => self.missing_app_info(app_id, force_refresh),
-            },
-            None => self.missing_app_info(app_id, force_refresh),
+        if !force_refresh {
+            if let Some(app) = self.saved_app(app_id)? {
+                return Ok(app);
+            }
         }
+        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+        if let Some(data) = self.call("getAppInfo", &params)? {
+            if data.is_object() {
+                if let Some(app) = convert::summary(&data, &self.key)? {
+                    return Ok(app);
+                }
+            }
+        }
+        self.saved_app(app_id)?
+            .ok_or_else(|| self.missing_app(app_id))
     }
 
-    fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error> {
-        let call = self.call(
-            "getAppDetail",
-            &dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]),
-        )?;
-        match call {
-            Some(data) => convert::detail(&data),
-            None => match self.fallback() {
-                Some(fallback) => fallback.get_app_detail(app_id, force_refresh),
-                None => Err(Error::NotFound(format!(
-                    "script channel `{}` returned no detail for `{app_id}` and has no fallback",
-                    self.key
-                ))),
-            },
+    fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
+        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+        match self.call("getAppDetail", &params)? {
+            Some(data) if data.is_object() => convert::detail(&data),
+            _ => Err(Error::NotFound(MISSING_DETAIL.to_string())),
         }
     }
 
     fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
-        let call = self.call(
-            "checkAppUpdate",
-            &dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]),
-        )?;
-        match call {
-            Some(data) => convert::update(&data, app_id),
-            None => match self.fallback() {
-                Some(fallback) => fallback.check_app_update(app_id),
-                None => Err(Error::NotFound(format!(
-                    "script channel `{}` returned no update for `{app_id}` and has no fallback",
-                    self.key
-                ))),
-            },
+        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+        if let Some(data) = self.call("checkAppUpdate", &params)? {
+            if data.is_object() {
+                return convert::update(&data, app_id);
+            }
+        }
+        match self.saved_app(app_id)? {
+            Some(app) => Ok(convert::update_from_summary(&app)),
+            None => Err(Error::NotFound(MISSING_UPDATE.to_string())),
         }
     }
 
-    fn search_apps(&self, keyword: &str, force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
-        let call = self.call(
-            "searchApps",
-            &dispatch::params(&[("keyword", JsonValue::String(keyword.to_owned()))]),
-        )?;
-        match call {
-            Some(data) => convert::apps(&data, &self.key),
-            None => match self.fallback() {
-                Some(fallback) => fallback.search_apps(keyword, force_refresh),
-                None => Err(Error::NotFound(format!(
-                    "script channel `{}` returned no search result and has no fallback",
-                    self.key
-                ))),
-            },
+    fn search_apps(&self, keyword: &str, _force_refresh: bool) -> Result<Vec<AppSummary>, Error> {
+        let params = dispatch::params(&[("keyword", JsonValue::String(keyword.to_owned()))]);
+        if let Some(data) = self.call("searchApps", &params)? {
+            if let Some(apps) = convert::apps_opt(&data, &self.key) {
+                return Ok(apps);
+            }
         }
+        let all = self.call("getAllApps", &Map::new())?;
+        let apps = all
+            .as_ref()
+            .and_then(|data| convert::apps_opt(data, &self.key))
+            .ok_or_else(|| Error::NotFound(MISSING_SEARCH.to_string()))?;
+        let needle = keyword.to_lowercase();
+        Ok(apps
+            .into_iter()
+            .filter(|app| matches_keyword(app, &needle))
+            .collect())
     }
 
     fn check_update(&self) -> Result<bool, Error> {
         match self.call("checkUpdate", &Map::new())? {
             Some(JsonValue::Bool(available)) => Ok(available),
-            Some(other) => Err(Error::Serialization(format!(
-                "script `checkUpdate` must return a boolean, got {other}"
-            ))),
-            None => match self.fallback() {
-                Some(fallback) => fallback.check_update(),
-                None => Ok(false),
-            },
+            _ => Ok(false),
         }
     }
 
     fn do_update(&self, progress: Option<&mut dyn FnMut(u64, u64)>) -> Result<bool, Error> {
-        match self.call("doUpdate", &Map::new())? {
-            Some(JsonValue::Bool(updated)) => Ok(updated),
-            Some(other) => Err(Error::Serialization(format!(
-                "script `doUpdate` must return a boolean, got {other}"
-            ))),
-            // Dart's fallback pulls the full list and persists it. Core has no
-            // repository here, so it delegates to the injected same-key driver
-            // and NEVER deletes or purges existing data.
-            None => match self.fallback() {
-                Some(fallback) => fallback.do_update(progress),
-                None => Ok(false),
-            },
+        if let Some(JsonValue::Bool(updated)) = self.call("doUpdate", &Map::new())? {
+            return Ok(updated);
         }
+        let all = self.call("getAllApps", &Map::new())?;
+        let apps = all
+            .as_ref()
+            .and_then(|data| convert::apps_opt(data, &self.key))
+            .ok_or_else(|| Error::NotFound(MISSING_UPDATE_DATA.to_string()))?;
+        let total = apps.len() as u64;
+        store::insert(self.store_slot(), &self.key, &apps)?;
+        if let Some(progress) = progress {
+            progress(total, total);
+        }
+        Ok(true)
     }
 
-    fn get_config(&self, force_refresh: bool) -> Result<Option<ChannelConfig>, Error> {
+    fn get_config(&self, _force_refresh: bool) -> Result<Option<ChannelConfig>, Error> {
         match self.call("getConfig", &Map::new())? {
-            Some(data) => Ok(Some(convert::config(&data)?)),
-            None => match self.fallback() {
-                Some(fallback) => fallback.get_config(force_refresh),
-                None => Err(Error::Unsupported(format!(
-                    "script channel `{}` returned no configuration",
-                    self.key
-                ))),
-            },
+            Some(data) if data.is_object() => Ok(Some(convert::config(&data)?)),
+            _ => Err(Error::NotFound(MISSING_CONFIG.to_string())),
         }
     }
 
     fn add_app(&self, app: &AppSummary) -> Result<(), Error> {
-        let _ = app;
-        Err(Error::Unsupported(
-            "script channel addApp is persisted by the host, not by core".to_string(),
-        ))
+        store::insert(self.store_slot(), &self.key, std::slice::from_ref(app))
     }
 
     fn remove_app(&self, app_id: &str) -> Result<(), Error> {
-        let _ = app_id;
-        Err(Error::Unsupported(
-            "script channel removeApp is persisted by the host, not by core".to_string(),
-        ))
+        store::remove(self.store_slot(), &self.key, app_id)
     }
 
     fn search_by_category(
         &self,
-        category_id: &str,
-        force_refresh: bool,
+        _category_id: &str,
+        _force_refresh: bool,
     ) -> Result<Vec<AppSummary>, Error> {
-        let _ = (category_id, force_refresh);
-        Err(Error::Unsupported(
-            "script channel does not support category search".to_string(),
-        ))
+        Ok(Vec::new())
     }
 
-    fn get_all_categories(&self, force_refresh: bool) -> Result<Vec<ChannelCategory>, Error> {
-        let _ = force_refresh;
-        Err(Error::Unsupported(
-            "script channel does not expose categories".to_string(),
-        ))
+    fn get_all_categories(&self, _force_refresh: bool) -> Result<Vec<ChannelCategory>, Error> {
+        Ok(Vec::new())
     }
 
     fn clear_cache(&self) -> Result<(), Error> {
-        Err(Error::Unsupported(
-            "script channel has no cache to clear".to_string(),
-        ))
+        Ok(())
     }
 
     fn get_cache_size(&self) -> Result<u64, Error> {
-        Err(Error::Unsupported(
-            "script channel has no cache size".to_string(),
-        ))
+        Ok(0)
     }
 
     fn dispose(&self) -> Result<(), Error> {
@@ -274,14 +243,8 @@ impl ChannelDriver for ScriptChannel {
     }
 }
 
-impl ScriptChannel {
-    fn missing_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error> {
-        match self.fallback() {
-            Some(fallback) => fallback.get_app_info(app_id, force_refresh),
-            None => Err(Error::NotFound(format!(
-                "script channel `{}` returned no app `{app_id}` and has no fallback",
-                self.key
-            ))),
-        }
-    }
+fn matches_keyword(app: &AppSummary, needle: &str) -> bool {
+    app.name.to_lowercase().contains(needle)
+        || app.des.to_lowercase().contains(needle)
+        || app.app_id.to_lowercase().contains(needle)
 }

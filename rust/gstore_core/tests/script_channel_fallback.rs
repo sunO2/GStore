@@ -1,230 +1,186 @@
-//! Fallback, data-preservation, and typed-error contracts for ScriptChannel.
+//! Store fallbacks and typed failures for ScriptChannel (Dart `JsChannel`).
 
 mod support;
 
 use std::sync::Arc;
 
-use gstore_core::channel::{ChannelConfig, ChannelDriver, InMemoryChannelDriver, ScriptChannel};
-use gstore_core::dto::{AppSummary, ChannelKey, ChannelKind, ChannelMeta};
+use gstore_core::channel::{ChannelDriver, ScriptChannel};
+use gstore_core::dto::ChannelKey;
 use gstore_core::ScriptChannelConfig;
-use support::fake_host;
+use support::{fake_host, memory_store, sample_app, MemoryStore};
 
-const NULL_JS: &str = r#"
-async function main(method, params) {
-  return null;
-}
-"#;
-
+const NULL_JS: &str = "async function main() { return null; }";
 const MISSING_MAIN_JS: &str = "var notAnEntryPoint = 1;";
 
 const ERROR_ENVELOPE_JS: &str = r#"
-async function main(method, params) {
+async function main() {
   return { ok: false, error: 'boom' };
 }
 "#;
 
+const THROWING_JS: &str = r#"
+async function main() {
+  throw new Error('kaboom');
+}
+"#;
+
 const WRONG_TYPE_JS: &str = r#"
-async function main(method, params) {
+async function main(method) {
   if (method === 'checkUpdate') return { ok: true, data: 'yes' };
   return { ok: true, data: 'not-a-list' };
 }
 "#;
 
-const THROWING_JS: &str = r#"
-async function main(method, params) {
-  throw new Error('kaboom');
-}
-"#;
+const MISSING_DETAIL: &str = "脚本未返回详情数据（脚本未实现或数据获取失败）";
+const MISSING_UPDATE: &str = "脚本未返回更新信息且渠道库无该应用";
+const MISSING_UPDATE_DATA: &str = "脚本未返回更新数据（脚本未实现或数据获取失败）";
+const MISSING_CONFIG: &str = "脚本未返回配置数据（脚本未实现或数据获取失败）";
+const MISSING_SEARCH: &str = "脚本未实现 searchApps 和 getAllApps";
 
 fn key(value: &str) -> ChannelKey {
     ChannelKey::new(value).expect("valid channel key")
 }
 
-fn meta() -> ChannelMeta {
-    ChannelMeta {
-        kind: ChannelKind::JsLocal,
-        name: "fallback".to_string(),
-        description: "fallback driver".to_string(),
-        enabled: true,
-        priority: 0,
-        support_offline: false,
-        last_update_time: None,
-        version: None,
+fn seeded() -> Arc<MemoryStore> {
+    let store = memory_store();
+    store.seed("js.fallback", vec![sample_app("store.only", "Store Only")]);
+    store
+}
+
+fn channel(script: &str, store: Option<Arc<MemoryStore>>) -> ScriptChannel {
+    let mut config = ScriptChannelConfig::new(key("js.fallback"), script, fake_host());
+    if let Some(store) = store {
+        config = config.with_store(store);
     }
-}
-
-fn sample_app() -> AppSummary {
-    AppSummary {
-        app_id: "org.example.dolphin".to_string(),
-        package_name: Some("org.example.dolphin".to_string()),
-        name: "Dolphin".to_string(),
-        user: "Example Team".to_string(),
-        repositories: "dolphin".to_string(),
-        icon: "https://example.test/dolphin.png".to_string(),
-        des: "Flipper-powered browser".to_string(),
-        readme: Some("# Dolphin".to_string()),
-        category: Some(vec!["tools".to_string()]),
-        extra: None,
-    }
-}
-
-fn seeded_fallback() -> Arc<InMemoryChannelDriver> {
-    Arc::new(
-        InMemoryChannelDriver::new(key("js.fallback"), meta())
-            .with_apps(vec![sample_app()])
-            .with_config(Some(ChannelConfig {
-                version: "7".to_string(),
-                proxy: Some("https://proxy.test".to_string()),
-            })),
-    )
-}
-
-fn channel_with_fallback(script: &str, fallback: Arc<InMemoryChannelDriver>) -> ScriptChannel {
-    ScriptChannel::new(
-        ScriptChannelConfig::new(key("js.fallback"), script, fake_host()).with_fallback(fallback),
-    )
-    .expect("script channel constructs")
+    ScriptChannel::new(config).expect("script channel constructs")
 }
 
 #[test]
-fn script_channel_fallback_reads_delegate_and_do_update_preserves_data() {
-    let fallback = seeded_fallback();
-    let channel = channel_with_fallback(NULL_JS, Arc::clone(&fallback));
+fn script_channel_null_degrades_to_the_saved_channel_rows() {
+    let store = seeded();
+    let channel = channel(NULL_JS, Some(store));
 
-    let apps = channel.get_all_apps(true).expect("fallback getAllApps");
+    let apps = channel.get_all_apps(true).expect("store getAllApps");
     assert_eq!(apps.len(), 1);
-    assert_eq!(apps[0].app_id, "org.example.dolphin");
+    assert_eq!(apps[0].app_id, "store.only");
 
-    let search = channel
-        .search_apps("dolphin", true)
-        .expect("fallback searchApps");
-    assert_eq!(search.len(), 1);
+    let info = channel.get_app_info("store.only", true).expect("store hit");
+    assert_eq!(info.name, "Store Only");
+    assert_eq!(
+        channel.get_app_info("missing", true).unwrap_err().code(),
+        "not_found"
+    );
 
-    let info = channel
-        .get_app_info("org.example.dolphin", true)
-        .expect("fallback getAppInfo");
-    assert_eq!(info.name, "Dolphin");
-
-    let detail = channel
-        .get_app_detail("org.example.dolphin", true)
-        .expect("fallback getAppDetail");
-    assert_eq!(detail.name, "Dolphin");
-    assert_eq!(detail.package_name.as_deref(), Some("org.example.dolphin"));
+    assert_eq!(
+        channel
+            .get_app_detail("store.only", true)
+            .unwrap_err()
+            .message(),
+        MISSING_DETAIL
+    );
+    assert_eq!(
+        channel.search_apps("store", true).unwrap_err().message(),
+        MISSING_SEARCH
+    );
 
     let update = channel
-        .check_app_update("org.example.dolphin")
-        .expect("fallback checkAppUpdate");
-    assert_eq!(update.app_id, "org.example.dolphin");
-    assert_eq!(update.name, "Dolphin");
-
-    assert!(!channel.check_update().expect("fallback checkUpdate"));
-
-    let config = channel
-        .get_config(true)
-        .expect("fallback getConfig")
-        .expect("fallback config");
-    assert_eq!(config.version, "7");
-    assert_eq!(config.proxy.as_deref(), Some("https://proxy.test"));
-
-    // Dart's doUpdate fallback pulls the full list and persists it. Core
-    // delegates to the same-key driver and must never purge existing rows.
-    assert!(channel.do_update(None).expect("fallback doUpdate"));
-    let preserved = fallback.get_all_apps(false).expect("fallback still seeded");
-    assert_eq!(preserved.len(), 1);
-    assert_eq!(preserved[0].app_id, "org.example.dolphin");
-    assert_eq!(preserved[0].name, "Dolphin");
-
-    let before = fallback.get_all_apps(false).expect("pre-dispose apps");
-    channel.dispose().expect("dispose");
-    let after = fallback.get_all_apps(false).expect("post-dispose apps");
-    assert_eq!(before, after);
-}
-
-#[test]
-fn script_channel_fallback_missing_main_uses_fallback() {
-    let fallback = seeded_fallback();
-    let channel = channel_with_fallback(MISSING_MAIN_JS, Arc::clone(&fallback));
-
-    let apps = channel
-        .get_all_apps(false)
-        .expect("script without main falls back");
-    assert_eq!(apps.len(), 1);
-    assert_eq!(apps[0].app_id, "org.example.dolphin");
-
-    channel.dispose().expect("dispose");
-}
-
-#[test]
-fn script_channel_fallback_without_fallback_returns_typed_errors() {
-    let channel = ScriptChannel::new(ScriptChannelConfig::new(
-        key("js.fallback"),
-        NULL_JS,
-        fake_host(),
-    ))
-    .expect("script channel constructs");
-
-    assert_eq!(channel.get_all_apps(false).unwrap_err().code(), "not_found");
+        .check_app_update("store.only")
+        .expect("summary update");
+    assert_eq!(update.app_id, "store.only");
+    assert_eq!(update.package_name, "store.only");
+    assert!(update.latest_version.is_none());
     assert_eq!(
-        channel.search_apps("dolphin", false).unwrap_err().code(),
-        "not_found"
+        channel.check_app_update("missing").unwrap_err().message(),
+        MISSING_UPDATE
     );
-    assert_eq!(
-        channel.get_app_info("app", false).unwrap_err().code(),
-        "not_found"
-    );
-    assert_eq!(
-        channel.get_app_detail("app", false).unwrap_err().code(),
-        "not_found"
-    );
-    assert_eq!(
-        channel.check_app_update("app").unwrap_err().code(),
-        "not_found"
-    );
+
     assert!(!channel.check_update().expect("no update by default"));
-    assert!(!channel.do_update(None).expect("doUpdate no-op"));
-    assert_eq!(channel.get_config(false).unwrap_err().code(), "unsupported");
+    assert_eq!(
+        channel.do_update(None).unwrap_err().message(),
+        MISSING_UPDATE_DATA
+    );
+    assert_eq!(
+        channel.get_config(false).unwrap_err().message(),
+        MISSING_CONFIG
+    );
 
     channel.dispose().expect("dispose");
 }
 
 #[test]
-fn script_channel_fallback_envelope_and_type_errors_are_typed() {
-    let error_channel = ScriptChannel::new(ScriptChannelConfig::new(
-        key("js.fallback"),
-        ERROR_ENVELOPE_JS,
-        fake_host(),
-    ))
-    .expect("error script channel constructs");
-    let error = error_channel
-        .get_all_apps(false)
-        .expect_err("ok:false is an error");
-    assert_eq!(error.code(), "internal");
-    assert!(error.message().contains("boom"));
+fn script_channel_missing_main_uses_the_store() {
+    let store = seeded();
+    let channel = channel(MISSING_MAIN_JS, Some(store));
+    let apps = channel.get_all_apps(false).expect("store list");
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].app_id, "store.only");
+    channel.dispose().expect("dispose");
+}
 
-    let wrong_channel = ScriptChannel::new(ScriptChannelConfig::new(
-        key("js.fallback"),
-        WRONG_TYPE_JS,
-        fake_host(),
-    ))
-    .expect("wrong-type channel constructs");
+#[test]
+fn script_channel_without_store_keeps_script_results_and_rejects_writes() {
+    let channel = channel(MISSING_MAIN_JS, None);
+    assert!(channel.get_all_apps(false).expect("empty store").is_empty());
     assert_eq!(
-        wrong_channel.get_all_apps(false).unwrap_err().code(),
-        "serialization"
+        channel
+            .add_app(&sample_app("app", "App"))
+            .unwrap_err()
+            .code(),
+        "unsupported"
     );
+    assert_eq!(channel.remove_app("app").unwrap_err().code(), "unsupported");
+    channel.dispose().expect("dispose");
+}
+
+#[test]
+fn script_channel_error_envelope_and_throw_are_no_script_results() {
+    for script in [ERROR_ENVELOPE_JS, THROWING_JS] {
+        let store = seeded();
+        let channel = channel(script, Some(store));
+
+        assert_eq!(
+            channel.get_all_apps(false).expect("store list")[0].app_id,
+            "store.only"
+        );
+        assert_eq!(
+            channel
+                .get_app_info("store.only", true)
+                .expect("store hit")
+                .name,
+            "Store Only"
+        );
+        assert_eq!(
+            channel
+                .get_app_detail("store.only", true)
+                .unwrap_err()
+                .message(),
+            MISSING_DETAIL
+        );
+        assert!(!channel.check_update().expect("false by default"));
+        assert_eq!(
+            channel.do_update(None).unwrap_err().message(),
+            MISSING_UPDATE_DATA
+        );
+        assert_eq!(
+            channel.get_config(false).unwrap_err().message(),
+            MISSING_CONFIG
+        );
+
+        channel.dispose().expect("dispose");
+    }
+}
+
+#[test]
+fn script_channel_wrong_types_degrade_instead_of_serialization_errors() {
+    let channel = channel(WRONG_TYPE_JS, None);
     assert_eq!(
-        wrong_channel.check_update().unwrap_err().code(),
-        "serialization"
+        channel.search_apps("dolphin", false).unwrap_err().message(),
+        MISSING_SEARCH
     );
-
-    let throwing = ScriptChannel::new(ScriptChannelConfig::new(
-        key("js.fallback"),
-        THROWING_JS,
-        fake_host(),
-    ))
-    .expect("throwing channel constructs");
-    assert_eq!(throwing.get_all_apps(false).unwrap_err().code(), "internal");
-
-    error_channel.dispose().expect("error channel dispose");
-    wrong_channel.dispose().expect("wrong channel dispose");
-    throwing.dispose().expect("throwing channel dispose");
+    assert!(!channel.check_update().expect("non-boolean is false"));
+    assert_eq!(
+        channel.get_config(false).unwrap_err().message(),
+        MISSING_CONFIG
+    );
+    channel.dispose().expect("dispose");
 }

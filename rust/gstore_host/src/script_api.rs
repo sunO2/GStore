@@ -43,12 +43,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gstore_core::channel::{validate_channel_key, PackPolicy, PackStore};
+use gstore_core::channel::{validate_channel_key, PackPolicy, PackStore, ScriptChannelStore};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
 use gstore_core::ports::{FileSecretStore, HttpPort};
 use gstore_script::SandboxLimits;
 
+use crate::script_db::SqliteScriptChannelStore;
 use crate::script_env;
 use crate::script_pack;
 pub(crate) use crate::script_pack::ScriptPackInfo;
@@ -62,6 +63,7 @@ pub(crate) const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Shared state behind the FRB facade.
 pub(crate) struct ScriptApiInner {
     db: DbHandle,
+    store: Arc<dyn ScriptChannelStore>,
     strict: PackStore,
     legacy: PackStore,
     secrets: FileSecretStore,
@@ -106,12 +108,15 @@ impl ScriptApiInner {
         }
         let db = DbHandle::open(Path::new(&data_dir))
             .map_err(|error| format!("io: open core db: {}", error.0))?;
+        let store: Arc<dyn ScriptChannelStore> =
+            Arc::new(SqliteScriptChannelStore::new(db.clone()));
         let root = Path::new(&files_dir).join("channel_packs");
         Ok(Self {
+            db: db.clone(),
+            store,
             strict: PackStore::new(root.clone(), db.clone()).with_policy(PackPolicy::Strict),
             legacy: PackStore::new(root, db.clone()).with_policy(PackPolicy::LegacyPermissive),
             secrets: FileSecretStore::new(Path::new(&files_dir).join("secrets")),
-            db,
             http,
             entries: Mutex::new(HashMap::new()),
             ui_budget,
@@ -247,6 +252,34 @@ impl ScriptApiInner {
             .collect()
     }
 
+    /// Returns the saved app rows for `key` as a JSON array string.
+    pub(crate) fn stored_apps(&self, key: &str) -> Result<String, String> {
+        let key = self.channel_key(key)?;
+        let entry = self.ensure_entry(&key)?;
+        let apps = entry
+            .store()
+            .list_apps(&key)
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+        serde_json::to_string(&apps)
+            .map_err(|error| format!("internal: encode stored apps: {error}"))
+    }
+
+    /// Releases the `app_id` detail runtime; unknown ids are a no-op.
+    pub(crate) fn release_detail(&self, key: &str, app_id: &str) -> Result<(), String> {
+        let key = self.channel_key(key)?;
+        let entry = {
+            let entries = self
+                .entries
+                .lock()
+                .map_err(|_| "internal: script entry cache poisoned".to_string())?;
+            entries.get(key.as_str()).cloned()
+        };
+        match entry {
+            Some(entry) => entry.release_detail(app_id),
+            None => Ok(()),
+        }
+    }
+
     fn channel_key(&self, key: &str) -> Result<ChannelKey, String> {
         let key =
             ChannelKey::new(key.trim()).map_err(|error| format!("invalid_argument: {error}"))?;
@@ -276,6 +309,7 @@ impl ScriptApiInner {
             env,
             EntryDeps {
                 db: self.db.clone(),
+                store: Arc::clone(&self.store),
                 http: Arc::clone(&self.http),
                 ui_budget: self.ui_budget,
                 eval_timeout: self.eval_timeout,

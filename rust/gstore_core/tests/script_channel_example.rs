@@ -6,8 +6,7 @@ use gstore_core::channel::{ChannelDriver, ScriptChannel};
 use gstore_core::dto::{ChannelKey, ChannelKind};
 use gstore_core::error::Error;
 use gstore_core::ScriptChannelConfig;
-use serde_json::json;
-use support::{fake_host, HostCall};
+use support::{fake_host, memory_store, sample_app, HostCall};
 
 const EXAMPLE_JS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -21,11 +20,15 @@ fn key(value: &str) -> ChannelKey {
 #[test]
 fn script_channel_example_meta_and_all_dispatched_methods() {
     let host = fake_host();
-    let channel = ScriptChannel::new(ScriptChannelConfig::new(
-        key("js.example"),
-        EXAMPLE_JS,
-        host.clone(),
-    ))
+    let store = memory_store();
+    store.seed(
+        "js.example",
+        vec![sample_app("org.example.dolphin", "Dolphin")],
+    );
+    let channel = ScriptChannel::new(
+        ScriptChannelConfig::new(key("js.example"), EXAMPLE_JS, host.clone())
+            .with_store(store.clone()),
+    )
     .expect("example.js channel constructs");
 
     assert_eq!(channel.key().as_str(), "js.example");
@@ -40,20 +43,16 @@ fn script_channel_example_meta_and_all_dispatched_methods() {
     assert!(channel.check_available().expect("available"));
     channel.initialize().expect("idempotent initialize");
 
-    let all = channel.get_all_apps(true).expect("getAllApps");
+    let all = channel.get_all_apps(true).expect("getAllApps from store");
     assert_eq!(all.len(), 1);
-    let app = &all[0];
-    assert_eq!(app.app_id, "org.example.dolphin");
-    assert_eq!(app.name, "Dolphin");
-    assert_eq!(app.user, "Example Team");
-    assert_eq!(app.repositories, "dolphin");
-    assert_eq!(app.icon, "https://example.test/dolphin.png");
-    assert_eq!(app.des, "Flipper-powered browser");
-    assert_eq!(app.package_name, None);
-    assert_eq!(app.category, Some(vec!["tools".to_string()]));
-    let extra = app.extra.as_ref().expect("extra map");
-    assert_eq!(extra["versionName"], json!("2.1.0"));
-    assert_eq!(extra["source"], json!("example-template"));
+    assert_eq!(all[0].app_id, "org.example.dolphin");
+    assert!(
+        !host
+            .calls()
+            .iter()
+            .any(|call| matches!(call, HostCall::Http { .. })),
+        "getAllApps must never touch the script/network"
+    );
 
     let search = channel.search_apps("dolphin", true).expect("searchApps");
     assert_eq!(search.len(), 1);
@@ -80,11 +79,8 @@ fn script_channel_example_meta_and_all_dispatched_methods() {
     assert_eq!(detail.channel, ChannelKind::JsLocal);
     assert!(detail.sections.is_empty());
     assert_eq!(detail.downloads.len(), 1);
-    let download = &detail.downloads[0];
-    assert_eq!(download.name, "dolphin-2.1.0.apk");
-    assert_eq!(download.size, Some(1234));
-    assert_eq!(download.version.as_deref(), Some("2.1.0"));
-    assert!(download.downloadable);
+    assert_eq!(detail.downloads[0].name, "dolphin-2.1.0.apk");
+    assert!(detail.downloads[0].downloadable);
 
     let update = channel
         .check_app_update("org.example.dolphin")
@@ -97,32 +93,28 @@ fn script_channel_example_meta_and_all_dispatched_methods() {
     assert_eq!(update.detail.name, "Dolphin");
 
     assert!(!channel.check_update().expect("checkUpdate"));
-    assert!(!channel
-        .do_update(None)
-        .expect("example.js doUpdate returns null"));
+    assert!(channel.do_update(None).expect("doUpdate fallback persists"));
+    assert!(store.contains("js.example", "org.example.dolphin"));
 
-    assert_eq!(channel.get_config(false).unwrap_err().code(), "unsupported");
     assert_eq!(
-        channel.get_all_categories(true).unwrap_err().code(),
-        "unsupported"
+        channel.get_config(false).unwrap_err().message(),
+        "脚本未返回配置数据（脚本未实现或数据获取失败）"
     );
-    assert_eq!(
-        channel
-            .search_by_category("tools", true)
-            .unwrap_err()
-            .code(),
-        "unsupported"
-    );
-    assert_eq!(channel.add_app(&all[0]).unwrap_err().code(), "unsupported");
-    assert_eq!(
-        channel
-            .remove_app("org.example.dolphin")
-            .unwrap_err()
-            .code(),
-        "unsupported"
-    );
-    assert_eq!(channel.clear_cache().unwrap_err().code(), "unsupported");
-    assert_eq!(channel.get_cache_size().unwrap_err().code(), "unsupported");
+    assert!(channel
+        .get_all_categories(true)
+        .expect("categories")
+        .is_empty());
+    assert!(channel
+        .search_by_category("tools", true)
+        .expect("category search")
+        .is_empty());
+    channel.add_app(&all[0]).expect("add_app persists");
+    channel
+        .remove_app("org.example.dolphin")
+        .expect("remove_app deletes");
+    assert!(!store.contains("js.example", "org.example.dolphin"));
+    channel.clear_cache().expect("clearCache");
+    assert_eq!(channel.get_cache_size().expect("cacheSize"), 0);
 
     let http_calls: Vec<HostCall> = host
         .calls()
@@ -139,7 +131,13 @@ fn script_channel_example_meta_and_all_dispatched_methods() {
     channel.dispose().expect("first dispose");
     channel.dispose().expect("dispose is idempotent");
     assert!(!channel.is_initialized().expect("disposed"));
-    assert_eq!(channel.get_all_apps(false).unwrap_err().code(), "internal");
+    assert_eq!(
+        channel
+            .get_app_info("org.example.dolphin", true)
+            .unwrap_err()
+            .code(),
+        "internal"
+    );
 }
 
 #[test]
@@ -147,10 +145,10 @@ fn script_channel_example_per_channel_isolation() {
     const ISOLATION_JS: &str = r#"
 let __count = 0;
 async function main(method, params) {
-  if (method === 'getAllApps') {
+  if (method === 'getAppInfo') {
     __count = __count + 1;
     host.log.info('count=' + __count);
-    return { ok: true, data: [{ appId: 'app-' + __count, name: 'App ' + __count }] };
+    return { ok: true, data: { appId: 'app-' + __count, name: 'App ' + __count } };
   }
   return null;
 }
@@ -170,12 +168,12 @@ async function main(method, params) {
     .expect("right channel");
 
     for expected in ["App 1", "App 2"] {
-        let apps = left.get_all_apps(false).expect("left apps");
-        assert_eq!(apps[0].name, expected);
+        let app = left.get_app_info("app", true).expect("left app");
+        assert_eq!(app.name, expected);
     }
     for expected in ["App 1", "App 2"] {
-        let apps = right.get_all_apps(false).expect("right apps");
-        assert_eq!(apps[0].name, expected);
+        let app = right.get_app_info("app", true).expect("right app");
+        assert_eq!(app.name, expected);
     }
 
     let logs = |channel: &str| -> Vec<String> {

@@ -127,7 +127,7 @@ impl ScriptDetail {
     }
 
     /// Invokes `main(method, params)` with the same envelope rules as the entry
-    /// channel (`null` -> `None`, `{ok:false}` -> typed error).
+    /// channel: `null`, `{ok:false}` and a JS throw all degrade to `None`.
     pub fn call_main(
         &self,
         method: &str,
@@ -193,15 +193,10 @@ impl ScriptDetail {
     /// `detailMenu(appId)`; a missing/non-list result degrades to an empty menu.
     pub fn detail_menu(&self, app_id: &str) -> Result<Vec<DetailAction>, Error> {
         let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
-        match self.call_main("detailMenu", &params)? {
-            None => Ok(Vec::new()),
-            Some(JsonValue::Array(items)) => {
-                Ok(items.iter().map(DetailAction::from_value).collect())
-            }
-            Some(other) => Err(Error::Serialization(format!(
-                "script `detailMenu` must return an array, got {other}"
-            ))),
-        }
+        Ok(match self.call_main("detailMenu", &params)? {
+            Some(JsonValue::Array(items)) => items.iter().map(DetailAction::from_value).collect(),
+            _ => Vec::new(),
+        })
     }
 
     /// Releases the runtime; safe to call repeatedly.

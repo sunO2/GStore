@@ -5,12 +5,15 @@
 //! engine is the only write authority. Row JSON mirrors Dart
 //! `_channelAppToJson` / `_toChannelAddedApp`.
 
+use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
+use gstore_core::dto::{AppSummary, ChannelKey};
+use gstore_core::error::Error as CoreError;
 use gstore_script::{
     ChannelApp, DatabaseAppRequest, DatabaseInsertRequest, ScriptChannel, ScriptError,
 };
 use rusqlite::OptionalExtension;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 const SELECT: &str = "SELECT app_id, name, user, repositories, apprepo, icon, description, \
                       category, add_time, extra FROM channel_apps";
@@ -55,6 +58,22 @@ pub(crate) fn get_app(
         .optional()
         .map_err(|error| host("query channel app", error))?;
     raw.map(|raw| raw.into_app(channel)).transpose()
+}
+
+pub(crate) fn remove_app(
+    db: &DbHandle,
+    channel: &ScriptChannel,
+    app_id: &str,
+) -> Result<(), ScriptError> {
+    db.with_writer(|conn| {
+        conn.execute(
+            "DELETE FROM channel_apps WHERE channel_key=?1 AND app_id=?2",
+            rusqlite::params![channel.as_str(), app_id],
+        )
+        .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+        Ok(())
+    })
+    .map_err(|error| host("remove channel app", error.0))
 }
 
 pub(crate) fn insert_apps(
@@ -226,4 +245,108 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+/// SQLite-backed `ScriptChannelStore` over the core `channel_apps` table.
+///
+/// Every call takes the channel key from the caller (the core driver's bound
+/// key), never from a script payload, so cross-channel writes stay impossible.
+pub struct SqliteScriptChannelStore {
+    db: DbHandle,
+}
+
+impl SqliteScriptChannelStore {
+    pub fn new(db: DbHandle) -> Self {
+        Self { db }
+    }
+
+    fn channel(&self, channel: &ChannelKey) -> Result<ScriptChannel, CoreError> {
+        ScriptChannel::new(channel.as_str()).map_err(|error| CoreError::Internal(error.to_string()))
+    }
+}
+
+impl ScriptChannelStore for SqliteScriptChannelStore {
+    fn list_apps(&self, channel: &ChannelKey) -> Result<Vec<AppSummary>, CoreError> {
+        let engine = self.channel(channel)?;
+        get_apps(&self.db, &engine)
+            .map(|rows| rows.into_iter().map(summary_from_row).collect())
+            .map_err(core_err)
+    }
+
+    fn get_app(&self, channel: &ChannelKey, app_id: &str) -> Result<Option<AppSummary>, CoreError> {
+        let engine = self.channel(channel)?;
+        let request = DatabaseAppRequest {
+            app_id: app_id.to_owned(),
+        };
+        get_app(&self.db, &engine, request)
+            .map(|row| row.map(summary_from_row))
+            .map_err(core_err)
+    }
+
+    fn insert_apps(&self, channel: &ChannelKey, apps: &[AppSummary]) -> Result<(), CoreError> {
+        if apps.is_empty() {
+            return Ok(());
+        }
+        let engine = self.channel(channel)?;
+        let request = DatabaseInsertRequest {
+            apps: apps.iter().map(summary_to_json).collect(),
+        };
+        insert_apps(&self.db, &engine, request)
+            .map(|_| ())
+            .map_err(core_err)
+    }
+
+    fn remove_app(&self, channel: &ChannelKey, app_id: &str) -> Result<(), CoreError> {
+        let engine = self.channel(channel)?;
+        remove_app(&self.db, &engine, app_id).map_err(core_err)
+    }
+}
+
+fn core_err(error: ScriptError) -> CoreError {
+    CoreError::Internal(error.to_string())
+}
+
+fn summary_from_row(row: ChannelApp) -> AppSummary {
+    let extra = row.extra.as_ref().and_then(JsonValue::as_object).cloned();
+    let package_name = extra
+        .as_ref()
+        .and_then(|extra| extra.get("packageName"))
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let category = row.category.and_then(|value| {
+        let items: Vec<String> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_owned)
+            .collect();
+        (!items.is_empty()).then_some(items)
+    });
+    AppSummary {
+        app_id: row.app_id,
+        package_name,
+        name: row.name,
+        user: row.user,
+        repositories: row.repositories,
+        icon: row.icon,
+        des: row.description,
+        readme: None,
+        category,
+        extra,
+    }
+}
+
+fn summary_to_json(app: &AppSummary) -> JsonValue {
+    json!({
+        "appId": app.app_id,
+        "name": app.name,
+        "user": app.user,
+        "repositories": app.repositories,
+        "icon": app.icon,
+        "description": app.des,
+        "category": app.category.as_ref().map(|items| items.join(",")),
+        "addTime": now_millis(),
+        "extra": app.extra.clone(),
+    })
 }

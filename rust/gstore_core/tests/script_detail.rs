@@ -129,3 +129,41 @@ async function main(method, params) {
         .expect_err("disposed detail errors");
     assert_eq!(disposed.code(), "internal");
 }
+
+#[test]
+fn detail_no_result_states_degrade_to_none() {
+    const NO_RESULT_JS: &str = r#"
+async function main(method) {
+  if (method === 'throw') throw new Error('kaboom');
+  if (method === 'okFalse') return { ok: false, error: 'boom' };
+  if (method === 'nonList') return { ok: true, data: 'not-a-list' };
+  return null;
+}
+"#;
+    let detail = ScriptDetail::new(ScriptDetailConfig::new(
+        key("js.noresult"),
+        NO_RESULT_JS,
+        fake_host(),
+    ))
+    .expect("detail channel");
+
+    for method in ["null", "throw", "okFalse"] {
+        let outcome = detail
+            .call_main(method, &Map::new())
+            .expect("no-result is not an error");
+        assert!(outcome.is_none(), "{method} must yield None");
+    }
+
+    assert!(detail.detail_menu("app").expect("non-list menu").is_empty());
+
+    let options = detail
+        .version_options(VersionOptionsQuery {
+            app_id: "app",
+            env: None,
+            version: Some("1.0"),
+        })
+        .expect("versionOptions degrades");
+    assert!(options.is_none());
+
+    detail.dispose().expect("dispose");
+}

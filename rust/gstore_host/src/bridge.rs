@@ -4311,6 +4311,22 @@ impl ScriptApi {
     pub fn list(&self) -> Result<Vec<ScriptPackInfo>, String> {
         self.inner.list()
     }
+
+    /// Returns the saved `channel_apps` rows for `key` as a JSON array string.
+    ///
+    /// Store-only: this is Dart `JsChannel.getAllApps` semantics and never calls
+    /// the script or the network.
+    pub fn stored_apps(&self, key: String) -> Result<String, String> {
+        self.inner.stored_apps(&key)
+    }
+
+    /// Releases the `detail.js` runtime bound to `(key, app_id)`.
+    ///
+    /// Mirrors Dart `JsChannel.releaseDetailChannel`: idempotent, and the next
+    /// detail call for that app gets a fresh, isolated runtime.
+    pub fn release_detail(&self, key: String, app_id: String) -> Result<(), String> {
+        self.inner.release_detail(&key, &app_id)
+    }
 }
 
 /// FRB facade for answering `script.ui_request`.

@@ -1,7 +1,12 @@
 //! Shared fakes for the ScriptChannel/ScriptDetail integration tests.
+#![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use gstore_core::channel::ScriptChannelStore;
+use gstore_core::dto::{AppSummary, ChannelKey};
+use gstore_core::error::Error;
 use gstore_script::{
     HttpRequest, HttpResponse, LogRequest, ScriptChannel as EngineChannel, ScriptError, ScriptHost,
 };
@@ -97,3 +102,84 @@ fn app_row() -> JsonValue {
         "repo": "dolphin",
     })
 }
+
+/// Deterministic in-memory `ScriptChannelStore` for driver parity tests.
+#[derive(Default)]
+pub struct MemoryStore {
+    rows: Mutex<BTreeMap<(String, String), AppSummary>>,
+}
+
+impl MemoryStore {
+    pub fn seed(&self, channel: &str, apps: Vec<AppSummary>) {
+        let mut rows = self.rows.lock().expect("memory store lock");
+        for app in apps {
+            rows.insert((channel.to_owned(), app.app_id.clone()), app);
+        }
+    }
+
+    pub fn rows(&self, channel: &str) -> Vec<AppSummary> {
+        self.rows
+            .lock()
+            .expect("memory store lock")
+            .iter()
+            .filter(|((key, _), _)| key == channel)
+            .map(|(_, app)| app.clone())
+            .collect()
+    }
+
+    pub fn contains(&self, channel: &str, app_id: &str) -> bool {
+        self.rows
+            .lock()
+            .expect("memory store lock")
+            .contains_key(&(channel.to_owned(), app_id.to_owned()))
+    }
+}
+
+impl ScriptChannelStore for MemoryStore {
+    fn list_apps(&self, channel: &ChannelKey) -> Result<Vec<AppSummary>, Error> {
+        Ok(self.rows(channel.as_str()))
+    }
+
+    fn get_app(&self, channel: &ChannelKey, app_id: &str) -> Result<Option<AppSummary>, Error> {
+        Ok(self
+            .rows
+            .lock()
+            .expect("memory store lock")
+            .get(&(channel.as_str().to_owned(), app_id.to_owned()))
+            .cloned())
+    }
+
+    fn insert_apps(&self, channel: &ChannelKey, apps: &[AppSummary]) -> Result<(), Error> {
+        self.seed(channel.as_str(), apps.to_vec());
+        Ok(())
+    }
+
+    fn remove_app(&self, channel: &ChannelKey, app_id: &str) -> Result<(), Error> {
+        self.rows
+            .lock()
+            .expect("memory store lock")
+            .remove(&(channel.as_str().to_owned(), app_id.to_owned()));
+        Ok(())
+    }
+}
+
+pub fn memory_store() -> Arc<MemoryStore> {
+    Arc::new(MemoryStore::default())
+}
+
+pub fn sample_app(app_id: &str, name: &str) -> AppSummary {
+    AppSummary {
+        app_id: app_id.to_owned(),
+        package_name: Some(app_id.to_owned()),
+        name: name.to_owned(),
+        user: "Example Team".to_owned(),
+        repositories: name.to_lowercase(),
+        icon: format!("https://example.test/{app_id}.png"),
+        des: format!("{name} description"),
+        readme: Some(format!("# {name}")),
+        category: Some(vec!["tools".to_owned()]),
+        extra: None,
+    }
+}
+
+pub mod parity;

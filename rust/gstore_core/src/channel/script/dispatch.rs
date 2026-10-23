@@ -1,9 +1,11 @@
 //! Runtime spawning and the single `main(method, params)` dispatch path.
 //!
 //! Every public driver/detail method funnels through [`call_main`], so the
-//! envelope rules from Dart `_callMain` live here exactly once: `null` and
-//! `{ok:true,data:null}` mean "not implemented" (caller falls back), while
-//! `{ok:false}` and non-boolean `ok` are typed errors.
+//! envelope rules from Dart `_callMain` live here exactly once. A script that
+//! returns nothing (`null`, `{ok:true,data:null}`), reports failure
+//! (`{ok:false}`), or throws a JS exception all mean "no script result": the
+//! caller applies Dart's fallback. Only malformed output / transport faults
+//! (timeout, disposal, sandbox limit, host failure, invalid JSON) are errors.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -48,33 +50,22 @@ pub(crate) fn call_main(
     let params_json = serde_json::to_string(params)?;
     let source =
         format!("(typeof main === 'function' ? main({method_json}, {params_json}) : null)");
-    let raw = runtime
-        .eval(&source)
-        .map_err(|error| map_script_error(&error))?;
-    unwrap_envelope(method, raw)
+    let raw = match runtime.eval(&source) {
+        Ok(value) => value,
+        Err(error) if error.kind() == ScriptErrorKind::Eval => return Ok(None),
+        Err(error) => return Err(map_script_error(&error)),
+    };
+    Ok(unwrap_envelope(raw))
 }
 
-fn unwrap_envelope(method: &str, raw: JsonValue) -> MainOutcome {
+fn unwrap_envelope(raw: JsonValue) -> Option<JsonValue> {
     let JsonValue::Object(map) = raw else {
-        return Ok((!raw.is_null()).then_some(raw));
+        return (!raw.is_null()).then_some(raw);
     };
-    match map.get("ok").cloned() {
-        None => Ok(Some(JsonValue::Object(map))),
-        Some(JsonValue::Bool(true)) => {
-            Ok(map.get("data").filter(|value| !value.is_null()).cloned())
-        }
-        Some(JsonValue::Bool(false)) => {
-            let detail = map
-                .get("error")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("unknown error");
-            Err(Error::Internal(format!(
-                "script `{method}` returned ok:false: {detail}"
-            )))
-        }
-        Some(_) => Err(Error::Serialization(format!(
-            "script `{method}` returned a non-boolean `ok`"
-        ))),
+    match map.get("ok") {
+        Some(JsonValue::Bool(true)) => map.get("data").filter(|value| !value.is_null()).cloned(),
+        Some(JsonValue::Bool(false)) => None,
+        _ => Some(JsonValue::Object(map)),
     }
 }
 

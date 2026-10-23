@@ -30,6 +30,7 @@ mod script_env;
 mod script_host_impl;
 mod script_http;
 mod script_db;
+pub use script_db::SqliteScriptChannelStore;
 mod script_pack;
 mod script_runtime_entry;
 mod ui_api;

@@ -24,8 +24,8 @@ pub use channel::{
     ChannelPack, ChannelRecord, ChannelRegistry, ChannelStore, DetailAction, FdroidDriver,
     GitHubDriver, InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore,
     InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits, PackPolicy, PackStore,
-    ScriptChannel, ScriptChannelConfig, ScriptDetail, ScriptDetailConfig, SqliteChannelRegistry,
-    SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
+    ScriptChannel, ScriptChannelConfig, ScriptChannelStore, ScriptDetail, ScriptDetailConfig,
+    SqliteChannelRegistry, SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,

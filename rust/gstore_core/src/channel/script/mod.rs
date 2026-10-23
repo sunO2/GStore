@@ -14,6 +14,7 @@
 //! - `dispatch` — runtime spawning, `main` invocation, envelope parsing
 //! - `meta`     — optional `CHANNEL_META` read (silent degrade)
 //! - `convert`  — script JSON -> `crate::dto` values
+//! - `store`    — optional channel-pinned app persistence for Dart fallbacks
 //! - `channel`  — the `ChannelDriver` implementation
 //! - `detail`   — the page-level detail dispatcher
 
@@ -23,9 +24,11 @@ mod convert;
 mod detail;
 mod dispatch;
 mod meta;
+mod store;
 
 pub use channel::ScriptChannel;
 pub use config::{ScriptChannelConfig, ScriptDetailConfig};
 pub use detail::{
     BuildHistoryQuery, DetailAction, ScriptDetail, SwitchVersionQuery, VersionOptionsQuery,
 };
+pub use store::ScriptChannelStore;

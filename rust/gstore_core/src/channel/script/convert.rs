@@ -18,21 +18,19 @@ use crate::error::Error;
 
 const CHANNEL_FIELD_ERROR: &str = "script channel returned a non-object value";
 
-/// Maps a `getAllApps` / `searchApps` payload (must be an array).
-pub(crate) fn apps(value: &JsonValue, channel: &ChannelKey) -> Result<Vec<AppSummary>, Error> {
-    let items = value
-        .as_array()
-        .ok_or_else(|| Error::Serialization("script app list is not a JSON array".to_string()))?;
+/// Maps a `getAllApps` / `searchApps` payload; `None` when it is not an array.
+///
+/// Dart's `_appsFromScript` returns `null` for a non-list (so the caller falls
+/// back) and silently skips rows that fail the `appId && name` check.
+pub(crate) fn apps_opt(value: &JsonValue, channel: &ChannelKey) -> Option<Vec<AppSummary>> {
+    let items = value.as_array()?;
     let mut apps = Vec::with_capacity(items.len());
     for item in items {
-        // Dart skips non-map rows instead of failing the whole list.
-        if item.is_object() {
-            if let Some(app) = summary(item, channel)? {
-                apps.push(app);
-            }
+        if let Some(app) = summary(item, channel).ok().flatten() {
+            apps.push(app);
         }
     }
-    Ok(apps)
+    Some(apps)
 }
 
 /// Maps one app row; `Ok(None)` means the row failed Dart's `appId && name` check.
@@ -123,6 +121,53 @@ pub(crate) fn update(value: &JsonValue, requested_app_id: &str) -> Result<AppUpd
         latest_download: None,
         detail,
     })
+}
+
+/// Builds the update payload Dart derives from a saved `AppSummary`.
+pub(crate) fn update_from_summary(app: &AppSummary) -> AppUpdate {
+    let package_name = app
+        .package_name
+        .clone()
+        .unwrap_or_else(|| app.app_id.clone());
+    let mut extra = Map::new();
+    extra.insert("appId".to_string(), JsonValue::String(app.app_id.clone()));
+    extra.insert("name".to_string(), JsonValue::String(app.name.clone()));
+    extra.insert("icon".to_string(), JsonValue::String(app.icon.clone()));
+    extra.insert(
+        "description".to_string(),
+        JsonValue::String(app.des.clone()),
+    );
+    extra.insert(
+        "packageName".to_string(),
+        JsonValue::String(package_name.clone()),
+    );
+    extra.insert("developer".to_string(), JsonValue::String(app.user.clone()));
+    if let Some(readme) = &app.readme {
+        extra.insert("readme".to_string(), JsonValue::String(readme.clone()));
+    }
+    let detail = AppDetail {
+        app_id: app.app_id.clone(),
+        name: app.name.clone(),
+        icon: app.icon.clone(),
+        description: app.des.clone(),
+        version: None,
+        developer: Some(app.user.clone()),
+        package_name: Some(package_name.clone()),
+        project_url: None,
+        channel: ChannelKind::JsLocal,
+        sections: Vec::new(),
+        downloads: Vec::new(),
+        extra,
+    };
+    AppUpdate {
+        app_id: app.app_id.clone(),
+        package_name,
+        name: app.name.clone(),
+        icon: Some(app.icon.clone()),
+        latest_version: None,
+        latest_download: None,
+        detail,
+    }
 }
 
 /// Maps a `getConfig` payload to [`crate::channel::ChannelConfig`].

@@ -42,8 +42,8 @@ pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
 pub use pack_loader::{InstalledPack, PackError, PackLimits, PackPolicy, PackStore};
 pub use registry::ChannelRegistry;
 pub use script::{
-    BuildHistoryQuery, DetailAction, ScriptChannel, ScriptChannelConfig, ScriptDetail,
-    ScriptDetailConfig, SwitchVersionQuery, VersionOptionsQuery,
+    BuildHistoryQuery, DetailAction, ScriptChannel, ScriptChannelConfig, ScriptChannelStore,
+    ScriptDetail, ScriptDetailConfig, SwitchVersionQuery, VersionOptionsQuery,
 };
 pub use sqlite_store::SqliteChannelStore;
 pub use store::{ChannelRecord, ChannelStore};

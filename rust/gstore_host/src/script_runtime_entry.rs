@@ -1,13 +1,16 @@
-//! One installed pack's QuickJS runtimes (`entry.js` and `detail.js`).
+//! One installed pack's QuickJS runtimes: `entry.js` plus one `detail.js`
+//! runtime per `appId` (Dart `JsChannel.getDetailChannel` / `releaseDetailChannel`).
 //!
 //! Both runtimes are created lazily on the same dedicated-thread machinery as
 //! `gstore_script::ScriptRuntime`, are serialised by `op`, and share the env,
 //! config, and app-id state that the host reads. Calls use `eval_long` because a
 //! script may park on a UI request (see `ui_api.rs`).
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
 use gstore_core::dto::ChannelKey;
 use gstore_core::ports::HttpPort;
@@ -24,6 +27,10 @@ use crate::script_pack::LoadedPack;
 /// interrupts the evaluation.
 const UI_GRACE: Duration = Duration::from_secs(5);
 
+/// Maximum live `detail.js` runtimes per pack (Dart releases per page exit;
+/// the cap protects long-lived callers that never release).
+const DETAIL_RUNTIME_CAP: usize = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeKind {
     Entry,
@@ -33,6 +40,7 @@ pub(crate) enum RuntimeKind {
 /// Infrastructure a pack runtime needs from the facade.
 pub(crate) struct EntryDeps {
     pub db: DbHandle,
+    pub store: Arc<dyn ScriptChannelStore>,
     pub http: Arc<dyn HttpPort>,
     pub ui_budget: Duration,
     pub eval_timeout: Duration,
@@ -48,6 +56,7 @@ pub(crate) struct ScriptEntry {
     app_id: Arc<Mutex<Option<String>>>,
     op: Mutex<()>,
     runtimes: Mutex<RuntimeSlots>,
+    store: Arc<dyn ScriptChannelStore>,
     db: DbHandle,
     http: Arc<dyn HttpPort>,
     ui_budget: Duration,
@@ -58,7 +67,34 @@ pub(crate) struct ScriptEntry {
 #[derive(Default)]
 struct RuntimeSlots {
     entry: Option<ScriptRuntime>,
-    detail: Option<ScriptRuntime>,
+    detail: DetailRuntimes,
+}
+
+#[derive(Default)]
+struct DetailRuntimes {
+    order: VecDeque<String>,
+    runtimes: HashMap<String, ScriptRuntime>,
+}
+
+impl DetailRuntimes {
+    fn take(&mut self, app_id: &str) -> Option<ScriptRuntime> {
+        self.order.retain(|key| key != app_id);
+        self.runtimes.remove(app_id)
+    }
+
+    fn insert(&mut self, app_id: String, runtime: ScriptRuntime) -> Option<ScriptRuntime> {
+        self.order.retain(|key| key != &app_id);
+        self.order.push_back(app_id.clone());
+        let evicted = if self.runtimes.len() >= DETAIL_RUNTIME_CAP {
+            self.order
+                .pop_front()
+                .and_then(|oldest| self.runtimes.remove(&oldest))
+        } else {
+            None
+        };
+        self.runtimes.insert(app_id, runtime);
+        evicted
+    }
 }
 
 impl ScriptEntry {
@@ -72,6 +108,7 @@ impl ScriptEntry {
             app_id: Arc::new(Mutex::new(None)),
             op: Mutex::new(()),
             runtimes: Mutex::new(RuntimeSlots::default()),
+            store: deps.store,
             db: deps.db,
             http: deps.http,
             ui_budget: deps.ui_budget,
@@ -114,7 +151,8 @@ impl ScriptEntry {
             .map_err(|error| format!("internal: encode params: {error}"))?;
         let source =
             format!("(typeof main === 'function' ? main({method_json}, {params_json}) : null)");
-        let raw = self.eval(kind, &source)?;
+        let app_id = params.get("appId").and_then(JsonValue::as_str);
+        let raw = self.eval(kind, &source, app_id)?;
         if let Ok(mut app_id) = self.app_id.lock() {
             *app_id = None;
         }
@@ -123,31 +161,80 @@ impl ScriptEntry {
             .map_err(|error| format!("internal: serialise script result: {error}"))
     }
 
-    fn eval(&self, kind: RuntimeKind, source: &str) -> Result<JsonValue, String> {
+    fn eval(
+        &self,
+        kind: RuntimeKind,
+        source: &str,
+        app_id: Option<&str>,
+    ) -> Result<JsonValue, String> {
+        match kind {
+            RuntimeKind::Entry => {
+                let script = self.entry_js.clone();
+                let mut slots = self
+                    .runtimes
+                    .lock()
+                    .map_err(|_| "internal: script runtime slots poisoned".to_string())?;
+                if slots.entry.is_none() {
+                    slots.entry = Some(self.spawn(&script)?);
+                }
+                match slots.entry.as_ref() {
+                    Some(runtime) => runtime
+                        .eval_long(source)
+                        .map_err(|error| map_script(&error)),
+                    None => Err("internal: script runtime missing after spawn".to_string()),
+                }
+            }
+            RuntimeKind::Detail => {
+                let script = self
+                    .detail_js
+                    .as_ref()
+                    .ok_or_else(|| format!("not_found: pack `{}` has no detail.js", self.key))?
+                    .clone();
+                let app_id = app_id.unwrap_or("");
+                let existing = {
+                    let mut slots = self
+                        .runtimes
+                        .lock()
+                        .map_err(|_| "internal: script runtime slots poisoned".to_string())?;
+                    slots.detail.take(app_id)
+                };
+                let runtime = match existing {
+                    Some(runtime) => runtime,
+                    None => self.spawn(&script)?,
+                };
+                let result = runtime
+                    .eval_long(source)
+                    .map_err(|error| map_script(&error));
+                let mut slots = self
+                    .runtimes
+                    .lock()
+                    .map_err(|_| "internal: script runtime slots poisoned".to_string())?;
+                if let Some(evicted) = slots.detail.insert(app_id.to_owned(), runtime) {
+                    let _ = evicted.dispose();
+                }
+                result
+            }
+        }
+    }
+
+    /// Drops one app's detail runtime (Dart `releaseDetailChannel`).
+    pub(crate) fn release_detail(&self, app_id: &str) -> Result<(), String> {
+        let _op = self
+            .op
+            .lock()
+            .map_err(|_| "internal: script runtime lock poisoned".to_string())?;
         let mut slots = self
             .runtimes
             .lock()
             .map_err(|_| "internal: script runtime slots poisoned".to_string())?;
-        let script = match kind {
-            RuntimeKind::Entry => &self.entry_js,
-            RuntimeKind::Detail => self
-                .detail_js
-                .as_ref()
-                .ok_or_else(|| format!("not_found: pack `{}` has no detail.js", self.key))?,
-        };
-        let slot = match kind {
-            RuntimeKind::Entry => &mut slots.entry,
-            RuntimeKind::Detail => &mut slots.detail,
-        };
-        if slot.is_none() {
-            *slot = Some(self.spawn(script)?);
+        if let Some(runtime) = slots.detail.take(app_id) {
+            runtime.dispose().map_err(|error| map_script(&error))?;
         }
-        let runtime = slot
-            .as_ref()
-            .ok_or_else(|| "internal: script runtime missing after spawn".to_string())?;
-        runtime
-            .eval_long(source)
-            .map_err(|error| map_script(&error))
+        Ok(())
+    }
+
+    pub(crate) fn store(&self) -> &Arc<dyn ScriptChannelStore> {
+        &self.store
     }
 
     fn spawn(&self, script: &str) -> Result<ScriptRuntime, String> {
