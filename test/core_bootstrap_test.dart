@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
@@ -37,6 +38,28 @@ class _RecordingBackend implements CoreBootstrapBackend {
     calls.add('pushInventory');
     snapshot = value;
     return const rust.InventoryPushResultDto(accepted: true);
+  }
+}
+
+/// Fake flags backend: appends its read into the shared bootstrap call log so
+/// the refresh position is observable.
+class _RecordingFlagsBackend implements CoreFlagsBackend {
+  _RecordingFlagsBackend(this.calls, {this.readError});
+
+  final List<String> calls;
+  final Object? readError;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async {
+    calls.add('flagsRefresh');
+    final error = readError;
+    if (error != null) throw error;
+    return const CoreFlagsSnapshot(download: true);
+  }
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    calls.add('flagsWrite');
   }
 }
 
@@ -94,10 +117,12 @@ void main() {
 
   setUp(() {
     CoreBootstrap.reset();
+    CoreFlags.resetBackend();
   });
 
   tearDown(() {
     CoreBootstrap.reset();
+    CoreFlags.resetBackend();
   });
 
   test('start() pushes init -> facts -> inventory in order with ms clock',
@@ -285,5 +310,73 @@ void main() {
     CoreBootstrap.reset();
 
     expect(CoreBootstrap.ready, isFalse);
+  });
+
+  test('start() refreshes flags after init and before pushPlatformFacts',
+      () async {
+    final backend = _RecordingBackend();
+    final flags = _RecordingFlagsBackend(backend.calls);
+    CoreFlags.installBackend(flags);
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: _FakeProbe(),
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: const (
+        '/tmp/gstore/data',
+        '/tmp/gstore/files',
+        '/tmp/gstore/cache',
+      ),
+    );
+
+    await CoreBootstrap.start();
+
+    expect(CoreBootstrap.ready, isTrue);
+    expect(
+      backend.calls,
+      <String>[
+        'init',
+        'flagsRefresh',
+        'pushPlatformFacts',
+        'pushInventory',
+      ],
+      reason: 'flags must be readable before facts/inventory are pushed',
+    );
+    expect(CoreFlags.download, isTrue,
+        reason: 'bootstrap refresh populates the mirror');
+  });
+
+  test('a failing flags refresh does not fail bootstrap', () async {
+    final backend = _RecordingBackend();
+    CoreFlags.installBackend(
+      _RecordingFlagsBackend(
+        backend.calls,
+        readError: StateError('flags unavailable'),
+      ),
+    );
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: _FakeProbe(),
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: const (
+        '/tmp/gstore/data',
+        '/tmp/gstore/files',
+        '/tmp/gstore/cache',
+      ),
+    );
+
+    await expectLater(CoreBootstrap.start(), completes);
+
+    expect(CoreBootstrap.ready, isTrue);
+    expect(
+      backend.calls,
+      <String>[
+        'init',
+        'flagsRefresh',
+        'pushPlatformFacts',
+        'pushInventory',
+      ],
+    );
   });
 }

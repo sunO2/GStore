@@ -20,6 +20,7 @@ import 'package:flutter/foundation.dart'
     show debugPrint, kDebugMode, visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -175,6 +176,16 @@ class CoreBootstrap {
         filesDir: dirs.$2,
         cacheDir: dirs.$3,
       );
+
+      // Pull the Rust-owned flag snapshot before any consumer reads it. A flag
+      // failure is non-fatal: the mirror keeps its last (all-false) value and
+      // the legacy paths stay in charge, exactly like every other bootstrap
+      // failure (see the catch below).
+      try {
+        await CoreFlags.refresh();
+      } catch (error) {
+        debugPrint('[CoreBootstrap] 读取特性开关失败（保持镜像原值）: $error');
+      }
 
       final device = await probe.deviceInfo();
       final apps = await probe.listInstalled();

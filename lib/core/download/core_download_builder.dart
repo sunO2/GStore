@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/core_flags.dart';
 
 import 'download_paths.dart';
@@ -91,13 +92,27 @@ class CoreDownloadBuilder {
   ///
   /// 返回 null 表示“未启用 / 未启动”，调用方应继续走旧的 Dart 路径；
   /// 关闭时**绝不**触碰 [api]，避免出现一半新一半旧的混跑。
+  ///
+  /// 镜像为关闭时先刷新一次：开关可能是别的路径在最后一次读取后打开的。
+  /// 刷新失败保持镜像原值并降级到旧路径，绝不让开关后端故障阻断下载。
   static Future<int?> startIfEnabled(
     CoreDownloadApi api,
     CoreDownloadRequest request,
   ) async {
-    if (!CoreFlags.download) {
+    if (!await _downloadEnabled()) {
       return null;
     }
     return api.start(request);
+  }
+
+  static Future<bool> _downloadEnabled() async {
+    if (!CoreFlags.download) {
+      try {
+        await CoreFlags.refresh();
+      } catch (error) {
+        debugPrint('CoreDownloadBuilder: 刷新 download 开关失败（保持镜像原值）: $error');
+      }
+    }
+    return CoreFlags.download;
   }
 }

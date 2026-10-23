@@ -369,13 +369,29 @@ class InstallManager implements IInstallService {
     }
   }
 
+  /// Reads [CoreFlags.install], refreshing a disabled mirror first.
+  ///
+  /// The mirror can be stale when another path armed the flag after the last
+  /// read. A flag-backend failure keeps the last mirror and degrades to the
+  /// legacy install path; it never blocks an install.
+  Future<bool> _installEnabled() async {
+    if (!CoreFlags.install) {
+      try {
+        await CoreFlags.refresh();
+      } catch (error) {
+        debugPrint('InstallManager: 刷新 install 开关失败（保持镜像原值）: $error');
+      }
+    }
+    return CoreFlags.install;
+  }
+
   /// Installs a core download task through [InstallFacade] when the install
   /// flag is armed; otherwise delegates to the legacy [installApk] path.
   Future<(bool, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
-    if (!CoreFlags.install) {
+    if (!await _installEnabled()) {
       return installApk(filePath);
     }
     await DownloadFacade.instance.importLegacyOnce();
@@ -654,7 +670,7 @@ class InstallManager implements IInstallService {
     String filePath, {
     bool moduleInstall = false,
   }) async {
-    if (CoreFlags.install) {
+    if (await _installEnabled()) {
       final coreTaskId = await _findCoreTaskId(filePath);
       if (coreTaskId != null) {
         return _installCoreTask(coreTaskId, filePath);
@@ -744,7 +760,7 @@ class InstallManager implements IInstallService {
   /// [action] uninstall（卸载）/ disable（停用）/ enable（启用）
   /// 返回是否成功
   Future<bool> managePackage(String packageName, String action) async {
-    if (action == 'uninstall' && CoreFlags.install) {
+    if (action == 'uninstall' && await _installEnabled()) {
       try {
         await _installFacade.uninstall(packageName);
         return true;

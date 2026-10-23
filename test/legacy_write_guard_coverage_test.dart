@@ -23,8 +23,16 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
   Future<CoreFlagsSnapshot> read() async => snapshot;
 
   @override
-  Future<void> write(CoreFlagsSnapshot flags) async {
-    snapshot = flags;
+  Future<void> write(CoreFlagsPatch patch) async {
+    snapshot = CoreFlagsSnapshot(
+      channels: patch.channel ?? snapshot.channels,
+      catalog: patch.catalog ?? snapshot.catalog,
+      update: patch.update ?? snapshot.update,
+      download: patch.download ?? snapshot.download,
+      install: patch.install ?? snapshot.install,
+      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
+      coreWrites: snapshot.coreWrites,
+    );
   }
 }
 

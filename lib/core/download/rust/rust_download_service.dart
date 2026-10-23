@@ -88,6 +88,22 @@ class RustDownloadService implements IDownloadService {
   Future<void> _ensureCoreReady() =>
       _coreReady ??= _importLegacyBeforeCoreRead();
 
+  /// Reads [CoreFlags.download], refreshing a disabled mirror first.
+  ///
+  /// The mirror can be stale when another component armed the flag after the
+  /// last read; a flag-backend failure keeps the last mirror and degrades to
+  /// the legacy path (a download never fails because flags are unavailable).
+  Future<bool> _downloadEnabled() async {
+    if (!CoreFlags.download) {
+      try {
+        await CoreFlags.refresh();
+      } catch (error) {
+        debugPrint('RustDownloadService: 刷新 download 开关失败（保持镜像原值）: $error');
+      }
+    }
+    return CoreFlags.download;
+  }
+
   Future<void> _importLegacyBeforeCoreRead() async {
     try {
       await DownloadFacade.instance.importLegacyOnce();
@@ -128,7 +144,7 @@ class RustDownloadService implements IDownloadService {
     bool forceDownload = false,
     bool installAfterDownload = true,
   }) async {
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       return _downloadViaCore(
         appid: appid,
         appName: appName,
@@ -180,7 +196,7 @@ class RustDownloadService implements IDownloadService {
   }) async {
     // 惰性 URL 解析：取一次当前有效地址（签名 URL 过期由上层重新构造请求）
     final url = request.urlProvider?.call() ?? request.url;
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       return _downloadViaCore(
         appid: appid,
         appName: appName,
@@ -341,36 +357,36 @@ class RustDownloadService implements IDownloadService {
   }
 
   @override
-  Future<void> pause(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> pause(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.pause(id.toString()),
         legacy: () => _op('download.pause', id),
       );
 
   @override
-  Future<void> resume(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> resume(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.resume(id.toString()),
         legacy: () => _op('download.resume', id),
       );
 
   @override
-  Future<void> cancel(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> cancel(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.cancel(id.toString()),
         legacy: () => _op('download.cancel', id),
       );
 
   @override
-  Future<void> retry(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> retry(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.retry(id.toString()),
         legacy: () => _op('download.retry', id),
       );
 
   @override
-  Future<void> restart(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> restart(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.restart(id.toString()),
         legacy: () => _op('download.restart', id),
       );
@@ -397,7 +413,7 @@ class RustDownloadService implements IDownloadService {
 
   @override
   Future<DownloadTask?> getTask(int id) async {
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       await _ensureCoreReady();
       final dto = await DownloadFacade.instance.get(id.toString());
       return dto == null ? null : toDownloadTask(dto);
@@ -410,7 +426,7 @@ class RustDownloadService implements IDownloadService {
   /// 列出任务（可选按状态索引过滤）。面板展示列表时用。
   Future<List<DownloadTask>> listTasks(
       {List<DownloadStatusEnum>? statuses}) async {
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       await _ensureCoreReady();
       final tasks = (await DownloadFacade.instance.list())
           .map(toDownloadTask)
@@ -428,8 +444,8 @@ class RustDownloadService implements IDownloadService {
 
   /// 删除任务（含落盘文件），模块侧 `download.remove`
   @override
-  Future<void> remove(int id) => _coreOp(
-        isEnabled: CoreFlags.download,
+  Future<void> remove(int id) async => _coreOp(
+        isEnabled: await _downloadEnabled(),
         core: () => DownloadFacade.instance.remove(id.toString()),
         legacy: () => _op('download.remove', id),
       );
@@ -440,7 +456,7 @@ class RustDownloadService implements IDownloadService {
   /// 否则消费方拿到的任务会缺 url / 路径 / 应用名。
   @override
   Stream<DownloadTask> watchAll() async* {
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       // Import resolves before the core stream is created, so reconnecting to
       // an in-progress legacy task does not emit an empty first snapshot.
       await _ensureCoreReady();
@@ -472,7 +488,7 @@ class RustDownloadService implements IDownloadService {
 
   @override
   Stream<DownloadTask> watch(int id) async* {
-    if (CoreFlags.download) {
+    if (await _downloadEnabled()) {
       await _ensureCoreReady();
       final dto = await DownloadFacade.instance.get(id.toString());
       if (dto != null) yield toDownloadTask(dto);
