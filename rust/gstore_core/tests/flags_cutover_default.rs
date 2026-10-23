@@ -20,11 +20,16 @@ fn cutover_default_is_process_isolated() {
 
     // The opt-out path stays available and all-off.
     assert_eq!(Flags::DISABLED, Flags::default());
-    assert!(!Flags::DISABLED.channels);
-    assert!(!Flags::DISABLED.catalog);
-    assert!(!Flags::DISABLED.update);
-    assert!(!Flags::DISABLED.download);
-    assert!(!Flags::DISABLED.install);
-    assert!(!Flags::DISABLED.js_channel);
-    assert!(!Flags::DISABLED.core_writes);
+    assert_eq!(
+        Flags::DISABLED,
+        Flags {
+            channels: false,
+            catalog: false,
+            update: false,
+            download: false,
+            install: false,
+            js_channel: false,
+            core_writes: false,
+        }
+    );
 }

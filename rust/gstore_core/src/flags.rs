@@ -240,17 +240,31 @@ mod tests {
 
     #[test]
     fn wave06b_cutover_flips_only_download_and_install() {
-        let cutover = Flags::WAVE06B_CUTOVER;
-        assert!(cutover.download);
-        assert!(cutover.install);
-        assert!(!cutover.channels);
-        assert!(!cutover.catalog);
-        assert!(!cutover.update);
-        assert!(!cutover.js_channel);
-        assert!(!cutover.core_writes);
+        assert_eq!(
+            Flags::WAVE06B_CUTOVER,
+            Flags {
+                channels: false,
+                catalog: false,
+                update: false,
+                download: true,
+                install: true,
+                js_channel: false,
+                core_writes: false,
+            }
+        );
         // The opt-out default stays all-off.
         assert_eq!(Flags::DISABLED, Flags::default());
-        assert!(!Flags::DISABLED.download);
-        assert!(!Flags::DISABLED.install);
+        assert_eq!(
+            Flags::DISABLED,
+            Flags {
+                channels: false,
+                catalog: false,
+                update: false,
+                download: false,
+                install: false,
+                js_channel: false,
+                core_writes: false,
+            }
+        );
     }
 }
