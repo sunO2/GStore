@@ -3513,6 +3513,8 @@ pub struct DownloadStartRequest {
     pub dedup_key: String,
     pub expected_sha256: Option<String>,
     pub install_after_download: bool,
+    /// Extra request headers forwarded to the module (UA/Accept-Language/...).
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 impl From<DownloadStartRequest> for DownloadRequest {
@@ -3530,6 +3532,7 @@ impl From<DownloadStartRequest> for DownloadRequest {
             dedup_key: request.dedup_key,
             expected_sha256: request.expected_sha256,
             install_after_download: request.install_after_download,
+            headers: request.headers,
         }
     }
 }

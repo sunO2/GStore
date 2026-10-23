@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -9,7 +10,11 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// Core task DTO with all the fields [DownloadTask] mapping reads.
-rust.DownloadTaskDto _dto({int id = 7, String status = 'downloading'}) =>
+rust.DownloadTaskDto _dto({
+  int id = 7,
+  String status = 'downloading',
+  String destPath = '/tmp/app.apk',
+}) =>
     rust.DownloadTaskDto(
       id: id,
       moduleTaskId: '$id',
@@ -22,7 +27,7 @@ rust.DownloadTaskDto _dto({int id = 7, String status = 'downloading'}) =>
       resourceId: 'com.example.app',
       resourceVersion: '1.0.0',
       url: 'https://x/app.apk',
-      destPath: '/tmp/app.apk',
+      destPath: destPath,
       status: status,
       bytesDone: 10,
       total: 100,
@@ -55,6 +60,7 @@ class _FakeDownloadBackend implements DownloadBackend {
   rust.DownloadTaskDto? task;
   rust.DownloadStartRequest? lastStart;
   Object? throwOn;
+  bool listEmpty = false;
   int watchAllCalls = 0;
 
   void _maybeThrow() {
@@ -74,7 +80,7 @@ class _FakeDownloadBackend implements DownloadBackend {
   Future<List<rust.DownloadTaskDto>> list() async {
     calls.add('list');
     _maybeThrow();
-    final current = task;
+    final current = listEmpty ? null : task;
     return current == null
         ? const <rust.DownloadTaskDto>[]
         : <rust.DownloadTaskDto>[current];
@@ -204,6 +210,82 @@ void main() {
       );
     });
 
+    test('forceDownload restarts the newest row at the same destPath', () async {
+      backend.task = _dto(id: 3, status: 'completed');
+
+      final task = await RustDownloadService.instance.download(
+        'com.example.app',
+        '示例',
+        '1.0.0',
+        'https://x/app.apk',
+        'app.apk',
+        saveFileName: '/tmp/app.apk',
+        forceDownload: true,
+      );
+
+      expect(task.id, 3);
+      expect(backend.lastStart, isNull,
+          reason: 'forceDownload must not start a second task');
+      expect(backend.calls, contains('restart:3'));
+      expect(
+        backend.calls.any((c) => c == 'start'),
+        isFalse,
+        reason: 'the existing core row is restarted, not re-started',
+      );
+    });
+
+    test('forceDownload without an existing row falls through to start',
+        () async {
+      backend.listEmpty = true;
+
+      await RustDownloadService.instance.download(
+        'com.example.app',
+        '示例',
+        '1.0.0',
+        'https://x/app.apk',
+        'app.apk',
+        saveFileName: '/tmp/app.apk',
+        forceDownload: true,
+      );
+
+      expect(backend.calls, contains('start'));
+      expect(
+        backend.calls.any((c) => c.startsWith('restart:')),
+        isFalse,
+        reason: 'nothing to restart when no row shares the destPath',
+      );
+    });
+
+    test('downloadWithContext forwards request headers end-to-end', () async {
+      final request = DownloadRequest(
+        url: 'https://x/app.apk',
+        savePath: '/tmp/app.apk',
+        headers: const <String, String>{
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'GStore/1.0',
+        },
+      );
+
+      await RustDownloadService.instance.downloadWithContext(
+        request,
+        'com.example.app',
+        '示例',
+        '1.0.0',
+        'app.apk',
+      );
+
+      expect(backend.lastStart!.headers, <String, String>{
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'GStore/1.0',
+      });
+    });
+
+    test('plain download() sends no headers', () async {
+      await _startDownload();
+
+      expect(backend.lastStart!.headers, isEmpty);
+    });
+
     test('getTask/listTasks map the backend DTOs', () async {
       final one = await RustDownloadService.instance.getTask(7);
       final many = await RustDownloadService.instance.listTasks();
@@ -282,6 +364,17 @@ void main() {
           contains('CORE_E_DOWNLOAD_MODULE_UNAVAILABLE'),
         )),
       );
+    });
+
+    test('an embedded code substring is not treated as unavailability',
+        () async {
+      final raw = Exception(
+        'CORE_E_DOWNLOAD_INVALID_ARG: file name contains '
+        'CORE_E_DOWNLOAD_MODULE_UNAVAILABLE',
+      );
+      backend.throwOn = raw;
+
+      await expectLater(_startDownload(), throwsA(same(raw)));
     });
 
     test('other backend errors pass through unchanged', () async {

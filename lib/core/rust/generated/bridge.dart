@@ -1310,6 +1310,9 @@ class DownloadStartRequest {
   final String? expectedSha256;
   final bool installAfterDownload;
 
+  /// Extra request headers forwarded to the module (UA/Accept-Language/...).
+  final Map<String, String> headers;
+
   const DownloadStartRequest({
     required this.appId,
     required this.appName,
@@ -1323,6 +1326,7 @@ class DownloadStartRequest {
     required this.dedupKey,
     this.expectedSha256,
     required this.installAfterDownload,
+    required this.headers,
   });
 
   @override
@@ -1338,7 +1342,8 @@ class DownloadStartRequest {
       resourceVersion.hashCode ^
       dedupKey.hashCode ^
       expectedSha256.hashCode ^
-      installAfterDownload.hashCode;
+      installAfterDownload.hashCode ^
+      headers.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1356,7 +1361,8 @@ class DownloadStartRequest {
           resourceVersion == other.resourceVersion &&
           dedupKey == other.dedupKey &&
           expectedSha256 == other.expectedSha256 &&
-          installAfterDownload == other.installAfterDownload;
+          installAfterDownload == other.installAfterDownload &&
+          headers == other.headers;
 }
 
 /// One `download_task` row crossing the FRB boundary (FRB data class).

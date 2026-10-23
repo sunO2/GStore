@@ -94,6 +94,7 @@ fn start_request() -> DownloadStartRequest {
         dedup_key: "dedup:example".to_string(),
         expected_sha256: None,
         install_after_download: false,
+        headers: std::collections::HashMap::new(),
     }
 }
 

@@ -53,6 +53,7 @@ rust.DownloadStartRequest _request() => const rust.DownloadStartRequest(
       dedupKey: 'dedup:example',
       expectedSha256: null,
       installAfterDownload: true,
+      headers: const <String, String>{},
     );
 
 class _FakeDownloadBackend implements DownloadBackend {

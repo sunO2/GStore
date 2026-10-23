@@ -7887,6 +7887,7 @@ impl SseDecode for crate::bridge::DownloadStartRequest {
         let mut var_dedupKey = <String>::sse_decode(deserializer);
         let mut var_expectedSha256 = <Option<String>>::sse_decode(deserializer);
         let mut var_installAfterDownload = <bool>::sse_decode(deserializer);
+        let mut var_headers = <std::collections::HashMap<String, String>>::sse_decode(deserializer);
         return crate::bridge::DownloadStartRequest {
             app_id: var_appId,
             app_name: var_appName,
@@ -7900,6 +7901,7 @@ impl SseDecode for crate::bridge::DownloadStartRequest {
             dedup_key: var_dedupKey,
             expected_sha256: var_expectedSha256,
             install_after_download: var_installAfterDownload,
+            headers: var_headers,
         };
     }
 }
@@ -9690,6 +9692,7 @@ impl flutter_rust_bridge::IntoDart for crate::bridge::DownloadStartRequest {
             self.dedup_key.into_into_dart().into_dart(),
             self.expected_sha256.into_into_dart().into_dart(),
             self.install_after_download.into_into_dart().into_dart(),
+            self.headers.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -10864,6 +10867,7 @@ impl SseEncode for crate::bridge::DownloadStartRequest {
         <String>::sse_encode(self.dedup_key, serializer);
         <Option<String>>::sse_encode(self.expected_sha256, serializer);
         <bool>::sse_encode(self.install_after_download, serializer);
+        <std::collections::HashMap<String, String>>::sse_encode(self.headers, serializer);
     }
 }
 

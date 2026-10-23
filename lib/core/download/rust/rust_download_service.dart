@@ -79,6 +79,7 @@ class RustDownloadService implements IDownloadService {
       fileName: fileName,
       saveFileName: saveFileName,
       installAfterDownload: installAfterDownload,
+      forceDownload: forceDownload,
     );
   }
 
@@ -104,6 +105,7 @@ class RustDownloadService implements IDownloadService {
       // savePath 声明为可空：为空时回落到与 download() 相同的目录约定
       saveFileName: request.savePath ?? saveFileName,
       installAfterDownload: installAfterDownload,
+      headers: request.headers ?? const <String, String>{},
     );
   }
 
@@ -119,6 +121,8 @@ class RustDownloadService implements IDownloadService {
     required String fileName,
     String? saveFileName,
     bool installAfterDownload = false,
+    bool forceDownload = false,
+    Map<String, String> headers = const <String, String>{},
   }) async {
     await _ensureCoreReady();
 
@@ -136,7 +140,18 @@ class RustDownloadService implements IDownloadService {
       saveFileName: saveFileName,
       docsDir: docsDir,
       installAfterDownload: installAfterDownload,
+      headers: headers,
     );
+
+    // `forceDownload` must re-download an existing file at the same path. The
+    // core start keeps an existing task (`ConflictPolicy::Keep`), so a corrupt
+    // completed file would be returned forever. Restart the newest task at
+    // that path instead (clears segments/progress, re-downloads from zero).
+    if (forceDownload) {
+      final restarted = await _restartForDest(core.destPath);
+      if (restarted != null) return restarted;
+    }
+
     final id = await DownloadFacade.instance.start(
       rust.DownloadStartRequest(
         appId: core.appId,
@@ -151,6 +166,7 @@ class RustDownloadService implements IDownloadService {
         dedupKey: core.dedupKey,
         expectedSha256: core.expectedSha256,
         installAfterDownload: core.installAfterDownload,
+        headers: core.headers,
       ),
     );
     final dto = await DownloadFacade.instance.get(id.toString());
@@ -159,6 +175,25 @@ class RustDownloadService implements IDownloadService {
           'RustDownloadService: core task $id not found after start');
     }
     return toDownloadTask(dto);
+  }
+
+  /// Returns the restarted task when a core row already occupies [destPath].
+  Future<DownloadTask?> _restartForDest(String destPath) async {
+    final matches = (await DownloadFacade.instance.list())
+        .where((dto) => dto.destPath == destPath)
+        .toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    if (matches.isEmpty) return null;
+
+    final newest = matches.last;
+    final key = newest.moduleTaskId ?? newest.id.toString();
+    await DownloadFacade.instance.restart(key);
+    final refreshed = await DownloadFacade.instance.get(key);
+    if (refreshed == null) {
+      throw StateError(
+          'RustDownloadService: core task $key not found after restart');
+    }
+    return toDownloadTask(refreshed);
   }
 
   @override

@@ -450,7 +450,7 @@ class DownloadFacade {
         StreamTransformer<rust.DownloadTaskDto, rust.DownloadTaskDto>
             .fromHandlers(
           handleError: (error, stackTrace, sink) {
-            if ('$error'.contains(DownloadModuleUnavailableException.code)) {
+            if (_isModuleUnavailable(error)) {
               sink.addError(
                 DownloadModuleUnavailableException(error),
                 stackTrace,
@@ -462,6 +462,30 @@ class DownloadFacade {
         ),
       );
 
+  /// True only when the transport message *starts* with the stable code.
+  ///
+  /// FRB throws the Rust `Result::Err` payload directly: a [String] for
+  /// `Result<_, String>`, or an exception (e.g. `AnyhowException`, plain
+  /// [Exception]) whose `message` is that payload. Substring matching would let
+  /// a user-controlled file name/URL echoed inside another error (say
+  /// `CORE_E_DOWNLOAD_INVALID_ARG`) be misclassified as module-unavailable.
+  static bool _isModuleUnavailable(Object error) {
+    final String message;
+    if (error is String) {
+      message = error;
+    } else {
+      final dynamic candidate = error;
+      Object? raw;
+      try {
+        raw = candidate.message;
+      } catch (_) {
+        raw = null;
+      }
+      message = raw is String ? raw : error.toString();
+    }
+    return message.startsWith(DownloadModuleUnavailableException.code);
+  }
+
   /// Single boundary where a backend's raw unavailability becomes the typed
   /// download-layer failure. Other errors rethrow unchanged so callers keep
   /// their existing error handling.
@@ -470,7 +494,7 @@ class DownloadFacade {
       return await action();
     } catch (error) {
       if (error is DownloadModuleUnavailableException) rethrow;
-      if ('$error'.contains(DownloadModuleUnavailableException.code)) {
+      if (_isModuleUnavailable(error)) {
         throw DownloadModuleUnavailableException(error);
       }
       rethrow;

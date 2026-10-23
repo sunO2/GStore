@@ -31,6 +31,9 @@ pub struct DownloadRequest {
     pub dedup_key: String,
     pub expected_sha256: Option<String>,
     pub install_after_download: bool,
+    /// Extra request headers forwarded verbatim to the download module.
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 /// Typed failures of the download port.
@@ -504,7 +507,7 @@ fn start_payload(req: &DownloadRequest) -> Value {
         "resourceVersion": req.resource_version,
         "dedup_key": req.dedup_key,
         "dedupKey": req.dedup_key,
-        "headers": {},
+        "headers": req.headers,
         "expected_sha256": req.expected_sha256,
         "expectedSha256": req.expected_sha256,
         "install_after_download": req.install_after_download,
@@ -723,6 +726,7 @@ mod tests {
             dedup_key: "dedup:example".to_string(),
             expected_sha256: Some("abc123".to_string()),
             install_after_download: true,
+            headers: std::collections::HashMap::new(),
         }
     }
 

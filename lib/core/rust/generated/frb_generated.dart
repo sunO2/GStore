@@ -5700,8 +5700,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DownloadStartRequest dco_decode_download_start_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return DownloadStartRequest(
       appId: dco_decode_String(arr[0]),
       appName: dco_decode_String(arr[1]),
@@ -5715,6 +5715,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       dedupKey: dco_decode_String(arr[9]),
       expectedSha256: dco_decode_opt_String(arr[10]),
       installAfterDownload: dco_decode_bool(arr[11]),
+      headers: dco_decode_Map_String_String_None(arr[12]),
     );
   }
 
@@ -7302,6 +7303,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_dedupKey = sse_decode_String(deserializer);
     var var_expectedSha256 = sse_decode_opt_String(deserializer);
     var var_installAfterDownload = sse_decode_bool(deserializer);
+    var var_headers = sse_decode_Map_String_String_None(deserializer);
     return DownloadStartRequest(
         appId: var_appId,
         appName: var_appName,
@@ -7314,7 +7316,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         resourceVersion: var_resourceVersion,
         dedupKey: var_dedupKey,
         expectedSha256: var_expectedSha256,
-        installAfterDownload: var_installAfterDownload);
+        installAfterDownload: var_installAfterDownload,
+        headers: var_headers);
   }
 
   @protected
@@ -9051,6 +9054,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.dedupKey, serializer);
     sse_encode_opt_String(self.expectedSha256, serializer);
     sse_encode_bool(self.installAfterDownload, serializer);
+    sse_encode_Map_String_String_None(self.headers, serializer);
   }
 
   @protected

@@ -75,6 +75,7 @@ impl DownloadStrategy for LocalDbStrategy {
             dedup_key: format!("app:{}:{}:{}", input.app_id, input.version, input.file_name),
             expected_sha256: input.expected_sha256.clone(),
             install_after_download: input.install_after_download,
+            headers: std::collections::HashMap::new(),
         })
     }
 }

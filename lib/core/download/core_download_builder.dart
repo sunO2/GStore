@@ -5,8 +5,8 @@ import 'download_paths.dart';
 /// Rust 内核下载请求的 Dart 镜像。
 ///
 /// 字段与 `gstore_core::download::port::DownloadRequest` 一一对应（不含
-/// proxy/header——Rust 请求类型里没有这两个字段），确保换内核时参数不会
-/// 在 Dart 侧被悄悄丢弃或改名。
+/// proxy——Rust 请求类型里没有该字段），确保换内核时参数不会在 Dart 侧
+/// 被悄悄丢弃或改名。请求头随 [headers] 原样跨边界转发。
 class CoreDownloadRequest {
   final String appId;
   final String appName;
@@ -20,6 +20,7 @@ class CoreDownloadRequest {
   final String dedupKey;
   final String? expectedSha256;
   final bool installAfterDownload;
+  final Map<String, String> headers;
 
   const CoreDownloadRequest({
     required this.appId,
@@ -34,6 +35,7 @@ class CoreDownloadRequest {
     required this.dedupKey,
     this.expectedSha256,
     this.installAfterDownload = false,
+    this.headers = const <String, String>{},
   });
 }
 
@@ -60,6 +62,7 @@ class CoreDownloadBuilder {
     required String docsDir,
     String? expectedSha256,
     bool installAfterDownload = false,
+    Map<String, String>? headers,
   }) async {
     final destPath = await DownloadPaths.resolveSavePath(
       saveFileName: saveFileName,
@@ -82,6 +85,7 @@ class CoreDownloadBuilder {
       dedupKey: 'app:$appId:$version:$fileName',
       expectedSha256: expectedSha256,
       installAfterDownload: installAfterDownload,
+      headers: headers ?? const <String, String>{},
     );
   }
 }
