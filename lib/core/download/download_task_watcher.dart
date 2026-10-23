@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -91,13 +90,10 @@ class DownloadTaskWatcher {
       case DownloadStatusEnum.completed:
         notif.onDownloadComplete(id);
         _started.remove(id);
-        // 自动安装只认任务自己持久化的标记（跨重启也有效）
+        // 自动安装只认任务自己持久化的标记（跨重启也有效）。
+        // Wave 6B 起 install 域由核心独占：这里永远走核心安装，没有旧路径分支。
         if (task.installAfterDownload) {
-          if (CoreFlags.install) {
-            unawaited(_installCore(id.toString(), task.filePath));
-          } else {
-            _install(task.filePath);
-          }
+          unawaited(_installCore(id.toString(), task.filePath));
         }
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
@@ -106,17 +102,6 @@ class DownloadTaskWatcher {
         notif.onDownloadCancel(id);
         _started.remove(id);
     }
-  }
-
-  void _install(String filePath) {
-    final manager = ModuleManager.instance.get<InstallManager>();
-    if (manager == null) {
-      debugPrint('DownloadTaskWatcher: InstallManager 不可用，跳过自动安装');
-      return;
-    }
-    debugPrint('DownloadTaskWatcher: 下载完成，触发安装 $filePath');
-    // 安装失败（如安装器抛异常）不得成为未处理的异步错误：在独立任务里捕获并上报。
-    unawaited(_installQuietly(manager, filePath));
   }
 
   Future<void> _installCore(String moduleTaskId, String filePath) async {
@@ -135,15 +120,6 @@ class DownloadTaskWatcher {
       debugPrint(
         'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',
       );
-    }
-  }
-
-  /// 执行自动安装并吞掉异常（含堆栈上报），避免 `unawaited` 产生未处理异步错误。
-  Future<void> _installQuietly(InstallManager manager, String filePath) async {
-    try {
-      await manager.installApk(filePath);
-    } catch (e, st) {
-      debugPrint('DownloadTaskWatcher: 自动安装失败 $filePath - $e\n$st');
     }
   }
 }

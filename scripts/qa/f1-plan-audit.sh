@@ -11,7 +11,8 @@
 #     `target/test-evidence/F<N>-...`) and `Plan-Todo: F<N>`.
 #   - Every checked item must have both evidence and a matching commit.
 #   - An unchecked item that still has evidence is stale state and fails.
-#   - No `CoreFlags`/Dart flag default may be `true`.
+#   - No `CoreFlags`/Dart flag default may be `true`, except the flag names
+#     explicitly listed by `--allow-flags` (Wave 6 cutover allowance).
 #   - The branch range must not delete any file.
 #
 # Exit codes:
@@ -21,7 +22,8 @@
 #
 # Usage:
 #   scripts/qa/f1-plan-audit.sh [--self-test] [--plan PATH] [--base REF]
-#       [--range A..B] [--repo-root DIR] [--evidence-dir DIR] [--verbose]
+#       [--range A..B] [--repo-root DIR] [--evidence-dir DIR]
+#       [--allow-flags download,install] [--verbose]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,6 +33,7 @@ PLAN=""
 BASE_REF=""
 RANGE=""
 EVIDENCE_DIR=""
+ALLOW_FLAGS=""
 VERBOSE=0
 SELF_TEST=0
 
@@ -50,6 +53,9 @@ Options:
   --range A..B           explicit commit range (overrides --base)
   --repo-root DIR        repository root (default: script's repo; used by self-test)
   --evidence-dir DIR     evidence directory (default: <repo>/target/test-evidence)
+  --allow-flags LIST     comma-separated flag names whose `true` default is
+                         allowed (Wave 6 cutover: download,install). Every
+                         other flag default is still rejected.
   --verbose              print extra detail
   -h | --help            show this help
 USAGE
@@ -63,6 +69,8 @@ while [ "$#" -gt 0 ]; do
     --range) RANGE="$2"; shift 2 ;;
     --repo-root) ROOT="$2"; shift 2 ;;
     --evidence-dir) EVIDENCE_DIR="$2"; shift 2 ;;
+    --allow-flags) ALLOW_FLAGS="$2"; shift 2 ;;
+    --allow-flags=*) ALLOW_FLAGS="${1#*=}"; shift ;;
     --verbose) VERBOSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -242,6 +250,26 @@ s = s.replace("channels: false", "channels: true", 1)
 open(p, "w", encoding="utf-8").write(s)
 PYEDIT
       ;;
+    wave6_flipped)
+      python3 - "$dir/rust/gstore_core/src/flags.rs" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+s = s.replace("download: false", "download: true", 1)
+s = s.replace("install: false", "install: true", 1)
+open(p, "w", encoding="utf-8").write(s)
+PYEDIT
+      ;;
+    nonwave6_flipped)
+      python3 - "$dir/rust/gstore_core/src/flags.rs" <<'PYEDIT'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+for name in ("channels", "catalog", "update", "js_channel"):
+    s = s.replace(name + ": false", name + ": true", 1)
+open(p, "w", encoding="utf-8").write(s)
+PYEDIT
+      ;;
     stale_unchecked)
       python3 - "$dir/plan.md" <<'PYEDIT'
 import sys
@@ -258,8 +286,9 @@ PYEDIT
 
 run_fixture_audit() {
   local dir="$1"
+  shift
   set +e
-  "$SELF" --repo-root "$dir" --plan "$dir/plan.md" --base main \
+  "$SELF" --repo-root "$dir" --plan "$dir/plan.md" --base main "$@" \
     > "$dir/audit.log" 2>&1
   local rc=$?
   set -e
@@ -292,6 +321,38 @@ self_test() {
     echo "[PASS] repeated run on valid fixture (rc=0)"
   else
     echo "[FAIL] repeated run on valid fixture (rc=$rc)" >&2
+    failures=$((failures + 1))
+  fi
+
+  # Wave-6 cutover allowance: download+install true pass only when named.
+  make_fixture "$tmp/wave6_flipped" wave6_flipped
+  rc="$(run_fixture_audit "$tmp/wave6_flipped" --allow-flags download,install)"
+  case_no=$((case_no + 1))
+  if [ "$rc" -eq 0 ]; then
+    echo "[PASS] wave6 download+install true accepted with --allow-flags"
+  else
+    echo "[FAIL] wave6 download+install true rejected with --allow-flags (rc=$rc)" >&2
+    sed 's/^/    /' "$tmp/wave6_flipped/audit.log" >&2
+    failures=$((failures + 1))
+  fi
+
+  rc="$(run_fixture_audit "$tmp/wave6_flipped")"
+  case_no=$((case_no + 1))
+  if [ "$rc" -ne 0 ]; then
+    echo "[PASS] same wave6 repo fails without --allow-flags (rc=$rc)"
+  else
+    echo "[FAIL] wave6 repo accepted without --allow-flags" >&2
+    failures=$((failures + 1))
+  fi
+
+  make_fixture "$tmp/nonwave6_flipped" nonwave6_flipped
+  rc="$(run_fixture_audit "$tmp/nonwave6_flipped" --allow-flags download,install)"
+  case_no=$((case_no + 1))
+  if [ "$rc" -ne 0 ]; then
+    echo "[PASS] channels/catalog/update/js_channel still rejected under the allowance (rc=$rc)"
+  else
+    echo "[FAIL] non-Wave-6 flag defaults accepted under the allowance" >&2
+    sed 's/^/    /' "$tmp/nonwave6_flipped/audit.log" >&2
     failures=$((failures + 1))
   fi
 
@@ -344,14 +405,15 @@ echo "evidence: $EVIDENCE_DIR"
 echo "range:    $RANGE"
 
 set +e
-python3 - "$ROOT" "$PLAN" "$EVIDENCE_DIR" "$RANGE" "$VERBOSE" <<'PY'
+python3 - "$ROOT" "$PLAN" "$EVIDENCE_DIR" "$RANGE" "$ALLOW_FLAGS" "$VERBOSE" <<'PY'
 import os
 import re
 import subprocess
 import sys
 
-repo_root, plan_path, evidence_dir, commit_range, verbose = sys.argv[1:6]
+repo_root, plan_path, evidence_dir, commit_range, allow_flags, verbose = sys.argv[1:7]
 verbose = verbose == "1"
+allowed_flags = {name.strip() for name in allow_flags.split(",") if name.strip()}
 
 
 def fail(msg):
@@ -435,8 +497,13 @@ if os.path.isdir(evidence_dir):
         for it in items:
             if it["kind"] == "num":
                 prefix = "%02d-" % int(it["id"])
-                if entry.startswith(prefix) and len(entry) > len(prefix):
-                    evidence_by_id.setdefault((it["kind"], it["id"]), []).append(entry)
+                # Wave 6 re-cuts use the `21<N-1>-` evidence convention
+                # (todo 1 -> 210-, todo 2 -> 211-, todo 3 -> 212-, ...).
+                wave6_prefix = "21%d-" % (int(it["id"]) - 1)
+                for candidate in (prefix, wave6_prefix):
+                    if entry.startswith(candidate) and len(entry) > len(candidate):
+                        evidence_by_id.setdefault((it["kind"], it["id"]), []).append(entry)
+                        break
             else:
                 if re.match(r"^[Ff]%s[-_.]" % re.escape(it["id"][1:]), entry):
                     evidence_by_id.setdefault((it["kind"], it["id"]), []).append(entry)
@@ -508,8 +575,14 @@ for path, pattern in flag_files:
         continue
     with open(path, encoding="utf-8", errors="replace") as fh:
         for lineno, line in enumerate(fh, 1):
-            if re.search(pattern, line):
-                flag_findings.append("%s:%d: %s" % (os.path.relpath(path, repo_root), lineno, line.strip()))
+            match = re.search(pattern, line)
+            if not match:
+                continue
+            # The allowance suppresses only the exact named flag(s); every other
+            # `true` default still fails the audit.
+            if match.group(1) in allowed_flags:
+                continue
+            flag_findings.append("%s:%d: %s" % (os.path.relpath(path, repo_root), lineno, line.strip()))
 
 # ---- report ----
 for it in items:

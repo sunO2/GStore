@@ -128,9 +128,8 @@ const List<_Writer> _writers = <_Writer>[
   _Writer('lib/core/agent/agent_service.dart', '_manageDownloads', 'download',
       occurrences: 2),
   // ---------------------------------------------------------------- install
-  _Writer('lib/core/service/install_manager.dart', 'installApk', 'install'),
-  _Writer(
-      'lib/core/service/install_manager.dart', '_legacyInstallApk', 'install'),
+  // Wave 6B cutover: a direct user-picked APK install creates no core state,
+  // so `_installApkDirect` is intentionally NOT a guarded legacy writer.
   // ---------------------------------------------------- cross-domain raw delete
   // `deleteRow` maps the selected table onto its owning domain; one entry per
   // mapped branch keeps the literal-domain assertion honest.
@@ -386,7 +385,7 @@ void main() {
 
       expect(seen, expected);
       expect(expected.toSet(),
-          <String>{'channel', 'catalog', 'update', 'download', 'install'});
+          <String>{'channel', 'catalog', 'update', 'download'});
     });
   });
 

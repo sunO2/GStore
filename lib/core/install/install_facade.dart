@@ -11,8 +11,9 @@
 /// and `installed_apps` seams, `canInstall` is a frontend predicate.
 ///
 /// Tests install a fake [InstallBackend] through the constructor or
-/// [backendOverride], so no native library is required. The `CoreFlags.install`
-/// decision stays in the callers (`InstallManager` / `DownloadTaskWatcher`).
+/// [backendOverride], so no native library is required. After the Wave 6B
+/// cutover the install domain is core-owned, so callers
+/// (`InstallManager` / `DownloadTaskWatcher`) no longer read a flag.
 library;
 
 import 'dart:convert' show jsonDecode;

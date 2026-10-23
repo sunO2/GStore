@@ -3,14 +3,12 @@ import 'package:app_installer/app_installer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
-import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// pm 命令成功判定：输出以 "Success" 开头（pm install/uninstall/clear/disable 等）
 /// null（命令未执行）/ "Failure [...]" / 空输出 → false
@@ -94,7 +92,6 @@ class InstallManager implements IInstallService {
   ) =>
       _appInstaller = installer;
 
-  static const String _installNoCoreTask = 'CORE_E_INSTALL_NO_CORE_TASK';
   static const Set<String> _terminalInstallStatuses = <String>{
     'installed',
     'failed',
@@ -369,31 +366,16 @@ class InstallManager implements IInstallService {
     }
   }
 
-  /// Reads [CoreFlags.install], refreshing a disabled mirror first.
+  /// Installs a core download task through [InstallFacade].
   ///
-  /// The mirror can be stale when another path armed the flag after the last
-  /// read. A flag-backend failure keeps the last mirror and degrades to the
-  /// legacy install path; it never blocks an install.
-  Future<bool> _installEnabled() async {
-    if (!CoreFlags.install) {
-      try {
-        await CoreFlags.refresh();
-      } catch (error) {
-        debugPrint('InstallManager: 刷新 install 开关失败（保持镜像原值）: $error');
-      }
-    }
-    return CoreFlags.install;
-  }
-
-  /// Installs a core download task through [InstallFacade] when the install
-  /// flag is armed; otherwise delegates to the legacy [installApk] path.
+  /// The install domain is core-owned after the Wave 6B cutover: there is no
+  /// flag-off legacy branch. A missing mirror row surfaces as the facade's
+  /// typed [InstallCoreException] (`CORE_E_INSTALL_NOT_FOUND`); every other
+  /// failure keeps the historical log-and-degrade behaviour.
   Future<(bool, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
-    if (!await _installEnabled()) {
-      return installApk(filePath);
-    }
     await DownloadFacade.instance.importLegacyOnce();
     return _installCoreTask(moduleTaskId, filePath);
   }
@@ -422,6 +404,8 @@ class InstallManager implements IInstallService {
       // this session; drain it so a later drain does not install twice.
       await _drainInstallEvents(skipSessionId: request.sessionId);
       return result;
+    } on InstallCoreException {
+      rethrow;
     } catch (e) {
       appLog.error('InstallManager: 核心安装失败 - $e', data: {
         'moduleTaskId': moduleTaskId,
@@ -664,36 +648,32 @@ class InstallManager implements IInstallService {
   }
 
   /// 安装 APK
-  /// `CoreFlags.install` 开启时只走核心安装；未命中且显式标记为模块 APK 时
-  /// 才保留旧安装路径。返回 (是否成功, 使用的安装方式)
+  ///
+  /// Splits by core state, not by the flag mirror: a core download row is
+  /// resolved by [dest_path], and only when it exists does the install go
+  /// through [InstallFacade]. Otherwise this is a direct user-picked APK install
+  /// ([_installApkDirect]) that creates no core state.
+  ///
+  /// [moduleInstall] is retained only for call-site source compatibility; the
+  /// split no longer depends on it and the parameter is intentionally unused.
+  /// 返回 (是否成功, 使用的安装方式)
   Future<(bool, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
   }) async {
-    if (await _installEnabled()) {
-      final coreTaskId = await _findCoreTaskId(filePath);
-      if (coreTaskId != null) {
-        return _installCoreTask(coreTaskId, filePath);
-      }
-      if (!moduleInstall) {
-        appLog.error(
-          'InstallManager: $_installNoCoreTask 未找到核心下载任务，拒绝回退旧安装路径',
-          data: {'filePath': filePath},
-        );
-        return (false, InstallMethod.system);
-      }
-      appLog.info(
-        'InstallManager: 模块 APK 不在内核下载任务中，使用模块安装路径: $filePath',
-      );
+    final coreTaskId = await _findCoreTaskId(filePath);
+    if (coreTaskId != null) {
+      return _installCoreTask(coreTaskId, filePath);
     }
-    // Legacy dispatch: the core route above is not a legacy write.
-    await LegacyWriteGuard.assertAllowed('install');
-    return _legacyInstallApk(filePath);
+    return _installApkDirect(filePath);
   }
 
-  /// 旧 Shizuku/系统安装路径；仅 flag 关闭或显式模块 APK 时使用。
-  Future<(bool, InstallMethod)> _legacyInstallApk(String filePath) async {
-    await LegacyWriteGuard.assertAllowed('install');
+  /// Direct Shizuku/system install for a user-picked APK.
+  ///
+  /// Deliberately NOT a legacy core-state writer: it never creates or mutates a
+  /// core row, so it is not guarded by `LegacyWriteGuard` (after the cutover the
+  /// `install` marker is armed and a guard here would break manual installs).
+  Future<(bool, InstallMethod)> _installApkDirect(String filePath) async {
     if (!_isAndroid || !filePath.endsWith('.apk')) {
       return (false, _preferredMethod);
     }
@@ -760,7 +740,7 @@ class InstallManager implements IInstallService {
   /// [action] uninstall（卸载）/ disable（停用）/ enable（启用）
   /// 返回是否成功
   Future<bool> managePackage(String packageName, String action) async {
-    if (action == 'uninstall' && await _installEnabled()) {
+    if (action == 'uninstall') {
       try {
         await _installFacade.uninstall(packageName);
         return true;

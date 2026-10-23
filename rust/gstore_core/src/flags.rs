@@ -1,7 +1,10 @@
 //! Rust-owned feature flags.
 //!
 //! The Rust core is the source of truth. Dart only mirrors the snapshot through
-//! `CoreFlags` and never writes it directly. Every flag defaults to `false`.
+//! `CoreFlags` and never writes it directly. The process-global default is
+//! [`Flags::WAVE06B_CUTOVER`] (download + install owned by the core); every
+//! other flag is still `false`, and [`Flags::DISABLED`] remains available so
+//! tests can opt back into the all-off world.
 //!
 //! `core_writes` is a *projection* of the `core_writes` table, not an operator
 //! switch: [`set_flags`] still rejects `Some(true)`, while
@@ -14,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
-/// Process-global flag snapshot (all flags default to `false`).
+/// Process-global flag snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Flags {
     /// Channel subsystem is enabled.
@@ -41,6 +44,20 @@ impl Flags {
         update: false,
         download: false,
         install: false,
+        js_channel: false,
+        core_writes: false,
+    };
+
+    /// Wave 6B durable cutover: only `download` + `install` are core-owned.
+    ///
+    /// This is the initial value of [`GLOBAL_FLAGS`]. `channels`, `catalog`,
+    /// `update`, `js_channel` and the `core_writes` projection stay off.
+    pub const WAVE06B_CUTOVER: Self = Self {
+        channels: false,
+        catalog: false,
+        update: false,
+        download: true,
+        install: true,
         js_channel: false,
         core_writes: false,
     };
@@ -112,7 +129,7 @@ impl Flags {
     }
 }
 
-static GLOBAL_FLAGS: RwLock<Flags> = RwLock::new(Flags::DISABLED);
+static GLOBAL_FLAGS: RwLock<Flags> = RwLock::new(Flags::WAVE06B_CUTOVER);
 
 fn read_guard() -> RwLockReadGuard<'static, Flags> {
     match GLOBAL_FLAGS.read() {
@@ -214,5 +231,56 @@ impl FlagsApi {
     /// Resets every flag to `false` and returns the resulting snapshot.
     pub fn reset(&self) -> Flags {
         reset_flags()
+    }
+}
+
+
+/// Serialises unit tests that read or mutate the process-global snapshot.
+///
+/// `core_writes` is a projection armed by `mark_core_write`, so a test that
+/// arms it must not overlap the default-snapshot assertion.
+#[cfg(test)]
+pub(crate) mod test_guard {
+    use std::sync::Mutex;
+
+    pub(crate) static FLAGS_TEST_LOCK: Mutex<()> = Mutex::new(());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wave06b_cutover_flips_only_download_and_install() {
+        let _guard = crate::flags::test_guard::FLAGS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cutover = Flags::WAVE06B_CUTOVER;
+        assert!(cutover.download);
+        assert!(cutover.install);
+        assert!(!cutover.channels);
+        assert!(!cutover.catalog);
+        assert!(!cutover.update);
+        assert!(!cutover.js_channel);
+        assert!(!cutover.core_writes);
+        // The opt-out default stays all-off.
+        assert_eq!(Flags::DISABLED, Flags::default());
+        assert!(!Flags::DISABLED.download);
+        assert!(!Flags::DISABLED.install);
+    }
+
+    #[test]
+    fn global_default_is_the_wave06b_cutover() {
+        let _guard = crate::flags::test_guard::FLAGS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = flags();
+        assert!(snapshot.download, "download must default to core-owned");
+        assert!(snapshot.install, "install must default to core-owned");
+        assert!(!snapshot.channels);
+        assert!(!snapshot.catalog);
+        assert!(!snapshot.update);
+        assert!(!snapshot.js_channel);
+        assert!(!snapshot.core_writes);
     }
 }

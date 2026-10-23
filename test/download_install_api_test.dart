@@ -362,12 +362,15 @@ void main() {
     CoreFlags.resetBackend();
   });
 
-  group('install flag off keeps the legacy path', () {
-    test('installTask delegates to installApk and never touches InstallFacade',
-        () async {
+  group('installTask is core-only regardless of the flag mirror', () {
+    test('installTask always routes through InstallFacade', () async {
       final install = _FakeInstallBackend();
       InstallFacade.installBackendForTest(install);
-      InstallManager.commandRunnerForTest = (_) async => 'Success';
+      var commands = 0;
+      InstallManager.commandRunnerForTest = (_) async {
+        commands++;
+        return 'Success';
+      };
       final manager = InstallManager.instance
         ..setShizukuStateForTest(binder: true, permission: true)
         ..setIsAndroidForTest(true);
@@ -375,10 +378,11 @@ void main() {
       final result = await manager.installTask('task-1', apk.path);
 
       expect(result, (true, InstallMethod.shizuku));
-      expect(install.calls, isEmpty, reason: 'flag off must not use core');
+      expect(install.calls, <String>['pendingRequests', 'install:task-1']);
+      expect(commands, 0, reason: 'installTask has no legacy Shizuku path');
     });
 
-    test('managePackage(uninstall) keeps the Shizuku runner', () async {
+    test('managePackage(uninstall) always uses the core facade', () async {
       final install = _FakeInstallBackend();
       InstallFacade.installBackendForTest(install);
       var commands = 0;
@@ -393,8 +397,8 @@ void main() {
       final ok = await manager.managePackage('com.example.app', 'uninstall');
 
       expect(ok, isTrue);
-      expect(commands, 1);
-      expect(install.calls, isEmpty);
+      expect(install.calls, <String>['uninstall:com.example.app']);
+      expect(commands, 0);
     });
   });
 
@@ -450,7 +454,7 @@ void main() {
       expect(commands, 0);
     });
 
-    test('missing core task never falls back to Shizuku/AppInstaller', () async {
+    test('missing core task installs directly without core state', () async {
       await _setFlags(install: true);
       final install = _FakeInstallBackend();
       InstallFacade.installBackendForTest(install);
@@ -466,12 +470,13 @@ void main() {
         ..setShizukuStateForTest(binder: true, permission: true)
         ..setIsAndroidForTest(true);
 
-      final result = await manager.installApk('/tmp/example.apk');
+      final result = await manager.installApk(apk.path);
 
-      expect(result, (false, InstallMethod.system));
-      expect(commands, 0, reason: 'flag-on app install has no legacy fallback');
+      expect(result, (true, InstallMethod.shizuku));
+      expect(commands, 1, reason: 'no mirrored row means the direct APK path');
       expect(install.calls, isEmpty);
-      debugPrint('flag-on missing core task result=$result commands=$commands');
+      debugPrint('missing core task direct install result=$result '
+          'commands=$commands');
     });
 
     test('explicit module APK keeps the module legacy path', () async {
@@ -652,7 +657,7 @@ void main() {
     });
   });
 
-  group('watcher flag on uses installTask', () {
+  group('watcher always uses installTask', () {
     test('completed task calls installTask and never installApk', () async {
       await _setFlags(install: true);
       final manager = _RecordingInstallManager();
@@ -668,6 +673,24 @@ void main() {
 
       expect(manager.installTaskCalls, 1);
       expect(manager.lastModuleTaskId, '9');
+      expect(manager.installApkCalls, 0);
+    });
+
+    test('download_completion_always_uses_core', () async {
+      // No flag mirror at all: the watcher must still route to the core.
+      final manager = _RecordingInstallManager();
+      ModuleManager.instance.bind<InstallManager>(manager);
+      addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+      final download = _FakeDownloadService();
+      final watcher = DownloadTaskWatcher.debug()..start(download);
+      addTearDown(watcher.dispose);
+
+      download.controller.add(_task(10));
+      await pumpEventQueue();
+
+      expect(manager.installTaskCalls, 1);
+      expect(manager.lastModuleTaskId, '10');
       expect(manager.installApkCalls, 0);
     });
   });
