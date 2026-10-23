@@ -265,10 +265,13 @@ class InstallModule extends AppModule {
     // 按具体类型绑定（消费方 get<InstallManager>() 覆盖接口外方法：
     // isShizukuAvailable/openUninstallInSystem/openAppDetailsInSystem 等）
     context.bindService?.call(InstallManager, InstallManager.instance);
+    // 全仓唯一的 `gstore/install_events` 订阅者：上线即消费终端安装结果。
+    InstallManager.instance.startEventBridge();
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    await InstallManager.instance.stopEventBridge();
     context.unbindService?.call(IInstallService);
     context.unbindService?.call(InstallManager);
   }

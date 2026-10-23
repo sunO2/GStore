@@ -7,6 +7,7 @@ import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
@@ -104,6 +105,107 @@ class InstallManager implements IInstallService {
   final Map<String, Timer> _installPollers = <String, Timer>{};
   bool _installRecoveryDone = false;
 
+  /// 全仓唯一的 `gstore/install_events` 订阅（`startEventBridge` 幂等建立）。
+  StreamSubscription<dynamic>? _installEventsSub;
+
+  /// 测试用：暴露当前订阅以断言幂等/取消（生产代码不读取）。
+  @visibleForTesting
+  StreamSubscription<dynamic>? get installEventsSubscriptionForTest =>
+      _installEventsSub;
+
+  /// 测试用：`StreamController` 驱动的假通道（默认 null → 真实 `EventChannel`）。
+  @visibleForTesting
+  static Stream<dynamic>? installEventsStreamForTest;
+
+  /// 建立全仓唯一的 `gstore/install_events` 订阅。
+  ///
+  /// 幂等：已有订阅时直接返回，`startEventBridge()` 调用多次也只订阅一次。
+  /// 通道只由 Android `MainActivity` 注册，其它平台不订阅（否则会触发
+  /// MissingPluginException）；测试经 `setIsAndroidForTest(true)` 走同一条路径。
+  void startEventBridge() {
+    if (_installEventsSub != null) return;
+    final injected = installEventsStreamForTest;
+    if (injected == null && !_isAndroid) return;
+    final stream = injected ??
+        const EventChannel(installEventsChannelName).receiveBroadcastStream();
+    _installEventsSub = stream.listen(
+      _onInstallEvent,
+      onError: (Object error, StackTrace stackTrace) {
+        // 通道层错误（解码失败 / 平台异常）只记录，绝不冒泡。
+        debugPrint('InstallManager: install_events 通道错误（忽略） - $error');
+      },
+    );
+  }
+
+  /// 取消订阅；幂等，可在未启动/已取消时安全调用。
+  Future<void> stopEventBridge() async {
+    final sub = _installEventsSub;
+    _installEventsSub = null;
+    await sub?.cancel();
+  }
+
+  void _detachEventBridge() {
+    final sub = _installEventsSub;
+    _installEventsSub = null;
+    if (sub != null) unawaited(sub.cancel());
+  }
+
+  /// 一条事件的完整处理：`InstallEvent.fromMap` → `InstallReport` → 核心。
+  ///
+  /// 空 `sessionId` 忽略；四种终端状态显式映射；其它状态、畸形载荷与核心
+  /// 错误一律 `debugPrint` 后吞掉，绝不从流处理器抛出。
+  Future<void> _onInstallEvent(Object? raw) async {
+    try {
+      if (raw is! Map) {
+        debugPrint('InstallManager: 忽略非 Map 的安装事件 - $raw');
+        return;
+      }
+      final event = InstallEvent.fromMap(raw);
+      if (event.sessionId.isEmpty) return;
+      final status = _installEventStatus(event.status);
+      if (status == null) {
+        debugPrint(
+          'InstallManager: 忽略未知安装状态 - ${event.status}'
+          '（sessionId=${event.sessionId}）',
+        );
+        return;
+      }
+      final ack = await _installFacade.reportResult(
+        InstallReport(
+          sessionId: event.sessionId,
+          status: status,
+          method: event.method ?? '',
+          installedVersion: event.installedVersion,
+          error: event.error,
+          reportedAt: clock().millisecondsSinceEpoch,
+        ),
+      );
+      // 去重只依赖核心的 changed:false（已终态 session），客户端不缓存。
+      debugPrint(
+        'InstallManager: install_events 已上报 '
+        'sessionId=${event.sessionId} status=$status changed=${ack.changed}',
+      );
+    } catch (e) {
+      debugPrint('InstallManager: install_events 上报失败（忽略） - $e');
+    }
+  }
+
+  /// 四种终端状态与核心枚举 1:1 显式映射；非终态/未知返回 null。
+  static String? _installEventStatus(String status) {
+    switch (status) {
+      case InstallReportStatus.installed:
+        return InstallReportStatus.installed;
+      case InstallReportStatus.failed:
+        return InstallReportStatus.failed;
+      case InstallReportStatus.denied:
+        return InstallReportStatus.denied;
+      case InstallReportStatus.timeout:
+        return InstallReportStatus.timeout;
+      default:
+        return null;
+    }
+  }
+
   /// Shizuku 是否已运行（Binder 连接）
   bool _binderRunning = false;
 
@@ -148,9 +250,11 @@ class InstallManager implements IInstallService {
   @visibleForTesting
   static void resetForTest() {
     _instance?._cancelInstallPollers();
+    _instance?._detachEventBridge();
     _instance = null;
     _commandRunner = rustShizukuRunner;
     installFacadeForTest = null;
+    installEventsStreamForTest = null;
     installPollInterval = const Duration(milliseconds: 500);
     installPollTimeout = const Duration(seconds: 180);
     clock = DateTime.now;
