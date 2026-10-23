@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/service/install_manager.dart';
@@ -396,7 +399,119 @@ void main() {
         isNull,
       );
     });
+
+    // Post-cutover (Plan-Todo 4): `download` + `install` default to the core,
+    // so a completed installAfterDownload task must go straight to
+    // `installTask` — there is no `installApk` fallback — while the
+    // `gstore/install_events` subscriber stays a single, cancellable
+    // subscription.
+    test('cutover completion uses installTask and keeps one subscriber',
+        () async {
+      useSink(trackCancel: true);
+      final module = InstallModule();
+      await module.onRegister(ModuleContext());
+      await pumpEventQueue();
+      expect(listenCount, 1,
+          reason: 'onRegister establishes exactly one install_events subscriber');
+
+      final manager = _RecordingInstallManager();
+      ModuleManager.instance.bind<InstallManager>(manager);
+      addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+      final download = _FakeDownloadService();
+      final watcher = DownloadTaskWatcher.debug()..start(download);
+      addTearDown(watcher.dispose);
+
+      download.controller.add(_completedInstallTask(11));
+      await pumpEventQueue();
+
+      expect(manager.installTaskCalls, 1);
+      expect(manager.lastModuleTaskId, '11');
+      expect(manager.consumeCalls, 1);
+      expect(manager.installApkCalls, 0,
+          reason: 'the cutover default must never route through installApk');
+      expect(listenCount, 1,
+          reason: 'a download completion must not re-subscribe install_events');
+
+      await module.onUnregister(ModuleContext());
+      await pumpEventQueue();
+      expect(cancelled, isTrue, reason: 'onUnregister must cancel install_events');
+      expect(
+        InstallManager.instance.installEventsSubscriptionForTest,
+        isNull,
+      );
+    });
   });
+}
+
+DownloadTask _completedInstallTask(int id) => DownloadTask(
+      id: id,
+      appId: 'com.example.app',
+      appName: 'Example',
+      version: '1.2.3',
+      fileName: 'example.apk',
+      url: 'https://example.test/example.apk',
+      filePath: '/tmp/example.apk',
+      total: 100,
+      received: 100,
+      status: DownloadStatusEnum.completed,
+      speedBps: 0,
+      etaSec: null,
+      error: null,
+      segments: null,
+      installAfterDownload: true,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(1),
+    );
+
+/// Core-cutover install seam for the watcher: records which install entry
+/// point it used. `installApk` must stay at zero after the flip.
+class _RecordingInstallManager implements InstallManager {
+  int installTaskCalls = 0;
+  int installApkCalls = 0;
+  int consumeCalls = 0;
+  String? lastModuleTaskId;
+
+  @override
+  Future<(bool, InstallMethod)> installTask(
+    String moduleTaskId,
+    String filePath,
+  ) async {
+    installTaskCalls++;
+    lastModuleTaskId = moduleTaskId;
+    return (true, InstallMethod.shizuku);
+  }
+
+  @override
+  Future<(bool, InstallMethod)> installApk(
+    String filePath, {
+    bool moduleInstall = false,
+  }) async {
+    installApkCalls++;
+    return (true, InstallMethod.system);
+  }
+
+  @override
+  Future<int> consumeInstallRequests() async {
+    consumeCalls++;
+    return 0;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
+}
+
+class _FakeDownloadService implements IDownloadService {
+  final StreamController<DownloadTask> controller =
+      StreamController<DownloadTask>.broadcast();
+
+  @override
+  Stream<DownloadTask> watchAll() => controller.stream;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
 }
 
 /// 记录上报与核心幂等应答的假件；`changed` 模拟核心的第一次 true、之后 false。

@@ -33,11 +33,20 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_millis(5000);
 #[cfg(test)]
 thread_local! {
     static FAIL_RESTORE_AFTER_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test-only free-space override consulted by [`free_bytes`] so the
+    /// `CORE_E_SNAPSHOT_DISK` preflight can be forced without a full disk.
+    /// Compiled out of every non-test build, so production is byte-identical.
+    static FORCED_FREE_BYTES: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
 fn take_forced_restore_failure() -> bool {
     FAIL_RESTORE_AFTER_COPY.with(|cell| cell.replace(false))
+}
+
+#[cfg(test)]
+fn set_forced_free_bytes(value: Option<u64>) {
+    FORCED_FREE_BYTES.with(|cell| cell.set(value));
 }
 
 /// Typed error prefix: the snapshot schema is newer than this core.
@@ -428,6 +437,10 @@ fn sidecar_path(live: &Path, suffix: &str) -> PathBuf {
 
 #[cfg(unix)]
 fn free_bytes(path: &Path) -> std::io::Result<u64> {
+    #[cfg(test)]
+    if let Some(bytes) = FORCED_FREE_BYTES.with(|cell| cell.get()) {
+        return Ok(bytes);
+    }
     use std::os::unix::ffi::OsStrExt;
 
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -450,6 +463,10 @@ fn free_bytes(path: &Path) -> std::io::Result<u64> {
 
 #[cfg(not(unix))]
 fn free_bytes(_path: &Path) -> std::io::Result<u64> {
+    #[cfg(test)]
+    if let Some(bytes) = FORCED_FREE_BYTES.with(|cell| cell.get()) {
+        return Ok(bytes);
+    }
     Ok(u64::MAX)
 }
 
@@ -742,6 +759,122 @@ mod tests {
             .with_file_name(format!("{CORE_DB_FILE}.restore-old"));
         assert!(!restore_old.exists(), ".restore-old must not survive success");
         assert!(snapshot.is_file(), "snapshot itself must not be moved");
+    }
+
+    #[test]
+    fn snapshot_backup_failure_is_typed() {
+        let snapshot = make_snapshot(
+            "backup_fail_src",
+            "INSERT INTO channels(key, kind, name) VALUES ('snapshot-row', 'custom', 'Snap');",
+        );
+        let (live, files) = live_handle(
+            "backup_fail_live",
+            "INSERT INTO channels(key, kind, name) VALUES ('old-row', 'custom', 'Old');",
+        );
+        // `<files>/migration/backups` as a regular file makes create_dir_all fail.
+        let migration_dir = files.join(migration::MIGRATION_DIR);
+        std::fs::create_dir_all(&migration_dir).unwrap();
+        std::fs::write(migration_dir.join("backups"), b"not a directory").unwrap();
+        let handle = restore_handle(&live, &files);
+
+        let error = handle.replace_from_snapshot(&snapshot).unwrap_err();
+        assert!(
+            error.0.starts_with(SNAPSHOT_BACKUP),
+            "backup failure must be typed: {}",
+            error.0
+        );
+        assert_eq!(
+            restore_backup_count(&files),
+            0,
+            "a failed backup must not create a pre-restore artifact"
+        );
+
+        // The failure happens before the writer swap: the live DB is untouched.
+        live.with_writer(|conn| {
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='old-row'"),
+                1,
+                "live rows must survive a backup failure"
+            );
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='snapshot-row'"),
+                0,
+                "no snapshot rows may land after a backup failure"
+            );
+            assert_integrity_ok(conn);
+            Ok(())
+        })
+        .unwrap();
+        let restore_old = handle
+            .path()
+            .with_file_name(format!("{CORE_DB_FILE}.restore-old"));
+        assert!(
+            !restore_old.exists(),
+            ".restore-old must not appear before the swap"
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_low_disk() {
+        let snapshot = make_snapshot(
+            "low_disk_src",
+            "INSERT INTO channels(key, kind, name) VALUES ('snapshot-row', 'custom', 'Snap');",
+        );
+        let (live, files) = live_handle(
+            "low_disk_live",
+            "INSERT INTO channels(key, kind, name) VALUES ('old-row', 'custom', 'Old');",
+        );
+        let handle = restore_handle(&live, &files);
+
+        set_forced_free_bytes(Some(0));
+        let error = handle.replace_from_snapshot(&snapshot).unwrap_err();
+        set_forced_free_bytes(None);
+        assert!(
+            error.0.starts_with(SNAPSHOT_DISK),
+            "low free space must be typed: {}",
+            error.0
+        );
+        assert_eq!(
+            restore_backup_count(&files),
+            0,
+            "the disk preflight must run before any backup"
+        );
+        live.with_writer(|conn| {
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='old-row'"),
+                1,
+                "live rows must survive a rejected restore"
+            );
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='snapshot-row'"),
+                0
+            );
+            assert_integrity_ok(conn);
+            Ok(())
+        })
+        .unwrap();
+
+        // Clearing the forced value proves the seam is the only reason the
+        // restore was rejected, and a successful restore cleans `.restore-old`.
+        let version = handle.replace_from_snapshot(&snapshot).unwrap();
+        assert_eq!(version, migration::CORE_SCHEMA_VERSION);
+        assert_eq!(restore_backup_count(&files), 1);
+        let restore_old = handle
+            .path()
+            .with_file_name(format!("{CORE_DB_FILE}.restore-old"));
+        assert!(
+            !restore_old.exists(),
+            "a successful restore must not leave .restore-old behind"
+        );
+        live.with_writer(|conn| {
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='snapshot-row'"),
+                1
+            );
+            assert_integrity_ok(conn);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

@@ -1,9 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart' show ModuleManager;
+import 'package:gstore/core/service/install_manager.dart'
+    show InstallManager, InstallMethod;
 
 /// Hermetic watcher lifecycle tests: no FFI, no network, no Flutter plugins.
 ///
@@ -33,7 +37,12 @@ class _FakeDownloadService implements IDownloadService {
       super.noSuchMethod(invocation);
 }
 
-DownloadTask _task(int id) => DownloadTask(
+DownloadTask _task(
+  int id, {
+  DownloadStatusEnum status = DownloadStatusEnum.downloading,
+  bool installAfterDownload = false,
+}) =>
+    DownloadTask(
       id: id,
       appId: 'app$id',
       appName: 'App $id',
@@ -43,15 +52,49 @@ DownloadTask _task(int id) => DownloadTask(
       filePath: '/tmp/file$id.apk',
       total: 100,
       received: 0,
-      status: DownloadStatusEnum.downloading,
+      status: status,
       speedBps: 0,
       etaSec: null,
       error: null,
       segments: null,
-      installAfterDownload: false,
+      installAfterDownload: installAfterDownload,
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
+
+/// Core-cutover install seam: [installTask] throws so the watcher's catch is
+/// exercised; [installApk] must never be reached.
+class _ThrowingInstallManager implements InstallManager {
+  int installTaskCalls = 0;
+  int installApkCalls = 0;
+  String? lastModuleTaskId;
+
+  @override
+  Future<(bool, InstallMethod)> installTask(
+    String moduleTaskId,
+    String filePath,
+  ) async {
+    installTaskCalls++;
+    lastModuleTaskId = moduleTaskId;
+    throw StateError('installTask boom: $moduleTaskId');
+  }
+
+  @override
+  Future<(bool, InstallMethod)> installApk(
+    String filePath, {
+    bool moduleInstall = false,
+  }) async {
+    installApkCalls++;
+    throw StateError('installApk must not be used after the cutover');
+  }
+
+  @override
+  Future<int> consumeInstallRequests() async => 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -128,5 +171,46 @@ void main() {
     expect(watcher.debugStartCount, 2,
         reason: 'after dispose a start must subscribe again');
     expect(service.watchAllCalls, 2);
+  });
+
+  // Ported from the deleted lazy wiring suite: the watcher's automatic install
+  // is still meaningful production code, but after the Wave 6B cutover it must
+  // always call `installTask` (there is no `installApk` fallback).
+  test('completed installAfterDownload calls installTask and swallows errors',
+      () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _ThrowingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    final printed = <String>[];
+    final originalDebugPrint = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message != null) printed.add(message);
+      originalDebugPrint(message, wrapWidth: wrapWidth);
+    };
+    addTearDown(() => debugPrint = originalDebugPrint);
+
+    service.emit(_task(
+      9,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 1,
+        reason: 'a completed installAfterDownload task always installs via core');
+    expect(install.lastModuleTaskId, '9');
+    expect(install.installApkCalls, 0,
+        reason: 'the cutover removed the installApk fallback');
+    expect(
+      printed.any((m) =>
+          m.contains('核心自动安装失败') && m.contains('installTask boom')),
+      isTrue,
+      reason: 'the install error must be caught and reported, never unhandled',
+    );
   });
 }

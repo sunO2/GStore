@@ -640,20 +640,24 @@ void main() {
       debugPrint('legacy gate after getTask: ${backend.events} '
           '(imports=${backend.importCalls})');
 
-      // Flag-off legacy streams are lazy and must not touch the core backend
-      // or re-run the import.
+      // The cutover made routing flag-free: a mirror that reports download
+      // false must NOT change where a call is dispatched. The one-shot legacy
+      // import gate is still memoized across that mirror change.
       await _setFlags(download: false);
       backend.events.clear();
-      final legacyStream = service.watchAll();
-      expect(legacyStream, isA<Stream<DownloadTask>>());
-      final legacyWatch = service.watch(7);
-      expect(legacyWatch, isA<Stream<DownloadTask>>());
-      expect(backend.events, isEmpty,
-          reason: 'flag-off must make zero core calls');
+      await service.pause(8);
+      expect(backend.events, <String>['pause'],
+          reason: 'the flag mirror must not gate a core mutation');
       expect(backend.importCalls, 1,
-          reason: 'flag-off must not trigger another import');
-      debugPrint('legacy gate flag-off: core_calls=${backend.events} '
-          '(imports=${backend.importCalls})');
+          reason: 'the import gate is memoized across mirror changes');
+
+      await service.watchAll().toList();
+      expect(backend.calls, contains('watchAll'),
+          reason: 'watchAll always reads the core stream, mirror-off included');
+      expect(backend.importCalls, 1,
+          reason: 'watchAll must not re-run the memoized import');
+      debugPrint('legacy gate mirror-off: core_calls=${backend.events} '
+          'calls=${backend.calls} (imports=${backend.importCalls})');
     });
   });
 

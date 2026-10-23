@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
@@ -70,6 +71,43 @@ class _RecordingResyncBackend extends _PlainBackend implements DownloadResync {
   }
 }
 
+/// Minimal flag mirror so the post-flip tests can prove the resync path no
+/// longer consults `CoreFlags` (the cutover left it core-owned regardless of
+/// the Dart mirror's value).
+class _MirrorBackend implements CoreFlagsBackend {
+  _MirrorBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    snapshot = CoreFlagsSnapshot(
+      channels: patch.channel ?? snapshot.channels,
+      catalog: patch.catalog ?? snapshot.catalog,
+      update: patch.update ?? snapshot.update,
+      download: patch.download ?? snapshot.download,
+      install: patch.install ?? snapshot.install,
+      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
+      coreWrites: snapshot.coreWrites,
+    );
+  }
+}
+
+Future<void> _installMirror({
+  required bool download,
+  required bool install,
+}) async {
+  CoreFlags.installBackend(
+    _MirrorBackend(
+      CoreFlagsSnapshot(download: download, install: install),
+    ),
+  );
+  await CoreFlags.refresh();
+}
+
 void main() {
   setUp(() => DownloadFacade.backendOverride = null);
   tearDown(() => DownloadFacade.backendOverride = null);
@@ -117,8 +155,10 @@ void main() {
   test('resync_rejects_backend_without_capability', () async {
     final facade = DownloadFacade(backend: _PlainBackend());
 
-    await expectLater(
-      facade.resyncDownloads(apply: true),
+    // `resyncDownloads` throws synchronously when the capability is missing,
+    // so the closure (not a Future) is what must be asserted.
+    expect(
+      () => facade.resyncDownloads(apply: true),
       throwsA(
         isA<UnsupportedError>().having(
           (error) => error.message,
@@ -127,5 +167,72 @@ void main() {
         ),
       ),
     );
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Post-flip (Plan-Todo 4): `download` + `install` default to the cutover
+  // flags, but the resync path was already flag-free. These tests pin what the
+  // flip changes: the Dart mirror is irrelevant, the dry-run stays read-only,
+  // and only an explicit `apply: true` forwards the snapshot mutation.
+  // ───────────────────────────────────────────────────────────────────────
+  group('post-cutover resync ignores the flag mirror', () {
+    tearDown(CoreFlags.resetBackend);
+
+    test('cutover mirror: dry-run is read-only, apply forwards exactly once',
+        () async {
+      await _installMirror(download: true, install: true);
+
+      final dryBackend = _RecordingResyncBackend(_report());
+      final dry = await DownloadFacade(backend: dryBackend).resyncDownloads();
+
+      expect(dryBackend.calls, 1);
+      expect(dryBackend.applies, <bool>[false],
+          reason: 'a dry-run stays read-only after the flip');
+      expect(dryBackend.floorPaths, <String?>[null]);
+      expect(dry.snapshotPath, isNull,
+          reason: 'a dry-run must not produce a snapshot path');
+      expect(dry.updated, 0);
+
+      const snapshot = '/files/migration/backups/pre-resync-42.db';
+      final applyBackend = _RecordingResyncBackend(
+        _report(updated: 4, snapshotPath: snapshot),
+      );
+      final applied = await DownloadFacade(backend: applyBackend)
+          .resyncDownloads(apply: true);
+
+      expect(applyBackend.calls, 1, reason: 'apply forwards exactly once');
+      expect(applyBackend.applies, <bool>[true]);
+      expect(applied.snapshotPath, snapshot);
+      expect(applied.updated, 4);
+    });
+
+    test('all-false mirror still forwards: routing no longer reads the flags',
+        () async {
+      await _installMirror(download: false, install: false);
+      final backend = _RecordingResyncBackend(_report());
+
+      final result = await DownloadFacade(backend: backend).resyncDownloads();
+
+      expect(backend.calls, 1,
+          reason: 'a mirror reporting false must not gate the core resync');
+      expect(backend.applies, <bool>[false]);
+      expect(result.updated, 0);
+    });
+
+    test('backend without DownloadResync still throws after the flip', () async {
+      await _installMirror(download: true, install: true);
+      final facade = DownloadFacade(backend: _PlainBackend());
+
+      expect(
+        () => facade.resyncDownloads(apply: true),
+        throwsA(
+          isA<UnsupportedError>().having(
+            (error) => error.message,
+            'message',
+            contains('does not support download resync'),
+          ),
+        ),
+      );
+    });
   });
 }
