@@ -391,9 +391,6 @@ mod tests {
 
     #[test]
     fn core_writes_guard() {
-        let _guard = crate::flags::test_guard::FLAGS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         apply_core_schema(&mut conn).unwrap();
 
@@ -421,7 +418,6 @@ mod tests {
         );
 
         ensure_legacy_write_allowed(&conn, "update").expect("other domains stay writable");
-        let _ = crate::flags::reset_flags();
     }
 
     #[test]

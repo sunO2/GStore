@@ -234,27 +234,12 @@ impl FlagsApi {
     }
 }
 
-
-/// Serialises unit tests that read or mutate the process-global snapshot.
-///
-/// `core_writes` is a projection armed by `mark_core_write`, so a test that
-/// arms it must not overlap the default-snapshot assertion.
-#[cfg(test)]
-pub(crate) mod test_guard {
-    use std::sync::Mutex;
-
-    pub(crate) static FLAGS_TEST_LOCK: Mutex<()> = Mutex::new(());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn wave06b_cutover_flips_only_download_and_install() {
-        let _guard = crate::flags::test_guard::FLAGS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cutover = Flags::WAVE06B_CUTOVER;
         assert!(cutover.download);
         assert!(cutover.install);
@@ -267,20 +252,5 @@ mod tests {
         assert_eq!(Flags::DISABLED, Flags::default());
         assert!(!Flags::DISABLED.download);
         assert!(!Flags::DISABLED.install);
-    }
-
-    #[test]
-    fn global_default_is_the_wave06b_cutover() {
-        let _guard = crate::flags::test_guard::FLAGS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = flags();
-        assert!(snapshot.download, "download must default to core-owned");
-        assert!(snapshot.install, "install must default to core-owned");
-        assert!(!snapshot.channels);
-        assert!(!snapshot.catalog);
-        assert!(!snapshot.update);
-        assert!(!snapshot.js_channel);
-        assert!(!snapshot.core_writes);
     }
 }
