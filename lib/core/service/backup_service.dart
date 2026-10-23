@@ -17,6 +17,7 @@ import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/service/core_snapshot_backup.dart';
 
 /// 备份/恢复进度日志回调（旁路输出，不影响返回/异常语义）
 typedef BackupLogCallback = void Function(String message, {bool isError});
@@ -385,6 +386,34 @@ class BackupService implements IBackupService {
       onLog?.call('导出失败: $e', isError: true);
       rethrow;
     }
+  }
+
+  // ==================== Core 数据库快照 ====================
+
+  /// 导出 Rust core 数据库快照（`VACUUM INTO`）。
+  ///
+  /// [path] 为空时落在应用支持目录下的 `gstore_core/files/backups`。快照不含
+  /// 宿主密钥库：`secrets_excluded` 恒为 true。
+  Future<CoreSnapshotExport> exportCoreSnapshot({String? path}) async {
+    final result = await CoreSnapshotBackup.export(path: path);
+    appLog.info(
+      'BackupService: 导出核心快照 ${result.path} (${result.bytes} bytes, '
+      'secrets_excluded=${result.secretsExcluded})',
+    );
+    return result;
+  }
+
+  /// 用核心快照替换当前 core 数据库。
+  ///
+  /// 校验、完整性检查与预恢复备份全部在替换前完成；失败会回滚到原库并抛出
+  /// 带 `CORE_E_SNAPSHOT_*` 前缀的异常。
+  Future<CoreSnapshotRestore> restoreCoreSnapshot(String path) async {
+    final result = await CoreSnapshotBackup.restore(path);
+    appLog.info(
+      'BackupService: 恢复核心快照 $path -> schema v${result.schemaVersion} '
+      '(secrets_excluded=${result.secretsExcluded})',
+    );
+    return result;
   }
 
   // ==================== 导入功能 ====================

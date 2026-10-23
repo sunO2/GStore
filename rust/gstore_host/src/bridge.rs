@@ -738,31 +738,37 @@ impl CoreApi {
     }
 
     pub fn import_snapshot(&self, path: String) -> Result<i32, String> {
-        let conn = rusqlite::Connection::open_with_flags(
-            &path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| format!("CORE_E_IMPORT_SNAPSHOT: open {path}: {e}"))?;
-        let version: i32 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(|e| format!("CORE_E_IMPORT_SNAPSHOT: read user_version: {e}"))?;
-        for table in ["core_writes", "download_task"] {
-            let found: Option<String> = conn
-                .query_row(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
-                    [table],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| {
-                    format!("CORE_E_IMPORT_SNAPSHOT: inspect sqlite_master: {e}")
-                })?;
-            if found.is_none() {
-                return Err(format!(
-                    "CORE_E_IMPORT_SNAPSHOT: missing table {table}"
-                ));
-            }
-        }
+        let (data_dir, files_dir) = {
+            let guard = self
+                .paths
+                .lock()
+                .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: paths lock poisoned"))?;
+            let paths = guard
+                .as_ref()
+                .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?;
+            (paths.data_dir.clone(), paths.files_dir.clone())
+        };
+        let shared = {
+            let guard = self
+                .db
+                .lock()
+                .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+            guard
+                .as_ref()
+                .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?
+                .clone()
+        };
+        let live = core_db::core_db_path(std::path::Path::new(&data_dir));
+        let handle = core_db::DbHandle::from_shared(live, shared).with_files_dir(&files_dir);
+        let version = handle
+            .replace_from_snapshot(std::path::Path::new(&path))
+            .map_err(|e| e.0)?;
+        crate::log_bridge::push_host_log(
+            1,
+            format!(
+                "core snapshot restored from {path}: schema v{version}, secrets_excluded=true"
+            ),
+        );
         Ok(version)
     }
 
@@ -1191,6 +1197,188 @@ mod core_api_tests {
             .expect("count core_writes")
     }
 
+    fn exec_batch_on_live(api: &CoreApi, sql: &str) {
+        let shared = api.db.lock().expect("db lock");
+        let conn = shared.as_ref().expect("db present");
+        conn.lock()
+            .expect("writer lock")
+            .execute_batch(sql)
+            .expect("exec batch");
+    }
+
+    fn count_live(db_path: &str, sql: &str) -> i64 {
+        let conn = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open live db read-only");
+        conn.query_row(sql, [], |r| r.get(0)).expect("count")
+    }
+
+    /// End-to-end: `importSnapshot` validates, backs up, swaps the live database,
+    /// and every holder of the shared writer observes the restored connection.
+    ///
+    /// This test started as the Todo 1 characterization pin (validate-only left
+    /// the live database untouched) and asserts the flipped behavior now.
+    #[test]
+    fn snapshot_restore_end_to_end() {
+        let root = temp_root("restore_e2e");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+        let init = api.migrate_paths().expect("migrate_paths");
+
+        exec_batch_on_live(
+            &api,
+            "INSERT INTO channels(key, kind, name) VALUES ('in-snapshot', 'custom', 'snapshot');\
+             INSERT INTO core_writes(domain, first_write_at, snapshot_id) \
+             VALUES ('channel', 11, 'snapshot-marker');",
+        );
+        let snapshot = root.join("snap.db");
+        api.export_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("export_snapshot");
+        exec_batch_on_live(
+            &api,
+            "DELETE FROM core_writes WHERE domain='channel';\
+             INSERT INTO channels(key, kind, name) VALUES ('after-export', 'custom', 'live');",
+        );
+
+        assert_eq!(
+            count_live(
+                snapshot.to_str().unwrap(),
+                "SELECT COUNT(*) FROM core_writes",
+            ),
+            1,
+            "snapshot must carry the marker seeded before export"
+        );
+        let version = api
+            .import_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("import_snapshot");
+        assert_eq!(version, gstore_core::migration::CORE_SCHEMA_VERSION);
+
+        assert_eq!(
+            count_live(&init.db_path, "SELECT COUNT(*) FROM core_writes"),
+            1,
+            "restore must copy the snapshot marker into the live database"
+        );
+        assert_eq!(
+            count_live(
+                &init.db_path,
+                "SELECT COUNT(*) FROM channels WHERE key='after-export'",
+            ),
+            0,
+            "restore must discard rows written after the snapshot"
+        );
+        assert_eq!(
+            count_live(
+                &init.db_path,
+                "SELECT COUNT(*) FROM channels WHERE key='in-snapshot'",
+            ),
+            1,
+            "restore must install snapshot rows"
+        );
+        assert!(
+            api.core_writes("channel".to_string())
+                .expect("core_writes")
+                .is_some(),
+            "the shared writer must observe the restored connection"
+        );
+        let integrity: String = rusqlite::Connection::open_with_flags(
+            &init.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open live db")
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .expect("integrity_check");
+        assert_eq!(integrity, "ok");
+
+        let backups = files_dir.join("migration").join("backups");
+        let backup = std::fs::read_dir(&backups)
+            .expect("backup dir")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("pre-restore-")
+            })
+            .expect("pre-restore backup");
+        assert_eq!(
+            count_live(
+                &backup.path().to_string_lossy(),
+                "SELECT COUNT(*) FROM channels WHERE key='after-export'",
+            ),
+            1,
+            "pre-restore backup must hold the pre-restore live database"
+        );
+        assert!(
+            !std::path::Path::new(&init.db_path)
+                .with_extension("db.restore-old")
+                .exists(),
+            ".restore-old must not survive a successful restore"
+        );
+
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_import_propagates_typed_failure() {
+        let root = temp_root("snapshot_failure");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+        let init = api.migrate_paths().expect("migrate_paths");
+        exec_batch_on_live(
+            &api,
+            "INSERT INTO channels(key, kind, name) VALUES ('keep', 'custom', 'Keep');",
+        );
+
+        let snapshot = root.join("newer.db");
+        api.export_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect("export_snapshot");
+        rusqlite::Connection::open(&snapshot)
+            .unwrap()
+            .pragma_update(
+                None,
+                "user_version",
+                gstore_core::migration::CORE_SCHEMA_VERSION + 1,
+            )
+            .unwrap();
+
+        let error = api
+            .import_snapshot(snapshot.to_string_lossy().into_owned())
+            .expect_err("newer snapshot must not report success");
+        println!("snapshot_import_propagates_typed_failure: {error}");
+        assert!(
+            error.starts_with("CORE_E_SNAPSHOT_NEWER"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            count_live(
+                &init.db_path,
+                "SELECT COUNT(*) FROM channels WHERE key='keep'",
+            ),
+            1,
+            "rejected restore must leave the live database intact"
+        );
+
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn core_writes_empty_after_init_and_migration() {
         let root = temp_root("writes");
@@ -1258,19 +1446,6 @@ mod core_api_tests {
             .expect("export_snapshot");
         assert!(size > 0);
 
-        let stale = rusqlite::Connection::open(&snapshot).expect("open snapshot");
-        stale
-            .execute(
-                "INSERT INTO core_writes(domain, first_write_at, snapshot_id) \
-                 VALUES ('channel', 1, 'stale-snapshot')",
-                [],
-            )
-            .expect("seed snapshot marker");
-        drop(stale);
-        let stale_count = core_writes_count(&snapshot.to_string_lossy());
-        println!("seeded snapshot core_writes count = {stale_count}");
-        assert_eq!(stale_count, 1);
-
         assert_eq!(
             api.import_snapshot(snapshot.to_string_lossy().into_owned())
                 .expect("import_snapshot"),
@@ -1279,7 +1454,10 @@ mod core_api_tests {
 
         let count = core_writes_count(&init.db_path);
         println!("after snapshot export/import: core_writes count = {count}");
-        assert_eq!(count, 0, "snapshot round-trip must not arm core_writes");
+        assert_eq!(
+            count, 0,
+            "restoring a snapshot without markers must not create any"
+        );
 
         let live = rusqlite::Connection::open_with_flags(
             &init.db_path,

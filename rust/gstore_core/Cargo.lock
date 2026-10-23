@@ -387,6 +387,7 @@ name = "gstore_core"
 version = "0.1.0"
 dependencies = [
  "gstore_contract",
+ "libc",
  "log",
  "refinery",
  "rusqlite",
