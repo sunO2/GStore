@@ -750,6 +750,51 @@ impl CoreApi {
         })
     }
 
+    /// Three-way download resync (dry-run by default).
+    ///
+    /// Documented deviation from the plan's no-argument `resyncDownloads()`:
+    /// the Rust core cannot locate the Dart Floor database
+    /// (`getDatabasesPath()/download_task.db`), so the caller passes it as
+    /// `floor_db_path`. `None` (or a missing file) yields `floor_rows == 0` and
+    /// a two-way module ↔ core parity run.
+    ///
+    /// A dry-run (`apply == false`) is strictly read-only: the module database
+    /// is opened `SQLITE_OPEN_READ_ONLY`, no core row is written, and
+    /// `snapshot_path`/`updated` stay empty. `apply == true` first writes
+    /// `<files_dir>/migration/backups/pre-resync-<millis>.db` via `VACUUM INTO`,
+    /// then mirrors module rows and marks non-terminal core rows
+    /// `needs_restart` when the module database is gone. Any identity conflict
+    /// returns `CORE_E_DOWNLOAD_RESYNC_CONFLICT` with zero writes, including
+    /// conflicts found during an apply.
+    ///
+    /// Neither path writes a `core_writes` marker or flips a flag.
+    pub fn resync_downloads(
+        &self,
+        apply: bool,
+        floor_db_path: Option<String>,
+    ) -> Result<ResyncReportDto, String> {
+        let files_dir = {
+            let paths = self
+                .paths
+                .lock()
+                .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: paths lock poisoned"))?;
+            paths
+                .as_ref()
+                .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?
+                .files_dir
+                .clone()
+        };
+        let floor = floor_db_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(std::path::Path::new);
+        self.download
+            .resync_downloads(apply, floor, std::path::Path::new(&files_dir))
+            .map(ResyncReportDto::from)
+            .map_err(resync_err)
+    }
+
     pub fn import_file(&self, path_or_fd: String) -> Result<u64, String> {
         let meta = std::fs::metadata(std::path::Path::new(&path_or_fd))
             .map_err(|_| format!("CORE_E_IMPORT_NOT_FOUND: {path_or_fd}"))?;
@@ -1755,6 +1800,154 @@ mod core_api_tests {
         assert_eq!(last, "official");
 
         drop(live);
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    struct ResyncTestBridge;
+
+    impl gstore_core::download::port::ModuleBridge for ResyncTestBridge {
+        fn call(&self, method: &str, _payload: &[u8]) -> Result<Vec<u8>, String> {
+            panic!("resync must not call the module bridge ({method})");
+        }
+    }
+
+    fn create_resync_module_db(path: &std::path::Path, dedup_key: &str) {
+        let conn = rusqlite::Connection::open(path).expect("open module db");
+        conn.execute_batch(
+            "CREATE TABLE download_task (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL, app_name TEXT NOT NULL, version TEXT NOT NULL,
+                file_name TEXT NOT NULL, url TEXT NOT NULL, file_path TEXT NOT NULL,
+                total INTEGER NOT NULL DEFAULT 0, received INTEGER NOT NULL DEFAULT 0,
+                status INTEGER NOT NULL, dedup_key TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            );",
+        )
+        .expect("module DDL");
+        conn.execute(
+            "INSERT INTO download_task
+             (id, app_id, app_name, version, file_name, url, file_path, total, received,
+              status, dedup_key, created_at, updated_at)
+             VALUES (1, 'com.a', 'A', '1.0', 'a.apk', 'https://example.test/a.bin',
+                     '/tmp/a.apk', 100, 10, 0, ?1, 1, 2)",
+            [dedup_key],
+        )
+        .expect("insert module row");
+    }
+
+    #[test]
+    fn core_api_resync_downloads_reports_and_aborts_on_conflict() {
+        let root = temp_root("resync");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let module_path = data_dir
+            .join("gstore_mods")
+            .join("download")
+            .join("download.db");
+        std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+        create_resync_module_db(&module_path, "app:com.a:1.0:a.apk");
+
+        let core_db = gstore_core::db::core_db_path(&data_dir);
+        let mut conn = rusqlite::Connection::open(&core_db).expect("open core db");
+        gstore_core::migration::apply_core_schema(&mut conn).expect("core schema");
+        let shared: gstore_core::db::SharedConn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let port = crate::download_host::HostDownloadPort::with_bridge_for_test(
+            ResyncTestBridge,
+            shared.clone(),
+            core_db.clone(),
+            Some(module_path.clone()),
+        );
+        let api = CoreApi::init_with_download_port_for_test(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+            port,
+        )
+        .expect("CoreApi::init_with_download_port_for_test");
+
+        exec_batch_on_live(
+            &api,
+            "INSERT INTO download_task
+             (id, module_task_id, dedup_key, app_id, app_name, version, file_name,
+              status, bytes_done, total, created_at, updated_at)
+             VALUES (100, '1', 'app:com.a:1.0:a.apk', 'com.a', 'A', '1.0', 'a.apk',
+                     'running', 0, 100, 1, 1);",
+        );
+        let db_path = api.migrate_paths().expect("migrate_paths").db_path;
+
+        let dry = api
+            .resync_downloads(false, None)
+            .expect("resync dry-run");
+        println!("core_api resync dry -> {dry:?}");
+        assert_eq!(dry.floor_rows, 0);
+        assert_eq!(dry.module_rows, 1);
+        assert_eq!(dry.core_rows, 1);
+        assert_eq!(dry.matched, 1);
+        assert_eq!(dry.missing, 0);
+        assert_eq!(dry.updated, 0);
+        assert!(dry.snapshot_path.is_none());
+
+        let applied = api.resync_downloads(true, None).expect("resync apply");
+        println!("core_api resync apply -> {applied:?}");
+        assert_eq!(applied.updated, 1, "the stale core mirror is refreshed");
+        let snapshot = applied.snapshot_path.clone().expect("apply snapshot");
+        assert!(std::path::Path::new(&snapshot).exists());
+        assert_eq!(
+            count_live(&db_path, "SELECT bytes_done FROM download_task WHERE id = 100"),
+            10
+        );
+        assert_eq!(
+            count_live(&db_path, "SELECT COUNT(*) FROM core_writes"),
+            0,
+            "resync must not write markers"
+        );
+
+        {
+            let module = rusqlite::Connection::open(&module_path).expect("reopen module");
+            module
+                .execute(
+                    "UPDATE download_task SET dedup_key = 'app:com.a:1.0:a.apk:rev2' WHERE id = 1",
+                    [],
+                )
+                .expect("introduce dedup conflict");
+        }
+        let error = api
+            .resync_downloads(true, None)
+            .expect_err("a conflict must abort the apply");
+        println!("core_api resync conflict -> {error}");
+        assert!(
+            error.starts_with("CORE_E_DOWNLOAD_RESYNC_CONFLICT"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            count_live(&db_path, "SELECT COUNT(*) FROM download_task"),
+            1,
+            "conflict abort must not write rows"
+        );
+        assert_eq!(
+            count_live(&db_path, "SELECT bytes_done FROM download_task WHERE id = 100"),
+            10,
+            "conflict abort must not rewrite the mirror"
+        );
+
+        std::fs::remove_file(&module_path).expect("drop module db");
+        let missing_floor = root.join("missing-floor.db");
+        let restart = api
+            .resync_downloads(true, Some(missing_floor.to_string_lossy().into_owned()))
+            .expect("a missing module db is not an error");
+        println!("core_api resync missing module db -> {restart:?}");
+        assert_eq!(restart.floor_rows, 0);
+        assert_eq!(restart.module_rows, 0);
+        assert_eq!(restart.conflicts, 0);
+        assert_eq!(restart.needs_restart, 1);
+        assert!(restart.snapshot_path.is_some());
+        assert_eq!(
+            count_live(&db_path, "SELECT COUNT(*) FROM download_task WHERE status = 'needs_restart'"),
+            1
+        );
+
         drop(api);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -3298,6 +3491,9 @@ const CORE_E_DOWNLOAD_UNKNOWN_TASK: &str = "CORE_E_DOWNLOAD_UNKNOWN_TASK";
 const CORE_E_DOWNLOAD_NEEDS_RESTART: &str = "CORE_E_DOWNLOAD_NEEDS_RESTART";
 const CORE_E_DOWNLOAD_IMPORT_DB: &str = "CORE_E_DOWNLOAD_IMPORT_DB";
 const CORE_E_DOWNLOAD_IMPORT_INTERNAL: &str = "CORE_E_DOWNLOAD_IMPORT_INTERNAL";
+const CORE_E_DOWNLOAD_RESYNC_CONFLICT: &str = "CORE_E_DOWNLOAD_RESYNC_CONFLICT";
+const CORE_E_DOWNLOAD_RESYNC_DB: &str = "CORE_E_DOWNLOAD_RESYNC_DB";
+const CORE_E_DOWNLOAD_RESYNC_INTERNAL: &str = "CORE_E_DOWNLOAD_RESYNC_INTERNAL";
 
 /// Start request accepted by [`DownloadApi::start`] (FRB data class).
 #[derive(Debug, Clone)]
@@ -3442,6 +3638,58 @@ impl From<crate::download_host::LegacyImportReport> for DownloadImportReportDto 
     }
 }
 
+/// Three-way download resync report (FRB data class).
+///
+/// `snapshot_path` is `None` in dry-run; every other field is meaningful in
+/// both modes. See [`CoreApi::resync_downloads`] for the exact semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResyncReportDto {
+    pub floor_rows: i64,
+    pub module_rows: i64,
+    pub core_rows: i64,
+    pub matched: i64,
+    pub updated: i64,
+    pub missing: i64,
+    pub conflicts: i64,
+    pub needs_restart: i64,
+    pub snapshot_path: Option<String>,
+}
+
+impl From<gstore_core::download::resync::ResyncReport> for ResyncReportDto {
+    fn from(report: gstore_core::download::resync::ResyncReport) -> Self {
+        let count = |value: usize| i64::try_from(value).unwrap_or(i64::MAX);
+        Self {
+            floor_rows: count(report.floor_rows),
+            module_rows: count(report.module_rows),
+            core_rows: count(report.core_rows),
+            matched: count(report.matched),
+            updated: count(report.updated),
+            missing: count(report.missing),
+            conflicts: count(report.conflicts),
+            needs_restart: count(report.needs_restart),
+            snapshot_path: report.snapshot_path,
+        }
+    }
+}
+
+fn resync_err(error: PortError) -> String {
+    match error {
+        PortError::ResyncConflict(message) => {
+            format!("{CORE_E_DOWNLOAD_RESYNC_CONFLICT}: {message}")
+        }
+        PortError::Db(message) => format!("{CORE_E_DOWNLOAD_RESYNC_DB}: {message}"),
+        PortError::Module(message) => {
+            format!("{CORE_E_DOWNLOAD_RESYNC_INTERNAL}: module: {message}")
+        }
+        PortError::UnknownTask(id) => {
+            format!("{CORE_E_DOWNLOAD_RESYNC_INTERNAL}: unknown task: {id}")
+        }
+        PortError::NeedsRestart(id) => {
+            format!("{CORE_E_DOWNLOAD_RESYNC_INTERNAL}: needs restart: {id}")
+        }
+    }
+}
+
 fn import_err(error: PortError) -> String {
     match error {
         PortError::Db(message) => format!("{CORE_E_DOWNLOAD_IMPORT_DB}: {message}"),
@@ -3455,6 +3703,9 @@ fn download_err(error: PortError) -> String {
         PortError::Db(message) => format!("{CORE_E_DOWNLOAD_DB}: {message}"),
         PortError::UnknownTask(id) => format!("{CORE_E_DOWNLOAD_UNKNOWN_TASK}: {id}"),
         PortError::NeedsRestart(id) => format!("{CORE_E_DOWNLOAD_NEEDS_RESTART}: {id}"),
+        PortError::ResyncConflict(message) => {
+            format!("{CORE_E_DOWNLOAD_RESYNC_CONFLICT}: {message}")
+        }
     }
 }
 

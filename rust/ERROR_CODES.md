@@ -156,3 +156,6 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `CORE_E_INVENTORY_STALE` | core | `Conflict`（push）/ `Unsupported`（判定时） | 两处语义：`InventoryStore::push` 收到同一 `source_id` 的 `seq < stored_seq` → `Conflict`，消息即该常量；更新判定时库存龄期超过 `UpdateRules.max_inventory_age_secs` → `Unsupported`（`force` 可绕过）。批量检查里单个应用的库存缺失/过期**只**把该应用标为 skipped（`inventory_missing` / `inventory_stale`），不整体中止 |
 | `CORE_E_RULES_INVALID` | core | `InvalidArgument` | `setInstallRules` / `setUpdateRules` 载荷的版本、JSON 或枚举值非法（消息以 `CORE_E_RULES_INVALID: ` 开头）；被拒的写入不改变已有规则 |
 | `CORE_E_INSTALL_SESSION` | core | `NotFound` | `InstallService::on_result` 收到未知 `session_id`（宿主 `bridge.rs` 会再补一次 `CORE_E_INSTALL_SESSION:` 前缀）；前端应经 `pendingRequests()` 重新对账后重报 |
+| `CORE_E_DOWNLOAD_RESYNC_CONFLICT` | core | `PortError::ResyncConflict` | 三路下载 resync 发现身份冲突：同一 `(app_id, version, file_name)` 的既有 `dedup_key` 不一致，或核心行带有模块库中不存在的 `module_task_id` 且状态非终态（`completed`/`cancelled`/`removed`/`failed`）。`apply=true` 时也**零写入**（不建快照、不改核心/模块库） |
+| `CORE_E_DOWNLOAD_RESYNC_DB` | core | `PortError::Db` | resync 读取/写入数据库失败：模块库或 Floor 库存在但不可读（非 SQLite、缺 `download_task`、截断）、快照 `VACUUM INTO` 失败，或应用事务失败（事务回滚，已建快照保留） |
+| `CORE_E_DOWNLOAD_RESYNC_INTERNAL` | core | `PortError::Module`/`UnknownTask`/`NeedsRestart` | resync 不会经模块桥；出现这些变体说明内部契约被破坏，按内部错误处理 |

@@ -7,6 +7,8 @@ use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::db::SharedConn;
+use crate::download::legacy::MappedTask;
+use crate::download::resync::{self, ResyncReport};
 use crate::download::{DownloadTaskRow, NEEDS_RESTART};
 
 /// Transport used to invoke the download module without linking its cdylib.
@@ -38,6 +40,8 @@ pub enum PortError {
     Db(String),
     UnknownTask(String),
     NeedsRestart(String),
+    /// Three-way resync found an identity disagreement; nothing was written.
+    ResyncConflict(String),
 }
 
 impl std::fmt::Display for PortError {
@@ -47,6 +51,7 @@ impl std::fmt::Display for PortError {
             Self::Db(msg) => write!(f, "db: {msg}"),
             Self::UnknownTask(id) => write!(f, "unknown task: {id}"),
             Self::NeedsRestart(id) => write!(f, "needs restart: {id}"),
+            Self::ResyncConflict(msg) => write!(f, "resync conflict: {msg}"),
         }
     }
 }
@@ -155,6 +160,34 @@ impl<B: ModuleBridge> ModuleDownloadPort<B> {
             .map_err(|e| PortError::Db(e.0))?;
         tx.commit()
             .map_err(|e| PortError::Db(format!("commit download upsert: {e}")))
+    }
+
+    /// Three-way resync between the Floor database, the download module's
+    /// database, and the core mirror.
+    ///
+    /// Dry-run (`apply == false`) is strictly read-only: the module database is
+    /// opened `SQLITE_OPEN_READ_ONLY` and no core row, marker, or flag changes.
+    /// Apply takes a `VACUUM INTO` snapshot under `<files_dir>/migration/backups`
+    /// before a single transaction mirrors the module rows and, when the module
+    /// database is gone, marks non-terminal core rows `needs_restart`.
+    ///
+    /// A resync is maintenance, not a domain mutation: it never writes a
+    /// `core_writes` marker, so `suppress_core_write_markers` is unnecessary.
+    pub fn resync(
+        &self,
+        apply: bool,
+        floor_db_path: Option<&Path>,
+        files_dir: &Path,
+    ) -> Result<ResyncReport, PortError> {
+        let backups = crate::migration::migration_dir(files_dir).join("backups");
+        let mut conn = self.lock()?;
+        resync::run(
+            &mut conn,
+            self.module_db_path.as_deref(),
+            floor_db_path,
+            apply,
+            &backups,
+        )
     }
 
     fn mark_needs_restart(&self, id: &str) -> Result<(), PortError> {
@@ -341,29 +374,59 @@ pub fn status_label(code: i64) -> &'static str {
 }
 
 #[derive(Debug)]
-struct TaskRecord {
-    module_task_id: String,
-    dedup_key: Option<String>,
-    app_id: String,
-    app_name: String,
-    version: String,
-    file_name: String,
-    kind: String,
-    resource_id: String,
-    resource_version: String,
-    url: String,
-    dest_path: String,
-    status: String,
-    bytes_done: i64,
-    total: i64,
-    speed_bps: i64,
-    eta_sec: Option<i64>,
-    last_started_at: Option<i64>,
-    expected_sha256: Option<String>,
-    install_after_download: bool,
+pub(crate) struct TaskRecord {
+    pub(crate) module_task_id: String,
+    pub(crate) dedup_key: Option<String>,
+    pub(crate) app_id: String,
+    pub(crate) app_name: String,
+    pub(crate) version: String,
+    pub(crate) file_name: String,
+    pub(crate) kind: String,
+    pub(crate) resource_id: String,
+    pub(crate) resource_version: String,
+    pub(crate) url: String,
+    pub(crate) dest_path: String,
+    pub(crate) status: String,
+    pub(crate) bytes_done: i64,
+    pub(crate) total: i64,
+    pub(crate) speed_bps: i64,
+    pub(crate) eta_sec: Option<i64>,
+    pub(crate) last_started_at: Option<i64>,
+    pub(crate) expected_sha256: Option<String>,
+    pub(crate) install_after_download: bool,
 }
 
 impl TaskRecord {
+    /// Builds the upsert projection of a mapped legacy/module row.
+    ///
+    /// Rows without a module id are not upsertable; callers must skip them.
+    pub(crate) fn from_mapped(task: &MappedTask) -> Option<Self> {
+        Some(Self {
+            module_task_id: task.module_task_id.clone()?,
+            dedup_key: task
+                .dedup_key
+                .clone()
+                .filter(|key| !key.trim().is_empty()),
+            app_id: task.app_id.clone().unwrap_or_default(),
+            app_name: task.app_name.clone().unwrap_or_default(),
+            version: task.version.clone().unwrap_or_default(),
+            file_name: task.file_name.clone().unwrap_or_default(),
+            kind: task.kind.clone().unwrap_or_default(),
+            resource_id: task.resource_id.clone().unwrap_or_default(),
+            resource_version: task.resource_version.clone().unwrap_or_default(),
+            url: task.url.clone().unwrap_or_default(),
+            dest_path: task.dest_path.clone().unwrap_or_default(),
+            status: task.status.clone(),
+            bytes_done: task.bytes_done,
+            total: task.total,
+            speed_bps: task.speed_bps,
+            eta_sec: task.eta_sec,
+            last_started_at: task.last_started_at,
+            expected_sha256: task.expected_sha256.clone(),
+            install_after_download: task.install_after_download,
+        })
+    }
+
     fn from_request(req: &DownloadRequest, module_task_id: String, status: &str) -> Self {
         Self {
             module_task_id,
@@ -450,7 +513,24 @@ fn start_payload(req: &DownloadRequest) -> Value {
 }
 
 fn upsert_record(conn: &Connection, record: &TaskRecord, now: i64) -> Result<(), PortError> {
-    let existing = existing_row_id(conn, "module_task_id", &record.module_task_id)?;
+    upsert_record_targeting(conn, record, now, None)
+}
+
+/// Upserts `record`, optionally forcing the core row to update.
+///
+/// `target` lets the resync bind a module row to the core row it matched by
+/// logical key even when the ids or dedup keys cannot do it, so a mirror update
+/// can never insert a duplicate logical task.
+pub(crate) fn upsert_record_targeting(
+    conn: &Connection,
+    record: &TaskRecord,
+    now: i64,
+    target: Option<i64>,
+) -> Result<(), PortError> {
+    let existing = match target {
+        Some(id) => Some(id),
+        None => existing_row_id(conn, "module_task_id", &record.module_task_id)?,
+    };
     let existing = match existing {
         Some(id) => Some(id),
         None => match &record.dedup_key {

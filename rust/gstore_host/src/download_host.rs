@@ -15,6 +15,7 @@ use gstore_core::download::legacy::{migrate_legacy_floor_db, migrate_module_db, 
 use gstore_core::download::port::{
     DownloadPort, DownloadRequest, ModuleBridge, ModuleDownloadPort, PortError, ReconcileReport,
 };
+use gstore_core::download::resync::ResyncReport;
 use gstore_core::download::DownloadTaskRow;
 
 use crate::bridge::DownloadTaskDto;
@@ -365,6 +366,37 @@ impl HostDownloadPort {
 
     pub fn db_path(&self) -> &Path {
         &self.core_db_path
+    }
+
+    /// Path of the download module's own SQLite database.
+    ///
+    /// Empty when the port was built without one; consumers treat an empty
+    /// path as absent (`is_present`).
+    pub fn module_db_path(&self) -> &Path {
+        self.module_db_path.as_deref().unwrap_or(Path::new(""))
+    }
+
+    /// Three-way Floor ↔ module ↔ core resync (dry-run or apply).
+    ///
+    /// Runs bridge-free: the module database is read directly, so an unmounted
+    /// module never blocks the report. See
+    /// [`gstore_core::download::resync::run`] for the exact parity/conflict
+    /// semantics and the read-only dry-run guarantee.
+    pub fn resync_downloads(
+        &self,
+        apply: bool,
+        floor_db_path: Option<&Path>,
+        files_dir: &Path,
+    ) -> Result<ResyncReport, PortError> {
+        let mut inner = ModuleDownloadPort::new(
+            UnavailableBridge,
+            self.conn.clone(),
+            self.core_db_path.clone(),
+        );
+        if let Some(path) = &self.module_db_path {
+            inner = inner.with_module_db_path(path.clone());
+        }
+        inner.resync(apply, floor_db_path, files_dir)
     }
 
     /// Creates a bridge-free core reader (used by the FRB watch thread).

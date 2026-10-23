@@ -3,6 +3,7 @@
 pub mod legacy;
 pub mod parity;
 pub mod port;
+pub mod resync;
 pub mod strategy;
 
 use rusqlite::OptionalExtension;

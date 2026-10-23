@@ -571,6 +571,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformFactsDto dco_decode_platform_facts_dto(dynamic raw);
 
   @protected
+  ResyncReportDto dco_decode_resync_report_dto(dynamic raw);
+
+  @protected
   TagGroup dco_decode_tag_group(dynamic raw);
 
   @protected
@@ -1139,6 +1142,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PlatformFactsDto sse_decode_platform_facts_dto(SseDeserializer deserializer);
+
+  @protected
+  ResyncReportDto sse_decode_resync_report_dto(SseDeserializer deserializer);
 
   @protected
   TagGroup sse_decode_tag_group(SseDeserializer deserializer);
@@ -1727,6 +1733,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_platform_facts_dto(
       PlatformFactsDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_resync_report_dto(
+      ResyncReportDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_tag_group(TagGroup self, SseSerializer serializer);

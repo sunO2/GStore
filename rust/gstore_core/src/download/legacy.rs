@@ -129,38 +129,43 @@ pub fn migrate_module_db(
     Ok(report)
 }
 
+/// One row of a Floor or module database mapped into core column semantics.
+///
+/// Shared by the one-shot importers ([`migrate_legacy_floor_db`],
+/// [`migrate_module_db`]) and the three-way resync reader so both use exactly
+/// the same column spellings, status table, and millisecond normalization.
 #[derive(Debug)]
-struct MappedTask {
-    module_task_id: Option<String>,
-    dedup_key: Option<String>,
-    app_id: Option<String>,
-    app_name: Option<String>,
-    version: Option<String>,
-    file_name: Option<String>,
-    kind: Option<String>,
-    resource_id: Option<String>,
-    resource_version: Option<String>,
-    url: Option<String>,
-    dest_path: Option<String>,
-    status: String,
-    bytes_done: i64,
-    total: i64,
-    speed_bps: i64,
-    eta_sec: Option<i64>,
-    segments_json: Option<String>,
-    retries: i64,
-    server_meta: Option<String>,
-    priority: i64,
-    headers_json: Option<String>,
-    expected_sha256: Option<String>,
-    install_after_download: bool,
-    error: Option<String>,
-    last_started_at: Option<i64>,
-    created_at: i64,
-    updated_at: i64,
+pub(crate) struct MappedTask {
+    pub(crate) module_task_id: Option<String>,
+    pub(crate) dedup_key: Option<String>,
+    pub(crate) app_id: Option<String>,
+    pub(crate) app_name: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) file_name: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) resource_id: Option<String>,
+    pub(crate) resource_version: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) dest_path: Option<String>,
+    pub(crate) status: String,
+    pub(crate) bytes_done: i64,
+    pub(crate) total: i64,
+    pub(crate) speed_bps: i64,
+    pub(crate) eta_sec: Option<i64>,
+    pub(crate) segments_json: Option<String>,
+    pub(crate) retries: i64,
+    pub(crate) server_meta: Option<String>,
+    pub(crate) priority: i64,
+    pub(crate) headers_json: Option<String>,
+    pub(crate) expected_sha256: Option<String>,
+    pub(crate) install_after_download: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) last_started_at: Option<i64>,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
 }
 
-fn map_floor_task(row: &RowMap) -> MappedTask {
+pub(crate) fn map_floor_task(row: &RowMap) -> MappedTask {
     let url = get_text(row, &["url"]).unwrap_or_default();
     let dest_path = get_text(row, &["filePath", "file_path"]).unwrap_or_default();
     let dedup_key = get_text(row, &["dedup_key", "dedupKey"])
@@ -199,7 +204,7 @@ fn map_floor_task(row: &RowMap) -> MappedTask {
     }
 }
 
-fn map_module_task(row: &RowMap, segments_json: Option<String>) -> MappedTask {
+pub(crate) fn map_module_task(row: &RowMap, segments_json: Option<String>) -> MappedTask {
     MappedTask {
         module_task_id: get_i64(row, &["id"]).map(|id| id.to_string()),
         dedup_key: get_text(row, &["dedup_key", "dedupKey"]),
@@ -246,6 +251,37 @@ fn status_text(code: i64) -> String {
         _ => "failed",
     }
     .to_string()
+}
+
+/// Reads every Floor task row read-only, using the same table discovery and
+/// mapping as [`migrate_legacy_floor_db`] but never writing anything.
+///
+/// A present-but-unreadable Floor database is an error; a missing one is the
+/// caller's decision and must be handled before calling this.
+pub(crate) fn read_floor_task_rows(floor_path: &Path) -> Result<Vec<MappedTask>, PortError> {
+    let floor = open_read_only(floor_path, "legacy floor db")?;
+    let table = find_download_table(&floor, floor_path)?;
+    let rows = read_rows(&floor, &format!("SELECT * FROM {}", quote_ident(&table)))?;
+    Ok(rows.iter().map(map_floor_task).collect())
+}
+
+/// Reads every download-module task row read-only with the importer's mapping.
+///
+/// `download_segment` is intentionally not read: the resync mirrors only the
+/// columns `upsert_record` writes. A missing `download_task` table is an error.
+pub(crate) fn read_module_task_rows(module_path: &Path) -> Result<Vec<MappedTask>, PortError> {
+    let module = open_read_only(module_path, "module db")?;
+    if !table_exists(&module, "download_task")? {
+        return Err(PortError::Db(format!(
+            "module db {} has no download_task table",
+            module_path.display()
+        )));
+    }
+    let rows = read_rows(&module, "SELECT * FROM \"download_task\"")?;
+    Ok(rows
+        .iter()
+        .map(|row| map_module_task(row, None))
+        .collect())
 }
 
 struct CoreLink {
@@ -374,7 +410,7 @@ fn read_segments_json(conn: &Connection, task_id: i64) -> Result<Option<String>,
         .map_err(|e| PortError::Db(format!("encode segments for task {task_id}: {e}")))
 }
 
-fn open_read_only(path: &Path, label: &str) -> Result<Connection, PortError> {
+pub(crate) fn open_read_only(path: &Path, label: &str) -> Result<Connection, PortError> {
     if !path.exists() {
         return Err(PortError::Db(format!(
             "{label} not found: {}",
@@ -385,7 +421,7 @@ fn open_read_only(path: &Path, label: &str) -> Result<Connection, PortError> {
         .map_err(|e| PortError::Db(format!("open {label} {}: {e}", path.display())))
 }
 
-fn find_download_table(conn: &Connection, path: &Path) -> Result<String, PortError> {
+pub(crate) fn find_download_table(conn: &Connection, path: &Path) -> Result<String, PortError> {
     let mut stmt = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .map_err(|e| PortError::Db(format!("list tables in {}: {e}", path.display())))?;
@@ -409,7 +445,7 @@ fn find_download_table(conn: &Connection, path: &Path) -> Result<String, PortErr
     )))
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool, PortError> {
+pub(crate) fn table_exists(conn: &Connection, name: &str) -> Result<bool, PortError> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         [name],
@@ -432,7 +468,7 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, PortErro
     Ok(columns.iter().map(|c| c.to_ascii_lowercase()).collect())
 }
 
-fn read_rows(conn: &Connection, sql: &str) -> Result<Vec<RowMap>, PortError> {
+pub(crate) fn read_rows(conn: &Connection, sql: &str) -> Result<Vec<RowMap>, PortError> {
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| PortError::Db(format!("prepare {sql}: {e}")))?;
@@ -461,7 +497,7 @@ fn read_rows(conn: &Connection, sql: &str) -> Result<Vec<RowMap>, PortError> {
     Ok(out)
 }
 
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 

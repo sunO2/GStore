@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
@@ -47,8 +48,24 @@ abstract class DownloadLegacyImport {
   Future<void> importLegacyOnce({String? floorDbPath, String? moduleDbPath});
 }
 
+/// Optional capability: three-way download resync against the core mirror.
+///
+/// Kept separate from [DownloadBackend] (like [DownloadLegacyImport]) so
+/// existing fakes do not have to grow a method only the FRB backend implements.
+abstract class DownloadResync {
+  /// Runs the Floor ↔ module ↔ core parity check.
+  ///
+  /// Dry-run (`apply: false`) is read-only; `apply: true` snapshots and mirrors.
+  /// [floorDbPath] defaults to the Dart Floor database on the FRB backend.
+  Future<rust.ResyncReportDto> resyncDownloads({
+    bool apply = false,
+    String? floorDbPath,
+  });
+}
+
 /// Production FRB backend. The `DownloadApi` handle is created lazily.
-class FrbDownloadBackend implements DownloadBackend, DownloadLegacyImport {
+class FrbDownloadBackend
+    implements DownloadBackend, DownloadLegacyImport, DownloadResync {
   FrbDownloadBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   final String? dataDir;
@@ -80,8 +97,7 @@ class FrbDownloadBackend implements DownloadBackend, DownloadLegacyImport {
     String? moduleDbPath,
   }) async {
     try {
-      final floor =
-          floorDbPath ?? '${await getDatabasesPath()}/download_task.db';
+      final floor = await _resolveFloorDbPath(floorDbPath);
       final module = moduleDbPath ??
           '${(await getApplicationDocumentsDirectory()).path}'
               '/gstore_mods/download/download.db';
@@ -108,6 +124,12 @@ class FrbDownloadBackend implements DownloadBackend, DownloadLegacyImport {
     }
   }
 
+  /// Resolves the legacy Floor database: the caller's override, else the Dart
+  /// `sqflite` default. Shared by the one-shot import and the resync so both
+  /// always read the same file.
+  static Future<String> _resolveFloorDbPath(String? override) async =>
+      override ?? '${await getDatabasesPath()}/download_task.db';
+
   void _logLegacyMissing(String label, String path) {
     try {
       if (!File(path).existsSync()) {
@@ -118,6 +140,28 @@ class FrbDownloadBackend implements DownloadBackend, DownloadLegacyImport {
     } catch (error) {
       debugPrint('download legacy import: cannot stat $label db: $error');
     }
+  }
+
+  /// Runs the three-way resync through the Rust core.
+  ///
+  /// `CoreApi` owns `resync_downloads`; `CoreApiFacade` memoises the handle so
+  /// this reuses the bootstrap writer instead of opening a second core
+  /// connection. The Rust `apply` argument is required, so it is always
+  /// forwarded explicitly. A `null` [floorDbPath] resolves to the same Dart
+  /// Floor database used by [importLegacyOnce].
+  @override
+  Future<rust.ResyncReportDto> resyncDownloads({
+    bool apply = false,
+    String? floorDbPath,
+  }) async {
+    final floor = await _resolveFloorDbPath(floorDbPath);
+    final dirs = await _resolveDirs();
+    final api = await CoreApiFacade.init(
+      dataDir: dirs.$1,
+      filesDir: dirs.$2,
+      cacheDir: dirs.$3,
+    );
+    return api.resyncDownloads(apply: apply, floorDbPath: floor);
   }
 
   Future<rust.DownloadApi> _ensureApi() {
@@ -347,6 +391,24 @@ class DownloadFacade {
         moduleDbPath: moduleDbPath,
       );
     }
+  }
+
+  /// Runs the three-way download resync when the backend supports it.
+  ///
+  /// Unlike [importLegacyOnce], a backend without [DownloadResync] throws
+  /// [UnsupportedError] instead of silently doing nothing: `apply: true` is a
+  /// mutation that writes a snapshot and mirrors rows, so a silent no-op would
+  /// be indistinguishable from a successful resync.
+  Future<rust.ResyncReportDto> resyncDownloads({
+    bool apply = false,
+    String? floorDbPath,
+  }) async {
+    final target = _target;
+    if (target is DownloadResync) {
+      final resync = target as DownloadResync;
+      return resync.resyncDownloads(apply: apply, floorDbPath: floorDbPath);
+    }
+    throw UnsupportedError('backend does not support download resync');
   }
 
   Future<int> start(rust.DownloadStartRequest request) =>

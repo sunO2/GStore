@@ -10,9 +10,9 @@ import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
@@ -289,6 +289,27 @@ abstract class CoreApi implements RustOpaqueInterface {
 
   /// Stores the latest frontend-pushed platform facts.
   Future<void> pushPlatformFacts({required PlatformFactsDto facts});
+
+  /// Three-way download resync (dry-run by default).
+  ///
+  /// Documented deviation from the plan's no-argument `resyncDownloads()`:
+  /// the Rust core cannot locate the Dart Floor database
+  /// (`getDatabasesPath()/download_task.db`), so the caller passes it as
+  /// `floor_db_path`. `None` (or a missing file) yields `floor_rows == 0` and
+  /// a two-way module ↔ core parity run.
+  ///
+  /// A dry-run (`apply == false`) is strictly read-only: the module database
+  /// is opened `SQLITE_OPEN_READ_ONLY`, no core row is written, and
+  /// `snapshot_path`/`updated` stay empty. `apply == true` first writes
+  /// `<files_dir>/migration/backups/pre-resync-<millis>.db` via `VACUUM INTO`,
+  /// then mirrors module rows and marks non-terminal core rows
+  /// `needs_restart` when the module database is gone. Any identity conflict
+  /// returns `CORE_E_DOWNLOAD_RESYNC_CONFLICT` with zero writes, including
+  /// conflicts found during an apply.
+  ///
+  /// Neither path writes a `core_writes` marker or flips a flag.
+  Future<ResyncReportDto> resyncDownloads(
+      {required bool apply, String? floorDbPath});
 
   /// Persists install rules after validation.
   Future<void> setInstallRules({required InstallRulesDto rules});
@@ -1924,6 +1945,61 @@ class PlatformFactsDto {
           paths == other.paths &&
           cryptoKey == other.cryptoKey &&
           capturedAt == other.capturedAt;
+}
+
+/// Three-way download resync report (FRB data class).
+///
+/// `snapshot_path` is `None` in dry-run; every other field is meaningful in
+/// both modes. See [`CoreApi::resync_downloads`] for the exact semantics.
+class ResyncReportDto {
+  final PlatformInt64 floorRows;
+  final PlatformInt64 moduleRows;
+  final PlatformInt64 coreRows;
+  final PlatformInt64 matched;
+  final PlatformInt64 updated;
+  final PlatformInt64 missing;
+  final PlatformInt64 conflicts;
+  final PlatformInt64 needsRestart;
+  final String? snapshotPath;
+
+  const ResyncReportDto({
+    required this.floorRows,
+    required this.moduleRows,
+    required this.coreRows,
+    required this.matched,
+    required this.updated,
+    required this.missing,
+    required this.conflicts,
+    required this.needsRestart,
+    this.snapshotPath,
+  });
+
+  @override
+  int get hashCode =>
+      floorRows.hashCode ^
+      moduleRows.hashCode ^
+      coreRows.hashCode ^
+      matched.hashCode ^
+      updated.hashCode ^
+      missing.hashCode ^
+      conflicts.hashCode ^
+      needsRestart.hashCode ^
+      snapshotPath.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResyncReportDto &&
+          runtimeType == other.runtimeType &&
+          floorRows == other.floorRows &&
+          moduleRows == other.moduleRows &&
+          coreRows == other.coreRows &&
+          matched == other.matched &&
+          updated == other.updated &&
+          missing == other.missing &&
+          conflicts == other.conflicts &&
+          needsRestart == other.needsRestart &&
+          snapshotPath == other.snapshotPath;
 }
 
 /// One `"{channel}:{app_id}"` tag bucket.
