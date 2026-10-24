@@ -289,8 +289,25 @@ impl<B: ModuleBridge> DownloadPort for ModuleDownloadPort<B> {
         self.module_mutate("download.restart", id, "running")
     }
 
+    /// Permanently removes a task: the module drops its own row, then the core
+    /// row is deleted outright.
+    ///
+    /// A user-initiated delete is a one-way door, so it must not leave a
+    /// tombstone. The module deletes its row on `download.remove`, so a
+    /// `removed` tombstone would be a core row the module no longer owns, and
+    /// the very next [`DownloadPort::reconcile`] would flip it to
+    /// [`NEEDS_RESTART`] — resurrecting a deleted record as a paused task.
+    /// `needs_restart` is reserved for module-DB loss, never for user deletion.
     fn remove(&self, id: &str) -> Result<(), PortError> {
-        self.module_mutate("download.remove", id, "removed")
+        let numeric = Self::module_id(id)?;
+        self.module_call("download.remove", json!({ "id": numeric }))?;
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM download_task WHERE module_task_id = ?1",
+            rusqlite::params![id],
+        )
+        .map_err(|e| PortError::Db(format!("delete task {id}: {e}")))?;
+        Ok(())
     }
 
     fn watch_all(&self) -> Result<Vec<DownloadTaskRow>, PortError> {
@@ -690,12 +707,16 @@ mod tests {
                         Ok(b"null".to_vec())
                     }
                 }
+                "download.remove" => {
+                    let id = body["id"].as_u64().ok_or("missing id")?;
+                    self.present.lock().unwrap().remove(&id);
+                    Ok(br#"{"ok":true}"#.to_vec())
+                }
                 "download.pause"
                 | "download.resume"
                 | "download.cancel"
                 | "download.retry"
-                | "download.restart"
-                | "download.remove" => Ok(br#"{"ok":true}"#.to_vec()),
+                | "download.restart" => Ok(br#"{"ok":true}"#.to_vec()),
                 other => Err(format!("unexpected method {other}")),
             }
         }
@@ -929,15 +950,85 @@ mod tests {
                         None => Ok(b"null".to_vec()),
                     }
                 }
+                "download.remove" => {
+                    let id = body["id"].as_u64().ok_or("missing id")?;
+                    self.tasks.lock().unwrap().remove(&id);
+                    Ok(br#"{"ok":true}"#.to_vec())
+                }
                 "download.pause"
                 | "download.resume"
                 | "download.cancel"
                 | "download.retry"
-                | "download.restart"
-                | "download.remove" => Ok(br#"{"ok":true}"#.to_vec()),
+                | "download.restart" => Ok(br#"{"ok":true}"#.to_vec()),
                 other => Err(format!("unexpected method {other}")),
             }
         }
+    }
+
+    fn insert_completed_core_row(conn: &SharedConn, module_id: &str) {
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO download_task
+                 (module_task_id, dedup_key, app_id, version, file_name, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'com.example.app', '1.2.3', 'example.apk', 'completed', 1, 1)",
+                rusqlite::params![module_id, format!("dedup:{module_id}")],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn download_remove_is_permanent_across_reconcile() {
+        let bridge = ReconcileBridge::default();
+        bridge.tasks.lock().unwrap().insert(
+            1,
+            task_value(1, 4, 100, "app:com.example.app:1.2.3:example.apk"),
+        );
+        let (port, conn) = port_with(bridge.clone());
+        insert_completed_core_row(&conn, "1");
+
+        port.remove("1").unwrap();
+        println!("rows after remove -> {}", port.snapshot().unwrap().len());
+        assert_eq!(
+            port.snapshot().unwrap().len(),
+            0,
+            "remove must delete the core row, not tombstone it"
+        );
+
+        let report = port.reconcile().unwrap();
+        println!("reconcile after remove -> {report:?}");
+        assert_eq!(report.checked, 0);
+        assert!(report.needs_restart.is_empty());
+        assert_eq!(
+            port.snapshot().unwrap().len(),
+            0,
+            "a deleted record must never be resurrected by reconcile"
+        );
+    }
+
+    #[test]
+    fn download_bulk_remove_is_permanent_across_reconcile() {
+        let bridge = ReconcileBridge::default();
+        {
+            let mut tasks = bridge.tasks.lock().unwrap();
+            tasks.insert(1, task_value(1, 4, 100, "app:com.example.app:1.2.3:example.apk"));
+            tasks.insert(2, task_value(2, 4, 100, "app:com.example.app:1.2.3:example.apk"));
+        }
+        let (port, conn) = port_with(bridge.clone());
+        insert_completed_core_row(&conn, "1");
+        insert_completed_core_row(&conn, "2");
+
+        // clearCompleted / clearAll issue one `service.remove` per task.
+        for id in ["1", "2"] {
+            port.remove(id).unwrap();
+        }
+        assert_eq!(port.snapshot().unwrap().len(), 0);
+
+        let report = port.reconcile().unwrap();
+        println!("reconcile after bulk remove -> {report:?}");
+        assert_eq!(report.checked, 0);
+        assert!(report.needs_restart.is_empty());
+        assert_eq!(port.snapshot().unwrap().len(), 0);
     }
 
     #[test]
