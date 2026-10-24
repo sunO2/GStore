@@ -564,7 +564,7 @@ if [ "$ADV_RESULT" = "RATCHET_OK" ]; then
   exit 0
 fi
 if [ "$HARD_RESULT" = "PASS" ] && { [ "$ADV_RESULT" = "PASS" ] || [ "$ADV_RESULT" = "SKIP" ]; }; then
-  echo "RESULT: PASS (hard gate clean; no advisory findings)"
+  echo "RESULT: PASS (hard gate clean; advisories not evaluated in this tier)"
   exit 0
 fi
 if [ "$HARD_RESULT" = "SKIP" ] && [ "$ADV_RESULT" = "PASS" ]; then
