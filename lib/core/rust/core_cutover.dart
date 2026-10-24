@@ -7,33 +7,36 @@
 ///    core-owned), and
 /// 2. on the first launch after the upgrade, [CoreCutover.run] takes **exactly
 ///    one** pre-closeout snapshot at
-///    `<files_dir>/migration/backups/pre-closeout-<millis>.db`, replays the
-///    retained Dart→core migration artifacts in the contractual order
-///    `channels → jsChannel → catalog → update`, verifies parity, and only then
-///    writes `<files_dir>/migration/cutover_v6.done` **atomically**
-///    (write temp + rename).
+///    `<files_dir>/migration/backups/pre-closeout-<millis>.db`, imports the
+///    legacy data from the paths in `CutoverPaths` in the contractual order
+///    `channels → jsChannel → catalog → update`, verifies row-level parity
+///    against that data, and only then writes
+///    `<files_dir>/migration/cutover_v6.done` **atomically** (write temp +
+///    rename).
 ///
 /// Every later launch sees the marker and does nothing: no snapshot, no resync.
-/// A failure at any step (snapshot, resync, parity) leaves the marker absent so
-/// the next launch retries; the retry reuses the existing `pre-closeout-*.db`
-/// instead of taking a second snapshot, so "one pre-closeout snapshot" holds
-/// across interruptions too. Reusing the first snapshot is also the correct
-/// choice: it is the pre-cutover state, not a half-resynced one.
+/// A failure at any step (snapshot, import, parity) leaves the marker absent so
+/// the next launch retries; the retry reuses a *validated* existing
+/// `pre-closeout-*.db` instead of taking a second snapshot, so "one pre-closeout
+/// snapshot" holds across interruptions too. A partial or corrupt snapshot is
+/// never reused.
 ///
-/// The resync steps are the wave's own Dart→core handoff artifacts
-/// (`channel_db`, `channel_env`, `pack`, `update_prefs`) replayed through
-/// `CoreApi.importMigrationFile`. They are idempotent upserts and the Rust side
-/// deletes each managed document only after its own import succeeds, so a
-/// partial run resumes instead of re-applying. Parity is the resync fixpoint
-/// (a second read of the same domain must report the same row count); the
-/// legacy-vs-core row parity for each domain is already proven by the
-/// B2–B5 parity suites.
+/// Fail-closed rule: if a domain's legacy data exists but the replay imported
+/// zero rows, [CoreCutoverException.emptyImport] is thrown and the marker is
+/// not written. A genuinely fresh install (no legacy artifacts at all) is
+/// allowed to complete with zero imported rows.
+///
+/// Parity is a row-level comparison of the imported legacy rows against the
+/// core projection (not a second read of the same getter), so dropping one
+/// imported row fails the cutover.
 library;
 
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
+
+import 'package:gstore/core/migration/cutover_paths.dart';
 
 /// The four domains the durable cutover resyncs, in the contractual order.
 ///
@@ -44,16 +47,33 @@ enum CutoverDomain { channels, jsChannel, catalog, update }
 
 /// Outcome of one resync step.
 class CutoverStepResult {
-  const CutoverStepResult({required this.rows, required this.parityOk});
+  const CutoverStepResult({
+    required this.rows,
+    required this.parityOk,
+    this.imported = 0,
+    this.legacyPresent = false,
+  });
 
-  /// Rows the core reports for the domain after the replay.
+  /// Rows the core projection holds for the domain after the replay.
   final int rows;
 
-  /// Whether a second read of the same domain reported the same row count.
+  /// Whether the row-level parity check proved every imported legacy row is in
+  /// the core projection (and no core row is missing from the source).
   final bool parityOk;
 
+  /// Rows the replay actually wrote for the domain.
+  final int imported;
+
+  /// Whether genuine legacy data was found for the domain.
+  ///
+  /// A step with `legacyPresent == true` and `imported == 0` fails the cutover:
+  /// that is exactly the silent no-op this repair exists to prevent. A fresh
+  /// install has `legacyPresent == false` and is allowed to complete.
+  final bool legacyPresent;
+
   @override
-  String toString() => 'CutoverStepResult(rows: $rows, parityOk: $parityOk)';
+  String toString() => 'CutoverStepResult(rows: $rows, imported: $imported, '
+      'legacyPresent: $legacyPresent, parityOk: $parityOk)';
 }
 
 /// Typed cutover failure. `CORE_E_*` codes mirror the Rust error vocabulary.
@@ -65,6 +85,9 @@ class CoreCutoverException implements Exception {
 
   /// Stable code: a domain did not reach its resync fixpoint.
   static const String parityFailed = 'CORE_E_CUTOVER_PARITY';
+
+  /// Stable code: legacy data exists but the domain imported zero rows.
+  static const String emptyImport = 'CORE_E_CUTOVER_EMPTY_IMPORT';
 
   /// Stable code: the done marker could not be written atomically.
   static const String markerFailed = 'CORE_E_CUTOVER_MARKER';
@@ -84,6 +107,7 @@ class CutoverResult {
     this.snapshotPath,
     this.resynced = const <CutoverDomain>[],
     this.rows = const <CutoverDomain, int>{},
+    this.imported = const <CutoverDomain, int>{},
   });
 
   /// `false` when the marker already existed: nothing snapshotted, nothing
@@ -99,12 +123,16 @@ class CutoverResult {
   /// Domains resynced, in execution order (empty when [ran] is false).
   final List<CutoverDomain> resynced;
 
-  /// Row counts observed per resynced domain.
+  /// Projection row counts observed per resynced domain.
   final Map<CutoverDomain, int> rows;
+
+  /// Rows imported per resynced domain.
+  final Map<CutoverDomain, int> imported;
 
   @override
   String toString() => 'CutoverResult(ran: $ran, snapshot: $snapshotPath, '
-      'resynced: ${resynced.map((d) => d.name).join(' -> ')})';
+      'resynced: ${resynced.map((d) => d.name).join(' -> ')}, '
+      'imported: ${imported.map((d, v) => MapEntry(d.name, v))})';
 }
 
 /// Transport seam for [CoreCutover]. Production is [FrbCoreCutoverBackend];
@@ -126,20 +154,20 @@ abstract class CoreCutoverBackend {
 class CoreCutover {
   CoreCutover._();
 
-  /// Marker file name under `<files_dir>/migration`.
-  static const String markerFileName = 'cutover_v6.done';
+  /// Marker file name under `<files_dir>/migration` (canonical: [CutoverPaths]).
+  static const String markerFileName = CutoverPaths.markerFileName;
 
   /// Migration directory name under `<files_dir>`.
-  static const String migrationDirName = 'migration';
+  static const String migrationDirName = CutoverPaths.migrationDirName;
 
   /// Backups directory name under the migration directory.
-  static const String backupsDirName = 'backups';
+  static const String backupsDirName = CutoverPaths.backupsDirName;
 
   /// Pre-closeout snapshot prefix.
-  static const String snapshotPrefix = 'pre-closeout-';
+  static const String snapshotPrefix = CutoverPaths.snapshotPrefix;
 
   /// Pre-closeout snapshot suffix.
-  static const String snapshotSuffix = '.db';
+  static const String snapshotSuffix = CutoverPaths.snapshotSuffix;
 
   /// Marker payload version.
   static const int markerVersion = 6;
@@ -186,16 +214,26 @@ class CoreCutover {
 
     final resynced = <CutoverDomain>[];
     final rows = <CutoverDomain, int>{};
+    final imported = <CutoverDomain, int>{};
     for (final step in _orderedSteps(transport)) {
       final result = await step.run();
-      if (!result.parityOk) {
+      if (result.legacyPresent && result.imported == 0) {
         throw CoreCutoverException(
-          CoreCutoverException.parityFailed,
-          '${step.domain.name} did not reach its resync fixpoint '
+          CoreCutoverException.emptyImport,
+          '${step.domain.name}: legacy data exists but the import wrote 0 rows '
           '(rows=${result.rows}); $markerFileName not written',
         );
       }
+      if (!result.parityOk) {
+        throw CoreCutoverException(
+          CoreCutoverException.parityFailed,
+          '${step.domain.name} failed row-level parity '
+          '(rows=${result.rows}, imported=${result.imported}); '
+          '$markerFileName not written',
+        );
+      }
       rows[step.domain] = result.rows;
+      imported[step.domain] = result.imported;
       resynced.add(step.domain);
     }
 
@@ -206,6 +244,7 @@ class CoreCutover {
       snapshotPath: snapshotPath,
       resynced: resynced,
       rows: rows,
+      imported: imported,
     );
 
     final result = CutoverResult(
@@ -214,6 +253,7 @@ class CoreCutover {
       snapshotPath: snapshotPath,
       resynced: List<CutoverDomain>.unmodifiable(resynced),
       rows: Map<CutoverDomain, int>.unmodifiable(rows),
+      imported: Map<CutoverDomain, int>.unmodifiable(imported),
     );
     lastResult = result;
     debugPrint('[CoreCutover] completed: $result');
@@ -222,8 +262,11 @@ class CoreCutover {
 
   /// The one pre-closeout snapshot.
   ///
-  /// Reuses an existing `pre-closeout-*.db` (a previous interrupted run), so a
-  /// retry never stacks a second snapshot on a half-resynced database.
+  /// Reuses an existing `pre-closeout-*.db` (a previous interrupted run) only
+  /// after validating it: a crash between `VACUUM INTO` and its post-write check
+  /// can leave a partial file, which must never be treated as the pre-cutover
+  /// state. Invalid snapshots are deleted and a fresh one is exported to a temp
+  /// name, validated, then renamed into place.
   static Future<String> _ensureSnapshot({
     required CoreCutoverBackend transport,
     required Directory migrationDir,
@@ -238,32 +281,78 @@ class CoreCutover {
         .where((file) => _isSnapshot(file.uri.pathSegments.last))
         .toList()
       ..sort((a, b) => a.path.compareTo(b.path));
-    if (existing.isNotEmpty) {
-      debugPrint('[CoreCutover] reusing snapshot: ${existing.first.path}');
-      return existing.first.path;
+    for (final file in existing) {
+      if (_isValidSnapshot(file)) {
+        debugPrint('[CoreCutover] reusing snapshot: ${file.path}');
+        return file.path;
+      }
+      debugPrint('[CoreCutover] rejecting invalid snapshot: ${file.path}');
+      _tryDelete(file);
     }
 
-    final destination = File('${backups.path}/$snapshotPrefix$millis$snapshotSuffix');
+    final destination =
+        File('${backups.path}/$snapshotPrefix$millis$snapshotSuffix');
+    final temp = File('${destination.path}.tmp-$pid');
     try {
-      await transport.exportSnapshot(path: destination.path);
-      if (!destination.existsSync()) {
+      await transport.exportSnapshot(path: temp.path);
+      if (!temp.existsSync()) {
         throw StateError('exportSnapshot reported success but wrote no file');
       }
-    } catch (error) {
-      // A half-written snapshot must never be reused by the retry.
-      if (destination.existsSync()) {
-        try {
-          destination.deleteSync();
-        } catch (cleanupError) {
-          debugPrint('[CoreCutover] snapshot cleanup failed: $cleanupError');
-        }
+      if (!_isValidSnapshot(temp)) {
+        throw StateError('exportSnapshot wrote an unreadable SQLite file');
       }
+      await temp.rename(destination.path);
+    } catch (error) {
+      _tryDelete(temp);
+      _tryDelete(destination);
       throw CoreCutoverException(
         CoreCutoverException.snapshotFailed,
         'pre-closeout snapshot failed: $error',
       );
     }
     return destination.path;
+  }
+
+  static void _tryDelete(File file) {
+    if (!file.existsSync()) return;
+    try {
+      file.deleteSync();
+    } catch (cleanupError) {
+      debugPrint('[CoreCutover] snapshot cleanup failed: $cleanupError');
+    }
+  }
+
+  /// A readable, non-truncated SQLite database: valid 16-byte header, a
+  /// power-of-two page size, and a file length that is a whole number of pages.
+  static bool _isValidSnapshot(File file) {
+    RandomAccessFile? handle;
+    try {
+      if (!file.existsSync()) return false;
+      final length = file.lengthSync();
+      if (length < 100) return false;
+      handle = file.openSync();
+      final header = handle.readSync(16);
+      if (header.length != 16 ||
+          String.fromCharCodes(header) != 'SQLite format 3\u0000') {
+        return false;
+      }
+      handle.setPositionSync(16);
+      final pageBytes = handle.readSync(2);
+      if (pageBytes.length != 2) return false;
+      var pageSize = (pageBytes[0] << 8) | pageBytes[1];
+      if (pageSize == 1) pageSize = 65536;
+      if (pageSize < 512 ||
+          pageSize > 65536 ||
+          (pageSize & (pageSize - 1)) != 0) {
+        return false;
+      }
+      return length >= pageSize && length % pageSize == 0;
+    } catch (error) {
+      debugPrint('[CoreCutover] snapshot validation failed: $error');
+      return false;
+    } finally {
+      handle?.closeSync();
+    }
   }
 
   static bool _isSnapshot(String name) =>
@@ -287,8 +376,10 @@ class CoreCutover {
     required String snapshotPath,
     required List<CutoverDomain> resynced,
     required Map<CutoverDomain, int> rows,
+    required Map<CutoverDomain, int> imported,
   }) async {
-    final payload = const JsonEncoder.withIndent('  ').convert(<String, Object?>{
+    final payload =
+        const JsonEncoder.withIndent('  ').convert(<String, Object?>{
       'version': markerVersion,
       'status': 'done',
       'completed_at': completedAt,
@@ -296,6 +387,9 @@ class CoreCutover {
       'resync_order': <String>[for (final domain in resynced) domain.name],
       'rows': <String, int>{
         for (final domain in resynced) domain.name: rows[domain] ?? 0,
+      },
+      'imported': <String, int>{
+        for (final domain in resynced) domain.name: imported[domain] ?? 0,
       },
     });
     final temp = File('${marker.path}.tmp-$pid-$completedAt');

@@ -872,9 +872,10 @@ impl CoreApi {
     ///
     /// Faces for `channel_db`, `channel_env`, `fdroid_sources`, and `pack` route
     /// through [`gstore_core::channel_migration`]; `update_prefs` keeps the
-    /// original JSON-document path. The old source files are never moved or
-    /// deleted by this method (only successfully imported env/fdroid documents
-    /// are removed).
+    /// original JSON-document path. `added_apps_db` and `catalog_db` import the
+    /// legacy Floor catalog into the core `added_apps`/`app_config` tables. The
+    /// old source files are never moved or deleted by this method (only
+    /// successfully imported env/fdroid documents are removed).
     pub fn import_migration_file(&self, kind: String, path: String) -> Result<u32, String> {
         let paths = {
             let guard = self
@@ -914,6 +915,39 @@ impl CoreApi {
                 .import_pack_archive(&store, path_ref)
                 .map(|report| report.packs as u32)
                 .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"));
+        }
+
+        // The legacy catalog importers take the shared `DbHandle` (they take the
+        // writer mutex internally), so the connection lock must not be held.
+        if kind == "added_apps_db" || kind == "catalog_db" {
+            let shared = {
+                let guard = self
+                    .db
+                    .lock()
+                    .map_err(|_| format!("{CORE_E_NOT_INITIALIZED}: db lock poisoned"))?;
+                guard
+                    .as_ref()
+                    .ok_or_else(|| CORE_E_NOT_INITIALIZED.to_string())?
+                    .clone()
+            };
+            let live = core_db::core_db_path(std::path::Path::new(&paths.0));
+            let handle = core_db::DbHandle::from_shared(live, shared)
+                .with_files_dir(std::path::Path::new(&paths.1));
+            if kind == "catalog_db" {
+                let report = gstore_core::catalog::import::import_catalog(
+                    &handle,
+                    Some(path_ref),
+                    path_ref,
+                    &gstore_core::catalog::import::CatalogImportOptions::default(),
+                )
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {}", e.message()))?;
+                return u32::try_from(report.apps)
+                    .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: catalog rows: {e}"));
+            }
+            let report = gstore_core::added::migration::import_dart_added_db(&handle, path_ref)
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: {e}"))?;
+            return u32::try_from(report.apps + report.tags)
+                .map_err(|e| format!("CORE_E_IMPORT_MIGRATION: added rows: {e}"));
         }
 
         let db = self
@@ -1798,6 +1832,109 @@ mod core_api_tests {
             )
             .unwrap();
         assert_eq!(last, "official");
+
+        drop(live);
+        drop(api);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn catalog_and_added_apps_migration_bridge_kinds() {
+        let root = temp_root("catalogadded");
+        let data_dir = root.join("data");
+        let files_dir = root.join("files");
+        let cache_dir = root.join("cache");
+        let api = CoreApi::init(
+            data_dir.to_string_lossy().into_owned(),
+            files_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("CoreApi::init");
+        let init = api.migrate_paths().expect("migrate_paths");
+
+        let catalog = root.join("gstore").join("apps.db");
+        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&catalog).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE apps(
+                     appId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, user TEXT,
+                     repositories TEXT, icon TEXT, des TEXT, category TEXT);
+                 CREATE TABLE category(
+                     id TEXT NOT NULL PRIMARY KEY, description TEXT NOT NULL,
+                     icon TEXT NOT NULL);
+                 CREATE TABLE config(version TEXT NOT NULL);
+                 INSERT INTO apps VALUES
+                     ('com.a','A','u','r','i','d','c'),
+                     ('com.b','B','u','r','i','d','c');
+                 INSERT INTO category VALUES ('c','Cat','i');
+                 INSERT INTO config VALUES ('v1');",
+            )
+            .unwrap();
+        }
+        let rows = api
+            .import_migration_file(
+                "catalog_db".to_string(),
+                catalog.to_string_lossy().into_owned(),
+            )
+            .expect("import catalog_db");
+        println!("catalog_db rows={rows}");
+        assert_eq!(rows, 2);
+        assert_eq!(
+            api.import_migration_file(
+                "catalog_db".to_string(),
+                catalog.to_string_lossy().into_owned(),
+            )
+            .expect("re-import catalog_db"),
+            2,
+            "a re-import replaces the same catalog"
+        );
+
+        let added = root.join("added_apps.db");
+        {
+            let conn = rusqlite::Connection::open(&added).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE added_apps(
+                     id INTEGER PRIMARY KEY AUTOINCREMENT, channelId TEXT NOT NULL,
+                     appId TEXT NOT NULL, addTime INTEGER NOT NULL,
+                     sortOrder INTEGER NOT NULL, isEnabled INTEGER NOT NULL,
+                     UNIQUE(channelId, appId));
+                 CREATE TABLE added_app_tags(
+                     channelId TEXT NOT NULL, appId TEXT NOT NULL, tag TEXT NOT NULL,
+                     addTime INTEGER NOT NULL,
+                     PRIMARY KEY(channelId, appId, tag));
+                 INSERT INTO added_apps VALUES
+                     (1,'github','com.a',10,0,1),
+                     (2,'vivo','com.b',20,1,1);
+                 INSERT INTO added_app_tags VALUES
+                     ('github','com.a','tag1',10),
+                     ('github','com.a','tag2',11);
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        }
+        let rows = api
+            .import_migration_file(
+                "added_apps_db".to_string(),
+                added.to_string_lossy().into_owned(),
+            )
+            .expect("import added_apps_db");
+        println!("added_apps_db rows={rows}");
+        assert_eq!(rows, 4, "two apps plus two tags");
+
+        let live = rusqlite::Connection::open(&init.db_path).unwrap();
+        for (table, expected) in [
+            ("apps", 2_i64),
+            ("categories", 1),
+            ("app_config", 1),
+            ("added_apps", 2),
+            ("added_app_tags", 2),
+        ] {
+            let count: i64 = live
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, expected, "core table {table}");
+        }
 
         drop(live);
         drop(api);

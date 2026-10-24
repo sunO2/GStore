@@ -18,9 +18,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart'
     show debugPrint, kDebugMode, visibleForTesting;
-import 'package:path_provider/path_provider.dart';
 
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/migration/cutover_paths.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/core_cutover.dart';
@@ -124,6 +124,7 @@ class CoreBootstrap {
   static int Function() _nowMillis = _defaultNowMillis;
   static String? _osOverride;
   static (String, String, String)? _dirsOverride;
+  static String? _legacyDirOverride;
 
   /// Whether the facts + inventory push completed successfully.
   static bool get ready => _ready;
@@ -148,6 +149,7 @@ class CoreBootstrap {
     int Function()? nowMillis,
     String? os,
     (String, String, String)? dirs,
+    String? legacyDir,
   }) {
     _backendOverride = backend;
     _probeOverride = probe;
@@ -155,6 +157,7 @@ class CoreBootstrap {
     _nowMillis = nowMillis ?? _defaultNowMillis;
     _osOverride = os;
     _dirsOverride = dirs;
+    _legacyDirOverride = legacyDir;
   }
 
   /// Test-only: clear readiness, the in-flight future and every injected seam.
@@ -169,6 +172,7 @@ class CoreBootstrap {
     _nowMillis = _defaultNowMillis;
     _osOverride = null;
     _dirsOverride = null;
+    _legacyDirOverride = null;
   }
 
   static Future<void> _run() async {
@@ -222,8 +226,11 @@ class CoreBootstrap {
       final cutover = _cutoverOverride ??
           (_backendOverride == null
               ? FrbCoreCutoverBackend(
+                  paths: await CutoverPaths.resolve(
+                    dirs: dirs,
+                    legacyRoot: _legacyDirOverride,
+                  ),
                   dataDir: dirs.$1,
-                  filesDir: dirs.$2,
                   cacheDir: dirs.$3,
                 )
               : null);
@@ -312,9 +319,7 @@ class CoreBootstrap {
   static Future<(String, String, String)> _resolveDirs() async {
     final override = _dirsOverride;
     if (override != null) return override;
-    final support = await getApplicationSupportDirectory();
-    final root = '${support.path}/gstore_core';
-    return ('$root/data', '$root/files', '$root/cache');
+    return CutoverPaths.defaultCoreDirs();
   }
 
   static int _defaultNowMillis() => DateTime.now().millisecondsSinceEpoch;

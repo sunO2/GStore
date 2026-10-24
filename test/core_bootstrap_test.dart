@@ -5,6 +5,22 @@ import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/core_cutover.dart';
 import 'dart:io';
 
+/// Writes a syntactically valid 512-byte SQLite file (header + page size).
+void _writeValidSnapshot(String path) {
+  final bytes = List<int>.filled(512, 0);
+  const header = 'SQLite format 3\u0000';
+  for (var i = 0; i < header.length; i++) {
+    bytes[i] = header.codeUnitAt(i);
+  }
+  bytes[16] = 0x02;
+  bytes[17] = 0x00;
+  bytes[18] = 1;
+  bytes[19] = 1;
+  final file = File(path);
+  file.parent.createSync(recursive: true);
+  file.writeAsBytesSync(bytes);
+}
+
 /// Fake FRB backend: records the exact call order and never touches the
 /// native library.
 class _RecordingBackend implements CoreBootstrapBackend {
@@ -57,6 +73,32 @@ class _RecordingFlagsBackend implements CoreFlagsBackend {
     final error = readError;
     if (error != null) throw error;
     return const CoreFlagsSnapshot(download: true);
+  }
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    calls.add('flagsWrite');
+  }
+}
+
+class _SixTrueFlagsBackend implements CoreFlagsBackend {
+  _SixTrueFlagsBackend(this.calls);
+
+  final List<String> calls;
+
+  static const CoreFlagsSnapshot snapshot = CoreFlagsSnapshot(
+    channels: true,
+    catalog: true,
+    update: true,
+    download: true,
+    install: true,
+    jsChannel: true,
+  );
+
+  @override
+  Future<CoreFlagsSnapshot> read() async {
+    calls.add('flagsRefresh');
+    return snapshot;
   }
 
   @override
@@ -124,10 +166,8 @@ class _RecordingCutover implements CoreCutoverBackend {
   @override
   Future<int> exportSnapshot({required String path}) async {
     calls.add('cutover:snapshot');
-    final file = File(path);
-    await file.parent.create(recursive: true);
-    await file.writeAsBytes(const <int>[0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
-    return 1;
+    _writeValidSnapshot(path);
+    return 512;
   }
 
   @override
@@ -159,10 +199,8 @@ class _RecordingCutover implements CoreCutoverBackend {
 class _FailingCutover implements CoreCutoverBackend {
   @override
   Future<int> exportSnapshot({required String path}) async {
-    final file = File(path);
-    await file.parent.create(recursive: true);
-    await file.writeAsBytes(const <int>[0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
-    return 1;
+    _writeValidSnapshot(path);
+    return 512;
   }
 
   @override
@@ -317,8 +355,8 @@ void main() {
     ]);
 
     expect(backend.calls.where((call) => call == 'init'), hasLength(1));
-    expect(backend.calls.where((call) => call == 'pushInventory'),
-        hasLength(1));
+    expect(
+        backend.calls.where((call) => call == 'pushInventory'), hasLength(1));
   });
 
   test('a thrown error is non-fatal and leaves ready == false', () async {
@@ -448,11 +486,76 @@ void main() {
         'pushInventory',
       ],
     );
+    expect(CoreFlags.snapshot, CoreFlagsSnapshot.disabled,
+        reason: 'a failed refresh must not invent flags');
   });
+
+  test('the mirror reaches the Rust all-six-true snapshot before pushes',
+      () async {
+    final backend = _RecordingBackend();
+    CoreFlags.installBackend(_SixTrueFlagsBackend(backend.calls));
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: _FakeProbe(),
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: const (
+        '/tmp/gstore/data',
+        '/tmp/gstore/files',
+        '/tmp/gstore/cache',
+      ),
+    );
+
+    await CoreBootstrap.start();
+
+    expect(CoreFlags.snapshot, _SixTrueFlagsBackend.snapshot);
+    expect(CoreFlags.channels, isTrue);
+    expect(CoreFlags.catalog, isTrue);
+    expect(CoreFlags.update, isTrue);
+    expect(CoreFlags.download, isTrue);
+    expect(CoreFlags.install, isTrue);
+    expect(CoreFlags.jsChannel, isTrue);
+    expect(CoreFlags.coreWrites, isFalse,
+        reason: 'core_writes stays owned by the Rust marker table');
+    expect(
+      backend.calls.indexOf('flagsRefresh'),
+      lessThan(backend.calls.indexOf('pushPlatformFacts')),
+      reason: 'the mirror must be readable before any service consumes it',
+    );
+  });
+
+  test('main.dart awaits CoreBootstrap.start before config and services', () {
+    final source = File('lib/main.dart').readAsStringSync();
+    final bootstrap = source.indexOf('await CoreBootstrap.start();');
+    expect(bootstrap, greaterThanOrEqualTo(0));
+    expect(bootstrap,
+        lessThan(source.indexOf('await ConfigInitializer.initialize();')));
+    expect(bootstrap, lessThan(source.indexOf('await registerService();')));
+  });
+
+  test('the Dart mirror default stays all-false', () {
+    CoreFlags.resetBackend();
+    expect(CoreFlags.snapshot, CoreFlagsSnapshot.disabled);
+    expect(
+      <bool>[
+        CoreFlags.channels,
+        CoreFlags.catalog,
+        CoreFlags.update,
+        CoreFlags.download,
+        CoreFlags.install,
+        CoreFlags.jsChannel,
+        CoreFlags.coreWrites,
+      ],
+      everyElement(isFalse),
+      reason: 'the Dart default must not diverge from a confirmed Rust read',
+    );
+  });
+
   test('the durable cutover runs once, after facts + inventory', () async {
     final backend = _RecordingBackend();
     CoreFlags.installBackend(_RecordingFlagsBackend(backend.calls));
-    final filesDir = Directory.systemTemp.createTempSync('gstore_boot_cutover_');
+    final filesDir =
+        Directory.systemTemp.createTempSync('gstore_boot_cutover_');
     addTearDown(() {
       if (filesDir.existsSync()) filesDir.deleteSync(recursive: true);
     });
@@ -518,7 +621,8 @@ void main() {
     await CoreBootstrap.start();
 
     expect(CoreBootstrap.ready, isTrue,
-        reason: 'a cutover failure retries next launch, it does not brick boot');
+        reason:
+            'a cutover failure retries next launch, it does not brick boot');
     expect(File('${filesDir.path}/migration/cutover_v6.done').existsSync(),
         isFalse);
   });

@@ -1,178 +1,254 @@
-/// Production [CoreCutoverBackend] over the existing core APIs.
+/// Production [CoreCutoverBackend] over the real legacy stores and core APIs.
 ///
-/// Split from `core_cutover.dart` so the orchestrator stays policy-only and the
-/// transport (FRB handles + retained-artifact replay) stays in one place.
+/// The cutover used to read `<files>/migration`, a directory nothing writes.
+/// This backend reads the stores the shipping Dart app actually wrote, per
+/// [CutoverPaths]:
+///
+/// * `channels`  — `<documents>/channel_apps.db` (`channel_added_app`);
+/// * `jsChannel` — `<documents>/channels/*.zip` packs;
+/// * `catalog`   — `<documents>/added_apps.db` + `<documents>/gstore/apps.db`;
+/// * `update`    — the four `SharedPreferences` keys, exported to
+///   `<files>/migration/update_prefs.json` before the import.
+///
+/// Each step reports how many rows it imported and whether every imported row is
+/// present in the core projection. `legacyPresent` distinguishes a real upgrade
+/// from a fresh install so an empty import of existing data fails closed.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:gstore/core/migration/cutover_parity.dart';
+import 'package:gstore/core/migration/cutover_paths.dart';
+import 'package:gstore/core/migration/migration_handoff.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
-import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/core_cutover.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// Production backend over the existing core APIs.
-///
-/// * the snapshot is `CoreApi.exportSnapshot` (the crate's existing
-///   `VACUUM INTO` snapshot writer — no new store is invented here);
-/// * the resync replays the retained Dart→core handoff artifacts from
-///   `<files>/migration` through `CoreApi.importMigrationFile`, then reads the
-///   domain back twice to prove the fixpoint.
-class FrbCoreCutoverBackend implements CoreCutoverBackend {
-  FrbCoreCutoverBackend({
+/// The four `UpdateCache` keys migrated by the `update` step.
+const List<String> kCutoverUpdatePrefKeys = <String>[
+  'update_last_checked_at',
+  'update_results_v1',
+  'update_check_logs_v1',
+  'update_preferred_apk',
+];
+
+/// Core transport seam. Production calls the FRB `CoreApi`; tests can inject a
+/// fake without loading the native library.
+abstract class CutoverCore {
+  Future<int> exportSnapshot(String path);
+
+  Future<int> importMigrationFile(String kind, String path);
+
+  Future<String> coreDbPath();
+}
+
+/// Production [CutoverCore] over [CoreApiFacade].
+class FrbCutoverCore implements CutoverCore {
+  FrbCutoverCore({
+    required this.dataDir,
     required this.filesDir,
-    String? dataDir,
-    String? cacheDir,
-  })  : dataDir = dataDir ?? '${_rootOf(filesDir)}/data',
-        cacheDir = cacheDir ?? '${_rootOf(filesDir)}/cache';
+    required this.cacheDir,
+  });
 
   final String dataDir;
   final String filesDir;
   final String cacheDir;
 
-  static String _rootOf(String filesDir) {
-    final normalized = filesDir.endsWith('/')
-        ? filesDir.substring(0, filesDir.length - 1)
-        : filesDir;
-    final slash = normalized.lastIndexOf('/');
-    return slash <= 0 ? normalized : normalized.substring(0, slash);
-  }
-
-  Directory get _migrationDir => Directory('$filesDir/${CoreCutover.migrationDirName}');
-
-  Future<rust.CoreApi> get _core async {
-    await RustBridge.ensureInitialized();
-    return CoreApiFacade.init(
-      dataDir: dataDir,
-      filesDir: filesDir,
-      cacheDir: cacheDir,
-    );
-  }
+  Future<rust.CoreApi> get _api => CoreApiFacade.init(
+        dataDir: dataDir,
+        filesDir: filesDir,
+        cacheDir: cacheDir,
+      );
 
   @override
-  Future<int> exportSnapshot({required String path}) async {
-    final api = await _core;
-    return (await api.exportSnapshot(path: path)).toInt();
-  }
+  Future<int> exportSnapshot(String path) async =>
+      (await (await _api).exportSnapshot(path: path)).toInt();
+
+  @override
+  Future<int> importMigrationFile(String kind, String path) async =>
+      (await _api).importMigrationFile(kind: kind, path: path);
+
+  @override
+  Future<String> coreDbPath() async =>
+      (await (await _api).migratePaths()).dbPath;
+}
+
+/// Production backend over the real legacy paths.
+class FrbCoreCutoverBackend implements CoreCutoverBackend {
+  FrbCoreCutoverBackend({
+    required this.paths,
+    required this.dataDir,
+    required this.cacheDir,
+    CutoverCore? core,
+    CutoverParity parity = const CutoverParity(),
+    Future<SharedPreferences> Function()? preferences,
+  })  : _core = core ??
+            FrbCutoverCore(
+              dataDir: dataDir,
+              filesDir: paths.filesDir,
+              cacheDir: cacheDir,
+            ),
+        _parity = parity,
+        _preferences = preferences ?? SharedPreferences.getInstance;
+
+  final CutoverPaths paths;
+  final String dataDir;
+  final String cacheDir;
+  final CutoverCore _core;
+  final CutoverParity _parity;
+  final Future<SharedPreferences> Function() _preferences;
+
+  @override
+  Future<int> exportSnapshot({required String path}) =>
+      _core.exportSnapshot(path);
 
   @override
   Future<CutoverStepResult> resyncChannels() async {
-    final core = await _core;
-    await _importNamed(core, kind: 'channel_db', name: 'channel_apps.db');
-    await _importMatching(
-      core,
-      kind: 'channel_env',
-      matches: (name) =>
-          name.startsWith('channel_env') && name.endsWith('.json'),
+    final source = paths.legacyChannelDb;
+    final count = await _count(source, 'channel_added_app');
+    final legacyPresent = count == null || count > 0;
+
+    var imported = 0;
+    if (File(source).existsSync()) {
+      imported += await _core.importMigrationFile('channel_db', source);
+    }
+
+    final coreDb = await _core.coreDbPath();
+    final rows =
+        await _parity.count(coreDb, 'SELECT COUNT(*) FROM channel_apps');
+    final parityOk =
+        legacyPresent ? await _parity.channels(source, coreDb) : true;
+    return CutoverStepResult(
+      rows: rows,
+      parityOk: parityOk,
+      imported: imported,
+      legacyPresent: legacyPresent,
     );
-    final api = await _channelApi();
-    final rows = (await api.list()).length;
-    final again = (await api.list()).length;
-    return CutoverStepResult(rows: rows, parityOk: rows == again);
   }
 
   @override
   Future<CutoverStepResult> resyncJsChannel() async {
-    final core = await _core;
-    await _importMatching(
-      core,
-      kind: 'pack',
-      matches: (name) => name.endsWith('.zip'),
-      directory: Directory('${_migrationDir.path}/packs'),
+    final packs = _legacyPacks();
+    final legacyPresent = packs.isNotEmpty;
+
+    var imported = 0;
+    for (final zip in packs) {
+      imported += await _core.importMigrationFile('pack', zip.path);
+    }
+
+    final coreDb = await _core.coreDbPath();
+    final rows =
+        await _parity.count(coreDb, 'SELECT COUNT(*) FROM channel_packs');
+    final parityOk = legacyPresent
+        ? await _parity.packs(packs.map((f) => f.path).toList(), coreDb)
+        : true;
+    return CutoverStepResult(
+      rows: rows,
+      parityOk: parityOk,
+      imported: imported,
+      legacyPresent: legacyPresent,
     );
-    final api = await _scriptApi();
-    final rows = (await api.list()).length;
-    final again = (await api.list()).length;
-    return CutoverStepResult(rows: rows, parityOk: rows == again);
   }
 
   @override
   Future<CutoverStepResult> resyncCatalog() async {
-    final rows = await _catalogTotal();
-    final again = await _catalogTotal();
-    return CutoverStepResult(rows: rows, parityOk: rows == again);
+    final addedApps = paths.legacyAddedAppsDb;
+    final catalog = paths.legacyCatalogDb;
+    final addedAppsCount = await _count(addedApps, 'added_apps');
+    final tagCount = await _count(addedApps, 'added_app_tags');
+    final catalogCount = await _count(catalog, 'apps');
+    final legacyPresent = addedAppsCount == null ||
+        tagCount == null ||
+        catalogCount == null ||
+        (addedAppsCount + tagCount + catalogCount) > 0;
+
+    var imported = 0;
+    if (File(addedApps).existsSync()) {
+      imported += await _core.importMigrationFile('added_apps_db', addedApps);
+    }
+    if (File(catalog).existsSync()) {
+      imported += await _core.importMigrationFile('catalog_db', catalog);
+    }
+
+    final coreDb = await _core.coreDbPath();
+    final rows = await _parity.count(
+      coreDb,
+      'SELECT (SELECT COUNT(*) FROM added_apps) + '
+      '(SELECT COUNT(*) FROM added_app_tags) + '
+      '(SELECT COUNT(*) FROM apps)',
+    );
+    final parityOk = legacyPresent
+        ? await _parity.catalog(
+            addedAppsPath: addedApps,
+            catalogPath: catalog,
+            corePath: coreDb,
+          )
+        : true;
+    return CutoverStepResult(
+      rows: rows,
+      parityOk: parityOk,
+      imported: imported,
+      legacyPresent: legacyPresent,
+    );
   }
 
   @override
   Future<CutoverStepResult> resyncUpdate() async {
-    final core = await _core;
-    await _importNamed(core, kind: 'update_prefs', name: 'update_prefs.json');
-    final api = await _updateApi();
-    final rows = (await api.count()).toInt();
-    final again = (await api.count()).toInt();
-    return CutoverStepResult(rows: rows, parityOk: rows == again);
-  }
+    final prefs = await _preferences();
+    final legacyPresent =
+        kCutoverUpdatePrefKeys.any((key) => prefs.containsKey(key));
 
-  Future<int> _catalogTotal() async {
-    final api = await _catalogApi();
-    final page = await api.listPage(offset: 0, limit: 1);
-    return page.total.toInt();
-  }
+    final document = await MigrationHandoff.exportUpdatePrefs(
+      into: Directory(paths.migrationDir),
+    );
+    final imported =
+        await _core.importMigrationFile('update_prefs', document.path);
 
-  Future<rust.ChannelApi> _channelApi() async {
-    await RustBridge.ensureInitialized();
-    return rust.ChannelApi.init(
-      dataDir: dataDir,
-      filesDir: filesDir,
-      cacheDir: cacheDir,
+    final expected = _exportedPrefs(document);
+    final coreDb = await _core.coreDbPath();
+    final rows =
+        await _parity.count(coreDb, 'SELECT COUNT(*) FROM update_prefs');
+    final parityOk =
+        legacyPresent ? await _parity.updatePrefs(expected, coreDb) : true;
+    return CutoverStepResult(
+      rows: rows,
+      parityOk: parityOk,
+      imported: imported,
+      legacyPresent: legacyPresent,
     );
   }
 
-  Future<rust.ScriptApi> _scriptApi() async {
-    await RustBridge.ensureInitialized();
-    return rust.ScriptApi.init(
-      dataDir: dataDir,
-      filesDir: filesDir,
-      cacheDir: cacheDir,
-    );
-  }
-
-  Future<rust.CatalogApi> _catalogApi() async {
-    await RustBridge.ensureInitialized();
-    return rust.CatalogApi.init(
-      dataDir: dataDir,
-      filesDir: filesDir,
-      cacheDir: cacheDir,
-    );
-  }
-
-  Future<rust.UpdateApi> _updateApi() async {
-    await RustBridge.ensureInitialized();
-    return rust.UpdateApi.init(
-      dataDir: dataDir,
-      filesDir: filesDir,
-      cacheDir: cacheDir,
-    );
-  }
-
-  Future<int> _importNamed(
-    rust.CoreApi api, {
-    required String kind,
-    required String name,
-  }) async {
-    final file = File('${_migrationDir.path}/$name');
-    if (!file.existsSync()) return 0;
-    return api.importMigrationFile(kind: kind, path: file.path);
-  }
-
-  Future<int> _importMatching(
-    rust.CoreApi api, {
-    required String kind,
-    required bool Function(String name) matches,
-    Directory? directory,
-  }) async {
-    final dir = directory ?? _migrationDir;
-    if (!dir.existsSync()) return 0;
+  List<File> _legacyPacks() {
+    final dir = Directory(paths.legacyPacksDir);
+    if (!dir.existsSync()) return const <File>[];
     final files = dir
         .listSync()
         .whereType<File>()
-        .where((file) => matches(file.uri.pathSegments.last))
+        .where((file) => file.path.endsWith('.zip'))
         .toList()
       ..sort((a, b) => a.path.compareTo(b.path));
-    var rows = 0;
-    for (final file in files) {
-      rows += await api.importMigrationFile(kind: kind, path: file.path);
+    return files;
+  }
+
+  /// Row count, or `null` when the file exists but cannot be read (a corrupt
+  /// source must be treated as "legacy data present" so the import fails).
+  Future<int?> _count(String dbPath, String table) async {
+    if (!File(dbPath).existsSync()) return 0;
+    try {
+      return await _parity.count(dbPath, 'SELECT COUNT(*) FROM $table');
+    } catch (_) {
+      return null;
     }
-    return rows;
+  }
+
+  Map<String, String> _exportedPrefs(File document) {
+    final decoded =
+        jsonDecode(document.readAsStringSync()) as Map<String, dynamic>;
+    final prefs = decoded['prefs'] as Map<String, dynamic>? ?? const {};
+    return <String, String>{
+      for (final entry in prefs.entries) entry.key: entry.value.toString(),
+    };
   }
 }

@@ -13,6 +13,8 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:gstore/core/migration/cutover_paths.dart';
+
 /// Result of one [MigrationHandoff.start] run.
 class MigrationResult {
   const MigrationResult({
@@ -83,12 +85,14 @@ class MigrationHandoff {
     'update_preferred_apk',
   ];
 
-  /// `<applicationSupport>/migration`, created if missing.
+  /// `<files>/migration`, created if missing.
+  ///
+  /// `files` is the core files dir (`<support>/gstore_core/files`), the same
+  /// root the cutover reads. Deriving it from [CutoverPaths] is what keeps the
+  /// exporter and the cutover from drifting onto different directories.
   static Future<Directory> migrationDir() async {
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory(
-      '${support.path}${Platform.pathSeparator}migration',
-    );
+    final dirs = await CutoverPaths.defaultCoreDirs();
+    final dir = Directory(CutoverPaths.migrationDirAt(dirs.$2));
     await dir.create(recursive: true);
     return dir;
   }
@@ -257,7 +261,7 @@ class MigrationHandoff {
     Future<Directory> documentsDir() async =>
         cachedDocuments ??= await getApplicationDocumentsDirectory();
     final dbPath = channelDatabasePath ??
-        '${(await documentsDir()).path}${Platform.pathSeparator}$channelDbFileName';
+        CutoverPaths.channelDbAt((await documentsDir()).path);
 
     var envExported = 0;
     var fdroidExported = 0;
@@ -300,8 +304,7 @@ class MigrationHandoff {
     final packDir = Directory('${dir.path}${Platform.pathSeparator}packs');
     await packDir.create(recursive: true);
     final sourcePacks = packsSourceDir ??
-        Directory(
-            '${(await documentsDir()).path}${Platform.pathSeparator}channels');
+        Directory(CutoverPaths.packsDirAt((await documentsDir()).path));
     if (await sourcePacks.exists()) {
       final zips = await sourcePacks
           .list()

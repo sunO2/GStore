@@ -4,9 +4,14 @@ import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 /// Immutable snapshot of the Rust-owned feature flags.
 ///
 /// This Dart mirror starts all-false until the first successful
-/// [CoreFlags.refresh]. The Rust process default is `Flags::WAVE06_CLOSEOUT`
-/// (all six domains true); `Flags::DISABLED` remains the all-off opt-out used
-/// by tests, and the durable one-time cutover is `CoreCutover`.
+/// [CoreFlags.refresh]. It deliberately does **not** hardcode the Rust
+/// all-six-true default (`Flags::WAVE06_CLOSEOUT`): the mirror must never claim
+/// a cutover before the native side confirms it. `CoreBootstrap.start()` calls
+/// [CoreFlags.refresh] right after `CoreApi` init and before any service or
+/// facade registers (`lib/main.dart` awaits `CoreBootstrap.start()` before
+/// `ConfigInitializer.initialize()` / `registerService()`), so every consumer
+/// sees the Rust snapshot. `Flags::DISABLED` remains the all-off opt-out used by
+/// tests, and the durable one-time cutover is `CoreCutover`.
 class CoreFlagsSnapshot {
   const CoreFlagsSnapshot({
     this.channels = false,
@@ -154,8 +159,9 @@ class FrbCoreFlagsBackend implements CoreFlagsBackend {
 /// Dart mirror of the Rust-owned feature flags.
 ///
 /// The Rust process default is `Flags::WAVE06_CLOSEOUT` (all six domains
-/// true); `Flags::DISABLED` remains the all-off opt-out. Call [refresh] to pull
-/// a new snapshot from the backend.
+/// true); `Flags::DISABLED` remains the all-off opt-out. The mirror itself
+/// starts all-false and only reaches six-true through [refresh], which
+/// `CoreBootstrap.start()` runs before service registration.
 ///
 /// [set] is the **only** partial-flip path: it forwards a *partial* patch (only
 /// the supplied flags) and then refreshes. Rust remains the source of truth and
