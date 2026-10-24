@@ -476,24 +476,47 @@ fn js_channel_store_write_marks_core_writes_once() {
         extra: None,
     };
 
+    assert!(
+        !gstore_core::flags::flags().js_channel,
+        "precondition: js_channel flag off"
+    );
     store
         .insert_apps(&key, std::slice::from_ref(&app))
-        .expect("first js_channel insert");
-    let first = core_writes_domain_count(db.path(), "js_channel");
-    assert_eq!(first, 1, "one js_channel marker row after insert");
+        .expect("flag-off js_channel insert still succeeds");
+    let flag_off = core_writes_domain_count(db.path(), "js_channel");
+    assert_eq!(
+        flag_off, 0,
+        "flag off must leave NO js_channel marker row"
+    );
+
+    set_flags(FlagsPatch {
+        js_channel: Some(true),
+        ..FlagsPatch::default()
+    })
+    .expect("flip js_channel");
+    assert!(
+        gstore_core::flags::flags().js_channel,
+        "flip must project into the flags read path"
+    );
 
     store
         .insert_apps(&key, std::slice::from_ref(&app))
-        .expect("second js_channel insert");
+        .expect("first flagged js_channel insert");
+    let first = core_writes_domain_count(db.path(), "js_channel");
+    assert_eq!(first, 1, "one js_channel marker row after flagged insert");
+
+    store
+        .insert_apps(&key, std::slice::from_ref(&app))
+        .expect("second flagged js_channel insert");
     let second = core_writes_domain_count(db.path(), "js_channel");
-    assert_eq!(second, 1, "second write is idempotent");
+    assert_eq!(second, 1, "second flagged write is idempotent");
 
     store.remove_app(&key, "app.marker").expect("js_channel remove");
     let after_remove = core_writes_domain_count(db.path(), "js_channel");
     assert_eq!(after_remove, 1, "remove reuses the same marker row");
 
     println!(
-        "PASS | js_channel core_writes | insert={first} second={second} remove={after_remove}"
+        "PASS | js_channel core_writes | flag_off={flag_off} insert={first} second={second} remove={after_remove}"
     );
 
     gstore_core::flags::reset_flags();
