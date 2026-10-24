@@ -4,7 +4,7 @@
 # Captures or compares `dart analyze` + `cargo clippy` findings against a
 # baseline JSON (`docs/qa-baseline.json`).  Existing crates are baseline-only:
 # their findings are captured once and a NEW finding fails the gate.  New crates
-# (`--strict-crates`, default `gstore_core`) must clippy-clean with `-D warnings`
+# (`--strict-crates`, default `gstore_core,gstore_script`) must clippy-clean with `-D warnings`
 # and have no baseline.
 #
 # Finding identity is exactly `(file, lint/rule/code, message)` — never
@@ -32,7 +32,7 @@
 # Usage:
 #   scripts/qa/f2-quality.sh [--capture-baseline] [options]
 #   --capture-baseline    capture current findings and write the baseline
-#   --strict-crates <csv> new crates checked with -D warnings (default gstore_core)
+#   --strict-crates <csv> new crates checked with -D warnings (default gstore_core,gstore_script)
 #   --baseline <path>     baseline path (default docs/qa-baseline.json)
 #   --strict-manifest <m> additionally clippy-check this Cargo.toml with -D warnings
 #   --verbose             print tool invocations and extra detail
@@ -52,7 +52,8 @@ Modes:
 
 Options:
   --strict-crates <csv>  new crates that must clippy-clean with -D warnings
-                         (default: gstore_core; skipped if the crate dir does not exist)
+                         (default: gstore_core,gstore_script; a crate whose dir does not
+                         exist is simply not scanned)
   --baseline <path>      baseline JSON path (default: docs/qa-baseline.json)
   --strict-manifest <m>  additionally clippy-check this Cargo.toml with -D warnings
                          (for throwaway probe crates; may be repeated)
@@ -63,7 +64,7 @@ EOF
 
 CAPTURE=0
 BASELINE=""
-STRICT_CRATES="gstore_core"
+STRICT_CRATES="gstore_core,gstore_script"
 VERBOSE=0
 EXTRA_STRICT_MANIFESTS=()
 
