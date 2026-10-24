@@ -1,21 +1,19 @@
-/// Todo 7 (Closeout-B3): `jsChannel` cutover parity.
+/// Todo 7 (Closeout-B3): `jsChannel` cutover seams.
 ///
 /// What is **real** here:
 /// - the flag seam (`CoreFlags`) and the production `ChannelLoader` /
 ///   `ChannelManager` gating;
-/// - the production `LegacyWriteGuard` call sites: `JsChannel.addApp`
-///   (`_persistApps`) and `JsChannelRuntime` (`_registerDatabaseHost`) are
-///   invoked for real and their probed domain is asserted to be `js_channel`;
-/// - `ScriptApi`'s flag gate + `getConfig` mapping;
-/// - the Dart-lane fixture runs on the real QuickJS engine (`JsChannelRuntime`)
-///   and the real `assets/channels/example.js` bytes go through the real
-///   `ScriptApi.import_` facade.
+/// - the production `LegacyWriteGuard` call site in `JsChannel.addApp`
+///   (`_persistApps`) is invoked for real and its probed domain is asserted to
+///   be `js_channel`; the `js_channel_runtime._registerDatabaseHost` writer is
+///   probed by `test/legacy_write_guard_coverage_test.dart`;
+/// - `ScriptApi`'s flag gate and its method/payload forwarding.
 ///
 /// What is **seam-backed**: `ScriptApiBackend` (no FRB dylib inside
-/// `flutter test`), i.e. the *Rust host responses* are replayed. The Rust
-/// engine path for the same contracts is covered by
-/// `cargo test --manifest-path rust/gstore_host/Cargo.toml script_api` and the
-/// `core_writes` marker behaviour by `cargo test ... script_db`.
+/// `flutter test`). Nothing in this file asserts a Rust engine result; that is
+/// proven by `cargo test --manifest-path rust/gstore_host/Cargo.toml --lib
+/// script_api_parity` (real example.js plus a real fixture for `getConfig`,
+/// `sendMessage`, `host.ui.call`).
 ///
 /// Marker note: the runtime absence/presence proof (flag off -> no row,
 /// flag on -> row) runs in `script_db::tests::
@@ -24,12 +22,10 @@
 /// never regress to unconditional.
 library;
 
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
@@ -38,8 +34,6 @@ import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core_flags.dart';
-import 'package:gstore/core/js/js_channel_runtime.dart';
-import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
@@ -119,67 +113,60 @@ class _FakeAppDao implements ChannelAddedAppDao {
   Future<int?> getTotalCount() async => apps.length;
 }
 
-/// Replays the Rust host side of the `ScriptApi` contract.
-class _ScriptApiFixtureBackend implements ScriptApiBackend {
-  final List<String> calls = <String>[];
-  final Map<String, String> methodResults = <String, String>{};
-  String? importedEntryScript;
+/// Records exactly what the `ScriptApi` facade forwards.
+///
+/// This backend is a seam: it never fabricates a "Rust lane" result, so the
+/// test can only assert the forwarding contract. The real Rust engine path is
+/// proven by
+/// `cargo test --manifest-path rust/gstore_host/Cargo.toml --lib script_api_parity`.
+class _RecordingScriptApiBackend implements ScriptApiBackend {
+  final List<({String key, String method, String paramsJson})> runs =
+      <({String key, String method, String paramsJson})>[];
 
   @override
   Future<void> init({
     required String dataDir,
     required String filesDir,
     required String cacheDir,
-  }) async {
-    calls.add('init');
-  }
+  }) async {}
 
   @override
   Future<rust_pack.ScriptPackInfo> import_({
     required List<int> packZipBytes,
     String? expectedKey,
-  }) async {
-    final archive = ZipDecoder().decodeBytes(Uint8List.fromList(packZipBytes));
-    importedEntryScript =
-        utf8.decode(archive.findFile('entry.js')!.content as List<int>);
-    calls.add('import:$expectedKey');
-    return rust_pack.ScriptPackInfo(
-      key: expectedKey ?? 'js_fixture',
-      name: 'Parity',
-      description: '',
-      icon: '',
-      hasDetail: false,
-    );
-  }
+  }) async =>
+      rust_pack.ScriptPackInfo(
+        key: expectedKey ?? 'js_seam',
+        name: 'Seam',
+        description: '',
+        icon: '',
+        hasDetail: false,
+      );
 
   @override
-  Future<void> remove({required String key}) async => calls.add('remove:$key');
+  Future<void> remove({required String key}) async {}
 
   @override
-  Future<rust_pack.ScriptPackInfo> refresh({required String key}) async {
-    calls.add('refresh:$key');
-    return const rust_pack.ScriptPackInfo(
-      key: 'js_fixture',
-      name: 'Parity',
-      description: '',
-      icon: '',
-      hasDetail: false,
-    );
-  }
+  Future<rust_pack.ScriptPackInfo> refresh({required String key}) async =>
+      const rust_pack.ScriptPackInfo(
+        key: 'js_seam',
+        name: 'Seam',
+        description: '',
+        icon: '',
+        hasDetail: false,
+      );
 
   @override
   Future<void> setEnv({
     required String key,
     required Map<String, String> env,
-  }) async =>
-      calls.add('setEnv:$key');
+  }) async {}
 
   @override
   Future<void> setConfig({
     required String key,
     required Map<String, String> config,
-  }) async =>
-      calls.add('setConfig:$key');
+  }) async {}
 
   @override
   Future<String> run({
@@ -187,12 +174,8 @@ class _ScriptApiFixtureBackend implements ScriptApiBackend {
     required String method,
     required String paramsJson,
   }) async {
-    calls.add('run:$key:$method');
-    final result = methodResults[method];
-    if (result == null) {
-      throw StateError('fixture has no result for $method');
-    }
-    return result;
+    runs.add((key: key, method: method, paramsJson: paramsJson));
+    return 'null';
   }
 
   @override
@@ -205,24 +188,11 @@ class _ScriptApiFixtureBackend implements ScriptApiBackend {
   Future<void> releaseDetail({
     required String key,
     required String appId,
-  }) async =>
-      calls.add('releaseDetail:$key:$appId');
+  }) async {}
 }
 
-const String _parityScript = r'''
-const CHANNEL_META = { name: 'Parity 渠道' };
-function main(method, params) {
-  if (method === 'getConfig') {
-    return { version: '2026.1', proxy: 'http://127.0.0.1:7890' };
-  }
-  if (method === 'sendMessage') {
-    return sendMessage('host.config.get', JSON.stringify({ key: 'channel.region' }));
-  }
-  if (method === 'uiCall') {
-    return host.ui.call('showVersionPicker', { title: '选择版本' });
-  }
-  return null;
-}
+const String _flipScript = r'''
+function main(method, params) { return null; }
 ''';
 
 Future<void> _setFlag({required bool jsChannel}) async {
@@ -231,23 +201,6 @@ Future<void> _setFlag({required bool jsChannel}) async {
   );
   await CoreFlags.refresh();
   expect(CoreFlags.jsChannel, jsChannel);
-}
-
-/// Builds a Dart-lane runtime over [_parityScript] with deterministic hosts.
-JsChannelRuntime _dartLaneRuntime({required _FakeAppDao dao}) {
-  final nativeHost = JSNativeHost()
-    ..register(
-        'ui',
-        'showVersionPicker',
-        (Map<String, dynamic> payload) async =>
-            <String, dynamic>{'env': 'sit'});
-  return JsChannelRuntime(
-    channelKey: 'js_parity',
-    script: _parityScript,
-    appDao: dao,
-    configGetter: (String key) async => key == 'channel.region' ? 'sit' : null,
-    nativeHost: nativeHost,
-  );
 }
 
 Uint8List _zipOf(String entry) {
@@ -279,7 +232,7 @@ void main() {
 
     final dartChannel = JsChannel(
       channelKey: 'js_flip',
-      script: _parityScript,
+      script: _flipScript,
       appDao: dao,
     );
     manager.registerChannel(dartChannel);
@@ -323,7 +276,7 @@ void main() {
 
     final rejected = JsChannel(
       channelKey: 'js_rejected',
-      script: _parityScript,
+      script: _flipScript,
       appDao: dao,
     );
     manager.registerChannel(rejected);
@@ -382,89 +335,53 @@ void main() {
         reason: 'js_channel must map to its own flag before the marker arms');
   });
 
-  test('jschannel_rust_lane_parity_from_dart', () async {
+  test('jschannel_scriptapi_facade_seams', () async {
+    // SEAM-BACKED (a): with jsChannel=true the Dart dynamic-channel lane is
+    // absent. Real ChannelLoader seam, real ChannelManager registry.
     await _setFlag(jsChannel: true);
+    final manager = ChannelManager.instance;
+    expect(manager.dartScriptChannelsEnabled, isFalse);
 
-    // 1) The real asset bytes go through the real ScriptApi facade.
-    final example = await rootBundle.loadString('assets/channels/example.js');
-    final backend = _ScriptApiFixtureBackend();
+    final dir = await Directory.systemTemp.createTemp('gstore_jschannel_seam');
+    addTearDown(() => dir.delete(recursive: true));
+    await File('${dir.path}/seam.zip').writeAsBytes(_zipOf(_flipScript));
+
+    final loaded = await ChannelLoader(directory: dir).loadAndRegister();
+    expect(loaded, isEmpty);
+    expect(manager.dynamicChannels, isEmpty);
+
+    // SEAM-BACKED (b): the facade forwards the exact method name and payload to
+    // its backend. The backend is a seam; nothing here claims a Rust result.
+    final backend = _RecordingScriptApiBackend();
     ScriptApi.installBackend(backend);
-    final info = await ScriptApi.instance.import_(
-      packZipBytes: _zipOf(example),
-      expectedKey: 'js_example',
+    const paramsJson = '{"token":"T-42"}';
+    await ScriptApi.instance.run(
+      key: 'js_example',
+      method: 'getConfig',
+      paramsJson: paramsJson,
     );
-    expect(info.key, 'js_example');
-    expect(backend.importedEntryScript, example,
-        reason:
-            'the fetched asset must be the pack entry.js the Rust lane gets');
-    expect(backend.calls, contains('import:js_example'));
+    expect(backend.runs, hasLength(1));
+    expect(backend.runs.single.key, 'js_example');
+    expect(backend.runs.single.method, 'getConfig');
+    expect(backend.runs.single.paramsJson, paramsJson);
 
-    // 2) Dart lane: the same host contract executed on the real engine.
-    final dao = _FakeAppDao();
-    final runtime = _dartLaneRuntime(dao: dao);
-    await runtime.initialize();
-    addTearDown(runtime.dispose);
-
-    final dartConfig =
-        await runtime.call('main', <dynamic>['getConfig', <String, dynamic>{}]);
-    final dartSendMessage = await runtime
-        .call('main', <dynamic>['sendMessage', <String, dynamic>{}]);
-    final dartUiCall =
-        await runtime.call('main', <dynamic>['uiCall', <String, dynamic>{}]);
-
-    expect(dartConfig, <String, Object?>{
-      'version': '2026.1',
-      'proxy': 'http://127.0.0.1:7890',
-    });
-    expect(dartSendMessage, <String, Object?>{
-      'ok': true,
-      'data': 'sit',
-    });
-    expect(dartUiCall, <String, Object?>{
-      'ok': true,
-      'data': <String, Object?>{'env': 'sit'},
-    });
-
-    // 3) Rust lane replay of the same script results through ScriptApi.
-    backend.methodResults
-      ..['getConfig'] = jsonEncode(dartConfig)
-      ..['sendMessage'] = jsonEncode(dartSendMessage)
-      ..['uiCall'] = jsonEncode(dartUiCall);
-
-    final rustConfig = await ScriptApi.instance.getConfig(key: 'js_example');
-    expect(rustConfig, <String, Object?>{
-      'version': '2026.1',
-      'proxy': 'http://127.0.0.1:7890',
-    });
-    expect(
-      <String, Object?>{
-        'version': rustConfig!['version'],
-        'proxy': rustConfig['proxy'],
-      },
-      <String, Object?>{
-        'version': (dartConfig as Map)['version'],
-        'proxy': dartConfig['proxy'],
-      },
-      reason: 'getConfig must map to the same {version, proxy} shape',
-    );
-
-    for (final method in <String>['sendMessage', 'uiCall']) {
-      final raw = await ScriptApi.instance.run(
+    // SEAM-BACKED (b): the flag gate runs before the backend and surfaces the
+    // stable typed refusal.
+    await _setFlag(jsChannel: false);
+    final runsBefore = backend.runs.length;
+    await expectLater(
+      ScriptApi.instance.run(
         key: 'js_example',
-        method: method,
-        paramsJson: '{}',
-      );
-      expect(jsonDecode(raw),
-          method == 'sendMessage' ? dartSendMessage : dartUiCall,
-          reason: '$method must roundtrip the Dart-lane value unchanged');
-    }
-
-    expect(
-        backend.calls,
-        containsAll(<String>[
-          'run:js_example:getConfig',
-          'run:js_example:sendMessage',
-          'run:js_example:uiCall',
-        ]));
+        method: 'getConfig',
+        paramsJson: paramsJson,
+      ),
+      throwsA(isA<ScriptApiDisabledException>().having(
+        (e) => e.errorCode,
+        'errorCode',
+        'CORE_E_SCRIPT_JS_CHANNEL_DISABLED',
+      )),
+    );
+    expect(backend.runs.length, runsBefore,
+        reason: 'the disabled flag must never reach the backend');
   });
 }
