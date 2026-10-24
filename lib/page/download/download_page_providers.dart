@@ -267,6 +267,17 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     }
   }
 
+  /// 丢弃某任务的 watch 订阅，使下一次 [loadTasks] 重新建立订阅。
+  ///
+  /// 内核的 watch 变更检测对**每个订阅**按 id 记住「终态只发一次」：一个
+  /// 曾处于 failed/completed 等终态的任务被 retry/restart 复活后，复用的旧
+  /// 订阅永远不会再推送它的新进度/完成（见
+  /// `rust/gstore_host/src/download_host.rs` 的 `DownloadWatchState`）。
+  /// 因此复活类动作必须换一条全新订阅，否则列表会一直停在旧状态。
+  void _dropWatch(int id) {
+    _watchSubs.remove(id)?.cancel();
+  }
+
   /// 单个任务状态更新：替换到分组中并刷新 UI
   void _onTaskUpdate(DownloadTask task) {
     final id = task.id;
@@ -412,6 +423,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     if (!await _runServiceAction('重试', (service) => service.retry(id))) {
       return;
     }
+    // 复活的终态任务必须换新订阅，否则旧订阅的终态闩锁会吞掉后续进度/完成。
+    _dropWatch(id);
     await loadTasks();
   }
 
@@ -426,6 +439,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     if (!await _runServiceAction('重新下载', (service) => service.restart(id))) {
       return;
     }
+    _dropWatch(id);
     await loadTasks();
   }
 
@@ -515,21 +529,28 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     final failed =
         tasks.where((t) => t.status == DownloadStatusEnum.failed).toList();
     final service = ModuleManager.instance.get<IDownloadService>();
+    var retried = false;
     for (final item in failed) {
       final id = item.id;
       if (id != null && service != null) {
-        unawaited(_runServiceAction(
+        if (!await _runServiceAction(
           '批量重试',
           (target) => target.retry(id),
           service: service,
-        ));
+        )) {
+          continue;
+        }
+        // 失败任务属于终态：换新订阅，避免旧订阅的终态闩锁吞掉新进度。
+        _dropWatch(id);
+        retried = true;
       }
     }
+    // 批量重试后必须重载：失败任务在列表里是终态，watch 不会主动刷新它们。
+    if (retried) await loadTasks();
   }
 
   /// 删除单个下载记录
   Future<void> deleteDownload(DownloadTask downStatus) async {
-    await LegacyWriteGuard.assertAllowed('download');
     try {
       final id = downStatus.id;
 
@@ -577,6 +598,10 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
             return;
           }
         } else {
+          // 守卫只保护「内核不可用 → 回落 Dart Floor」这条旧写入路径：
+          // 内核可用时删除走 service.remove(id)，与旧写入域标记无关，不能被
+          // LegacyWriteBlocked 拦下（否则 delete 永远在 try 外抛出、列表不刷新）。
+          await LegacyWriteGuard.assertAllowed('download');
           final db = await downloadTaskDatabase;
           await db.database
               .delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
@@ -600,11 +625,31 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 删除指定应用的所有下载记录
   Future<void> deleteDownloadsByAppId(String appId) async {
-    await LegacyWriteGuard.assertAllowed('download');
     try {
-      final db = await downloadTaskDatabase;
-      await db.database
-          .delete('DownloadTaskEntity', where: 'appId = ?', whereArgs: [appId]);
+      final service = ModuleManager.instance.get<IDownloadService>();
+      if (service != null) {
+        final tasks = await _allTasks();
+        final ids = tasks
+            .where((t) => t.appId == appId)
+            .map((t) => t.id)
+            .whereType<int>()
+            .toList();
+        for (final id in ids) {
+          if (!await _runServiceAction(
+            '删除记录',
+            (target) => target.remove(id),
+            service: service,
+          )) {
+            return;
+          }
+        }
+      } else {
+        // 守卫只保护内核不可用时的 Dart Floor 回落写入。
+        await LegacyWriteGuard.assertAllowed('download');
+        final db = await downloadTaskDatabase;
+        await db.database.delete('DownloadTaskEntity',
+            where: 'appId = ?', whereArgs: [appId]);
+      }
 
       await loadTasks();
 
@@ -622,7 +667,6 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 清理已完成的下载记录
   Future<void> clearCompleted() async {
-    await LegacyWriteGuard.assertAllowed('download');
     try {
       final tasks = await _allTasks();
       final completed = tasks
@@ -648,16 +692,32 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         }
       }
 
-      // 删除数据库记录（completed/failed）
-      final db = await downloadTaskDatabase;
-      await db.database.delete(
-        'DownloadTaskEntity',
-        where: 'status IN (?, ?)',
-        whereArgs: [
-          DownloadStatusEnum.completed.index,
-          DownloadStatusEnum.failed.index,
-        ],
-      );
+      // 删除记录：内核任务在模块自己的库里，只删 Floor 删不掉（列表会"复活"）。
+      // 内核可用时逐条走服务接口；不可用时才回落 Floor，并受旧写入守卫保护。
+      final service = ModuleManager.instance.get<IDownloadService>();
+      if (service != null) {
+        final ids = completed.map((t) => t.id).whereType<int>().toList();
+        for (final id in ids) {
+          if (!await _runServiceAction(
+            '清理记录',
+            (target) => target.remove(id),
+            service: service,
+          )) {
+            return;
+          }
+        }
+      } else {
+        await LegacyWriteGuard.assertAllowed('download');
+        final db = await downloadTaskDatabase;
+        await db.database.delete(
+          'DownloadTaskEntity',
+          where: 'status IN (?, ?)',
+          whereArgs: [
+            DownloadStatusEnum.completed.index,
+            DownloadStatusEnum.failed.index,
+          ],
+        );
+      }
 
       // 刷新列表
       await loadTasks();
@@ -677,7 +737,6 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 清空所有下载记录
   Future<void> clearAll() async {
-    await LegacyWriteGuard.assertAllowed('download');
     // 显示确认对话框
     final confirmed = await AppDialogs.showDialog(
       title: '确认清空',
@@ -726,9 +785,24 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         }
       }
 
-      // 清空数据库
-      final db = await downloadTaskDatabase;
-      await db.database.delete('DownloadTaskEntity');
+      // 清空记录：内核任务在模块自己的库里，只清 Floor 清不掉（列表会"复活"）。
+      // 内核可用时逐条走服务接口；不可用时才回落 Floor，并受旧写入守卫保护。
+      if (service != null) {
+        final ids = tasks.map((t) => t.id).whereType<int>().toList();
+        for (final id in ids) {
+          if (!await _runServiceAction(
+            '清空记录',
+            (target) => target.remove(id),
+            service: service,
+          )) {
+            return;
+          }
+        }
+      } else {
+        await LegacyWriteGuard.assertAllowed('download');
+        final db = await downloadTaskDatabase;
+        await db.database.delete('DownloadTaskEntity');
+      }
 
       // 刷新列表
       await loadTasks();
