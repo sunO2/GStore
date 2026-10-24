@@ -59,10 +59,12 @@ shipped; the decisions above are unchanged.
 - Install is core-only: `installTask` always goes through the core install facade. A missing
   mirror row is `CORE_E_INSTALL_NOT_FOUND`. A user-picked APK still uses the direct
   Shizuku/AppInstaller path (`_installApkDirect`), which creates no core state.
-- The process default is `Flags::WAVE06B_CUTOVER` (download + install true, the other five
-  flags false). `Flags::DISABLED` / `Default` remain the all-off opt-out, and `CoreFlags.set`
-  is the only partial-flip API; Rust stays the source of truth and `core_writes` is never
-  operator-settable.
+- The process default is `Flags::WAVE06_CLOSEOUT`: all six domains (channels, js_channel,
+  catalog, update, download, install) are core-owned. `Flags::DISABLED` remains the all-off
+  opt-out, and `CoreFlags.set` is a test seam, not a durable switch; the durable one-time
+  cutover (single `pre-closeout-<millis>.db` snapshot, ordered resync, atomic
+  `cutover_v6.done` marker) lives in the Dart `CoreCutover`/`CoreBootstrap`. Rust stays the
+  source of truth and `core_writes` is never operator-settable.
 
 ### Download is two layers
 

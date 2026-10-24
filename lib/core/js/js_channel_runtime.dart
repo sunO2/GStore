@@ -55,6 +55,16 @@ class JsChannelException implements Exception {
 /// ## 类型转换
 /// - Dart→JS：参数经 jsonEncode 注入；host 返回值经引擎桥转换（Future 自动转 JS Promise）
 /// - JS→Dart：`evaluate` 的 rawResult 已由引擎转换为 Map/List/String/num/bool/Future
+///
+/// ## 生命周期（Wave 6 closeout）
+/// 旧 Dart/QuickJS（`quickjs_engine`）运行时。`Flags::WAVE06_CLOSEOUT` 之后
+/// 脚本渠道由 Rust `ScriptApi` 接管（见 `lib/core/script/script_api.dart`），
+/// 本类只保留为 `CoreFlags.jsChannel == false` 的旧后端，禁止新增调用方。
+@Deprecated(
+  'Legacy Dart/QuickJS runtime (quickjs_engine); superseded by the Rust '
+  'ScriptApi lane (js_channel). Kept only as the CoreFlags.jsChannel == false '
+  'backend — do not add new callers.',
+)
 class JsChannelRuntime {
   /// 渠道唯一标识（如 'js.vivo'），用于数据隔离
   final String channelKey;

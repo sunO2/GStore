@@ -2,9 +2,13 @@
 //!
 //! The Rust core is the source of truth. Dart only mirrors the snapshot through
 //! `CoreFlags` and never writes it directly. The process-global default is
-//! [`Flags::WAVE06B_CUTOVER`] (download + install owned by the core); every
-//! other flag is still `false`, and [`Flags::DISABLED`] remains available so
-//! tests can opt back into the all-off world.
+//! [`Flags::WAVE06_CLOSEOUT`]: all six domains (`channels`, `js_channel`,
+//! `catalog`, `update`, `download`, `install`) are core-owned. The durable
+//! one-time cutover that makes this legal lives in the Dart
+//! `CoreCutover`/`CoreBootstrap` (one `pre-closeout-<millis>.db` snapshot, the
+//! ordered resync and a `cutover_v6.done` marker). [`Flags::DISABLED`] remains
+//! available so tests can opt back into the all-off world, and runtime
+//! `CoreFlags.set` stays a test seam only (no production `set(...true)`).
 //!
 //! `core_writes` is a *projection* of the `core_writes` table, not an operator
 //! switch: [`set_flags`] still rejects `Some(true)`, while
@@ -48,24 +52,26 @@ impl Flags {
         core_writes: false,
     };
 
-    /// Wave 6B durable cutover: only `download` + `install` are core-owned.
+    /// Wave 6 durable closeout: all six domains are core-owned.
     ///
-    /// This is the initial value of [`GLOBAL_FLAGS`]. `channels`, `catalog`,
-    /// `update`, `js_channel` and the `core_writes` projection stay off.
-    pub const WAVE06B_CUTOVER: Self = Self {
-        channels: false,
-        catalog: false,
-        update: false,
+    /// This is the initial value of [`GLOBAL_FLAGS`] and the value of
+    /// [`Flags::default`]. Only the `core_writes` projection stays off: it is
+    /// armed from the `core_writes` table, never by a flag default.
+    pub const WAVE06_CLOSEOUT: Self = Self {
+        channels: true,
+        catalog: true,
+        update: true,
         download: true,
         install: true,
-        js_channel: false,
+        js_channel: true,
         core_writes: false,
     };
 }
 
 impl Default for Flags {
+    /// The process default is the durable closeout snapshot, not `DISABLED`.
     fn default() -> Self {
-        Self::DISABLED
+        Self::WAVE06_CLOSEOUT
     }
 }
 
@@ -129,7 +135,7 @@ impl Flags {
     }
 }
 
-static GLOBAL_FLAGS: RwLock<Flags> = RwLock::new(Flags::WAVE06B_CUTOVER);
+static GLOBAL_FLAGS: RwLock<Flags> = RwLock::new(Flags::WAVE06_CLOSEOUT);
 
 fn read_guard() -> RwLockReadGuard<'static, Flags> {
     match GLOBAL_FLAGS.read() {
@@ -239,21 +245,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wave06b_cutover_flips_only_download_and_install() {
+    fn wave06_closeout_flips_all_six_domains() {
         assert_eq!(
-            Flags::WAVE06B_CUTOVER,
+            Flags::WAVE06_CLOSEOUT,
             Flags {
-                channels: false,
-                catalog: false,
-                update: false,
+                channels: true,
+                catalog: true,
+                update: true,
                 download: true,
                 install: true,
-                js_channel: false,
+                js_channel: true,
                 core_writes: false,
             }
         );
-        // The opt-out default stays all-off.
-        assert_eq!(Flags::DISABLED, Flags::default());
+        // The process default is the closeout snapshot.
+        assert_eq!(Flags::WAVE06_CLOSEOUT, Flags::default());
         assert_eq!(
             Flags::DISABLED,
             Flags {

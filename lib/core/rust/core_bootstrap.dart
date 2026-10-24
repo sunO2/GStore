@@ -23,6 +23,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
+import 'package:gstore/core/rust/core_cutover.dart';
+import 'package:gstore/core/rust/core_cutover_backend.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// Inventory/facts source identity pinned by the plan (`android_frontend`).
@@ -118,6 +120,7 @@ class CoreBootstrap {
 
   static CoreBootstrapBackend? _backendOverride;
   static CorePlatformProbe? _probeOverride;
+  static CoreCutoverBackend? _cutoverOverride;
   static int Function() _nowMillis = _defaultNowMillis;
   static String? _osOverride;
   static (String, String, String)? _dirsOverride;
@@ -141,12 +144,14 @@ class CoreBootstrap {
   static void debugConfigure({
     CoreBootstrapBackend? backend,
     CorePlatformProbe? probe,
+    CoreCutoverBackend? cutover,
     int Function()? nowMillis,
     String? os,
     (String, String, String)? dirs,
   }) {
     _backendOverride = backend;
     _probeOverride = probe;
+    _cutoverOverride = cutover;
     _nowMillis = nowMillis ?? _defaultNowMillis;
     _osOverride = os;
     _dirsOverride = dirs;
@@ -160,6 +165,7 @@ class CoreBootstrap {
     _lastSeq = 0;
     _backendOverride = null;
     _probeOverride = null;
+    _cutoverOverride = null;
     _nowMillis = _defaultNowMillis;
     _osOverride = null;
     _dirsOverride = null;
@@ -205,6 +211,36 @@ class CoreBootstrap {
           ],
         ),
       );
+
+      // Durable one-time closeout, after facts + inventory so the `update`
+      // resync has a real inventory to judge against. A failure is non-fatal
+      // and leaves `cutover_v6.done` absent, so the next launch retries.
+      //
+      // An injected bootstrap backend is a test seam; the production cutover is
+      // only armed with the production backend unless a cutover seam is passed
+      // explicitly (same convention as `UpdateFacade`'s `_frbInjected`).
+      final cutover = _cutoverOverride ??
+          (_backendOverride == null
+              ? FrbCoreCutoverBackend(
+                  dataDir: dirs.$1,
+                  filesDir: dirs.$2,
+                  cacheDir: dirs.$3,
+                )
+              : null);
+      if (cutover != null) {
+        try {
+          final result = await CoreCutover.run(
+            filesDir: dirs.$2,
+            backend: cutover,
+            nowMillis: _nowMillis,
+          );
+          debugPrint('[CoreBootstrap] 一次性切流: $result');
+        } catch (error) {
+          // Never fatal: the marker was not written, so the next launch retries.
+          debugPrint('[CoreBootstrap] 一次性切流失败（下次启动重试）: $error');
+        }
+      }
+
       _ready = true;
     } catch (error, stackTrace) {
       debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');

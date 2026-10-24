@@ -781,6 +781,15 @@ class JsChannel extends IChannel implements DynamicChannel {
   }
 
   /// 落库到本渠道（强制 channelCode = channelKey）
+  ///
+  /// Wave 6 closeout 后脚本渠道数据归 Rust（`ScriptApi` + `channel_apps`），本
+  /// 方法只作为 `CoreFlags.jsChannel == false` 的旧后端，并由 `js_channel`
+  /// 写入标记兜底。
+  @Deprecated(
+    'Legacy Dart JS channel write; superseded by the Rust ScriptApi lane and '
+    'the core channel_apps store (js_channel). Kept only as the '
+    'CoreFlags.jsChannel == false backend.',
+  )
   Future<void> _persistApps(
     List<AppSummary> apps, {
     Function(int current, int total)? onProgress,

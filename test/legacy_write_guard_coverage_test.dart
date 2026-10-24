@@ -73,6 +73,9 @@ const List<_Writer> _writers = <_Writer>[
       'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'addApp', 'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'removeApp', 'channel'),
+  _Writer('lib/core/channel/impl/channel_loader.dart', 'importZip', 'channel'),
+  _Writer('lib/core/channel/impl/channel_loader.dart', 'removeChannel',
+      'channel'),
   _Writer('lib/core/channel/impl/JsChannel.dart', '_persistApps', 'js_channel'),
   _Writer('lib/core/channel/impl/JsChannel.dart', 'removeApp', 'js_channel'),
   _Writer('lib/core/js/js_channel_runtime.dart', '_registerDatabaseHost',
@@ -350,6 +353,37 @@ void main() {
       expect(seen, <String>['channel'],
           reason:
               'the probe must run even while CoreFlags.coreWrites is false');
+    });
+
+    test('every writer domain is blocked while the global flag is false',
+        () async {
+      // The global `coreWrites` mirror is explicitly false: each domain's
+      // marker alone must be enough to block its legacy writer.
+      CoreFlags.installBackend(
+        _FakeFlagsBackend(const CoreFlagsSnapshot(coreWrites: false)),
+      );
+      await CoreFlags.refresh();
+      expect(CoreFlags.coreWrites, isFalse);
+
+      final domains = <String>{for (final writer in _writers) writer.domain};
+      expect(domains, isNotEmpty);
+      final blocked = <String>[];
+      LegacyWriteGuard.probeOverride = (domain) async {
+        expect(domains, contains(domain),
+            reason: '$domain is probed but no writer declares it');
+        return true;
+      };
+
+      for (final domain in domains) {
+        try {
+          await LegacyWriteGuard.assertAllowed(domain);
+        } on LegacyWriteBlocked {
+          blocked.add(domain);
+        }
+      }
+
+      expect(blocked.toSet(), domains,
+          reason: 'every writer domain must block even with the flag off');
     });
 
     test('marker absent allows the legacy write', () async {

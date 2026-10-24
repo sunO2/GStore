@@ -42,9 +42,13 @@ core 的任何一条边都不得调用平台代码。
 `gstore_mods/download/download.db`；core 只在 parity/reconcile 时**只读**打开模块库
 （`legacy::open_read_only`），从不改写模块行，模块对实时进度保持权威。安装为 core-only
 （`installTask` → core 安装域；缺镜像行为 `CORE_E_INSTALL_NOT_FOUND`），手动选包走
-`_installApkDirect` 且不产生 core 状态。进程默认 flags 来自 `Flags::WAVE06B_CUTOVER`
-（download+install=true，其余五项 false），`Flags::DISABLED`/`Default` 仍是全关退路；
-`CoreFlags.set` 是唯一的部分翻转 API（Rust 为权威，`core_writes` 永不由操作者设置）。
+`_installApkDirect` 且不产生 core 状态。进程默认 flags 来自 `Flags::WAVE06_CLOSEOUT`
+（六域全开：channels/js_channel/catalog/update/download/install；`core_writes` 仍由
+`core_writes` 表投影）。durable 一次性切流由 Dart `CoreCutover`/`CoreBootstrap` 负责：
+首启在 `<files>/migration/backups/pre-closeout-<millis>.db` 取**一个**快照，按
+`channels → jsChannel → catalog → update` 重放并校验 parity，最后原子写
+`<files>/migration/cutover_v6.done`；之后的启动不再快照/重放。`Flags::DISABLED` 仍是
+全关退路；`CoreFlags.set` 仅是测试 seam（Rust 为权威，`core_writes` 永不由操作者设置）。
 
 **仅有的两个模块级例外**（均在 core 之外，且显式列在允许清单上）：
 

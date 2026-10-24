@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/core_cutover.dart';
+import 'dart:io';
 
 /// Fake FRB backend: records the exact call order and never touches the
 /// native library.
@@ -110,6 +112,74 @@ class _FakeProbe implements CorePlatformProbe {
       },
     ];
   }
+}
+
+/// Fake cutover backend: appends its work into the shared bootstrap call log
+/// so the durable cutover's position (after the inventory push) is observable.
+class _RecordingCutover implements CoreCutoverBackend {
+  _RecordingCutover(this.calls);
+
+  final List<String> calls;
+
+  @override
+  Future<int> exportSnapshot({required String path}) async {
+    calls.add('cutover:snapshot');
+    final file = File(path);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(const <int>[0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
+    return 1;
+  }
+
+  @override
+  Future<CutoverStepResult> resyncChannels() async {
+    calls.add('cutover:channels');
+    return const CutoverStepResult(rows: 1, parityOk: true);
+  }
+
+  @override
+  Future<CutoverStepResult> resyncJsChannel() async {
+    calls.add('cutover:jsChannel');
+    return const CutoverStepResult(rows: 1, parityOk: true);
+  }
+
+  @override
+  Future<CutoverStepResult> resyncCatalog() async {
+    calls.add('cutover:catalog');
+    return const CutoverStepResult(rows: 1, parityOk: true);
+  }
+
+  @override
+  Future<CutoverStepResult> resyncUpdate() async {
+    calls.add('cutover:update');
+    return const CutoverStepResult(rows: 1, parityOk: true);
+  }
+}
+
+/// Fake cutover backend whose resync fails mid-way: no marker may be written.
+class _FailingCutover implements CoreCutoverBackend {
+  @override
+  Future<int> exportSnapshot({required String path}) async {
+    final file = File(path);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(const <int>[0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
+    return 1;
+  }
+
+  @override
+  Future<CutoverStepResult> resyncChannels() async =>
+      throw StateError('forced channels failure');
+
+  @override
+  Future<CutoverStepResult> resyncJsChannel() async =>
+      const CutoverStepResult(rows: 0, parityOk: true);
+
+  @override
+  Future<CutoverStepResult> resyncCatalog() async =>
+      const CutoverStepResult(rows: 0, parityOk: true);
+
+  @override
+  Future<CutoverStepResult> resyncUpdate() async =>
+      const CutoverStepResult(rows: 0, parityOk: true);
 }
 
 void main() {
@@ -378,5 +448,78 @@ void main() {
         'pushInventory',
       ],
     );
+  });
+  test('the durable cutover runs once, after facts + inventory', () async {
+    final backend = _RecordingBackend();
+    CoreFlags.installBackend(_RecordingFlagsBackend(backend.calls));
+    final filesDir = Directory.systemTemp.createTempSync('gstore_boot_cutover_');
+    addTearDown(() {
+      if (filesDir.existsSync()) filesDir.deleteSync(recursive: true);
+    });
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: _FakeProbe(),
+      cutover: _RecordingCutover(backend.calls),
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: (
+        '/tmp/gstore/data',
+        filesDir.path,
+        '/tmp/gstore/cache',
+      ),
+    );
+
+    await CoreBootstrap.start();
+
+    expect(CoreBootstrap.ready, isTrue);
+    expect(
+      backend.calls,
+      <String>[
+        'init',
+        'flagsRefresh',
+        'pushPlatformFacts',
+        'pushInventory',
+        'cutover:snapshot',
+        'cutover:channels',
+        'cutover:jsChannel',
+        'cutover:catalog',
+        'cutover:update',
+      ],
+      reason: 'the cutover must run after the bootstrap inventory push',
+    );
+    expect(File('${filesDir.path}/migration/cutover_v6.done').existsSync(),
+        isTrue);
+
+    // Second start is single-flight: no second cutover run.
+    await CoreBootstrap.start();
+    expect(backend.calls.where((c) => c == 'cutover:snapshot'), hasLength(1));
+  });
+
+  test('a failed cutover leaves the marker absent but keeps bootstrap ready',
+      () async {
+    final backend = _RecordingBackend();
+    final filesDir = Directory.systemTemp.createTempSync('gstore_boot_fail_');
+    addTearDown(() {
+      if (filesDir.existsSync()) filesDir.deleteSync(recursive: true);
+    });
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: _FakeProbe(),
+      cutover: _FailingCutover(),
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: (
+        '/tmp/gstore/data',
+        filesDir.path,
+        '/tmp/gstore/cache',
+      ),
+    );
+
+    await CoreBootstrap.start();
+
+    expect(CoreBootstrap.ready, isTrue,
+        reason: 'a cutover failure retries next launch, it does not brick boot');
+    expect(File('${filesDir.path}/migration/cutover_v6.done').existsSync(),
+        isFalse);
   });
 }

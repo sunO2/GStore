@@ -74,8 +74,15 @@ class ChannelManager {
   /// 注册渠道
   /// 动态渠道（DynamicChannel）额外登记 _channelsByKey（后注册覆盖 custom 槽位）
   ///
+  /// Wave 6 closeout 后由 `ChannelApi.register` / Rust 渠道注册表接管；保留为
+  /// `CoreFlags.channels == false` 的旧分支。
+  ///
   /// 结构门禁：`CoreFlags.jsChannel == true` 时拒绝任何 Dart 脚本渠道，
   /// 内置枚举渠道不受影响（见 [dartScriptChannelsEnabled]）。
+  @Deprecated(
+    'Legacy Dart channel registry write; superseded by ChannelApi.register '
+    '(channels). Kept only as the CoreFlags.channels == false backend.',
+  )
   void registerChannel(IChannel channel) {
     if (channel is DynamicChannel && !dartScriptChannelsEnabled) {
       final key = (channel as DynamicChannel).channelKey;
@@ -101,6 +108,10 @@ class ChannelManager {
   }
 
   /// 取消注册渠道（按类型；动态渠道同步清理 key 索引）
+  @Deprecated(
+    'Legacy Dart channel registry write; superseded by ChannelApi.unregister '
+    '(channels). Kept only as the CoreFlags.channels == false backend.',
+  )
   void unregisterChannel(ChannelType type) {
     var channel = _channels.remove(type);
     if (channel != null) {
@@ -113,6 +124,10 @@ class ChannelManager {
   }
 
   /// 取消注册动态渠道（按 key，同步清理 custom 槽位）
+  @Deprecated(
+    'Legacy Dart channel registry write; superseded by ChannelApi.unregister '
+    '(channels). Kept only as the CoreFlags.channels == false backend.',
+  )
   void unregisterChannelByKey(String key) {
     var channel = _channelsByKey.remove(key);
     if (channel != null) {
@@ -679,7 +694,14 @@ class ChannelManager {
 
   // ==================== 私有方法 ====================
 
-  /// 选择渠道
+  /// 选择渠道（旧分支）
+  ///
+  /// 所有 `CoreFlags.channels == false` 的回落路径都经过这里；`channels` 打开后
+  /// 走 `RustChannelFacade`。
+  @Deprecated(
+    'Legacy Dart channel branch; superseded by RustChannelFacade (channels). '
+    'Only reachable while CoreFlags.channels is false.',
+  )
   IChannel? _selectChannel(ChannelType? type) {
     var selectedType = type ?? _defaultChannelType;
     var channel = _channels[selectedType];

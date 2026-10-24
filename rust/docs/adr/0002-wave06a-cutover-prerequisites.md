@@ -93,8 +93,8 @@ The binding has changed: `download` and `install` are core-only, with no Dart fa
 runtime kernel selector. `DownloadCoreConfig` / `LazyDownloadService` are deleted and
 `RustDownloadService` is the only `IDownloadService`.
 
-- The process default is `Flags::WAVE06B_CUTOVER` (download + install true, the other five
-  flags false). `Flags::DISABLED` / `Default` remain the all-off opt-out.
+- The process default is `Flags::WAVE06_CLOSEOUT` (all six domains true).
+  `Flags::DISABLED` remains the all-off opt-out.
 - `CoreFlags.set` is the only partial-flip path; Rust stays the source of truth and
   `core_writes` is never operator-settable.
 - The consequences above still hold unchanged: resync reads the module DB read-only, the mirror
