@@ -1,0 +1,62 @@
+{
+  "note": "INPUT ONLY. This file is the handcrafted input for rust/gstore_core/tests/update_parity_golden.rs and test/update_cutover_parity_test.dart. It is NOT a core expectation and MUST NOT be compared against anything as if it were Rust output. The authoritative core output is update_parity_golden.json, produced by running the real UpdateService over the committed update_parity_input.db derived from this file.",
+  "checkedAt": 1710000000000,
+  "sourceId": "android",
+  "abis": ["arm64-v8a"],
+  "added": [
+    {"channelId": "github", "appId": "owner/alpha", "addTime": 2000},
+    {"channelId": "github", "appId": "owner/beta", "addTime": 1000}
+  ],
+  "installed": [
+    {"packageName": "com.example.alpha", "versionName": "1.0.0"},
+    {"packageName": "com.example.beta", "versionName": "3.1.0"}
+  ],
+  "preferredApk": {
+    "github:owner/alpha": "alpha-arm64-v8a.apk"
+  },
+  "channels": [
+    {
+      "code": "github",
+      "updates": [
+        {
+          "appId": "owner/alpha",
+          "appName": "Alpha",
+          "packageName": "com.example.alpha",
+          "iconUrl": "https://example.test/alpha.png",
+          "latestVersion": "2.0.0",
+          "download": {
+            "url": "https://example.test/alpha-arm64-2.0.0.apk",
+            "name": "alpha-arm64-v8a.apk",
+            "size": 1234,
+            "downloadCount": 7,
+            "version": "2.0.0",
+            "versionCode": 200,
+            "publishedAt": 1710000000000,
+            "platform": "arm64-v8a",
+            "hash": "alpha-sha256",
+            "hashType": "sha256"
+          }
+        },
+        {
+          "appId": "owner/beta",
+          "appName": "Beta",
+          "packageName": "com.example.beta",
+          "iconUrl": "https://example.test/beta.png",
+          "latestVersion": "4.0.0",
+          "download": {
+            "url": "https://example.test/beta-universal.apk",
+            "name": "beta-universal.apk",
+            "size": 4321,
+            "downloadCount": 3,
+            "version": "4.0.0",
+            "versionCode": 400,
+            "publishedAt": 1710000000000,
+            "platform": "universal",
+            "hash": "beta-sha256",
+            "hashType": "sha256"
+          }
+        }
+      ]
+    }
+  ]
+}

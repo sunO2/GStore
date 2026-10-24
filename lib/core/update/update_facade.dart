@@ -192,7 +192,10 @@ class UpdateFacade {
     _state.beginFacadeCheck();
     try {
       final updates = await backend.check(force: force);
-      final report = backend is FrbUpdateBackend ? backend.lastReport : null;
+      final report = switch (backend) {
+        final UpdateReportSource source => source.lastReport,
+        _ => null,
+      };
       if (report != null) {
         final logs = deriveCoreCheckLogs(report);
         for (final entry in logs) {

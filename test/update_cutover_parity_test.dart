@@ -40,119 +40,158 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
   }
 }
 
-const int _checkedAtMillis = 1710000000000;
-final DateTime _checkedAt = DateTime.fromMillisecondsSinceEpoch(_checkedAtMillis);
+// ---------------------------------------------------------------------------
+// Committed fixtures (shared with rust/gstore_core/tests/update_parity_golden.rs)
+// ---------------------------------------------------------------------------
+//
+// `update_parity_input.json` is INPUT ONLY: the handcrafted channel payloads /
+// installed versions / preferred APK the Rust fixture generator consumes. It is
+// never compared against anything as an expectation.
+//
+// `update_parity_golden.json` is REAL core output: it is produced by running
+// the production Rust `UpdateService` over the committed SQLite fixture
+// (`update_parity_input.db`). It is the authoritative core expectation here.
+const String _fixturesDir = 'rust/gstore_core/tests/fixtures';
 
-/// Core-native fixture: the exact camelCase JSON `UpdateApi` emits (no
-/// `detail`). This is deliberately NOT the Dart object shape: the parity path
-/// decodes it with the production [decodeUpdateList] codec.
-List<Map<String, dynamic>> _coreUpdatesJson({String alphaLatest = '2.0.0'}) {
-  return <Map<String, dynamic>>[
-    <String, dynamic>{
-      'channelId': 'github',
-      'appId': 'owner/alpha',
-      'appName': 'Alpha',
-      'iconUrl': 'https://example.test/alpha.png',
-      'packageName': 'com.example.alpha',
-      'installedVersion': '1.0.0',
-      'latestVersion': alphaLatest,
-      'checkedAt': _checkedAtMillis,
-      'download': <String, dynamic>{
-        'url': 'https://example.test/alpha-arm64-$alphaLatest.apk',
-        'name': 'alpha-arm64-v8a.apk',
-        'size': 1234,
-        'downloadCount': 7,
-        'version': alphaLatest,
-        'versionCode': 200,
-        'publishedAt': _checkedAtMillis,
-        'platform': 'arm64-v8a',
-        'hash': 'alpha-sha256',
-        'hashType': 'sha256',
-      },
-    },
-    <String, dynamic>{
-      'channelId': 'github',
-      'appId': 'owner/beta',
-      'appName': 'Beta',
-      'iconUrl': 'https://example.test/beta.png',
-      'packageName': 'com.example.beta',
-      'installedVersion': '3.1.0',
-      'latestVersion': '4.0.0',
-      'checkedAt': _checkedAtMillis,
-      'download': <String, dynamic>{
-        'url': 'https://example.test/beta-universal.apk',
-        'name': 'beta-universal.apk',
-        'size': 4321,
-        'downloadCount': 3,
-        'version': '4.0.0',
-        'versionCode': 400,
-        'publishedAt': _checkedAtMillis,
-        'platform': 'universal',
-        'hash': 'beta-sha256',
-        'hashType': 'sha256',
-      },
-    },
+String _inputPath() => '$_fixturesDir/update_parity_input.json';
+
+/// Test-only override so a mutated /tmp golden copy can be proven to fail; the
+/// committed golden is never modified in that mode.
+String _goldenPath() =>
+    Platform.environment['GSTORE_UPDATE_PARITY_GOLDEN'] ??
+    '$_fixturesDir/update_parity_golden.json';
+
+Map<String, dynamic> _readJson(String path) =>
+    jsonDecode(File(path).readAsStringSync()) as Map<String, dynamic>;
+
+Map<String, dynamic> _inputFixture() => _readJson(_inputPath());
+Map<String, dynamic> _golden() => _readJson(_goldenPath());
+Map<String, dynamic> _goldenCanonical() =>
+    (_golden()['canonical'] as Map).cast<String, dynamic>();
+Map<String, dynamic> _goldenReport() =>
+    (_golden()['report'] as Map).cast<String, dynamic>();
+
+int get _checkedAtMillis => (_inputFixture()['checkedAt'] as num).toInt();
+DateTime get _checkedAt => DateTime.fromMillisecondsSinceEpoch(_checkedAtMillis);
+
+/// Builds the legacy lane's input from the SAME committed INPUT fixture the
+/// Rust generator consumes, ordered exactly like `AddedAppsService::list`
+/// (`add_time DESC`) so the two lanes are fed identical data.
+List<AppUpdateInfo> _legacyUpdates() {
+  final input = _inputFixture();
+  final added = <Map<String, dynamic>>[
+    ...(input['added'] as List).cast<Map<String, dynamic>>(),
+  ]..sort((a, b) => (b['addTime'] as int).compareTo(a['addTime'] as int));
+  final channels = <String, Map<String, dynamic>>{
+    for (final channel
+        in (input['channels'] as List).cast<Map<String, dynamic>>())
+      channel['code'] as String: channel,
+  };
+  return <AppUpdateInfo>[
+    for (final entry in added)
+      _legacyUpdate(
+        channelId: entry['channelId'] as String,
+        update: (channels[entry['channelId']]!['updates'] as List)
+            .cast<Map<String, dynamic>>()
+            .firstWhere((update) => update['appId'] == entry['appId']),
+      ),
   ];
 }
 
-/// Legacy-native fixture: the same logical check expressed as Dart models the
-/// legacy engine builds. It is produced independently of the core JSON above
-/// so an echo-it-back fake cannot fake parity.
-List<AppUpdateInfo> _legacyUpdates() => <AppUpdateInfo>[
-      AppUpdateInfo(
-        channelId: 'github',
-        appId: 'owner/alpha',
-        appName: 'Alpha',
-        iconUrl: 'https://example.test/alpha.png',
-        packageName: 'com.example.alpha',
-        installedVersion: '1.0.0',
-        latestVersion: '2.0.0',
-        checkedAt: _checkedAt,
-        latestDownload: DownloadInfo(
-          url: 'https://example.test/alpha-arm64-2.0.0.apk',
-          name: 'alpha-arm64-v8a.apk',
-          size: 1234,
-          downloadCount: 7,
-          version: '2.0.0',
-          versionCode: 200,
-          publishedAt: _checkedAt,
-          platform: 'arm64-v8a',
-          hash: 'alpha-sha256',
-          hashType: 'sha256',
+AppUpdateInfo _legacyUpdate({
+  required String channelId,
+  required Map<String, dynamic> update,
+}) {
+  final download = update['download'] as Map<String, dynamic>;
+  return AppUpdateInfo(
+    channelId: channelId,
+    appId: update['appId'] as String,
+    appName: update['appName'] as String,
+    iconUrl: update['iconUrl'] as String?,
+    packageName: update['packageName'] as String,
+    installedVersion: _installedVersionFor(update['packageName'] as String),
+    latestVersion: update['latestVersion'] as String,
+    checkedAt: _checkedAt,
+    latestDownload: DownloadInfo(
+      url: download['url'] as String,
+      name: download['name'] as String,
+      size: download['size'] as int?,
+      downloadCount: download['downloadCount'] as int?,
+      version: download['version'] as String?,
+      versionCode: download['versionCode'] as int?,
+      publishedAt: download['publishedAt'] == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(download['publishedAt'] as int),
+      platform: download['platform'] as String?,
+      hash: download['hash'] as String?,
+      hashType: download['hashType'] as String?,
+    ),
+  );
+}
+
+String _installedVersionFor(String packageName) {
+  for (final app
+      in (_inputFixture()['installed'] as List).cast<Map<String, dynamic>>()) {
+    if (app['packageName'] == packageName) {
+      return app['versionName'] as String;
+    }
+  }
+  throw StateError('no installed version for $packageName');
+}
+
+/// Seeds the user preference fixture the golden covers.
+Future<void> _seedPreferredApk() async {
+  final preferred =
+      (_inputFixture()['preferredApk'] as Map).cast<String, String>();
+  for (final entry in preferred.entries) {
+    final parts = entry.key.split(':');
+    await UpdateCache.savePreferredApk(parts[0], parts[1], entry.value);
+  }
+}
+
+/// A report-backed core fake: replays the committed golden candidates and hands
+/// the production facade a real [CoreCheckReport], so the `lastReport` branch
+/// (and therefore `deriveCoreCheckLogs`) is exercised, not bypassed.
+_ReportCoreBackend _goldenCoreBackend({
+  List<Map<String, dynamic>>? candidates,
+  CoreCheckReport? report,
+}) {
+  final json = candidates ??
+      (_goldenCanonical()['candidates'] as List).cast<Map<String, dynamic>>();
+  final reportJson = _goldenReport();
+  final decoded = decodeUpdateList(jsonEncode(json));
+  return _ReportCoreBackend(
+    updatesJson: json,
+    report: report ??
+        CoreCheckReport(
+          updates: decoded,
+          skipped: <UpdateSkip>[
+            for (final skip
+                in (reportJson['skipped'] as List).cast<Map<String, dynamic>>())
+              UpdateSkip.fromJson(skip),
+          ],
+          checkedAt: DateTime.fromMillisecondsSinceEpoch(
+            (reportJson['checkedAt'] as num).toInt(),
+          ),
+          total: (reportJson['total'] as num).toInt(),
+          usedCache: reportJson['usedCache'] as bool,
         ),
-      ),
-      AppUpdateInfo(
-        channelId: 'github',
-        appId: 'owner/beta',
-        appName: 'Beta',
-        iconUrl: 'https://example.test/beta.png',
-        packageName: 'com.example.beta',
-        installedVersion: '3.1.0',
-        latestVersion: '4.0.0',
-        checkedAt: _checkedAt,
-        latestDownload: DownloadInfo(
-          url: 'https://example.test/beta-universal.apk',
-          name: 'beta-universal.apk',
-          size: 4321,
-          downloadCount: 3,
-          version: '4.0.0',
-          versionCode: 400,
-          publishedAt: _checkedAt,
-          platform: 'universal',
-          hash: 'beta-sha256',
-          hashType: 'sha256',
-        ),
-      ),
-    ];
+  );
+}
 
 /// Legacy-lane fake manager: reproduces `UpdateManagerService.checkUpdates`
 /// state + persistence (the same four prefs keys) without touching channels.
+///
+/// [checkCount] is FIXTURE INSTRUMENTATION, not a production counter. It exists
+/// only so this test can prove the legacy engine did (legacy half) or did not
+/// (core half) run.
 class _FixtureUpdateManager extends UpdateManagerService {
   _FixtureUpdateManager({List<AppUpdateInfo>? updates})
       : _fixture = updates ?? const <AppUpdateInfo>[];
 
   final List<AppUpdateInfo> _fixture;
 
+  /// Fixture instrumentation: number of times this fake legacy engine ran.
   int checkCount = 0;
 
   @override
@@ -204,9 +243,9 @@ class _FixtureUpdateManager extends UpdateManagerService {
 }
 
 /// Core-lane fake: only the existing `UpdateBackend.check` contract is used, so
-/// the RED run compiles against today's API while proving the facade path is
-/// not consulted.
-class _RecordingCoreBackend implements UpdateBackend {
+/// the production facade path is what gets exercised. The golden is the source
+/// of truth for [updatesJson]; `lastReport` supplies the production report.
+class _RecordingCoreBackend extends UpdateBackend {
   _RecordingCoreBackend(this.updatesJson);
 
   final List<Map<String, dynamic>> updatesJson;
@@ -255,6 +294,76 @@ class _RecordingCoreBackend implements UpdateBackend {
   Future<int> count() async {
     calls.add('count');
     return _updates.length;
+  }
+
+  @override
+  Future<bool> cacheValid() async {
+    calls.add('cacheValid');
+    return false;
+  }
+}
+
+/// Core fake that additionally carries a real [CoreCheckReport] through the
+/// `UpdateBackend.lastReport` seam (production: `FrbUpdateBackend`).
+class _ReportCoreBackend extends _RecordingCoreBackend
+    implements UpdateReportSource {
+  _ReportCoreBackend({
+    required List<Map<String, dynamic>> updatesJson,
+    required this.report,
+  }) : super(updatesJson);
+
+  final CoreCheckReport? report;
+
+  @override
+  CoreCheckReport? get lastReport => report;
+}
+
+/// A legacy backend that records every call and does nothing else. Injecting it
+/// on the core half proves the production facade never reaches the legacy lane
+/// while `update` is authoritative — independently of the fixture counter.
+class _RecordingLegacyBackend extends UpdateBackend {
+  final List<String> calls = <String>[];
+
+  @override
+  Future<List<AppUpdateInfo>> check({required bool force}) async {
+    calls.add('check:$force');
+    return const <AppUpdateInfo>[];
+  }
+
+  @override
+  Future<List<AppUpdateInfo>> run() async {
+    calls.add('run');
+    return const <AppUpdateInfo>[];
+  }
+
+  @override
+  Future<List<AppUpdateInfo>> list() async {
+    calls.add('list');
+    return const <AppUpdateInfo>[];
+  }
+
+  @override
+  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async {
+    calls.add('checkApp:$appId');
+    return null;
+  }
+
+  @override
+  Future<bool> markUpdated(String appId) async {
+    calls.add('markUpdated:$appId');
+    return false;
+  }
+
+  @override
+  Future<bool> hasUpdate(String appId) async {
+    calls.add('hasUpdate:$appId');
+    return false;
+  }
+
+  @override
+  Future<int> count() async {
+    calls.add('count');
+    return 0;
   }
 
   @override
@@ -390,17 +499,23 @@ void main() {
   });
 
   test('update_cutover_parity_diff_empty', () async {
+    final goldenCanonical = _goldenCanonical();
+
     // ---- legacy lane: flag off, legacy service writes the canonical state ----
     CoreFlags.installBackend(_FakeFlagsBackend(const CoreFlagsSnapshot()));
     await CoreFlags.refresh();
     UpdateFacade.backendOverride = null;
+    UpdateFacade.legacyBackendOverride = null;
 
-    final legacyManager =
-        _FixtureUpdateManager(updates: _legacyUpdates());
+    final legacyManager = _FixtureUpdateManager(updates: _legacyUpdates());
     legacyManager.debugSetState(lastCheckedAt: _checkedAt);
-    await UpdateCache.savePreferredApk(
-        'github', 'owner/alpha', 'alpha-arm64-v8a.apk');
+    await _seedPreferredApk();
     await _runNotifierCheck(legacyManager);
+
+    // Positive control: the legacy fixture engine really ran, so the probe
+    // below is demonstrably capable of firing (it is not a dead counter).
+    expect(legacyManager.checkCount, 1,
+        reason: 'positive control: the legacy fixture engine must run once');
 
     final legacyPrefs = await SharedPreferences.getInstance();
     final legacyCanonical = _canonicalFromPrefs(legacyPrefs);
@@ -439,10 +554,13 @@ void main() {
     );
     await CoreFlags.refresh();
 
-    await UpdateCache.savePreferredApk(
-        'github', 'owner/alpha', 'alpha-arm64-v8a.apk');
-    final coreBackend = _RecordingCoreBackend(_coreUpdatesJson());
+    await _seedPreferredApk();
+    final coreBackend = _goldenCoreBackend();
     UpdateFacade.backendOverride = coreBackend;
+    // Production-boundary proof: a recording legacy backend is available, but
+    // with `update` authoritative the facade must never consult it.
+    final legacyProbe = _RecordingLegacyBackend();
+    UpdateFacade.legacyBackendOverride = legacyProbe;
 
     final coreManager = _FixtureUpdateManager();
     coreManager.debugSetState(lastCheckedAt: _checkedAt);
@@ -452,20 +570,24 @@ void main() {
     // engine was not. A fake that never runs cannot fake parity.
     expect(coreBackend.calls, isNotEmpty,
         reason: 'flag on + facade path must consult the core backend');
+    expect(legacyProbe.calls, isEmpty,
+        reason:
+            'flag on must never consult the legacy backend, even when injected');
     expect(coreManager.checkCount, 0,
-        reason: 'flag on must not run the legacy check engine');
+        reason:
+            'fixture instrumentation: flag on must not run the legacy engine');
     expect(coreState.updateList, hasLength(2),
-        reason: 'the facade must mirror the core result into the shared state');
+        reason: 'the facade must mirror the core report into the shared state');
 
     final corePrefs = await SharedPreferences.getInstance();
     final coreCanonical = _canonicalFromManager(coreManager, corePrefs);
 
     expect(coreCanonical['candidates'], hasLength(2),
-        reason: 'core fixture must produce candidates');
+        reason: 'core golden must produce candidates');
     expect(
       (coreCanonical['update_check_logs_v1'] as List<dynamic>).length,
       greaterThanOrEqualTo(3),
-      reason: 'the facade must derive non-empty check logs',
+      reason: 'the facade must derive non-empty check logs from the report',
     );
     // The same four prefs contracts hold on the mirrored core side.
     expect(coreCanonical['update_last_checked_at'], _checkedAtMillis);
@@ -473,15 +595,25 @@ void main() {
     expect(coreCanonical['update_preferred_apk'],
         <String, dynamic>{'github:owner/alpha': 'alpha-arm64-v8a.apk'});
 
-    final diff = _canonicalDiff(legacyCanonical, coreCanonical);
-    expect(diff, isEmpty, reason: 'update parity diverged: $diff');
+    // ---- legacy == golden == real Rust; core report replay == golden ----
+    expect(legacyCanonical, goldenCanonical,
+        reason: 'legacy lane diverged from the real Rust golden');
+    expect(coreCanonical, goldenCanonical,
+        reason: 'core lane diverged from the real Rust golden');
+    expect(_canonicalDiff(legacyCanonical, coreCanonical), isEmpty,
+        reason: 'update parity diverged');
 
     // ---- adversarial: a deliberate divergence must FAIL the diff ----
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await UpdateCache.savePreferredApk(
-        'github', 'owner/alpha', 'alpha-arm64-v8a.apk');
+    await _seedPreferredApk();
+    final divergedCandidates = <Map<String, dynamic>>[
+      for (final item in (goldenCanonical['candidates'] as List)
+          .cast<Map<String, dynamic>>())
+        Map<String, dynamic>.from(item),
+    ];
+    divergedCandidates.first['latestVersion'] = '9.9.9';
     UpdateFacade.backendOverride =
-        _RecordingCoreBackend(_coreUpdatesJson(alphaLatest: '9.9.9'));
+        _goldenCoreBackend(candidates: divergedCandidates);
     final divergedManager = _FixtureUpdateManager();
     divergedManager.debugSetState(lastCheckedAt: _checkedAt);
     await _runNotifierCheck(divergedManager);
@@ -493,6 +625,54 @@ void main() {
     expect(divergedDiff, isNotEmpty,
         reason: 'the parity diff must detect a real divergence');
     expect(divergedDiff, contains('latestVersions'));
+  });
+
+  test('update_facade_uses_the_backend_report_branch', () async {
+    // The production `lastReport` branch must be driven by the report itself,
+    // not by a concrete backend type check. `usedCache` and `checkedAt` can
+    // only come from the report, so an `_adopt` fallback cannot fake them.
+    CoreFlags.installBackend(
+      _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true, update: true)),
+    );
+    await CoreFlags.refresh();
+
+    final reportAt = _checkedAtMillis + 4242;
+    final candidates =
+        (_goldenCanonical()['candidates'] as List).cast<Map<String, dynamic>>();
+    final updates = decodeUpdateList(jsonEncode(candidates));
+    final backend = _ReportCoreBackend(
+      updatesJson: candidates,
+      report: CoreCheckReport(
+        updates: updates,
+        skipped: const <UpdateSkip>[],
+        checkedAt: DateTime.fromMillisecondsSinceEpoch(reportAt),
+        total: updates.length,
+        usedCache: true,
+      ),
+    );
+    UpdateFacade.backendOverride = backend;
+
+    final manager = _FixtureUpdateManager();
+    final state = await _runNotifierCheck(manager);
+
+    expect(manager.lastCheckedAt, DateTime.fromMillisecondsSinceEpoch(reportAt),
+        reason: 'the facade must take checkedAt from the report branch');
+    expect(manager.checkLog, hasLength(1),
+        reason: 'usedCache reports render the single cache line');
+    expect(manager.checkLog.single.text, contains('使用缓存结果'));
+    expect(state.updateList, hasLength(2));
+  });
+
+  test('fixture_check_count_probe_is_falsifiable', () async {
+    // Committed positive control for the D1 probe: it fires when the legacy
+    // engine runs and stays zero when nothing ran.
+    final called = _FixtureUpdateManager(updates: _legacyUpdates());
+    await called.checkUpdates(force: true);
+    expect(called.checkCount, 1,
+        reason: 'the fixture probe must fire when the legacy engine runs');
+    final notCalled = _FixtureUpdateManager(updates: _legacyUpdates());
+    expect(notCalled.checkCount, 0,
+        reason: 'the fixture probe stays zero when nothing ran');
   });
 
   test('update_cutover_runs_after_bootstrap_facts_and_inventory', () async {
@@ -530,7 +710,8 @@ void main() {
     expect(state.errorMessage, contains('CORE_E_FACTS_MISSING'),
         reason: 'pre-bootstrap update checks must surface the typed code');
     expect(legacyManager.checkCount, 0,
-        reason: 'a missing bootstrap push must not silently fall back');
+        reason:
+            'fixture instrumentation: a missing bootstrap push must not silently fall back');
   });
 
   test('update_cutover_requires_catalog_authoritative', () async {
@@ -546,7 +727,8 @@ void main() {
     expect(state.errorMessage, contains('CORE_E_UPDATE_CUTOVER_ORDER'),
         reason: 'update must not cut over before catalog is authoritative');
     expect(legacyManager.checkCount, 0,
-        reason: 'an out-of-order cutover must not silently fall back');
+        reason:
+            'fixture instrumentation: an out-of-order cutover must not silently fall back');
   });
 
   test('update_core_errors_are_typed_and_reach_the_ui', () async {
@@ -565,7 +747,8 @@ void main() {
     expect(state.errorMessage, contains('CORE_E_INVENTORY_STALE'),
         reason: 'the raw FRB error must become a typed UI error');
     expect(legacyManager.checkCount, 0,
-        reason: 'a typed core rejection must not fall back to the legacy lane');
+        reason:
+            'fixture instrumentation: a typed core rejection must not fall back to the legacy lane');
   });
 
   test('update_callers_use_the_facade', () async {

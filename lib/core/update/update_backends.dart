@@ -13,6 +13,18 @@ import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/core/update/update_report.dart';
 
+/// Optional capability: a transport that records the report of its last check.
+///
+/// The facade reads this seam directly (no concrete `FrbUpdateBackend` type
+/// check), so the production `deriveCoreCheckLogs` path is driven by a real
+/// report and a test fake can supply one. It is deliberately a separate,
+/// opt-in interface rather than a member of [UpdateBackend]: adding a required
+/// member to [UpdateBackend] would break every existing `implements
+/// UpdateBackend` fake that is out of scope for this change.
+abstract interface class UpdateReportSource {
+  CoreCheckReport? get lastReport;
+}
+
 /// Injectable update transport seam.
 abstract class UpdateBackend {
   /// Checks updates, honoring the cache unless [force].
@@ -35,7 +47,7 @@ abstract class UpdateBackend {
 }
 
 /// Production FRB backend.
-class FrbUpdateBackend implements UpdateBackend {
+class FrbUpdateBackend implements UpdateBackend, UpdateReportSource {
   FrbUpdateBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   final String? dataDir;
@@ -47,6 +59,7 @@ class FrbUpdateBackend implements UpdateBackend {
 
   /// The last report recorded by [check]/[run] (report-level data the plain
   /// `List<AppUpdateInfo>` return type cannot carry).
+  @override
   CoreCheckReport? lastReport;
 
   Future<rust.UpdateApi> _ensureApi() {

@@ -163,3 +163,13 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `CORE_E_INSTALL_NOT_FOUND` | host（`bridge.rs::install_err`） | `CoreError::NotFound` | 安装域找不到任务或镜像行（未知 `module_task_id`，或按 `dest_path` 查不到核心下载行）；非 `CORE_E_INSTALL_SESSION` 的 `NotFound` 都映射到该码。`installTask` 自 Wave 6B 起只走 core，无 legacy 分支；调用方应重新枚举/对账后再重试 |
 | `CORE_E_SNAPSHOT_DISK` | core（`db.rs`） | `DbError`（`SNAPSHOT_DISK` 前缀） | 快照恢复预检失败：目标盘剩余空间不足 `2 ×` 快照大小，或 `stat` 剩余空间失败。在任何写入前拒绝，live DB 保持不变；释放空间后重试即可 |
 | `CORE_E_SNAPSHOT_BACKUP` | core（`db.rs`） | `DbError`（`SNAPSHOT_BACKUP` 前缀） | 恢复前 live DB 备份失败（创建 `migration/backups`、取时钟或 `VACUUM INTO` 失败）。失败时不产生备份也不触碰 live DB；修复目录/磁盘后重试 |
+
+## Dart 侧守卫（DART-SIDE GUARD，**非** Rust 核心发出）
+
+以下常量**不由 `gstore_core` 发出**，而是由 Dart 前端在调用核心之前产生。它们沿用共享错误码的
+`CORE_E_` 前缀约定（便于 UI 用同一套 `startsWith('CORE_E_')` 逻辑识别并展示），但它们从未出现在
+任何 Rust `Error` 变体或 FRB 错误消息里；在 Rust 源码中 grep 不到。
+
+| code | 产生位置 | 触发条件 | 含义 |
+|---|---|---|---|
+| `CORE_E_UPDATE_CUTOVER_ORDER` | Dart `lib/core/update/update_report.dart`（`CoreUpdateException.cutoverOrder`），由 `lib/core/update/update_facade.dart` 的 `_assertCutoverOrder` 抛出 | 顺序守卫的两个触发条件：(1) `catalog` 尚未权威（`CoreFlags.catalog == false`）→ 抛本码；(2) `CoreBootstrap` 尚未就绪（未推送平台事实 + 库存，`CoreBootstrap.ready == false`）→ 同一守卫函数抛 `CORE_E_FACTS_MISSING`（见上表） | `update` 在 `catalog` 权威之前、或在 bootstrap 完成之前被翻转时拒绝执行。这是 plan 强制的 cutover 顺序守卫（catalog → update），不是核心返回的运行时错误；Dart 侧保证不会静默回落到 legacy 引擎 |
