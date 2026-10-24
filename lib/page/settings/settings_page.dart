@@ -13,6 +13,7 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:go_router/go_router.dart';
 
@@ -646,19 +647,37 @@ class _SettingsPageState extends State<SettingsPage> {
     if (pkg == null) return;
 
     try {
-      final channel = await ChannelLoader().importZip(
+      final imported = await ChannelLoader().importZip(
         channelKey: pkg.channelKey,
         zipBytes: pkg.bytes,
       );
-      // 环境变量：导入成功后逐个写入
-      if (envVars.isNotEmpty) {
-        for (final entry in envVars.entries) {
-          await channel.setEnv(entry.key, entry.value);
-        }
-        AppDialogs.showSuccess(
-            '渠道包已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
-      } else {
-        AppDialogs.showSuccess('渠道包已导入（${channel.info.name}），可切到发现页查看');
+      // Lane decided by CoreFlags.jsChannel inside ChannelLoader: legacy Dart
+      // registers a JsChannel; the Rust lane returns the installed pack and the
+      // env snapshot goes through ScriptApi.setEnv. Both paths write nothing to
+      // the legacy channel directory while the flag is on.
+      switch (imported) {
+        case LegacyChannelImport(:final channel):
+          if (envVars.isNotEmpty) {
+            for (final entry in envVars.entries) {
+              await channel.setEnv(entry.key, entry.value);
+            }
+            AppDialogs.showSuccess(
+                '渠道包已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
+          } else {
+            AppDialogs.showSuccess(
+                '渠道包已导入（${channel.info.name}），可切到发现页查看');
+          }
+        case ScriptLaneChannelImport(:final pack):
+          if (envVars.isNotEmpty) {
+            await ScriptApi.instance.setEnv(
+              key: pack.key,
+              env: envVars,
+            );
+            AppDialogs.showSuccess(
+                '渠道包已导入（${pack.name}），环境变量已保存，脚本通过 host.env.get 读取');
+          } else {
+            AppDialogs.showSuccess('渠道包已导入（${pack.name}），可切到发现页查看');
+          }
       }
       if (mounted) setState(() {});
     } catch (e) {

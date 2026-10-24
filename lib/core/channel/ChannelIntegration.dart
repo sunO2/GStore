@@ -94,18 +94,21 @@ class ChannelIntegration {
       fdroidChannel,
     ]);
 
-    // 5. 加载并注册脚本渠道（用户渠道目录扫描；单个脚本失败跳过，不阻塞内置渠道）
-    //    脚本渠道 initialize 在 JsChannel.initialize 内完成（失败降级 checkAvailable false）
-    //    CoreFlags.jsChannel=true 时 Rust `ScriptApi` 拥有渠道包，Dart 侧整段跳过。
-    if (manager.dartScriptChannelsEnabled) {
-      try {
-        await ChannelLoader(dio: DioClient().get()).loadAndRegister();
-      } catch (e) {
-        appLog.error('ChannelIntegration: 脚本渠道加载失败（不影响内置渠道）: $e');
+    // 5. 加载脚本渠道（用户渠道目录扫描；单个脚本失败跳过，不阻塞内置渠道）
+    //    `CoreFlags.jsChannel == false`：构建并注册 Dart `JsChannel`
+    //    （initialize 在 JsChannel.initialize 内完成，失败降级 checkAvailable false）。
+    //    `CoreFlags.jsChannel == true`：`ChannelLoader` 不构建 Dart 渠道，而是把
+    //    目录里的 zip 渠道包经 `ScriptApi.init/import` 导入 Rust 脚本通道——这是
+    //    生产环境的启动加载入口，切轨后脚本渠道仍随应用启动被真正加载。
+    try {
+      final loaded =
+          await ChannelLoader(dio: DioClient().get()).loadAndRegister();
+      if (loaded.isEmpty && !manager.dartScriptChannelsEnabled) {
+        appLog.info('ChannelIntegration: CoreFlags.jsChannel=true，'
+            '脚本渠道包已交给 Rust ScriptApi 通道加载');
       }
-    } else {
-      appLog.info(
-          'ChannelIntegration: CoreFlags.jsChannel=true，跳过 Dart 脚本渠道加载（Rust ScriptApi 接管）');
+    } catch (e) {
+      appLog.error('ChannelIntegration: 脚本渠道加载失败（不影响内置渠道）: $e');
     }
 
     // 初始化所有启用的渠道

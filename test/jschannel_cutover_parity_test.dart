@@ -37,6 +37,7 @@ import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -195,6 +196,20 @@ const String _flipScript = r'''
 function main(method, params) { return null; }
 ''';
 
+/// Installs the process-wide script-channel service without FFI: fixed core
+/// dirs and no Rust runtime init. The service still resolves `ScriptApi.instance`
+/// lazily, so a fake backend installed afterwards is observed.
+void _installScriptService() {
+  ScriptChannelService.installForTest(ScriptChannelService(
+    coreDirs: () async => (
+      '/tmp/gstore_seam/data',
+      '/tmp/gstore_seam/files',
+      '/tmp/gstore_seam/cache',
+    ),
+    ensureRust: () async {},
+  ));
+}
+
 Future<void> _setFlag({required bool jsChannel}) async {
   CoreFlags.installBackend(
     _FakeFlagsBackend(CoreFlagsSnapshot(jsChannel: jsChannel)),
@@ -219,6 +234,7 @@ void main() {
     LegacyWriteGuard.resetForTest();
     CoreFlags.resetBackend();
     ScriptApi.resetBackend();
+    ScriptChannelService.resetForTest();
     await ChannelManager.instance.disposeAll();
   });
 
@@ -267,6 +283,10 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await File('${dir.path}/flip.zip')
         .writeAsBytes(_zipOf('function main(){ return null; }'));
+
+    // The flipped load path is the Rust lane; back it with the recording seam.
+    ScriptApi.installBackend(_RecordingScriptApiBackend());
+    _installScriptService();
 
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
     expect(loaded, isEmpty,
@@ -346,14 +366,17 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await File('${dir.path}/seam.zip').writeAsBytes(_zipOf(_flipScript));
 
+    // The flipped load path is the Rust lane; back it with the recording seam.
+    final backend = _RecordingScriptApiBackend();
+    ScriptApi.installBackend(backend);
+    _installScriptService();
+
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
     expect(loaded, isEmpty);
     expect(manager.dynamicChannels, isEmpty);
 
     // SEAM-BACKED (b): the facade forwards the exact method name and payload to
     // its backend. The backend is a seam; nothing here claims a Rust result.
-    final backend = _RecordingScriptApiBackend();
-    ScriptApi.installBackend(backend);
     const paramsJson = '{"token":"T-42"}';
     await ScriptApi.instance.run(
       key: 'js_example',

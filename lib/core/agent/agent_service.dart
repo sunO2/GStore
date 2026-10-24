@@ -36,6 +36,9 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
@@ -2861,6 +2864,14 @@ class AgentService {
   Future<String> _runJsChannel(String channel, String method, dynamic params) async {
     if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
     if (method.isEmpty) return '执行脚本渠道方法需要 method';
+
+    // jsChannel 切轨后脚本渠道不在 Dart ChannelManager 注册表里（结构门禁拒绝
+    // Dart 脚本渠道），执行入口必须落到 Rust `ScriptApi.run`；flag off 时保持
+    // 旧的 JsChannel.callMethod 路径逐字节不变。
+    if (CoreFlags.jsChannel && channel.startsWith('js_')) {
+      return _runScriptLaneChannel(channel, method, params);
+    }
+
     try {
       final inst = _resolveChannel(channel);
       if (inst is! JsChannel) {
@@ -2876,6 +2887,38 @@ class AgentService {
         return '脚本 $channel 未实现方法 $method 或执行失败（返回 null）';
       }
       return '脚本 $channel.$method 返回：\n${result.toString()}';
+    } catch (e) {
+      return '执行脚本方法失败: $e';
+    }
+  }
+
+  /// Runs one method through the Rust script lane (`ScriptApi.run`).
+  ///
+  /// The pack must be installed (startup load or the settings import action);
+  /// `ScriptApi.run` returns the raw JSON the Dart runtime would have received,
+  /// so the value is surfaced verbatim, matching the legacy string contract.
+  Future<String> _runScriptLaneChannel(
+    String channel,
+    String method,
+    dynamic params,
+  ) async {
+    try {
+      await ScriptChannelService.instance.ensureInitialized();
+      final packs = await ScriptApi.instance.list();
+      if (!packs.any((pack) => pack.key == channel)) {
+        return '渠道 $channel 未安装到脚本通道，请先在设置中导入脚本渠道包';
+      }
+      final args = params is Map
+          ? params.map((k, v) => MapEntry(k.toString(), v))
+          : const <String, dynamic>{};
+      _updateToolStep('执行脚本方法 $method…');
+      final raw = await ScriptApi.instance.run(
+        key: channel,
+        method: method,
+        paramsJson: jsonEncode(args),
+      );
+      _updateToolStep('脚本方法 $method 已返回');
+      return '脚本 $channel.$method 返回：\n$raw';
     } catch (e) {
       return '执行脚本方法失败: $e';
     }

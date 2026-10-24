@@ -176,6 +176,11 @@ Uint8List buildZip({
 /// 损坏/非 zip 字节
 Uint8List corruptZip() => Uint8List.fromList(List<int>.filled(64, 7));
 
+/// Unwraps the legacy-lane import result. This file keeps `jsChannel` off, so
+/// every successful import must be a registered Dart `JsChannel`; a script-lane
+/// result here would mean the flag gating regressed.
+JsChannel _legacy(ChannelImport result) => (result as LegacyChannelImport).channel;
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -475,10 +480,10 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
 
       final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
-      final channel = await loader.importZip(
+      final channel = _legacy(await loader.importZip(
         channelKey: 'js_vivo',
         zipBytes: buildZip(entry: _scriptA),
-      );
+      ));
 
       expect(channel.channelKey, 'js_vivo');
       expect(channel.isInitialized, isTrue);
@@ -501,11 +506,11 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
 
       final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
-      final channel = await loader.importZip(
+      final channel = _legacy(await loader.importZip(
         channelKey: 'js_full',
         zipBytes:
             buildZip(entry: _scriptA, detail: _detailScript, meta: _metaJson),
-      );
+      ));
 
       expect(channel.detailScript, contains('getAppDetail'));
       expect(channel.meta,
@@ -586,13 +591,13 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
 
       final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
-      final first = await loader.importZip(
-          channelKey: 'js_dup', zipBytes: buildZip(entry: _scriptA));
+      final first = _legacy(await loader.importZip(
+          channelKey: 'js_dup', zipBytes: buildZip(entry: _scriptA)));
       expect((await first.searchApps('App')).data!.first.name, 'App A One');
 
       // 同 key 导入不同包 → 覆盖
-      final second = await loader.importZip(
-          channelKey: 'js_dup', zipBytes: buildZip(entry: _scriptB));
+      final second = _legacy(await loader.importZip(
+          channelKey: 'js_dup', zipBytes: buildZip(entry: _scriptB)));
       expect(second.channelKey, 'js_dup');
       expect(second, isNot(same(first)), reason: '覆盖后应为新实例');
       expect((await second.searchApps('App')).data!.first.name, 'App B One');
@@ -630,10 +635,10 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
 
       final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
-      final first = await loader.importZip(
-          channelKey: 'js_idem', zipBytes: buildZip(entry: _scriptA));
-      final second = await loader.importZip(
-          channelKey: 'js_idem', zipBytes: buildZip(entry: _scriptA));
+      final first = _legacy(await loader.importZip(
+          channelKey: 'js_idem', zipBytes: buildZip(entry: _scriptA)));
+      final second = _legacy(await loader.importZip(
+          channelKey: 'js_idem', zipBytes: buildZip(entry: _scriptA)));
 
       expect(second, same(first), reason: '包未变应返回现有渠道');
 
