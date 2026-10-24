@@ -3108,7 +3108,7 @@ class AgentService {
   /// 检查应用更新
   Future<String> _checkUpdates(String appId, String channel) async {
     try {
-      final manager = UpdateManagerService.instance;
+      final manager = UpdateFacade.instance;
 
       // 指定应用时只查该应用（渠道直查或读缓存，不污染全量）
       if (appId.isNotEmpty) {

@@ -120,7 +120,7 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
     // 订阅 UpdateManager：可更新状态变化 → 刷新红点/分区/排序
     try {
-      _updateSub = UpdateManagerService.instance.updateListStream.listen((_) {
+      _updateSub = UpdateFacade.instance.updateListStream.listen((_) {
         _syncUpdateStates();
         _applyFilter();
       });
@@ -132,19 +132,19 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
   /// 同步可更新状态到本地（供红点/分区/排序）
   void _syncUpdateStates() {
-    final manager = UpdateManagerService.instance;
+    final manager = UpdateFacade.instance;
     final states = <String, bool>{};
     for (final app in state.apps) {
-      states[app.appInfo.appId] = manager.hasUpdate(app.appInfo.appId);
+      states[app.appInfo.appId] = manager.cachedHasUpdate(app.appInfo.appId);
     }
     state = state.copyWith(updateStates: states);
   }
 
   /// 可更新应用列表（用于"可更新"分区，数据来自 UpdateManager）
   List<AggregatedAppInfo> get updatableApps {
-    final manager = UpdateManagerService.instance;
+    final manager = UpdateFacade.instance;
     final result = state.apps
-        .where((app) => manager.hasUpdate(app.appInfo.appId))
+        .where((app) => manager.cachedHasUpdate(app.appInfo.appId))
         .toList();
     result.sort(
         (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));

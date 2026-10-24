@@ -482,6 +482,83 @@ class UpdateManagerService {
     return DateTime.now().difference(last).inHours < cacheValidHours;
   }
 
+  // ===== Facade/core 通道的共享状态镜像 =====
+  //
+  // `UpdateFacade` 在 `CoreFlags.update == true` 时由 FRB 执行检测，并通过
+  // 以下方法把结果回放到本服务的响应式状态（结果/日志/时间/进度）。页面、
+  // 红点、列表与 Agent 因此保持同一套订阅面。这些方法只改内存状态：不访问
+  // 渠道、不写缓存（持久化由 Rust core 拥有），所以不是 legacy writer。
+
+  /// 开始一轮由 facade（core 通道）驱动的检测：加锁并清空上一轮日志/进度。
+  void beginFacadeCheck() {
+    _isChecking = true;
+    _notifyIsChecking();
+    _checkLog.clear();
+    _notifyCheckLog();
+    _checkList.clear();
+    _notifyCheckList();
+    _currentProgress = null;
+    _notifyCurrentProgress();
+    _checkedCount = 0;
+    _notifyCheckedCount();
+    _totalCount = 0;
+    _notifyTotalCount();
+    _checkingAppName = '';
+    _notifyCheckingAppName();
+    _checkingIconUrl = null;
+    _notifyCheckingIconUrl();
+  }
+
+  /// 回放 facade/core 检测结果到共享状态并释放检测锁。
+  void adoptFacadeCheck({
+    required List<AppUpdateInfo> updates,
+    required List<CheckLogEntry> logs,
+    required DateTime checkedAt,
+    int? total,
+    List<String>? checkList,
+  }) {
+    _updateList
+      ..clear()
+      ..addAll(updates);
+    _notifyUpdateList();
+    _checkLog
+      ..clear()
+      ..addAll(logs);
+    _notifyCheckLog();
+    _lastCheckedAt = checkedAt;
+    _notifyLastCheckedAt();
+    if (total != null) {
+      _totalCount = total;
+      _notifyTotalCount();
+      _checkedCount = total;
+      _notifyCheckedCount();
+    }
+    if (checkList != null) {
+      _checkList
+        ..clear()
+        ..addAll(checkList);
+      _notifyCheckList();
+    }
+    _isChecking = false;
+    _notifyIsChecking();
+  }
+
+  /// 回放 facade/core 检测失败：写一条 typed 错误日志并释放检测锁。
+  void failFacadeCheck(String message) {
+    final entry = CheckLogEntry(level: CheckLogLevel.error, text: message);
+    _checkLog.add(entry);
+    _notifyCheckLog();
+    _isChecking = false;
+    _notifyIsChecking();
+  }
+
+  /// core 通道 markUpdated 成功后同步共享状态（红点/列表立即更新）。
+  void removeFacadeUpdated(String appId) {
+    final before = _updateList.length;
+    _updateList.removeWhere((e) => e.appId == appId);
+    if (_updateList.length != before) _notifyUpdateList();
+  }
+
   /// 重置状态（测试用）
   @visibleForTesting
   void resetForTest() {

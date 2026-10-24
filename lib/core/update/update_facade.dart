@@ -2,189 +2,34 @@
 ///
 /// `CoreFlags.update == false` routes to the legacy Dart
 /// `UpdateManagerService`; `true` routes to the FRB `UpdateApi`.
+///
+/// The facade also owns the shared reactive state surface (results, logs,
+/// progress, last-check time). On the legacy lane the service writes that
+/// state itself; on the core lane the facade mirrors the core result into the
+/// same state holder so the update page, the app list, the badge and the agent
+/// keep a single subscription contract. The legacy check engine is never run
+/// while `update` is authoritative.
 library;
 
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:path_provider/path_provider.dart';
 
 import 'package:gstore/core/core_flags.dart';
-import 'package:gstore/core/rust/RustBridge.dart';
-import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_backends.dart';
+import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
+import 'package:gstore/core/update/update_report.dart';
 
-/// Injectable update transport seam.
-abstract class UpdateBackend {
-  /// Checks updates, honoring the cache unless [force].
-  Future<List<AppUpdateInfo>> check({required bool force});
-
-  /// Forces a full check.
-  Future<List<AppUpdateInfo>> run();
-
-  Future<List<AppUpdateInfo>> list();
-
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode});
-
-  Future<bool> markUpdated(String appId);
-
-  Future<bool> hasUpdate(String appId);
-
-  Future<int> count();
-
-  Future<bool> cacheValid();
-}
-
-/// Production FRB backend.
-class FrbUpdateBackend implements UpdateBackend {
-  FrbUpdateBackend({this.dataDir, this.filesDir, this.cacheDir});
-
-  final String? dataDir;
-  final String? filesDir;
-  final String? cacheDir;
-
-  rust.UpdateApi? _api;
-  Future<rust.UpdateApi>? _pending;
-
-  Future<rust.UpdateApi> _ensureApi() {
-    final existing = _api;
-    if (existing != null) return Future.value(existing);
-    return _pending ??= _create();
-  }
-
-  Future<rust.UpdateApi> _create() async {
-    try {
-      await RustBridge.ensureInitialized();
-      final dirs = await _resolveDirs();
-      final api = await rust.UpdateApi.init(
-        dataDir: dirs.$1,
-        filesDir: dirs.$2,
-        cacheDir: dirs.$3,
-      );
-      _api = api;
-      return api;
-    } finally {
-      _pending = null;
-    }
-  }
-
-  Future<(String, String, String)> _resolveDirs() async {
-    if (dataDir != null && filesDir != null && cacheDir != null) {
-      return (dataDir!, filesDir!, cacheDir!);
-    }
-    final support = await getApplicationSupportDirectory();
-    final root = '${support.path}/gstore_core';
-    return ('$root/data', '$root/files', '$root/cache');
-  }
-
-  Future<T> _call<T>(Future<T> Function(rust.UpdateApi api) action) async {
-    final api = await _ensureApi();
-    return action(api);
-  }
-
-  @override
-  Future<List<AppUpdateInfo>> check({required bool force}) =>
-      _call((api) => api.check(force: force)).then(
-        (report) => decodeUpdateList(report.updatesJson),
-      );
-
-  @override
-  Future<List<AppUpdateInfo>> run() => _call((api) => api.run()).then(
-        (report) => decodeUpdateList(report.updatesJson),
-      );
-
-  @override
-  Future<List<AppUpdateInfo>> list() =>
-      _call((api) => api.list()).then(decodeUpdateList);
-
-  @override
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) =>
-      _call((api) => api.checkApp(appId: appId, channelCode: channelCode))
-          .then((raw) => raw == null ? null : decodeUpdate(raw));
-
-  @override
-  Future<bool> markUpdated(String appId) =>
-      _call((api) => api.markUpdated(appId: appId));
-
-  @override
-  Future<bool> hasUpdate(String appId) =>
-      _call((api) => api.hasUpdate(appId: appId));
-
-  @override
-  Future<int> count() =>
-      _call((api) => api.count()).then((value) => value.toInt());
-
-  @override
-  Future<bool> cacheValid() => _call((api) => api.cacheValid());
-}
-
-/// Decodes one serialized `AppUpdateInfo`.
-AppUpdateInfo decodeUpdate(String raw) => AppUpdateInfo.fromCacheJson(
-    Map<String, dynamic>.from(jsonDecode(raw) as Map));
-
-/// Decodes a serialized `AppUpdateInfo` array.
-List<AppUpdateInfo> decodeUpdateList(String raw) {
-  final decoded = jsonDecode(raw);
-  if (decoded is! List) return <AppUpdateInfo>[];
-  return decoded
-      .whereType<Map>()
-      .map((item) =>
-          AppUpdateInfo.fromCacheJson(Map<String, dynamic>.from(item)))
-      .toList(growable: false);
-}
-
-/// Legacy backend over `UpdateManagerService`.
-class LegacyUpdateBackend implements UpdateBackend {
-  LegacyUpdateBackend({UpdateManagerService? service})
-      : _service = service ?? UpdateManagerService.instance;
-
-  final UpdateManagerService _service;
-
-  @override
-  Future<List<AppUpdateInfo>> check({required bool force}) async {
-    await _service.checkUpdates(force: force);
-    return List<AppUpdateInfo>.of(_service.updateList);
-  }
-
-  @override
-  Future<List<AppUpdateInfo>> run() => check(force: true);
-
-  @override
-  Future<List<AppUpdateInfo>> list() async =>
-      List<AppUpdateInfo>.of(_service.updateList);
-
-  @override
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
-      _service.getByAppId(appId);
-
-  @override
-  Future<bool> markUpdated(String appId) async {
-    final existed = _service.hasUpdate(appId);
-    await _service.markUpdated(appId);
-    return existed && !_service.hasUpdate(appId);
-  }
-
-  @override
-  Future<bool> hasUpdate(String appId) async => _service.hasUpdate(appId);
-
-  @override
-  Future<int> count() async => _service.updateCount;
-
-  @override
-  Future<bool> cacheValid() async {
-    if (_service.updateList.isEmpty) return false;
-    final last = _service.lastCheckedAt;
-    if (last == null) return false;
-    return DateTime.now().difference(last).inHours < 1;
-  }
-}
+export 'package:gstore/core/update/update_backends.dart';
+export 'package:gstore/core/update/update_report.dart';
 
 /// Flag-gated update facade.
 class UpdateFacade {
   UpdateFacade({UpdateBackend? legacy, UpdateBackend? frb})
       : _legacy = legacy ?? LegacyUpdateBackend(),
-        _frb = frb ?? FrbUpdateBackend();
+        _frb = frb ?? FrbUpdateBackend(),
+        _frbInjected = frb != null;
 
   static UpdateFacade instance = UpdateFacade();
 
@@ -199,6 +44,14 @@ class UpdateFacade {
   final UpdateBackend _legacy;
   final UpdateBackend _frb;
 
+  /// An injected FRB backend is a test seam; only the default production wiring
+  /// enforces the bootstrap/catalog ordering gate.
+  final bool _frbInjected;
+
+  /// The shared reactive state holder. The legacy engine writes it when
+  /// `update` is off; the facade mirrors the core result into it when on.
+  UpdateManagerService get _state => UpdateManagerService.instance;
+
   Future<bool> _enabled() async {
     try {
       await CoreFlags.refresh();
@@ -208,9 +61,197 @@ class UpdateFacade {
     return CoreFlags.update;
   }
 
-  Future<UpdateBackend> _backend() async => await _enabled()
-      ? (backendOverride ?? _frb)
-      : (legacyBackendOverride ?? _legacy);
+  /// The cutover is only legal after the Rust core is authoritative for
+  /// `catalog` and the bootstrap has pushed platform facts + inventory.
+  void _assertCutoverOrder() {
+    if (!CoreFlags.catalog) {
+      throw const CoreUpdateException(
+        CoreUpdateException.cutoverOrder,
+        'update cutover requires catalog authoritative (catalog -> update order)',
+      );
+    }
+    if (!CoreBootstrap.ready) {
+      throw const CoreUpdateException(
+        CoreUpdateException.factsMissing,
+        'CoreBootstrap has not pushed platform facts + inventory',
+      );
+    }
+  }
+
+  UpdateBackend _coreBackend() {
+    final override = backendOverride;
+    if (override != null) return override;
+    if (!_frbInjected) _assertCutoverOrder();
+    return _frb;
+  }
+
+  Future<UpdateBackend> _backend() async {
+    if (!await _enabled()) {
+      return legacyBackendOverride ?? _legacy;
+    }
+    return _coreBackend();
+  }
+
+  // ===== Shared reactive state (same surface for both lanes) =====
+
+  List<AppUpdateInfo> get updateList => _state.updateList;
+
+  List<AppUpdateInfo> get updatableApps => _state.updatableApps;
+
+  int get updateCount => _state.updateCount;
+
+  AppUpdateInfo? cachedUpdate(String appId) => _state.getByAppId(appId);
+
+  bool cachedHasUpdate(String appId) => _state.hasUpdate(appId);
+
+  DateTime? get lastCheckedAt => _state.lastCheckedAt;
+
+  bool get isChecking => _state.isChecking;
+
+  List<CheckLogEntry> get checkLog => _state.checkLog;
+
+  UpdateCheckProgress? get currentProgress => _state.currentProgress;
+
+  Stream<List<AppUpdateInfo>> get updateListStream => _state.updateListStream;
+
+  Stream<List<CheckLogEntry>> get checkLogStream => _state.checkLogStream;
+
+  Stream<bool> get isCheckingStream => _state.isCheckingStream;
+
+  Stream<DateTime?> get lastCheckedAtStream => _state.lastCheckedAtStream;
+
+  Stream<List<String>> get checkListStream => _state.checkListStream;
+
+  Stream<int> get checkedCountStream => _state.checkedCountStream;
+
+  Stream<int> get totalCountStream => _state.totalCountStream;
+
+  Stream<String> get checkingAppNameStream => _state.checkingAppNameStream;
+
+  Stream<String?> get checkingIconUrlStream => _state.checkingIconUrlStream;
+
+  Stream<UpdateCheckProgress?> get currentProgressStream =>
+      _state.currentProgressStream;
+
+  List<String> get checkList => _state.checkList;
+
+  int get checkedCount => _state.checkedCount;
+
+  int get totalCount => _state.totalCount;
+
+  String get checkingAppName => _state.checkingAppName;
+
+  String? get checkingIconUrl => _state.checkingIconUrl;
+
+  /// Restores the persisted result/log cache into the shared state.
+  Future<void> get cacheRestored => _state.cacheRestored;
+
+  void restoreCacheInBackground() => _state.restoreCacheInBackground();
+
+  /// Startup/background lazy check (lock + one-hour window), routed by flag.
+  Future<void> ensureChecked({bool force = false}) async {
+    if (_state.isChecking) return;
+    if (!force && _state.updateList.isNotEmpty && await cacheValid()) return;
+    await checkUpdates(force: true);
+  }
+
+  /// Runs one check on the flag-selected lane and mirrors the result.
+  ///
+  /// Core failures surface as [CoreUpdateException] (typed `CORE_E_*`); the
+  /// facade never falls back to the legacy engine once `update` is on.
+  Future<void> checkUpdates({
+    bool force = false,
+    void Function(UpdateCheckProgress progress)? onProgress,
+    void Function(CheckLogLevel level, String message)? onLog,
+    void Function(List<String> appNames)? onCheckList,
+  }) async {
+    final enabled = await _enabled();
+    if (!enabled) {
+      final backend = legacyBackendOverride ?? _legacy;
+      if (backend is LegacyUpdateBackend) {
+        await backend.runCheck(
+          force: force,
+          onProgress: onProgress,
+          onLog: onLog,
+          onCheckList: onCheckList,
+        );
+        return;
+      }
+      _state.beginFacadeCheck();
+      try {
+        final updates = await backend.check(force: force);
+        _adopt(updates, onLog: onLog, onCheckList: onCheckList);
+      } catch (error) {
+        _state.failFacadeCheck(error.toString());
+        rethrow;
+      }
+      return;
+    }
+
+    final backend = _coreBackend();
+    _state.beginFacadeCheck();
+    try {
+      final updates = await backend.check(force: force);
+      final report = backend is FrbUpdateBackend ? backend.lastReport : null;
+      if (report != null) {
+        final logs = deriveCoreCheckLogs(report);
+        for (final entry in logs) {
+          onLog?.call(entry.level, entry.text);
+        }
+        final names = <String>[
+          for (final update in report.updates) update.appName,
+        ];
+        onCheckList?.call(names);
+        _state.adoptFacadeCheck(
+          updates: report.updates,
+          logs: logs,
+          checkedAt: report.checkedAt,
+          total: report.total,
+          checkList: names,
+        );
+      } else {
+        _adopt(updates, onLog: onLog, onCheckList: onCheckList);
+      }
+    } on CoreUpdateException catch (error) {
+      _state.failFacadeCheck(error.toString());
+      rethrow;
+    } catch (error) {
+      final typed = CoreUpdateException.fromRaw(error);
+      _state.failFacadeCheck(typed.toString());
+      throw typed;
+    }
+  }
+
+  void _adopt(
+    List<AppUpdateInfo> updates, {
+    void Function(CheckLogLevel level, String message)? onLog,
+    void Function(List<String> appNames)? onCheckList,
+  }) {
+    final checkedAt =
+        updates.isNotEmpty ? updates.first.checkedAt : DateTime.now();
+    final report = CoreCheckReport(
+      updates: updates,
+      skipped: const <UpdateSkip>[],
+      checkedAt: checkedAt,
+      total: updates.length,
+      usedCache: false,
+    );
+    final logs = deriveCoreCheckLogs(report);
+    for (final entry in logs) {
+      onLog?.call(entry.level, entry.text);
+    }
+    final names = <String>[for (final update in updates) update.appName];
+    onCheckList?.call(names);
+    _state.adoptFacadeCheck(
+      updates: updates,
+      logs: logs,
+      checkedAt: checkedAt,
+      total: updates.length,
+      checkList: names,
+    );
+  }
+
+  // ===== Operations =====
 
   Future<List<AppUpdateInfo>> check({required bool force}) async =>
       (await _backend()).check(force: force);
@@ -222,8 +263,12 @@ class UpdateFacade {
   Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
       (await _backend()).checkApp(appId, channelCode: channelCode);
 
-  Future<bool> markUpdated(String appId) async =>
-      (await _backend()).markUpdated(appId);
+  Future<bool> markUpdated(String appId) async {
+    final removed = (await _backend()).markUpdated(appId);
+    final result = await removed;
+    if (result) _state.removeFacadeUpdated(appId);
+    return result;
+  }
 
   Future<bool> hasUpdate(String appId) async =>
       (await _backend()).hasUpdate(appId);

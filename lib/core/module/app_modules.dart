@@ -382,10 +382,9 @@ class UpdateModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    final service = UpdateManagerService.instance;
-    ModuleManager.instance.bind<UpdateManagerService>(service);
-    // 启动恢复上次检测缓存（重启后立即展示可更新应用，后台静默）
-    service.restoreCacheInBackground();
+    // 启动恢复上次检测缓存（重启后立即展示可更新应用，后台静默）。
+    // 更新入口统一走 facade；旧服务的实例由 facade 在需要时解析。
+    UpdateFacade.instance.restoreCacheInBackground();
   }
 }
 
