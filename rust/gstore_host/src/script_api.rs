@@ -297,9 +297,21 @@ impl ScriptApiInner {
                 .map_err(|error| format!("io: pack list row: {error}"))?
         };
         keys.iter()
-            .map(|key| {
-                let key = self.channel_key(key)?;
-                script_pack::info(&self.strict, &key)
+            .filter_map(|key| {
+                let described = self
+                    .channel_key(key)
+                    .and_then(|key| script_pack::info(&self.strict, &key));
+                match described {
+                    Ok(info) => Some(Ok(info)),
+                    // One unreadable pack (e.g. its version directory vanished)
+                    // must never blank the whole list: the UI lane reads this to
+                    // render every installed channel, so a single bad row is
+                    // skipped with a warning instead of failing the call.
+                    Err(error) => {
+                        log::warn!("script pack: skipping {key} in list: {error}");
+                        None
+                    }
+                }
             })
             .collect()
     }

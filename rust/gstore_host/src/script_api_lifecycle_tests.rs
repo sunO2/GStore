@@ -596,3 +596,58 @@ function main() {
     assert!(error.contains("aborted after"), "{error}");
     println!("PASS | streamed limit | envelope={value}");
 }
+
+#[test]
+fn script_api_lists_a_pack_with_malformed_meta() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("list-bad-meta");
+    // A pack whose optional meta.json is not valid JSON (e.g. a BOM or a
+    // trailing comma) is accepted by the legacy-permissive import and must stay
+    // listed and runnable: the read path mirrors Dart `ChannelPackage._parseMeta`
+    // and ignores the malformed metadata instead of failing.
+    let info = harness
+        .api
+        .import(
+            zip_with(ENV_SCRIPT, None, Some("{\"name\": \"truncated\"")),
+            Some("js_badmeta".to_string()),
+        )
+        .expect("legacy-permissive import accepts a malformed meta.json");
+    assert_eq!(info.key, "js_badmeta");
+    assert_eq!(info.name, "js_badmeta", "name falls back to the key");
+
+    let list = harness.api.list().expect("list must not fail on a bad meta.json");
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0].key, "js_badmeta");
+
+    let run = harness
+        .api
+        .run("js_badmeta", "getAllApps", "{}")
+        .expect("a malformed meta.json must not block running the pack");
+    let value: Value = serde_json::from_str(&run).expect("run json");
+    assert_eq!(value["marker"], "v1");
+    println!("PASS | list          | malformed meta.json ignored, pack still listed and runnable");
+}
+
+#[test]
+fn script_api_list_skips_a_pack_whose_version_dir_is_missing() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("list-missing-dir");
+    harness
+        .api
+        .import(zip_with(ENV_SCRIPT, None, None), Some("js_keep".to_string()))
+        .expect("import keep");
+    harness
+        .api
+        .import(zip_with(ENV_SCRIPT, None, None), Some("js_gone".to_string()))
+        .expect("import gone");
+
+    let gone_root = harness.root.join("files/channel_packs/js_gone");
+    std::fs::remove_dir_all(&gone_root).expect("drop the version directory");
+
+    // One pack whose files vanished must not blank the whole list: the healthy
+    // pack is still listed and the broken row is skipped.
+    let list = harness.api.list().expect("list must survive one broken pack");
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0].key, "js_keep");
+    println!("PASS | list          | a broken pack is skipped, the healthy pack is listed");
+}

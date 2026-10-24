@@ -138,10 +138,17 @@ fn read_meta(dir: &Path) -> Result<Map<String, JsonValue>, String> {
     match serde_json::from_str::<JsonValue>(&raw) {
         Ok(JsonValue::Object(map)) => Ok(map),
         Ok(_) => Ok(Map::new()),
-        Err(error) => Err(format!(
-            "pack_invalid_meta: {} is not valid JSON: {error}",
-            path.display()
-        )),
+        // Parity with Dart `ChannelPackage._parseMeta`: `meta.json` is optional
+        // and opaque, so a malformed one is ignored, never fatal. A hard error
+        // here made `ScriptApi.list` fail wholesale, hiding every installed
+        // channel from the UI even though the pack imported fine.
+        Err(error) => {
+            log::warn!(
+                "pack: ignoring malformed meta.json at {}: {error}",
+                path.display()
+            );
+            Ok(Map::new())
+        }
     }
 }
 
