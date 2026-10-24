@@ -3170,7 +3170,21 @@ class AgentService {
         case 'import':
           if (filePath.isEmpty) return '导入需要 filePath';
           _updateToolStep('正在从备份恢复…');
-          await service.importFromFile(filePath);
+          final result = await service.importFromFile(filePath);
+          if (!result.success) {
+            // A blocked/failed restore must NEVER be reported as success: the
+            // typed CORE_E_WRITE_BLOCKED warning is the caller-visible failure.
+            for (final warning in result.writeWarnings) {
+              appLog.warning('AgentService: $warning');
+            }
+            final detail = result.writeWarnings.isNotEmpty
+                ? result.writeWarnings.join('; ')
+                : (result.error ?? '恢复未完成');
+            if (result.writeWarnings.isEmpty) {
+              appLog.error('AgentService: 恢复失败: $detail');
+            }
+            return '恢复失败: $detail';
+          }
           _updateToolStep('恢复完成');
           return '已从 $filePath 恢复';
         default:

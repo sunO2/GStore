@@ -98,6 +98,7 @@ abstract class IBackupService {
   Future<BackupImportResult> importFromFile(
     String filePath, {
     BackupImportMode mode = BackupImportMode.merge,
+    BackupLogCallback? onLog,
   });
 
   /// 导出备份压缩包（tar.gz bytes）——供 WebDAV 等传输层上传

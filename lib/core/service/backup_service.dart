@@ -428,6 +428,7 @@ class BackupService implements IBackupService {
     String filePath, {
     BackupImportMode mode = BackupImportMode.merge,
     bool restoreAppConfig = true,
+    BackupLogCallback? onLog,
   }) async {
     appLog.info('BackupService: ========== 开始导入 ==========');
     debugPrint('BackupService: 文件路径: $filePath');
@@ -557,11 +558,22 @@ class BackupService implements IBackupService {
     }
 
     final result = await importData(backupData, mode: mode);
+    if (!result.success) {
+      // Mirror importBackupBytes: a blocked/failed data import must abort the
+      // restore before any channel zip is written.
+      final detail = result.writeWarnings.isNotEmpty
+          ? result.writeWarnings.join('; ')
+          : (result.error ?? '恢复未完成');
+      appLog.error('BackupService: 恢复中止: $detail');
+      onLog?.call('恢复中止: $detail', isError: true);
+      return result;
+    }
 
     // 写回脚本渠道 zip 包 + 重新注册（旧备份无 channels/ 条目时为空，自动跳过）
     if (channelZipEntries.isNotEmpty) {
       final restored = await _restoreChannelPackages(channelZipEntries);
       debugPrint('BackupService: 渠道包恢复完成 ${restored} 个');
+      onLog?.call('渠道包恢复完成（$restored 个）');
     }
 
     appLog.info('BackupService: ========== 导入完成 ==========');
@@ -569,6 +581,7 @@ class BackupService implements IBackupService {
     debugPrint('BackupService: 总数: ${result.totalCount}');
     debugPrint('BackupService: 新增: ${result.addedCount}');
     debugPrint('BackupService: 跳过: ${result.skippedCount}');
+    onLog?.call('恢复完成');
 
     return result;
   }

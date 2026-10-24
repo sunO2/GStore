@@ -1,0 +1,218 @@
+{
+  "input": {
+    "catalog_db": {
+      "sha256": "e8d5249b3cf3c02b51f970390652b625192f44c94c8131dc6c542a280eea29d1",
+      "bytes": 24576
+    },
+    "added_db": {
+      "sha256": "0682aba4a25916c6bebdd831b7de397c175cb2a8f276e14d2f82464c8fe45d42",
+      "bytes": 24576
+    },
+    "catalog_seed_sql": [
+      "CREATE TABLE apps(appId TEXT PRIMARY KEY, name TEXT NOT NULL, user TEXT, repositories TEXT, icon TEXT, des TEXT, category TEXT, readme TEXT, extra TEXT)",
+      "CREATE TABLE category(id TEXT PRIMARY KEY, description TEXT NOT NULL, icon TEXT NOT NULL)",
+      "CREATE TABLE config(version TEXT NOT NULL, proxy TEXT)",
+      "INSERT INTO apps(appId,name,user,repositories,icon,des,category,readme,extra) VALUES('com.example.alpha','Alpha','example','alpha','icon-a','first app','Tools',NULL,NULL)",
+      "INSERT INTO apps(appId,name,user,repositories,icon,des,category,readme,extra) VALUES('com.example.beta','Beta','example','beta','icon-b','second app','Proxy',NULL,NULL)",
+      "INSERT INTO apps(appId,name,user,repositories,icon,des,category,readme,extra) VALUES('com.example.gamma','Gamma','example','gamma','icon-c','third app','Tools,Proxy',NULL,NULL)",
+      "INSERT INTO apps(appId,name,user,repositories,icon,des,category,readme,extra) VALUES('com.example.delta','三角洲','example','delta','icon-d','中文描述','Tools',NULL,NULL)",
+      "INSERT INTO apps(appId,name,user,repositories,icon,des,category,readme,extra) VALUES('com.example.epsilon','Epsilon','example','epsilon','icon-e','no category',NULL,NULL,NULL)",
+      "INSERT INTO category(id,description,icon) VALUES('Tools','工具','tool.png')",
+      "INSERT INTO category(id,description,icon) VALUES('Proxy','代理','proxy.png')",
+      "INSERT INTO category(id,description,icon) VALUES('Media','媒体','media.png')",
+      "INSERT INTO config(version,proxy) VALUES('2026.10.24',NULL)"
+    ],
+    "added_seed_sql": [
+      "CREATE TABLE added_apps(id INTEGER PRIMARY KEY AUTOINCREMENT, channelId TEXT NOT NULL, appId TEXT NOT NULL, addTime INTEGER NOT NULL, sortOrder INTEGER NOT NULL, isEnabled INTEGER NOT NULL)",
+      "CREATE UNIQUE INDEX index_added_apps_channelId_appId ON added_apps(channelId, appId)",
+      "CREATE TABLE added_app_tags(channelId TEXT NOT NULL, appId TEXT NOT NULL, tag TEXT NOT NULL, addTime INTEGER NOT NULL, PRIMARY KEY (channelId, appId, tag))",
+      "INSERT INTO added_apps(id,channelId,appId,addTime,sortOrder,isEnabled) VALUES(11,'github','owner/alpha',1000,0,1)",
+      "INSERT INTO added_apps(id,channelId,appId,addTime,sortOrder,isEnabled) VALUES(12,'github','owner/beta',2000,3,0)",
+      "INSERT INTO added_apps(id,channelId,appId,addTime,sortOrder,isEnabled) VALUES(13,'local_db','com.example.gamma',3000,1,1)",
+      "INSERT INTO added_apps(id,channelId,appId,addTime,sortOrder,isEnabled) VALUES(14,'fdroid','org.example.delta',4000,2,1)",
+      "INSERT INTO added_app_tags(channelId,appId,tag,addTime) VALUES('github','owner/alpha','favorite',1001)",
+      "INSERT INTO added_app_tags(channelId,appId,tag,addTime) VALUES('github','owner/alpha','work',1002)",
+      "INSERT INTO added_app_tags(channelId,appId,tag,addTime) VALUES('github','owner/beta','archive',2001)",
+      "INSERT INTO added_app_tags(channelId,appId,tag,addTime) VALUES('local_db','com.example.gamma','tools',3001)",
+      "INSERT INTO added_app_tags(channelId,appId,tag,addTime) VALUES('github','ghost','orphan',5000)"
+    ]
+  },
+  "added": {
+    "apps": [
+      {
+        "channel": "fdroid",
+        "appId": "org.example.delta",
+        "addTime": 4000,
+        "sortOrder": 2,
+        "isEnabled": true
+      },
+      {
+        "channel": "local_db",
+        "appId": "com.example.gamma",
+        "addTime": 3000,
+        "sortOrder": 1,
+        "isEnabled": true
+      },
+      {
+        "channel": "github",
+        "appId": "owner/beta",
+        "addTime": 2000,
+        "sortOrder": 3,
+        "isEnabled": false
+      },
+      {
+        "channel": "github",
+        "appId": "owner/alpha",
+        "addTime": 1000,
+        "sortOrder": 0,
+        "isEnabled": true
+      }
+    ],
+    "tags": {
+      "github:owner/alpha": [
+        "favorite",
+        "work"
+      ],
+      "github:owner/beta": [
+        "archive"
+      ],
+      "local_db:com.example.gamma": [
+        "tools"
+      ],
+      "github:ghost": [
+        "orphan"
+      ]
+    }
+  },
+  "catalog": {
+    "list": [
+      {
+        "appId": "com.example.alpha",
+        "packageName": null,
+        "name": "Alpha",
+        "user": "example",
+        "repositories": "alpha",
+        "icon": "icon-a",
+        "des": "first app",
+        "category": [
+          "Tools"
+        ]
+      },
+      {
+        "appId": "com.example.beta",
+        "packageName": null,
+        "name": "Beta",
+        "user": "example",
+        "repositories": "beta",
+        "icon": "icon-b",
+        "des": "second app",
+        "category": [
+          "Proxy"
+        ]
+      },
+      {
+        "appId": "com.example.gamma",
+        "packageName": null,
+        "name": "Gamma",
+        "user": "example",
+        "repositories": "gamma",
+        "icon": "icon-c",
+        "des": "third app",
+        "category": [
+          "Tools",
+          "Proxy"
+        ]
+      },
+      {
+        "appId": "com.example.delta",
+        "packageName": null,
+        "name": "三角洲",
+        "user": "example",
+        "repositories": "delta",
+        "icon": "icon-d",
+        "des": "中文描述",
+        "category": [
+          "Tools"
+        ]
+      },
+      {
+        "appId": "com.example.epsilon",
+        "packageName": null,
+        "name": "Epsilon",
+        "user": "example",
+        "repositories": "epsilon",
+        "icon": "icon-e",
+        "des": "no category",
+        "category": []
+      }
+    ],
+    "categories": [
+      [
+        "Tools",
+        "工具",
+        "tool.png"
+      ],
+      [
+        "Proxy",
+        "代理",
+        "proxy.png"
+      ],
+      [
+        "Media",
+        "媒体",
+        "media.png"
+      ]
+    ],
+    "byCategory": [
+      {
+        "appId": "com.example.alpha",
+        "packageName": null,
+        "name": "Alpha",
+        "user": "example",
+        "repositories": "alpha",
+        "icon": "icon-a",
+        "des": "first app",
+        "category": [
+          "Tools"
+        ]
+      },
+      {
+        "appId": "com.example.gamma",
+        "packageName": null,
+        "name": "Gamma",
+        "user": "example",
+        "repositories": "gamma",
+        "icon": "icon-c",
+        "des": "third app",
+        "category": [
+          "Tools",
+          "Proxy"
+        ]
+      },
+      {
+        "appId": "com.example.delta",
+        "packageName": null,
+        "name": "三角洲",
+        "user": "example",
+        "repositories": "delta",
+        "icon": "icon-d",
+        "des": "中文描述",
+        "category": [
+          "Tools"
+        ]
+      }
+    ],
+    "one": {
+      "appId": "com.example.alpha",
+      "packageName": null,
+      "name": "Alpha",
+      "user": "example",
+      "repositories": "alpha",
+      "icon": "icon-a",
+      "des": "first app",
+      "category": [
+        "Tools"
+      ]
+    }
+  }
+}
