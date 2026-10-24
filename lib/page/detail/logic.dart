@@ -15,6 +15,7 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -78,6 +79,13 @@ class DetailLogic
   /// 页面级 detail 通道（JsDetailChannel 或 StandardDetailChannel）。
   IDetailChannel? detailChannel;
 
+  /// 当前页面在进程级 UI handler 注册表里的绑定句柄（页面退出时解绑）。
+  ///
+  /// `DetailCallbacks` 是页面级对象，而 `ScriptUiRequestRouter` 是进程级
+  /// 单例；详情页把自身绑定到 `ScriptUiHandlerRegistry`，`ui.*` handler 在
+  /// 调用时读取，不把页面 callbacks 固化进 channel 初始化。
+  ScriptUiBinding? _scriptUiBinding;
+
   /// 聚合管理器（标签读写）
   late IAggregateService? _aggregator;
 
@@ -112,6 +120,11 @@ class DetailLogic
     );
     dc.bind(state, this);
     detailChannel = dc;
+    _scriptUiBinding = ScriptUiHandlerRegistry.instance.bind(
+      callbacks: this,
+      appId: () => req.appId,
+      channelKey: () => code,
+    );
     await dc.load();
   }
 
@@ -568,6 +581,11 @@ class DetailLogic
     _shutDown = true;
     _actionBusyTimer?.cancel();
     _actionBusyTimer = null;
+    final binding = _scriptUiBinding;
+    _scriptUiBinding = null;
+    if (binding != null) {
+      ScriptUiHandlerRegistry.instance.unbind(binding);
+    }
     final req = request;
     if (req != null) {
       final code = req.channelCode ?? req.channel.code;

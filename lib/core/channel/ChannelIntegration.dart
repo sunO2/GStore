@@ -3,6 +3,7 @@ import 'dart:async' show unawaited;
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/script_ui_request_router.dart';
+import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
@@ -30,6 +31,10 @@ class ChannelIntegration {
     _scriptUiAttached = true;
     ScriptUiRequestRouter.instance
         .attachToModuleEvents(RustModuleManager.instance.moduleEvents);
+    // Register all eight `ui.*` kinds behind the process-wide registry. The
+    // detail page supplies/clears the active callbacks; a missing page is a
+    // typed CORE_E_SCRIPT_UI_NO_ACTIVE_DETAIL, never `ui.<kind> 未注册`.
+    ScriptUiHandlerRegistry.instance.registerOn(ScriptUiRequestRouter.instance);
   }
 
   static ChannelManager get manager {
@@ -119,6 +124,7 @@ class ChannelIntegration {
   static void resetForTest() {
     _initialized = false;
     _manager = null;
+    ScriptUiHandlerRegistry.instance.detach();
     if (_scriptUiAttached) {
       _scriptUiAttached = false;
       unawaited(ScriptUiRequestRouter.instance.detach());

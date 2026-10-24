@@ -125,3 +125,64 @@ fn script_api_config_rejects_invalid_json_without_mutating_the_map() {
     let after = run_config(&harness, "js_config_bad");
     assert!(after["hit"]["data"].is_null(), "{after}");
 }
+
+const GET_CONFIG_SCRIPT: &str = r#"
+function main(method, params) {
+  if (method === 'getConfig') {
+    return { ok: true, data: { version: 2026.1, proxy: 'socks5://127.0.0.1:7890' } };
+  }
+  return { ok: false, error: 'unexpected ' + method };
+}
+"#;
+
+#[test]
+fn script_api_getconfig_is_allowlisted_and_matches_the_mapped_channel_config_shape() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(matches!(
+        crate::script_runtime_entry::classify("getConfig"),
+        Some(crate::script_runtime_entry::RuntimeKind::Entry)
+    ));
+
+    let harness = harness(
+        "getconfig-shape",
+        Duration::from_millis(200),
+        Duration::from_millis(200),
+    );
+    harness
+        .api
+        .import(
+            zip_with(GET_CONFIG_SCRIPT, None, None),
+            Some("js_config_shape".to_string()),
+        )
+        .expect("import");
+
+    let raw = harness
+        .api
+        .run("js_config_shape", "getConfig", "{}")
+        .expect("run getConfig");
+    println!("[getconfig-raw] {raw}");
+    let value: Value = serde_json::from_str(&raw).expect("raw JSON");
+    // Raw lane: the script payload is returned verbatim (number, not text).
+    assert_eq!(value["version"], 2026.1, "{value}");
+    assert_eq!(value["proxy"], "socks5://127.0.0.1:7890", "{value}");
+
+    // Mapped lane (gstore_core::channel::script::convert::config): text_value
+    // stringifies numbers, version defaults to "", proxy stays nullable.
+    let mapped = gstore_core::channel::ChannelConfig {
+        version: value["version"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value["version"].to_string()),
+        proxy: value["proxy"].as_str().map(str::to_owned),
+    };
+    println!("[getconfig-mapped] {mapped:?}");
+    assert_eq!(mapped.version, "2026.1");
+    assert_eq!(mapped.proxy.as_deref(), Some("socks5://127.0.0.1:7890"));
+    assert_eq!(
+        serde_json::to_value(&mapped).expect("serialize mapped config"),
+        serde_json::json!({
+            "version": "2026.1",
+            "proxy": "socks5://127.0.0.1:7890",
+        })
+    );
+}

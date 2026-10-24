@@ -267,7 +267,7 @@ impl ScriptEntry {
 pub(crate) fn classify(method: &str) -> Option<RuntimeKind> {
     match method {
         "getAllApps" | "searchApps" | "getAppInfo" | "getAppDetail" | "checkAppUpdate"
-        | "checkUpdate" | "doUpdate" => Some(RuntimeKind::Entry),
+        | "checkUpdate" | "doUpdate" | "getConfig" => Some(RuntimeKind::Entry),
         "versionOptions" | "switchVersion" | "buildHistory" | "detailMenu" => {
             Some(RuntimeKind::Detail)
         }
