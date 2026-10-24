@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 
@@ -57,14 +56,23 @@ class DownloadNotificationService {
     debugPostCount = 0;
   }
 
-  bool get _coreOwnsNotifications => CoreFlags.download;
+  /// 测试专用：完整复位实例状态（初始化标记、活跃下载、节流表、spy 计数）。
+  ///
+  /// 生产代码从不调用；测试用它保证用例之间没有状态串扰。
+  @visibleForTesting
+  void debugResetForTest() {
+    debugCallCount = 0;
+    debugPostCount = 0;
+    _initialized = false;
+    _activeDownloads = 0;
+    _lastNotify.clear();
+  }
 
   /// 进度通知节流（避免高频刷新）
   final Map<int, DateTime> _lastNotify = {};
 
   /// 初始化（应用启动时调用）
   Future<void> init() async {
-    if (_coreOwnsNotifications) return;
     if (_initialized) return;
     _initialized = true;
 
@@ -123,7 +131,6 @@ class DownloadNotificationService {
 
   /// 请求通知权限（Android 13+ 必需）
   Future<void> requestPermission() async {
-    if (_coreOwnsNotifications) return;
     await init();
     try {
       await _local
@@ -152,7 +159,6 @@ class DownloadNotificationService {
   /// 下载开始
   void onDownloadStart(int id, String title, String fileName) {
     debugCallCount++;
-    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -170,7 +176,6 @@ class DownloadNotificationService {
     int total,
   ) {
     debugCallCount++;
-    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -184,7 +189,6 @@ class DownloadNotificationService {
   /// 下载完成（移除进度通知）
   void onDownloadComplete(int id) {
     debugCallCount++;
-    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -198,7 +202,6 @@ class DownloadNotificationService {
   /// 下载失败（显示失败通知）
   void onDownloadError(int id, String title) {
     debugCallCount++;
-    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -225,7 +228,6 @@ class DownloadNotificationService {
   /// 下载取消（移除通知）
   void onDownloadCancel(int id) {
     debugCallCount++;
-    if (_coreOwnsNotifications) return;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -272,7 +274,6 @@ class DownloadNotificationService {
 
   /// 启动前台服务（保持进程，下载后台继续）
   Future<void> startForegroundService() async {
-    if (_coreOwnsNotifications) return;
     try {
       if (await FlutterForegroundTask.isRunningService) return;
       debugPostCount++;
@@ -297,7 +298,6 @@ class DownloadNotificationService {
   }
 
   Future<void> _stopForegroundService() async {
-    if (_coreOwnsNotifications) return;
     try {
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();

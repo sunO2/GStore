@@ -699,22 +699,35 @@ void main() {
     });
   });
 
-  group('notification flag on posts nothing', () {
-    test('all posting entry points keep debugPostCount at zero', () async {
+  group('download notifications stay enabled after the cutover', () {
+    test('init before on* posts, including a progress post', () async {
       await _setFlags(download: true);
       DownloadNotificationService.debugResetCallCount();
       final service = DownloadNotificationService.instance;
 
+      // `init()` MUST run before the `on*` callbacks: otherwise the service's
+      // `_initialized` early-return drops every post.
+      await service.init();
+
       service.onDownloadStart(1, 'Example', 'example.apk');
+      final afterStart = DownloadNotificationService.debugPostCount;
+      expect(afterStart, greaterThan(0),
+          reason: 'start must post a notification even with the flag on');
+
       service.onDownloadProgress(1, 'Example', 'example.apk', 10, 100);
+      expect(
+        DownloadNotificationService.debugPostCount,
+        greaterThan(afterStart),
+        reason: 'progress must post a notification after init',
+      );
+
       service.onDownloadComplete(1);
       service.onDownloadError(2, 'Example');
       service.onDownloadCancel(3);
-      await service.startForegroundService();
-      await service.init();
 
       expect(DownloadNotificationService.debugCallCount, 5);
-      expect(DownloadNotificationService.debugPostCount, 0);
+      expect(DownloadNotificationService.debugPostCount, greaterThan(0),
+          reason: 'the Dart notification path must not be suppressed');
     });
   });
 
