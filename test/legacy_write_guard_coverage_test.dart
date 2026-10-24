@@ -73,10 +73,10 @@ const List<_Writer> _writers = <_Writer>[
       'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'addApp', 'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'removeApp', 'channel'),
-  _Writer('lib/core/channel/impl/JsChannel.dart', '_persistApps', 'channel'),
-  _Writer('lib/core/channel/impl/JsChannel.dart', 'removeApp', 'channel'),
+  _Writer('lib/core/channel/impl/JsChannel.dart', '_persistApps', 'js_channel'),
+  _Writer('lib/core/channel/impl/JsChannel.dart', 'removeApp', 'js_channel'),
   _Writer('lib/core/js/js_channel_runtime.dart', '_registerDatabaseHost',
-      'channel'),
+      'js_channel'),
   _Writer('lib/core/service/apk_info_service.dart',
       '_updateNameAndIconAfterInstall', 'channel'),
   _Writer(
@@ -294,16 +294,24 @@ void main() {
           reason: 'the writer inventory must stay exhaustive');
     });
 
-    test('js_channel domain is reserved and has no writer call site', () {
-      final offenders = <String>[];
+    test('js_channel has guarded Dart writer call sites after B3', () {
+      // Closeout-B3 re-domained the Dart JS writers from `channel` to
+      // `js_channel`; the field is no longer reserved. Every JS writer must
+      // probe the js_channel marker instead of the channel one.
+      final guarded = <String>[];
       for (final file in _dartFiles(Directory('lib'))) {
-        final source = file.readAsStringSync();
-        if (source.contains("assertAllowed('js_channel')")) {
-          offenders.add(file.path);
+        if (file.readAsStringSync().contains("assertAllowed('js_channel')")) {
+          guarded.add(file.path.replaceAll(r'\', '/'));
         }
       }
-      expect(offenders, isEmpty,
-          reason: 'js_channel is RESERVED until Wave 5: $offenders');
+      expect(
+        guarded,
+        containsAll(<String>[
+          'lib/core/channel/impl/JsChannel.dart',
+          'lib/core/js/js_channel_runtime.dart',
+        ]),
+        reason: 'the JS writers must probe the js_channel marker: $guarded',
+      );
     });
 
     test('guard binds at bootstrap through the CoreApi facade', () {
@@ -384,8 +392,9 @@ void main() {
       }
 
       expect(seen, expected);
+      // Closeout-B3 adds the js_channel domain (Dart JS writers).
       expect(expected.toSet(),
-          <String>{'channel', 'catalog', 'update', 'download'});
+          <String>{'channel', 'js_channel', 'catalog', 'update', 'download'});
     });
   });
 

@@ -59,10 +59,10 @@ pub fn catalog_fts_available(conn: &rusqlite::Connection) -> bool {
 
 /// Domains that, once written by the Rust core, block legacy Dart writes.
 ///
-/// `js_channel` is RESERVED: it is declared here now so the guard and the FRB
-/// surface are complete, but no Rust writer marks it until Wave 5. Declaring a
-/// domain does not arm it; only a first post-flip write (or an explicit
-/// `armCoreWrite`) creates a marker.
+/// All six domains have at least one flag-gated Rust writer: `js_channel` is
+/// marked from `gstore_host::script_db` (`insert_apps` / `remove_app`) once the
+/// `js_channel` flag is on. Declaring a domain does not arm it; only a first
+/// post-flip write (or an explicit `armCoreWrite`) creates a marker.
 pub const CORE_WRITES_DOMAINS: [&str; 6] =
     ["channel", "catalog", "update", "download", "install", "js_channel"];
 

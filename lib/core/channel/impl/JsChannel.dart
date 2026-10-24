@@ -529,7 +529,7 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   @override
   Future<ChannelResult<void>> removeApp(String appId) async {
-    await LegacyWriteGuard.assertAllowed('channel');
+    await LegacyWriteGuard.assertAllowed('js_channel');
     try {
       await (await _getAppDao()).removeApp(appId, channelKey);
       return ChannelResult.success(data: null, from: ChannelType.custom);
@@ -785,7 +785,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     List<AppSummary> apps, {
     Function(int current, int total)? onProgress,
   }) async {
-    await LegacyWriteGuard.assertAllowed('channel');
+    await LegacyWriteGuard.assertAllowed('js_channel');
     final dao = await _getAppDao();
     final entities = <ChannelAddedApp>[];
     for (var i = 0; i < apps.length; i++) {

@@ -316,7 +316,7 @@ class JsChannelRuntime {
     });
 
     engine.onMessage('host.database.insertApps', (dynamic args) async {
-      await LegacyWriteGuard.assertAllowed('channel');
+      await LegacyWriteGuard.assertAllowed('js_channel');
       try {
         final apps = _asList(_asMap(args)['apps']);
         // 强制 channelKey = 当前渠道（忽略脚本传入的 channelCode）

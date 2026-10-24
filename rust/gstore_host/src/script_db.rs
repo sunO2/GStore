@@ -4,8 +4,15 @@
 //! channel. Script-supplied `channelCode` is ignored: the channel passed by the
 //! engine is the only write authority. Row JSON mirrors Dart
 //! `_channelAppToJson` / `_toChannelAddedApp`. Every successful write also
-//! records the `js_channel` core-write marker in the same transaction, so this
-//! lane's provenance is visible without inventing a new domain.
+//! records the `js_channel` core-write marker in the same transaction **when
+//! the `js_channel` flag is on** (`mark_core_write_if_flipped`), so this lane's
+//! provenance is visible without inventing a new domain.
+//!
+//! The marker's only effect is the `core_writes` projection that
+//! [`gstore_core::migration`] arms; no Dart writer consumes `js_channel`
+//! before the flip (pre-flip Dart writes stay on the `channel` domain and the
+//! two lanes ship together), and the unconditional `mark_core_write` path is
+//! deliberately not used here.
 
 use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
@@ -75,7 +82,8 @@ pub(crate) fn remove_app(
             )
             .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
         if changed > 0 {
-            gstore_core::migration::mark_core_write(conn, "js_channel", None)?;
+            // Flag-gated: pre-flip store code must never arm the guard.
+            gstore_core::migration::mark_core_write_if_flipped(conn, "js_channel", None)?;
         }
         Ok(())
     })
@@ -123,7 +131,8 @@ pub(crate) fn insert_apps(
                 ])
                 .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
         }
-        gstore_core::migration::mark_core_write(conn, "js_channel", None)?;
+        // Flag-gated: pre-flip store code must never arm the guard.
+        gstore_core::migration::mark_core_write_if_flipped(conn, "js_channel", None)?;
         Ok(())
     })
     .map_err(|error| host("insert channel apps", error.0))?;
@@ -356,4 +365,128 @@ fn summary_to_json(app: &AppSummary) -> JsonValue {
         "addTime": now_millis(),
         "extra": app.extra.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Behavioural proof that the `js_channel` marker is flag-gated: the same
+    //! `host.database.insertApps` write leaves no `core_writes` row while the
+    //! flag is off, and creates it once the flag is on (one run, both
+    //! directions).
+
+    use std::path::Path;
+    use std::time::Duration;
+
+    use gstore_core::db::core_db_path;
+    use gstore_core::flags::{flags, reset_flags, set_flags, FlagsPatch};
+
+    use crate::script_api_test_support::{harness, zip_with};
+    use crate::TEST_SERIAL;
+
+    const INSERT_JS: &str = r#"
+function main(method, params) {
+  if (method === 'doUpdate') {
+    host.database.insertApps([{
+      appId: params.appId, name: 'Marker', user: 'team',
+      repositories: 'repo', icon: 'i', description: 'd'
+    }]);
+    return { ok: true, data: true };
+  }
+  return null;
+}
+"#;
+
+    fn domain_markers(root: &Path, domain: &str) -> i64 {
+        let db_path = core_db_path(&root.join("data"));
+        let conn = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open core db read-only");
+        conn.query_row(
+            "SELECT COUNT(*) FROM core_writes WHERE domain=?1",
+            [domain],
+            |row| row.get(0),
+        )
+        .expect("count domain markers")
+    }
+
+    #[test]
+    fn script_db_js_channel_marker_only_after_flip() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_flags();
+        let harness = harness(
+            "js-channel-marker",
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+        );
+        harness
+            .api
+            .import(
+                zip_with(INSERT_JS, None, None),
+                Some("js_marker".to_string()),
+            )
+            .expect("import marker pack");
+
+        // Flag off: the write happens, the marker does not.
+        assert!(!flags().js_channel, "precondition: js_channel flag off");
+        harness
+            .api
+            .run("js_marker", "doUpdate", r#"{"appId":"app.pre"}"#)
+            .expect("pre-flip write");
+        let stored = harness.api.stored_apps("js_marker").expect("stored apps");
+        println!(
+            "pre-flip: flag={} marker_rows={} stored={}",
+            flags().js_channel,
+            domain_markers(&harness.root, "js_channel"),
+            stored
+        );
+        assert!(
+            stored.contains("app.pre"),
+            "the write must have happened pre-flip: {stored}"
+        );
+        assert_eq!(
+            domain_markers(&harness.root, "js_channel"),
+            0,
+            "flag off must leave NO js_channel marker"
+        );
+        assert!(
+            !flags().core_writes,
+            "flag off must not arm the core_writes projection"
+        );
+
+        // Flag on: the same write now records exactly one marker.
+        set_flags(FlagsPatch {
+            js_channel: Some(true),
+            ..FlagsPatch::default()
+        })
+        .expect("flip js_channel");
+        harness
+            .api
+            .run("js_marker", "doUpdate", r#"{"appId":"app.post"}"#)
+            .expect("post-flip write");
+        let stored = harness.api.stored_apps("js_marker").expect("stored apps");
+        println!(
+            "post-flip: flag={} marker_rows={} projection={} stored={}",
+            flags().js_channel,
+            domain_markers(&harness.root, "js_channel"),
+            flags().core_writes,
+            stored
+        );
+        assert!(
+            stored.contains("app.post"),
+            "the write must have happened post-flip: {stored}"
+        );
+        assert_eq!(
+            domain_markers(&harness.root, "js_channel"),
+            1,
+            "flag on must create the js_channel marker"
+        );
+        assert!(
+            flags().core_writes,
+            "the marker must arm the core_writes projection"
+        );
+
+        reset_flags();
+    }
 }
