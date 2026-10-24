@@ -3,6 +3,7 @@ name = "gstore_mod_analyzer"
 version = "0.1.2"
 edition = "2021"
 rust-version = "1.89"
+publish = false
 
 [lib]
 name = "gstore_mod_analyzer"

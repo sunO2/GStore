@@ -2,6 +2,7 @@
 name = "gstore_contract"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 name = "gstore_contract"

@@ -1,0 +1,240 @@
+# cargo-deny configuration for every Rust crate in this repository.
+#
+# Used by scripts/qa/supply-chain.sh, which runs two tiers over every
+# `rust/*/Cargo.toml` (11 crates: 10 standalone + gstore_script in the
+# rust/Cargo.toml workspace):
+#
+#   --tier=hard        cargo deny check licenses bans sources
+#   --tier=advisories  cargo deny check advisories (with the ignore list below
+#                      emptied so the script sees every graph finding) plus
+#                      cargo audit --file on every Cargo.lock
+#
+# The machine-readable registry of accepted advisory findings is
+# rust/supply-chain-baseline.toml, NOT this file: the gate parses that TOML and
+# never scrapes ids out of comments.  review_date is enforced there because
+# cargo-deny rejects unknown keys.
+#
+# Every allowance below is derived from the real dependency graph
+# (`cargo deny list` over every crate's lockfile), not guessed.  Exceptions are
+# per-crate, never blanket, and each carries a reason + a review deadline
+# (2027-01-31 unless stated otherwise).
+
+[advisories]
+version = 2
+
+# A yanked release in a shipped lockfile is a supply-chain hazard, so this stays
+# "deny": any newly yanked crate fails the gate (scripts/qa/supply-chain.sh
+# compares cargo-audit's yanked list against the baseline).  Two yanked versions
+# are already pinned in today's lockfiles and cannot be unpinned without the
+# out-of-scope lockfile refresh; they are the ONLY documented exceptions and are
+# itemised at the end of `ignore` with no advisory attached.
+yanked = "deny"
+
+# Scoped, time-boxed ignores.  This list holds ONLY findings that are provably
+# not exploitable in this tree: quinn-proto is present only in the lockfile (not
+# the build graph), zip's advisories are in extract() which has no call site,
+# anyhow has no downcast_mut() caller, paste/unsafe-libyaml are unmaintained with
+# no vulnerability, and the two yanked pins have no advisory.
+#
+# The 12 findings that ARE reachable are deliberately NOT ignored here.  They are
+# BLOCKING records in rust/supply-chain-baseline.toml (with per-crate
+# applies_to, fix_version and an enforced review_date), so the gate reports them
+# and exits BLOCKED until the out-of-scope dependency refresh lands.  Adding a
+# reachable finding to this list without the code evidence above is a false PASS.
+#
+# Count: 9 RUSTSEC IDs + 2 yanked = 11 entries.  Every entry's machine-readable
+# review_date lives in rust/supply-chain-baseline.toml; a passed date is a hard
+# FAIL.
+ignore = [
+  # --- quinn-proto -----------------------------------------------------------
+  # reason: optional reqwest `http3` dependency present only in the lockfile;
+  #         not in the resolved build graph (`cargo tree -i quinn-proto` is
+  #         empty).  Fix would need quinn-proto >= 0.11.18.
+  # review: 2027-01-31.
+  "RUSTSEC-2026-0338",
+  "RUSTSEC-2026-0340",
+  "RUSTSEC-2026-0343",
+  # --- zip ------------------------------------------------------------------
+  # reason: all three affect ZipArchive::extract()/ZipStreamReader::extract();
+  #         no `.extract(` call site exists (readers use ZipArchive::new +
+  #         by_index).  Fix needs zip >= 9.0.0 (major bump).
+  # review: 2027-01-31.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+  # --- anyhow (unsound, not reachable here) ----------------------------------
+  # reason: Error::downcast_mut() unsoundness; this tree has zero downcast_mut()
+  #         call sites (grep -rn downcast_mut rust/ --include='*.rs' = 0).  Fix
+  #         is a 1.x patch bump.
+  # review: 2027-01-31.
+  "RUSTSEC-2026-0190",
+  # --- unmaintained (no known vulnerability) --------------------------------
+  # reason: paste is a build-time proc-macro only (no runtime code).
+  # review: 2027-01-31.
+  "RUSTSEC-2024-0436",
+  # reason: unsafe-libyaml is a transitive dependency of serde_yaml in the
+  #         proxy; unmaintained, no vulnerability recorded.
+  # review: 2027-01-31.
+  "RUSTSEC-2024-0449",
+  # --- yanked (documented exceptions to `yanked = "deny"`) -------------------
+  # reason: yoke-derive 0.8.3 is yanked upstream but pinned transitively by
+  #         icu_* via the meow-rs graph in gstore_mod_proxy; no advisory exists
+  #         for it and the lockfile update is out of scope for this todo.
+  # review: 2027-01-31.
+  "yoke-derive@0.8.3",
+  # reason: inout 0.2.3 is yanked upstream but pinned transitively by
+  #         aes-gcm/cipher in gstore_mod_analyzer; no advisory exists for it and
+  #         the lockfile update is out of scope for this todo.
+  # review: 2027-01-31.
+  "inout@0.2.3",
+]
+
+[licenses]
+version = 2
+
+# Raised above the default so a fuzzy license-text match cannot silently pass.
+confidence-threshold = 0.93
+
+# Licenses actually present in the graph (union over all 11 lockfiles):
+#   0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-1-Clause,
+#   BSD-2-Clause, BSD-3-Clause, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0, ISC,
+#   MIT, MIT-0, Unicode-3.0, Unlicense, Zlib.
+# LGPL-2.1-or-later (r-efi only) and the repository's own GPL-3.0-only crates
+# are scoped per-crate below, NOT allowed globally.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-1-Clause",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+exceptions = [
+  # The first-party crates are GPL-3.0-only (see clarify above).  Scoping the
+  # exception here keeps GPL-3.0-only OUT of the global allow list, so a
+  # third-party GPL crate would still be rejected.
+  # reason: first-party crates, repository LICENSE is GPLv3.
+  # review: 2027-01-31 (re-check if the manifests gain a license field).
+  { crate = "gstore_contract", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_core", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_host", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_script", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_analyzer", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_download", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_llm", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_perf", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_proxy", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_qr", allow = ["GPL-3.0-only"] },
+  { crate = "gstore_mod_repo", allow = ["GPL-3.0-only"] },
+
+  # reason: r-efi is a transitive UEFI shim (windows-sys on the
+  #         windows-targets path).  LGPL-2.1-or-later allows use as a separate
+  #         library without relicensing this tree; the crate is unmodified and
+  #         the license text ships with it.
+  # review: 2027-01-31 (or when windows-sys pulls a newer r-efi).
+  { crate = "r-efi@5.3.0", allow = ["LGPL-2.1-or-later"] },
+  { crate = "r-efi@6.0.0", allow = ["LGPL-2.1-or-later"] },
+]
+
+# The GPLv3 LICENSE at the repository root covers these first-party crates, but
+# their Cargo.toml files omit the `license` field.  Clarifying is preferred over
+# editing manifests: it records the truth without touching crate metadata.
+# (An empty `license-files` list is used because no crate-local LICENSE file
+# exists; the repository-root LICENSE is the source of truth.)
+[[licenses.clarify]]
+name = "gstore_contract"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_core"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_host"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_script"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_analyzer"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_download"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_llm"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_perf"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_proxy"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_qr"
+expression = "GPL-3.0-only"
+license-files = []
+
+[[licenses.clarify]]
+name = "gstore_mod_repo"
+expression = "GPL-3.0-only"
+license-files = []
+
+
+[licenses.private]
+# Keep the default: first-party crates are explicitly clarified above, so we do
+# not need (and do not want) a blanket ignore of unpublished crates.
+ignore = false
+
+[bans]
+# Flag duplicated versions so they are visible in the CI log.
+multiple-versions = "warn"
+# A wildcard dependency (`*`) makes a lockfile meaningless, so it fails the
+# gate.  Every first-party crate sets `publish = false`, which is what lets
+# cargo-deny apply `allow-wildcard-paths` to their path-only deps; a
+# registry/git wildcard is still a hard failure.
+wildcards = "deny"
+# Path-only dependencies omit a version by design; allow them where cargo-deny
+# permits it (crates marked `publish = false`).
+allow-wildcard-paths = true
+# No crate is banned outright today; keep the section explicit so a future ban
+# has a documented home.
+deny = []
+
+[sources]
+# Only crates.io is a trusted registry; a stray private/mirror registry fails.
+unknown-registry = "deny"
+# Git dependencies must be vetted and pinned, so any unknown git source fails.
+unknown-git = "deny"
+# reason: gstore_mod_proxy vendors meow-rs pinned to an EXACT rev
+#         0e718f587442caaac00b221efc91c84907aeb0e0 (no release tags exist at
+#         that rev; see rust/gstore_mod_proxy/SPIKE.md).  This is the only git
+#         source in the tree.
+# review: 2027-01-31 (or when meow-rs publishes a tagged release).
+allow-git = ["https://github.com/meow-rs/meow-rs.git"]

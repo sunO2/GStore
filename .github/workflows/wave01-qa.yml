@@ -185,6 +185,59 @@ jobs:
           LIBCLANG_PATH: /nonexistent/libclang
         run: bash scripts/qa/f2-quality.sh
 
+      - name: Cache supply-chain CLIs (cargo-deny/cargo-audit)
+        id: supply-chain-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-wave01-supply-chain-cargo-deny-0.20.2-cargo-audit-0.22.2
+
+      - name: Install supply-chain CLIs
+        if: steps.supply-chain-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+
+      # Two blocking tiers: licenses/bans/sources must be clean, and the advisory
+      # ratchet must not introduce novelty, baseline drift, or an overdue review.
+      - name: Supply-chain hard gate (licenses/bans/sources)
+        run: bash scripts/qa/supply-chain.sh --tier=hard
+
+      - name: Supply-chain advisory ratchet (novelty/drift/review dates)
+        run: bash scripts/qa/supply-chain.sh --tier=advisories --mode=ratchet
+
+      # The 12 reachable RustSec findings are a documented BLOCKED posture until
+      # the out-of-scope dependency refresh lands.  This step records them; it is
+      # never a PASS and never fails the build.
+      - name: Supply-chain advisory report (baselined findings are BLOCKED)
+        continue-on-error: true
+        run: |
+          bash scripts/qa/supply-chain.sh --tier=advisories --mode=report \
+            | tee supply-chain-advisories.txt
+          baselined="$(grep -c 'BLOCKED (baseline)' supply-chain-advisories.txt || true)"
+          echo "::warning::BLOCKED (${baselined} baselined findings)"
+          {
+            echo "### Supply-chain advisories: BLOCKED"
+            echo ""
+            echo "${baselined} baselined findings pending an out-of-scope dependency refresh."
+            echo "Hard gate and advisory ratchet both passed."
+            echo ""
+            echo '```'
+            cat supply-chain-advisories.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload supply-chain advisory report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-advisories
+          path: supply-chain-advisories.txt
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Plan audit self-test (fixtures only, no real plan needed)
         run: bash scripts/qa/f1-plan-audit.sh --self-test
 
