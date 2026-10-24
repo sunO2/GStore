@@ -80,6 +80,15 @@ fn task_json(id: u64, status: i64, received: i64, dedup: &str) -> Value {
     })
 }
 
+fn task_json_with_segments(id: u64, status: i64, received: i64, dedup: &str) -> Value {
+    let mut value = task_json(id, status, received, dedup);
+    value["segments"] = json!([
+        {"index": 0, "startByte": 0, "endByte": 49, "received": 50},
+        {"index": 1, "startByte": 50, "endByte": 99, "received": 0}
+    ]);
+    value
+}
+
 fn start_request() -> DownloadStartRequest {
     DownloadStartRequest {
         app_id: "com.example.app".to_string(),
@@ -275,6 +284,47 @@ fn download_api_list_refreshes_core_rows_from_module() {
     println!("download_api refresh without module: {core_rows:?}");
     assert_eq!(core_rows[0].status, "completed");
     assert_eq!(core_rows[0].bytes_done, 100);
+}
+
+#[test]
+fn download_api_list_refreshes_core_segments_from_module() {
+    let (conn, core_db) = core_conn();
+    let bridge = FakeBridge::default();
+    let port = HostDownloadPort::with_bridge_for_test(
+        bridge.clone(),
+        conn.clone(),
+        core_db,
+        None,
+    );
+    let api = DownloadApi::from_port_for_test(port);
+
+    let id = api.start(start_request()).expect("start via fake module");
+    assert_eq!(id, 42);
+
+    // The module reports no block list yet: the core row must stay NULL rather
+    // than acquire a spurious empty snapshot.
+    let before = api.list().expect("list before segments");
+    assert_eq!(
+        before[0].segments_json, None,
+        "no module segments must leave the core snapshot NULL, never []"
+    );
+
+    // The module now reports a segmented snapshot; the same list path must fold
+    // it into the core row the detail sheet reads.
+    bridge.set_task(42, task_json_with_segments(42, 2, 50, "dedup:example"));
+    let after = api.list().expect("list after segments");
+    println!("download_api segments rows: {after:?}");
+    let raw = after[0]
+        .segments_json
+        .as_deref()
+        .expect("the live reconcile must populate segments_json");
+    let segments: Vec<Value> = serde_json::from_str(raw).expect("segments json");
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["index"], 0);
+    assert_eq!(segments[0]["startByte"], 0);
+    assert_eq!(segments[0]["endByte"], 49);
+    assert_eq!(segments[1]["index"], 1);
+    assert_eq!(segments[1]["received"], 0);
 }
 
 #[test]

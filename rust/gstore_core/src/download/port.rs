@@ -414,6 +414,7 @@ pub(crate) struct TaskRecord {
     pub(crate) last_started_at: Option<i64>,
     pub(crate) expected_sha256: Option<String>,
     pub(crate) install_after_download: bool,
+    pub(crate) segments_json: Option<String>,
 }
 
 impl TaskRecord {
@@ -444,6 +445,7 @@ impl TaskRecord {
             last_started_at: task.last_started_at,
             expected_sha256: task.expected_sha256.clone(),
             install_after_download: task.install_after_download,
+            segments_json: task.segments_json.clone(),
         })
     }
 
@@ -468,6 +470,7 @@ impl TaskRecord {
             last_started_at: None,
             expected_sha256: req.expected_sha256.clone(),
             install_after_download: req.install_after_download,
+            segments_json: None,
         }
     }
 
@@ -475,6 +478,14 @@ impl TaskRecord {
         let module_task_id = field_i64(value, &["id"])?.to_string();
         let received = field_i64(value, &["received"]).unwrap_or(0);
         let total = field_i64(value, &["total"]).unwrap_or(0);
+        // The module's `download.get` DTO already carries `segments` in the
+        // camelCase shape the Dart consumer parses, so the live reconcile can
+        // reuse it verbatim. An empty array is not a block list: it must stay
+        // `None` rather than be written as a spurious `[]`.
+        let segments_json = field(value, &["segments"])
+            .and_then(Value::as_array)
+            .filter(|segments| !segments.is_empty())
+            .and_then(|segments| serde_json::to_string(segments).ok());
         Some(Self {
             module_task_id,
             dedup_key: field_str(value, &["dedup_key", "dedupKey"]).and_then(|s| empty_to_none(&s)),
@@ -499,6 +510,7 @@ impl TaskRecord {
             install_after_download: field(value, &["install_after_download", "installAfterDownload"])
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            segments_json,
         })
     }
 }
@@ -578,6 +590,7 @@ pub(crate) fn upsert_record_targeting(
         record.last_started_at,
         record.expected_sha256,
         i64::from(record.install_after_download),
+        record.segments_json,
         now,
     ];
     match existing {
@@ -587,8 +600,9 @@ pub(crate) fn upsert_record_targeting(
                 file_name = ?6, kind = ?7, resource_id = ?8, resource_version = ?9, url = ?10,
                 dest_path = ?11, status = ?12, bytes_done = ?13, total = ?14, speed_bps = ?15,
                 eta_sec = ?16, last_started_at = ?17, expected_sha256 = ?18,
-                install_after_download = ?19, updated_at = ?20
-             WHERE id = ?21",
+                install_after_download = ?19,
+                segments_json = COALESCE(?20, segments_json), updated_at = ?21
+             WHERE id = ?22",
             rusqlite::params![
                 record.module_task_id,
                 record.dedup_key,
@@ -609,6 +623,7 @@ pub(crate) fn upsert_record_targeting(
                 record.last_started_at,
                 record.expected_sha256,
                 i64::from(record.install_after_download),
+                record.segments_json,
                 now,
                 row_id,
             ],
@@ -618,9 +633,9 @@ pub(crate) fn upsert_record_targeting(
                 module_task_id, dedup_key, app_id, app_name, version, file_name, kind,
                 resource_id, resource_version, url, dest_path, status, bytes_done, total,
                 speed_bps, eta_sec, last_started_at, expected_sha256, install_after_download,
-                created_at, updated_at
+                segments_json, created_at, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                       ?16, ?17, ?18, ?19, ?20, ?20)",
+                       ?16, ?17, ?18, ?19, ?20, ?21, ?21)",
             params,
         ),
     }

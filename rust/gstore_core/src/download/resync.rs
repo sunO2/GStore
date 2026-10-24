@@ -269,6 +269,10 @@ fn mirror_differs(core: &DownloadTaskRow, record: &TaskRecord) -> bool {
         || core.last_started_at != record.last_started_at
         || core.expected_sha256 != record.expected_sha256
         || core.install_after_download != record.install_after_download
+        || record
+            .segments_json
+            .as_ref()
+            .is_some_and(|next| core.segments_json.as_deref() != Some(next.as_str()))
 }
 
 fn now_secs() -> i64 {

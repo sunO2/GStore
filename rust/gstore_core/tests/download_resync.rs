@@ -169,6 +169,23 @@ fn insert_module_row(conn: &Connection, row: &ModuleRow<'_>, received: i64) {
     .expect("insert module row");
 }
 
+fn insert_module_segment(
+    conn: &Connection,
+    task_id: i64,
+    idx: i64,
+    start: i64,
+    end: i64,
+    received: i64,
+    done: i64,
+) {
+    conn.execute(
+        "INSERT INTO download_segment (task_id, idx, start_byte, end_byte, received, done)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![task_id, idx, start, end, received, done],
+    )
+    .expect("insert module segment");
+}
+
 fn create_module_db(path: &Path, rows: &[ModuleRow<'_>]) {
     let conn = Connection::open(path).expect("open module fixture");
     conn.execute_batch(module_ddl()).expect("module DDL");
@@ -869,4 +886,192 @@ fn download_resync_terminal_statuses_are_exact() {
     );
     assert!(!TERMINAL_STATUSES.contains(&NEEDS_RESTART));
     assert!(!TERMINAL_STATUSES.contains(&"running"));
+}
+
+#[test]
+fn download_resync_live_fold_populates_core_segments() {
+    let dir = TempDir::new("segments_fold");
+    let files_dir = dir.join("files");
+    let module_path = dir.join("module.db");
+
+    {
+        let conn = Connection::open(&module_path).expect("open module fixture");
+        conn.execute_batch(module_ddl()).expect("module DDL");
+        insert_module_row(
+            &conn,
+            &ModuleRow {
+                id: 7,
+                app_id: "com.seg",
+                version: "1.0",
+                file_name: "seg.apk",
+                status: 2,
+                dedup_key: "app:com.seg:1.0:seg.apk",
+            },
+            500,
+        );
+        insert_module_segment(&conn, 7, 0, 0, 499, 500, 1);
+        insert_module_segment(&conn, 7, 1, 500, 999, 250, 0);
+    }
+
+    let conn = Arc::new(Mutex::new(core_conn()));
+    {
+        let guard = conn.lock().unwrap();
+        insert_core_row(
+            &guard,
+            1,
+            Some("7"),
+            "app:com.seg:1.0:seg.apk",
+            "com.seg",
+            "1.0",
+            "seg.apk",
+            "running",
+        );
+    }
+
+    let report = resync(&conn, Some(&module_path), None, true, &files_dir).expect("resync apply");
+    println!("segments fold report: {report:?}");
+    assert!(report.updated >= 1, "the module row must be mirrored");
+
+    let guard = conn.lock().unwrap();
+    let row = gstore_core::download::load_task(&guard, "7")
+        .expect("load core row")
+        .expect("core row exists");
+    let raw = row
+        .segments_json
+        .expect("the live fold must populate segments_json");
+    let segments: Vec<serde_json::Value> = serde_json::from_str(&raw).expect("segments json");
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["index"], 0);
+    assert_eq!(segments[0]["startByte"], 0);
+    assert_eq!(segments[0]["endByte"], 499);
+    assert_eq!(segments[0]["received"], 500);
+    assert_eq!(segments[1]["index"], 1);
+    assert_eq!(segments[1]["received"], 250);
+}
+
+#[test]
+fn download_resync_leaves_segments_null_without_segment_rows() {
+    let dir = TempDir::new("segments_none");
+    let files_dir = dir.join("files");
+    let module_path = dir.join("module.db");
+
+    {
+        let conn = Connection::open(&module_path).expect("open module fixture");
+        conn.execute_batch(module_ddl()).expect("module DDL");
+        insert_module_row(
+            &conn,
+            &ModuleRow {
+                id: 8,
+                app_id: "com.none",
+                version: "1.0",
+                file_name: "none.apk",
+                status: 2,
+                dedup_key: "app:com.none:1.0:none.apk",
+            },
+            500,
+        );
+    }
+
+    let conn = Arc::new(Mutex::new(core_conn()));
+    {
+        let guard = conn.lock().unwrap();
+        insert_core_row(
+            &guard,
+            1,
+            Some("8"),
+            "app:com.none:1.0:none.apk",
+            "com.none",
+            "1.0",
+            "none.apk",
+            "running",
+        );
+    }
+
+    resync(&conn, Some(&module_path), None, true, &files_dir).expect("resync apply");
+
+    let guard = conn.lock().unwrap();
+    let row = gstore_core::download::load_task(&guard, "8")
+        .expect("load core row")
+        .expect("core row exists");
+    assert_eq!(
+        row.segments_json, None,
+        "a task with no segment rows must stay NULL, never a spurious []"
+    );
+}
+
+#[test]
+fn download_resync_replaces_changed_segment_snapshot() {
+    let dir = TempDir::new("segments_replace");
+    let files_dir = dir.join("files");
+    let module_path = dir.join("module.db");
+
+    {
+        let conn = Connection::open(&module_path).expect("open module fixture");
+        conn.execute_batch(module_ddl()).expect("module DDL");
+        insert_module_row(
+            &conn,
+            &ModuleRow {
+                id: 9,
+                app_id: "com.rep",
+                version: "1.0",
+                file_name: "rep.apk",
+                status: 2,
+                dedup_key: "app:com.rep:1.0:rep.apk",
+            },
+            500,
+        );
+        insert_module_segment(&conn, 9, 0, 0, 499, 500, 1);
+        insert_module_segment(&conn, 9, 1, 500, 999, 250, 0);
+    }
+
+    let conn = Arc::new(Mutex::new(core_conn()));
+    {
+        let guard = conn.lock().unwrap();
+        insert_core_row(
+            &guard,
+            1,
+            Some("9"),
+            "app:com.rep:1.0:rep.apk",
+            "com.rep",
+            "1.0",
+            "rep.apk",
+            "running",
+        );
+    }
+
+    resync(&conn, Some(&module_path), None, true, &files_dir).expect("first resync");
+    {
+        let guard = conn.lock().unwrap();
+        let row = gstore_core::download::load_task(&guard, "9")
+            .expect("load core row")
+            .expect("core row exists");
+        let segments: Vec<serde_json::Value> =
+            serde_json::from_str(row.segments_json.as_deref().expect("first snapshot"))
+                .expect("segments json");
+        assert_eq!(segments.len(), 2);
+    }
+
+    {
+        let conn = Connection::open(&module_path).expect("reopen module fixture");
+        conn.execute("DELETE FROM download_segment WHERE task_id = 9", [])
+            .expect("clear module segments");
+        insert_module_segment(&conn, 9, 0, 0, 999, 1000, 1);
+    }
+
+    let second = resync(&conn, Some(&module_path), None, true, &files_dir).expect("second resync");
+    println!("segments replace second: {second:?}");
+
+    let guard = conn.lock().unwrap();
+    let row = gstore_core::download::load_task(&guard, "9")
+        .expect("load core row")
+        .expect("core row exists");
+    let segments: Vec<serde_json::Value> =
+        serde_json::from_str(row.segments_json.as_deref().expect("second snapshot"))
+            .expect("segments json");
+    assert_eq!(
+        segments.len(),
+        1,
+        "a changed snapshot must replace the stored block list"
+    );
+    assert_eq!(segments[0]["endByte"], 999);
 }

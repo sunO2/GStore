@@ -6,7 +6,7 @@
 //! overwritten, so re-running a migration is idempotent and safe after the
 //! core has already started updating a task.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -265,10 +265,16 @@ pub(crate) fn read_floor_task_rows(floor_path: &Path) -> Result<Vec<MappedTask>,
     Ok(rows.iter().map(map_floor_task).collect())
 }
 
-/// Reads every download-module task row read-only with the importer's mapping.
+/// Reads every download-module task row read-only with the importer's mapping,
+/// folding each task's `download_segment` rows into `segments_json`.
 ///
-/// `download_segment` is intentionally not read: the resync mirrors only the
-/// columns `upsert_record` writes. A missing `download_task` table is an error.
+/// This is the live fold: a module task's block list must reach the core row so
+/// the detail sheet can draw it. A missing `download_task` table is an error.
+///
+/// Performance: the fold runs on every reconcile sweep. Rather than one segment
+/// query per module row per tick, a single `DISTINCT task_id` scan yields the
+/// tasks that actually own segment rows, and only those pay the per-task read.
+/// Tasks with no block list cost zero extra queries and stay `None`.
 pub(crate) fn read_module_task_rows(module_path: &Path) -> Result<Vec<MappedTask>, PortError> {
     let module = open_read_only(module_path, "module db")?;
     if !table_exists(&module, "download_task")? {
@@ -278,10 +284,35 @@ pub(crate) fn read_module_task_rows(module_path: &Path) -> Result<Vec<MappedTask
         )));
     }
     let rows = read_rows(&module, "SELECT * FROM \"download_task\"")?;
-    Ok(rows
-        .iter()
-        .map(|row| map_module_task(row, None))
-        .collect())
+    let segmented = segmented_task_ids(&module)?;
+    let mut tasks = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let segments_json = match get_i64(row, &["id"]) {
+            Some(id) if segmented.contains(&id) => read_segments_json(&module, id)?,
+            _ => None,
+        };
+        tasks.push(map_module_task(row, segments_json));
+    }
+    Ok(tasks)
+}
+
+/// Task ids that currently own at least one `download_segment` row.
+///
+/// One `DISTINCT` scan bounds the live fold's per-task segment reads to the
+/// tasks that actually have a block list, instead of every module row.
+fn segmented_task_ids(conn: &Connection) -> Result<HashSet<i64>, PortError> {
+    if !table_exists(conn, "download_segment")? {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT task_id FROM download_segment")
+        .map_err(|e| PortError::Db(format!("prepare segmented task ids: {e}")))?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| PortError::Db(format!("query segmented task ids: {e}")))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| PortError::Db(format!("read segmented task ids: {e}")))?;
+    Ok(ids)
 }
 
 struct CoreLink {
@@ -376,35 +407,40 @@ fn insert_task(conn: &Connection, task: &MappedTask) -> Result<(), PortError> {
     })
 }
 
+/// Reads a task's `download_segment` rows as the JSON snapshot stored in the
+/// core `download_task.segments_json` column.
+///
+/// Keys match the Dart consumer (`SegmentInfo.fromMap`: `index` / `startByte` /
+/// `endByte` / `received`), so a written snapshot renders without a second
+/// translation. A task with no segment rows is `None`, never `[]`: an empty
+/// array would masquerade as a real (empty) block list and defeat the sheet's
+/// `segs.isNotEmpty` guard.
 fn read_segments_json(conn: &Connection, task_id: i64) -> Result<Option<String>, PortError> {
     if !table_exists(conn, "download_segment")? {
         return Ok(None);
     }
     let mut stmt = conn
         .prepare(
-            "SELECT idx, start_byte, end_byte, received, done
+            "SELECT idx, start_byte, end_byte, received
              FROM download_segment WHERE task_id = ?1 ORDER BY idx ASC",
         )
         .map_err(|e| PortError::Db(format!("prepare segments for task {task_id}: {e}")))?;
     let rows = stmt
         .query_map([task_id], |row| {
-            let idx: i64 = row.get(0)?;
-            let start_byte: i64 = row.get(1)?;
-            let end_byte: i64 = row.get(2)?;
-            let received: i64 = row.get(3)?;
-            let done: i64 = row.get(4)?;
             Ok(serde_json::json!({
-                "idx": idx,
-                "start_byte": start_byte,
-                "end_byte": end_byte,
-                "received": received,
-                "done": done != 0,
+                "index": row.get::<_, i64>(0)?,
+                "startByte": row.get::<_, i64>(1)?,
+                "endByte": row.get::<_, i64>(2)?,
+                "received": row.get::<_, i64>(3)?,
             }))
         })
         .map_err(|e| PortError::Db(format!("query segments for task {task_id}: {e}")))?;
     let segments = rows
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| PortError::Db(format!("read segments for task {task_id}: {e}")))?;
+    if segments.is_empty() {
+        return Ok(None);
+    }
     serde_json::to_string(&segments)
         .map(Some)
         .map_err(|e| PortError::Db(format!("encode segments for task {task_id}: {e}")))
@@ -774,11 +810,10 @@ mod tests {
         let segments: Vec<serde_json::Value> =
             serde_json::from_str(linked.segments_json.as_deref().unwrap()).unwrap();
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0]["idx"], 0);
-        assert_eq!(segments[0]["start_byte"], 0);
-        assert_eq!(segments[0]["end_byte"], 10000);
+        assert_eq!(segments[0]["index"], 0);
+        assert_eq!(segments[0]["startByte"], 0);
+        assert_eq!(segments[0]["endByte"], 10000);
         assert_eq!(segments[0]["received"], 10000);
-        assert_eq!(segments[0]["done"], true);
 
         let module_rerun = migrate_module_db(&core, &module_path).unwrap();
         assert_eq!(

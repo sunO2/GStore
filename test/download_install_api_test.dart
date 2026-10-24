@@ -795,6 +795,9 @@ void main() {
         ),
       );
       expect(valid.segments, hasLength(1));
+      expect(valid.segments!.single.index, 0);
+      expect(valid.segments!.single.startByte, 0);
+      expect(valid.segments!.single.endByte, 10);
       expect(valid.segments!.single.received, 5);
       expect(valid.headers['Authorization'], 'token');
     });
