@@ -13,6 +13,7 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:go_router/go_router.dart';
@@ -51,6 +52,17 @@ typedef _SelectedPackage = ({
   Uint8List bytes,
 });
 
+/// 已导入渠道的统一视图（Dart 旧轨 [JsChannel] / Rust 脚本通道二选一）。
+///
+/// [rust] 决定 env 读取/保存与删除走哪条通道：true → `ScriptApi.setEnv` /
+/// `ChannelLoader.removeChannel`（Rust 侧），false → `JsChannel` 旧路径。
+typedef _ImportedChannel = ({
+  String key,
+  String name,
+  String description,
+  bool rust,
+});
+
 class _SettingsPageState extends State<SettingsPage> {
   /// theme 模块是否在线（随模块上下线实时更新；下线时主题入口禁用）
   bool _themeModuleOnline = false;
@@ -68,6 +80,50 @@ class _SettingsPageState extends State<SettingsPage> {
         _themeModuleOnline = ModuleManager.instance.isModuleEnabled('theme');
       });
     });
+    // Rust 脚本通道（flag on）：「已导入渠道」计数/列表读 Rust lane 缓存，
+    // 打开设置页时刷新一次，保证计数反映真实导入。
+    unawaited(_refreshRustLane());
+  }
+
+  /// 刷新 Rust 脚本通道缓存（flag off 时 no-op），并刷新「已导入渠道」计数。
+  Future<void> _refreshRustLane() async {
+    final lane = RustScriptChannelLane.instance;
+    if (!lane.enabled) return;
+    await lane.refresh();
+    if (mounted) setState(() {});
+  }
+
+  /// 已导入渠道数：Rust 通道 flag on 时读 Rust lane，否则读 Dart 注册表。
+  int _importedChannelCount() {
+    final lane = RustScriptChannelLane.instance;
+    if (lane.enabled) return lane.packs.length;
+    return ChannelManager.instance.dynamicChannels.length;
+  }
+
+  /// 已导入渠道视图列表（两轨统一供管理对话框消费）。
+  List<_ImportedChannel> _importedChannels() {
+    final lane = RustScriptChannelLane.instance;
+    if (lane.enabled) {
+      return [
+        for (final pack in lane.packs)
+          (
+            key: pack.key,
+            name: pack.name.isEmpty ? pack.key : pack.name,
+            description: pack.description,
+            rust: true,
+          ),
+      ];
+    }
+    return [
+      for (final channel
+          in ChannelManager.instance.dynamicChannels.whereType<JsChannel>())
+        (
+          key: channel.channelKey,
+          name: channel.info.name,
+          description: channel.info.description,
+          rust: false,
+        ),
+    ];
   }
 
   @override
@@ -263,7 +319,7 @@ class _SettingsPageState extends State<SettingsPage> {
             leading: const Icon(TablerIcons.code, size: AppTypography.iconMD),
             title: const Text('已导入渠道'),
             subtitle: Text(
-                '${ChannelManager.instance.dynamicChannels.length} 个渠道包'),
+                '${_importedChannelCount()} 个渠道包'),
             trailing:
                 const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptChannelManageDialog(context),
@@ -686,6 +742,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   /// 显示渠道包管理对话框：列出已导入渠道 + 环境变量编辑 + 删除。
+  ///
+  /// 列表来源按 `CoreFlags.jsChannel` 分轨：flag on 时 Rust ScriptApi 拥有渠道
+  /// 包（Dart `dynamicChannels` 为空），从 `RustScriptChannelLane` 读取；flag off
+  /// 时沿用 Dart `JsChannel` 注册表（逐字节不变）。
   Future<void> _showScriptChannelManageDialog(BuildContext context) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -694,9 +754,7 @@ class _SettingsPageState extends State<SettingsPage> {
       title: '渠道包管理',
       content: StatefulBuilder(
         builder: (dialogContext, setDialogState) {
-          final channels = ChannelManager.instance.dynamicChannels
-              .whereType<JsChannel>()
-              .toList();
+          final channels = _importedChannels();
           if (channels.isEmpty) {
             return Text(
               '暂无已导入的渠道包，请先通过「脚本渠道」导入',
@@ -711,7 +769,7 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               for (final channel in channels)
                 Padding(
-                  key: Key('script_channel_manage_${channel.channelKey}'),
+                  key: Key('script_channel_manage_${channel.key}'),
                   padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                   child: Row(
                     children: [
@@ -719,10 +777,9 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(channel.info.name,
-                                style: textTheme.bodyLarge),
+                            Text(channel.name, style: textTheme.bodyLarge),
                             Text(
-                              channel.channelKey,
+                              channel.key,
                               style: textTheme.bodySmall?.copyWith(
                                 color: scheme.onSurfaceVariant,
                               ),
@@ -731,8 +788,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                       IconButton(
-                        key: Key(
-                            'script_channel_env_edit_${channel.channelKey}'),
+                        key: Key('script_channel_env_edit_${channel.key}'),
                         tooltip: '编辑环境变量',
                         icon: const Icon(TablerIcons.settings),
                         onPressed: () async {
@@ -741,8 +797,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         },
                       ),
                       IconButton(
-                        key: Key(
-                            'script_channel_delete_${channel.channelKey}'),
+                        key: Key('script_channel_delete_${channel.key}'),
                         tooltip: '删除渠道',
                         icon: const Icon(TablerIcons.trash),
                         onPressed: () =>
@@ -762,13 +817,14 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) setState(() {}); // 刷新「已导入渠道」计数
   }
 
-  /// 删除渠道包：危险确认 → [ChannelLoader.removeChannel]（注销 + 删文件 + 清 env）。
+  /// 删除渠道包：危险确认 → [ChannelLoader.removeChannel]（Rust/Dart 轨均由
+  /// 其按 `CoreFlags.jsChannel` 分派：注销 + 删文件 + 清 env）。
   Future<void> _removeScriptChannel(
-      JsChannel channel, StateSetter setDialogState) async {
+      _ImportedChannel channel, StateSetter setDialogState) async {
     final confirmed = await AppDialogs.showDialog(
       title: '删除渠道包',
       content:
-          '确定删除「${channel.info.name}」（${channel.channelKey}）？渠道包文件与环境变量将一并删除。',
+          '确定删除「${channel.name}」（${channel.key}）？渠道包文件与环境变量将一并删除。',
       confirmText: '删除',
       cancelText: '取消',
       isDangerous: true,
@@ -776,7 +832,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (confirmed != true) return;
 
     try {
-      await ChannelLoader().removeChannel(channel.channelKey);
+      await ChannelLoader().removeChannel(channel.key);
       if (context.mounted) {
         setDialogState(() {});
         AppDialogs.showSuccess('渠道包已删除');
@@ -786,12 +842,38 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 编辑已导入渠道的环境变量：加载 [JsChannel.getAllEnv] → 键值对编辑 →
-  /// 差异应用 setEnv/removeEnv（保存后立即生效）。
-  Future<void> _showScriptChannelEnvDialog(JsChannel channel) async {
+  /// 读取渠道当前环境变量（两轨统一）。
+  ///
+  /// Rust 通道 `ScriptApi` 无 env 读取 API，回退读旧 ConfigStore
+  /// `channel_env_<key>`（导入对话框回显同款）；可能为空，仅作编辑器初值。
+  Future<Map<String, String>> _loadChannelEnv(_ImportedChannel channel) async {
+    if (!channel.rust) {
+      final dartChannel = ChannelManager.instance.getChannelByKey(channel.key);
+      if (dartChannel is JsChannel) return dartChannel.getAllEnv();
+      return const {};
+    }
+    try {
+      final raw =
+          await ConfigStore.instance.readString('channel_env_${channel.key}');
+      if (raw == null || raw.isEmpty) return const {};
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+      }
+    } catch (_) {
+      // 读取失败不影响，使用空值
+    }
+    return const {};
+  }
+
+  /// 编辑已导入渠道的环境变量：加载当前值 → 键值对编辑 → 保存。
+  ///
+  /// Rust 通道保存走 `ScriptApi.setEnv`（全量替换语义，脚本下次 host.env.get
+  /// 立即生效）；Dart 旧轨差异应用 setEnv/removeEnv（逐字节不变）。
+  Future<void> _showScriptChannelEnvDialog(_ImportedChannel channel) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final initial = await channel.getAllEnv();
+    final initial = await _loadChannelEnv(channel);
     if (!context.mounted) return;
     var envVars = Map<String, String>.of(initial);
 
@@ -802,7 +884,7 @@ class _SettingsPageState extends State<SettingsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            channel.channelKey,
+            channel.key,
             style: textTheme.bodySmall?.copyWith(
               color: scheme.onSurfaceVariant,
             ),
@@ -828,15 +910,22 @@ class _SettingsPageState extends State<SettingsPage> {
 
     if (saved != true) return;
 
-    // 差异应用：新增/修改 → setEnv；删除 → removeEnv
-    for (final entry in envVars.entries) {
-      if (initial[entry.key] != entry.value) {
-        await channel.setEnv(entry.key, entry.value);
-      }
-    }
-    for (final key in initial.keys) {
-      if (!envVars.containsKey(key)) {
-        await channel.removeEnv(key);
+    if (channel.rust) {
+      await ScriptApi.instance.setEnv(key: channel.key, env: envVars);
+    } else {
+      final dartChannel = ChannelManager.instance.getChannelByKey(channel.key);
+      if (dartChannel is JsChannel) {
+        // 差异应用：新增/修改 → setEnv；删除 → removeEnv
+        for (final entry in envVars.entries) {
+          if (initial[entry.key] != entry.value) {
+            await dartChannel.setEnv(entry.key, entry.value);
+          }
+        }
+        for (final key in initial.keys) {
+          if (!envVars.containsKey(key)) {
+            await dartChannel.removeEnv(key);
+          }
+        }
       }
     }
     if (context.mounted) {

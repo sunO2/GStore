@@ -6,6 +6,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -684,8 +685,12 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
       case ChannelType.custom:
         return '自定义';
       case null:
-        // 脚本渠道：显示其名称（截断 4 字），缺失回退 code
-        final name = ChannelManager.instance.getChannelByKey(code)?.info.name;
+        // 脚本渠道：显示其名称（截断 4 字），缺失回退 code。
+        // Rust 通道包名优先（flag on 时 Dart 渠道已注销）。
+        final rustName = RustScriptChannelLane.instance.packFor(code)?.name;
+        final name = (rustName != null && rustName.isNotEmpty)
+            ? rustName
+            : ChannelManager.instance.getChannelByKey(code)?.info.name;
         if (name != null && name.isNotEmpty) {
           return name.length <= 4 ? name : name.substring(0, 4);
         }

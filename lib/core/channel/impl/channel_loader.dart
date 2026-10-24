@@ -10,6 +10,7 @@ import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
+import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:path_provider/path_provider.dart';
@@ -134,6 +135,8 @@ class ChannelLoader {
       if (directory == null) return const [];
       final imported =
           await ScriptChannelService.instance.syncInstalledPacks(directory);
+      // Refresh the UI-facing Rust-lane cache so discovery/settings see the packs.
+      await RustScriptChannelLane.instance.refresh();
       if (imported.isNotEmpty) {
         appLog.info(
             'ChannelLoader: 已向 Rust 脚本通道导入 ${imported.length} 个渠道包');
@@ -267,12 +270,13 @@ class ChannelLoader {
   }) async {
     if (CoreFlags.jsChannel) {
       // Rust 脚本通道：不触碰 LegacyWriteGuard / 旧渠道目录，失败也不落盘。
-      return ScriptLaneChannelImport(
-        await ScriptChannelService.instance.importPack(
-          channelKey: channelKey,
-          zipBytes: zipBytes,
-        ),
+      final pack = await ScriptChannelService.instance.importPack(
+        channelKey: channelKey,
+        zipBytes: zipBytes,
       );
+      // Keep the UI-facing Rust-lane cache in sync (discovery/settings read it).
+      await RustScriptChannelLane.instance.refresh();
+      return ScriptLaneChannelImport(pack);
     }
     await LegacyWriteGuard.assertAllowed('channel');
     if (CoreFlags.channels ||
@@ -359,6 +363,8 @@ class ChannelLoader {
             channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
       }
       await ScriptChannelService.instance.removePack(channelKey);
+      // Keep the UI-facing Rust-lane cache in sync after a delete.
+      await RustScriptChannelLane.instance.refresh();
       final directory = await _resolveDirectory();
       if (directory != null) {
         final fileName = channelKey.startsWith('js_')

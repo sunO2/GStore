@@ -9,12 +9,15 @@ import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/script/rust_script_detail_channel.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
@@ -110,7 +113,17 @@ class DetailLogic
     if (req == null) return;
     final code = req.channelCode ?? req.channel.code;
     final ch = _channelManager?.getChannelByCode(code);
-    if (ch == null) return;
+    if (ch == null) {
+      // Rust 脚本通道：flag on 时 js_* 渠道包归 ScriptApi，Dart 渠道已注销。
+      if (await _loadRustScriptChannel(req, code)) return;
+      if (CoreFlags.jsChannel) {
+        // 解析失败：给出类型化错误，避免 SizedBox.shrink() 静默白屏。
+        state.errorMessage = '渠道不可用或未注册: $code';
+        state.isLoadingDetail = false;
+        return;
+      }
+      return; // flag off：旧路径逐字节不变（保持原静默返回）
+    }
     var dc = ch.getDetailChannel(req.appId);
     dc ??= StandardDetailChannel(
       appId: req.appId,
@@ -126,6 +139,34 @@ class DetailLogic
       channelKey: () => code,
     );
     await dc.load();
+  }
+
+  /// Rust 脚本通道解析：flag on 且 [code] 命中 Rust lane 时构造
+  /// [RustScriptDetailChannel] 并加载，返回 true；否则返回 false。
+  ///
+  /// 缓存未命中时先刷新一次（deep-link 冷启动场景），仍无则回落类型化错误。
+  Future<bool> _loadRustScriptChannel(AppDetailRequest req, String code) async {
+    if (!CoreFlags.jsChannel) return false;
+    final lane = RustScriptChannelLane.instance;
+    if (lane.packFor(code) == null) {
+      await lane.refresh();
+    }
+    if (lane.packFor(code) == null) return false;
+
+    final dc = RustScriptDetailChannel(
+      appId: req.appId,
+      channelKey: code,
+      request: req,
+    );
+    dc.bind(state, this);
+    detailChannel = dc;
+    _scriptUiBinding = ScriptUiHandlerRegistry.instance.bind(
+      callbacks: this,
+      appId: () => req.appId,
+      channelKey: () => code,
+    );
+    await dc.load();
+    return true;
   }
 
   /// 加载详情（错误页重试 / 单测直调入口）。
@@ -592,6 +633,12 @@ class DetailLogic
       _channelManager
           ?.getChannelByCode(code)
           ?.releaseDetailChannel(req.appId);
+    }
+    final dc = detailChannel;
+    if (dc is RustScriptDetailChannel) {
+      // Rust 通道：释放 (key, app_id) detail runtime（Dart 渠道未注册，上面的
+      // getChannelByCode 为 null，不会重复释放）。
+      unawaited(dc.dispose());
     }
     detailChannel = null;
     counterController.close();

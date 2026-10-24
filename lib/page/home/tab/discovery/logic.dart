@@ -13,6 +13,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 
 import 'state.dart';
 import 'widgets/tag_picker_dialog.dart';
@@ -118,6 +119,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     for (final channel in ChannelManager.instance.enabledChannels) {
       codes.add(channelCode(channel));
     }
+    // Rust 脚本通道（CoreFlags.jsChannel=true 时 Rust ScriptApi 拥有渠道包，
+    // Dart dynamicChannels 为空）→ 把已安装的 js_* 渠道包并入；Set 天然去重。
+    codes.addAll(RustScriptChannelLane.instance.codes);
     final result = codes.toList()..sort();
     debugPrint('DiscoveryNotifier: sortedChannelCodes = $result');
     debugPrint(
@@ -361,8 +365,13 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   Future<void> _loadAllChannelApps() async {
     final manager = _channelManager;
     if (manager == null) return;
+    // Rust 脚本通道（flag on 时 dynamicChannels 为空）：刷新已安装渠道包缓存。
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled) {
+      await rustLane.refresh();
+    }
     debugPrint(
-        'DiscoveryNotifier: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}');
+        'DiscoveryNotifier: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}, rustPacks=${rustLane.codes.length}');
 
     final codes = <String>[];
     for (final channel in manager.dynamicChannels) {
@@ -373,10 +382,22 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       final code = channelCode(channel);
       if (!codes.contains(code)) codes.add(code);
     }
+    for (final code in rustLane.codes) {
+      if (!codes.contains(code)) codes.add(code);
+    }
 
     var updated = state.channelApps;
     for (final code in codes) {
       try {
+        // Rust 脚本渠道：读 Rust `channel_apps` 已保存行（等价 JsChannel.getAllApps
+        // 只读本地库语义），不再经 ChannelManager（其 facade 走 channel 域）。
+        if (rustLane.enabled && rustLane.packFor(code) != null) {
+          final apps = await rustLane.storedApps(code);
+          updated = {...updated, code: apps};
+          debugPrint(
+              'DiscoveryNotifier: 加载 Rust 脚本渠道 $code - count=${apps.length}');
+          continue;
+        }
         final result = await manager.getAllAppsByCode(code);
         debugPrint(
             'DiscoveryNotifier: 加载渠道 $code - success=${result.success}, count=${result.data?.length ?? 0}');
@@ -983,7 +1004,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       case ChannelType.custom:
         return '自定义';
       case null:
-        // 脚本渠道：取渠道名，缺失回退 code
+        // 脚本渠道：Rust 通道包名优先（flag on 时 Dart 渠道已注销），
+        // 其次取 Dart 渠道名，缺失回退 code
+        final rustPack = RustScriptChannelLane.instance.packFor(code);
+        if (rustPack != null && rustPack.name.isNotEmpty) {
+          return rustPack.name;
+        }
         return _channelManager?.getChannelByCode(code)?.info.name ?? code;
     }
   }
@@ -1035,6 +1061,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           await _searchInChannel(code, keyword);
         }
       }
+      // Rust 脚本通道（flag on 时 dynamicChannels 为空）同样纳入搜索。
+      for (final code in RustScriptChannelLane.instance.codes) {
+        if (searched.add(code)) {
+          await _searchInChannel(code, keyword);
+        }
+      }
     }
   }
 
@@ -1044,6 +1076,23 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (manager == null) return;
 
     try {
+      // Rust 脚本渠道：按关键字过滤已保存行（本地过滤，等价 JsChannel
+      // searchApps 的 getAllApps 兜底语义；不经 channel 域 facade）。
+      final rustLane = RustScriptChannelLane.instance;
+      if (rustLane.enabled && rustLane.packFor(code) != null) {
+        final apps = await rustLane.storedApps(code);
+        final kw = keyword.toLowerCase();
+        final filtered = apps
+            .where((app) =>
+                app.name.toLowerCase().contains(kw) ||
+                app.des.toLowerCase().contains(kw) ||
+                app.appId.toLowerCase().contains(kw))
+            .toList();
+        state = state.copyWith(
+          channelApps: {...state.channelApps, code: filtered},
+        );
+        return;
+      }
       final result =
           await manager.searchAppsByCode(code, keyword, forceRefresh: true);
       if (result.success && result.data != null) {

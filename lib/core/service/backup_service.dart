@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -17,6 +18,7 @@ import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/service/core_snapshot_backup.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
@@ -247,6 +249,25 @@ class BackupService implements IBackupService {
       }
     } catch (e) {
       appLog.error('BackupService: 导出脚本渠道环境变量失败 - $e');
+    }
+
+    // Rust 脚本通道（CoreFlags.jsChannel=true）：渠道包 env 存 Rust `channel_env`
+    // 表 + FileSecretStore，Dart 侧无 env 读取 API，无法枚举导出。显式记录该遗漏
+    // （extras 标记 + 日志），绝不静默丢弃——见 238-jschannel-ui.txt residual。
+    try {
+      if (CoreFlags.jsChannel) {
+        await RustScriptChannelLane.instance.refresh();
+        final rustPacks = RustScriptChannelLane.instance.packs;
+        if (rustPacks.isNotEmpty) {
+          extras['js_envs_rust_lane_omitted'] =
+              rustPacks.map((pack) => pack.key).toList();
+          appLog.warning(
+              'BackupService: ${rustPacks.length} 个 Rust 脚本渠道包的 env 未导出'
+              '（ScriptApi 无 env 读取 API；键记录于 extras.js_envs_rust_lane_omitted）');
+        }
+      }
+    } catch (e) {
+      appLog.error('BackupService: 记录 Rust 脚本通道 env 遗漏失败 - $e');
     }
 
     // 导出用户分类标签（v2.1 新增）
