@@ -7,7 +7,19 @@ import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/rust_download_service.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
+import 'package:mockito/mockito.dart';
+
+/// 伪造宿主模块句柄：只被 [ModuleBootstrap.debugConfigure] 的 `loadOverride`
+/// 原样返回，从不调用其任何宿主方法（无 FFI）。
+class _FakeModuleHandle extends Mock implements ModuleHandle {}
+
+/// 伪造模块实例：`acquire('download')` 需要一个实例，但本测试从不调用它。
+class _FakeRustModuleInstance extends Mock implements RustModuleInstance {}
 
 /// Core task DTO with all the fields [DownloadTask] mapping reads.
 rust.DownloadTaskDto _dto({
@@ -54,6 +66,11 @@ class _FakeDownloadBackend implements DownloadBackend {
   _FakeDownloadBackend({this.task});
 
   final List<String> calls = <String>[];
+
+  /// Optional shared event log (records core calls in the same list as the
+  /// module-ensure events) so tests can assert ordering, not just membership.
+  List<String>? eventLog;
+
   final StreamController<rust.DownloadTaskDto> events =
       StreamController<rust.DownloadTaskDto>.broadcast();
 
@@ -63,6 +80,11 @@ class _FakeDownloadBackend implements DownloadBackend {
   bool listEmpty = false;
   int watchAllCalls = 0;
 
+  void _record(String name) {
+    calls.add(name);
+    eventLog?.add(name);
+  }
+
   void _maybeThrow() {
     final error = throwOn;
     if (error != null) throw error;
@@ -70,7 +92,7 @@ class _FakeDownloadBackend implements DownloadBackend {
 
   @override
   Future<int> start(rust.DownloadStartRequest request) async {
-    calls.add('start');
+    _record('start');
     _maybeThrow();
     lastStart = request;
     return 7;
@@ -78,7 +100,7 @@ class _FakeDownloadBackend implements DownloadBackend {
 
   @override
   Future<List<rust.DownloadTaskDto>> list() async {
-    calls.add('list');
+    _record('list');
     _maybeThrow();
     final current = listEmpty ? null : task;
     return current == null
@@ -88,50 +110,50 @@ class _FakeDownloadBackend implements DownloadBackend {
 
   @override
   Future<rust.DownloadTaskDto?> get(String moduleTaskId) async {
-    calls.add('get:$moduleTaskId');
+    _record('get:$moduleTaskId');
     _maybeThrow();
     return task;
   }
 
   @override
   Future<void> pause(String moduleTaskId) async {
-    calls.add('pause:$moduleTaskId');
+    _record('pause:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Future<void> resume(String moduleTaskId) async {
-    calls.add('resume:$moduleTaskId');
+    _record('resume:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Future<void> cancel(String moduleTaskId) async {
-    calls.add('cancel:$moduleTaskId');
+    _record('cancel:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Future<void> retry(String moduleTaskId) async {
-    calls.add('retry:$moduleTaskId');
+    _record('retry:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Future<void> restart(String moduleTaskId) async {
-    calls.add('restart:$moduleTaskId');
+    _record('restart:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Future<void> remove(String moduleTaskId) async {
-    calls.add('remove:$moduleTaskId');
+    _record('remove:$moduleTaskId');
     _maybeThrow();
   }
 
   @override
   Stream<rust.DownloadTaskDto> watchAll() {
-    calls.add('watchAll');
+    _record('watchAll');
     watchAllCalls++;
     return events.stream;
   }
@@ -172,15 +194,46 @@ void main() {
 
   late _FakeDownloadBackend backend;
 
+  /// Installs hermetic [ModuleBootstrap] seams so the new `download` module
+  /// mount in [RustDownloadService._ensureCoreReady] never touches FFI/network.
+  ///
+  /// [ensureOverride] drives install+mount success; the fake handle/instance
+  /// satisfy `acquire` without loading a real `.so`.
+  void configureModuleSeams({
+    required Future<bool> Function(
+      String module, {
+      required bool allowDownload,
+      ModuleProgressCallback? onProgress,
+    }) ensure,
+  }) {
+    ModuleBootstrap.instance.debugConfigure(
+      ensureOverride: ensure,
+      loadOverride: (String module) async => _FakeModuleHandle(),
+      factoryOverride: (ModuleHandle handle) async => _FakeRustModuleInstance(),
+      delayOverride: (Duration duration) async {},
+    );
+  }
+
   setUp(() {
     backend = _FakeDownloadBackend(task: _dto());
     DownloadFacade.backendOverride = backend;
     RustDownloadService.instance.resetCoreReadyForTest();
+    ModuleBootstrap.instance.debugReset();
+    // Default: the `download` module mounts successfully.
+    configureModuleSeams(
+      ensure: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async =>
+          true,
+    );
   });
 
   tearDown(() async {
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    ModuleBootstrap.instance.debugReset();
     await backend.events.close();
   });
 
@@ -436,6 +489,80 @@ void main() {
         isEmpty,
         reason: 'the download layer must be flag-free after the cutover:\n'
             '${hits.join('\n')}',
+      );
+    });
+  });
+
+  group('download module ensure gate', () {
+    late List<String> events;
+    late List<String> ensureModules;
+
+    setUp(() {
+      events = <String>[];
+      ensureModules = <String>[];
+      backend.eventLog = events;
+      configureModuleSeams(
+        ensure: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureModules.add(module);
+          events.add('ensure:$module');
+          return true;
+        },
+      );
+    });
+
+    tearDown(() {
+      backend.eventLog = null;
+    });
+
+    test('mounts the download module before the first core call', () async {
+      await _startDownload();
+
+      expect(ensureModules, <String>['download'],
+          reason: 'the download module must be ensured exactly once');
+      expect(
+        events,
+        <String>['ensure:download', 'start', 'get:7'],
+        reason: 'the mount must resolve BEFORE any core call (start/get)',
+      );
+    });
+
+    test('the ensure is one-shot: memoized across every entry point', () async {
+      await _startDownload();
+      await RustDownloadService.instance.getTask(7);
+      await RustDownloadService.instance.listTasks();
+
+      expect(ensureModules, <String>['download'],
+          reason: 'one-shot: the second/third entry points reuse the memo');
+      expect(events.where((e) => e == 'ensure:download').length, 1);
+    });
+
+    test('a failed ensure surfaces the typed error and never calls the core',
+        () async {
+      configureModuleSeams(
+        ensure: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async =>
+            false,
+      );
+
+      await expectLater(
+        _startDownload(),
+        throwsA(isA<DownloadModuleUnavailableException>().having(
+          (e) => '$e',
+          'toString',
+          contains('CORE_E_DOWNLOAD_MODULE_UNAVAILABLE'),
+        )),
+      );
+      expect(
+        backend.calls,
+        isEmpty,
+        reason: 'no core call and no Dart fallback when the module cannot mount',
       );
     });
   });

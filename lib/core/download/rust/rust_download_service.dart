@@ -5,8 +5,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/download/download_facade.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 /// [IDownloadService] 的 **Rust 内核实现**。
@@ -32,23 +34,52 @@ class RustDownloadService implements IDownloadService {
   /// 模块名（对应 `libgstore_mod_download.so`）
   static const String moduleName = 'download';
 
-  /// Memoized one-shot legacy import gate.
+  /// Memoized one-shot gate: mount the `download` module, then import legacy.
   ///
   /// Every core entry point (start, read, watch, pause/resume/...) must wait
   /// for this before touching the core database, otherwise a fresh core DB
-  /// looks empty until the first download is started.
+  /// looks empty until the first download is started — **and** the host
+  /// `HostDownloadPort` cannot resolve the native module.
   Future<void>? _coreReady;
 
   Future<void> _ensureCoreReady() =>
-      _coreReady ??= _importLegacyBeforeCoreRead();
+      _coreReady ??= _mountModuleThenImportLegacy();
 
-  Future<void> _importLegacyBeforeCoreRead() async {
+  /// Ensures the Rust `download` module is installed+mounted, then runs the
+  /// one-shot legacy import.
+  ///
+  /// The mount **must** precede every core read/start: [DownloadModule.onRegister]
+  /// binds [IDownloadService] to this Rust-only service with no Dart fallback,
+  /// but the host `HostDownloadPort` resolves the native module by name
+  /// (`module_id_by_name("download")`) and returns
+  /// `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` when it was never mounted. Mirroring
+  /// the qr/repo consumers ([ModuleBootstrap.acquire]), we mount it on first use.
+  ///
+  /// [acquire] (not bare `ensureOnly`) is deliberate: `ensureOnly` leaves the
+  /// observable phase at `downloading` (it publishes no terminal state), which
+  /// the app-wide `ModuleInstallBanner` would render forever. `acquire` drives
+  /// `initializing → ready`, so the banner clears. It never awaits a path the
+  /// ensure itself needs, so it cannot deadlock.
+  Future<void> _mountModuleThenImportLegacy() async {
+    await _ensureDownloadModule();
     try {
       await DownloadFacade.instance.importLegacyOnce();
     } catch (error) {
       // The import is best-effort by contract: it must never block a download.
       debugPrint(
           'RustDownloadService: legacy import failed (non-fatal) - $error');
+    }
+  }
+
+  /// Mounts the Rust `download` module or throws the typed unavailability error.
+  ///
+  /// A genuinely failed acquire surfaces [DownloadModuleUnavailableException]
+  /// (`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`); there is **no** Dart fallback.
+  Future<void> _ensureDownloadModule() async {
+    try {
+      await ModuleBootstrap.instance.acquire(moduleName);
+    } on ModuleInstallFailedException catch (error) {
+      throw DownloadModuleUnavailableException(error);
     }
   }
 

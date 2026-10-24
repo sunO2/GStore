@@ -11,7 +11,18 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:mockito/mockito.dart';
+
+/// 伪造宿主模块句柄：只被 [ModuleBootstrap.debugConfigure] 的 `loadOverride`
+/// 原样返回（无 FFI）。
+class _FakeModuleHandle extends Mock implements rust.ModuleHandle {}
+
+/// 伪造模块实例：满足 `acquire('download')` 的实例创建（从不调用其方法）。
+class _FakeRustModuleInstance extends Mock implements RustModuleInstance {}
 
 /// Wave 6B-B1 binding contract.
 ///
@@ -142,6 +153,21 @@ void main() {
     CoreFlags.installBackend(_DisabledFlagsBackend());
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    // Hermetic `download` module mount: `RustDownloadService` now acquires the
+    // module before its first core call; keep it off FFI/network here.
+    ModuleBootstrap.instance.debugReset();
+    ModuleBootstrap.instance.debugConfigure(
+      ensureOverride: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async =>
+          true,
+      loadOverride: (String module) async => _FakeModuleHandle(),
+      factoryOverride: (rust.ModuleHandle handle) async =>
+          _FakeRustModuleInstance(),
+      delayOverride: (Duration duration) async {},
+    );
   });
 
   tearDown(() async {
@@ -150,6 +176,7 @@ void main() {
     CoreFlags.resetBackend();
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    ModuleBootstrap.instance.debugReset();
     manager.injectContext(null);
     await manager.clear();
   });

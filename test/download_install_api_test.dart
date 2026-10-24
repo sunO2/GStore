@@ -14,9 +14,20 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart' show ModuleManager;
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:mockito/mockito.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
+
+/// 伪造宿主模块句柄：只被 [ModuleBootstrap.debugConfigure] 的 `loadOverride`
+/// 原样返回（无 FFI）。
+class _FakeModuleHandle extends Mock implements rust.ModuleHandle {}
+
+/// 伪造模块实例：满足 `acquire('download')` 的实例创建（从不调用其方法）。
+class _FakeRustModuleInstance extends Mock implements RustModuleInstance {}
 
 class _FakeFlagsBackend implements CoreFlagsBackend {
   _FakeFlagsBackend(this.snapshot);
@@ -349,6 +360,21 @@ void main() {
     InstallFacade.resetForTest();
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    // Hermetic `download` module mount: `RustDownloadService` acquires the
+    // module before its first core call; keep it off FFI/network here.
+    ModuleBootstrap.instance.debugReset();
+    ModuleBootstrap.instance.debugConfigure(
+      ensureOverride: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async =>
+          true,
+      loadOverride: (String module) async => _FakeModuleHandle(),
+      factoryOverride: (rust.ModuleHandle handle) async =>
+          _FakeRustModuleInstance(),
+      delayOverride: (Duration duration) async {},
+    );
     temp = Directory.systemTemp.createTempSync('gstore_install_api_');
     apk = File('${temp.path}/app.apk')..writeAsBytesSync(<int>[0x50, 0x4B]);
   });
@@ -359,6 +385,7 @@ void main() {
     InstallFacade.resetForTest();
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    ModuleBootstrap.instance.debugReset();
     CoreFlags.resetBackend();
   });
 
