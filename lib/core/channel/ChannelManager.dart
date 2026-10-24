@@ -211,6 +211,11 @@ class ChannelManager {
     return (from ?? _defaultChannelType).code;
   }
 
+  /// 渠道 code 映射到结果里的 `from`：枚举 code 命中枚举；脚本渠道归 custom。
+  ChannelType _resultTypeForCode(String code) {
+    return ChannelType.fromCode(code) ?? ChannelType.custom;
+  }
+
   /// Rust `ChannelAppInfo` → Dart `AppSummary`（extra 仍是 JSON 对象）。
   AppSummary _toAppSummary(rust.ChannelAppInfo info) {
     Map<String, dynamic>? extra;
@@ -240,10 +245,58 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final apps = await RustChannelFacade.instance.getAllApps(
+          key: _rustChannelKey(from),
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: apps.map(_toAppSummary).toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
         from: from ?? _defaultChannelType,
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.getAllApps(forceRefresh: forceRefresh);
+  }
+
+  /// 按渠道 code（枚举 `type.code` / 脚本 `channelKey`）获取所有应用。
+  ///
+  /// 发现页用 code 定位渠道；`CoreFlags.channels == true` 时走 Rust facade，
+  /// 否则回落到已注册的 Dart [IChannel]（旧路径逐字节不变）。
+  Future<ChannelResult<List<AppSummary>>> getAllAppsByCode(
+    String code, {
+    bool forceRefresh = false,
+  }) async {
+    if (CoreFlags.channels) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        final apps = await RustChannelFacade.instance.getAllApps(
+          key: code,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: apps.map(_toAppSummary).toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
         error: '渠道不可用或未注册',
       );
     }
@@ -308,6 +361,38 @@ class ChannelManager {
     if (channel == null) {
       return ChannelResult.failure(
         from: from ?? _defaultChannelType,
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.searchApps(keyword, forceRefresh: forceRefresh);
+  }
+
+  /// 按渠道 code 搜索应用（发现页用；flag on 走 facade，flag off 走旧路径）。
+  Future<ChannelResult<List<AppSummary>>> searchAppsByCode(
+    String code,
+    String keyword, {
+    bool forceRefresh = false,
+  }) async {
+    if (CoreFlags.channels) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        final apps = await RustChannelFacade.instance.search(
+          key: code,
+          keyword: keyword,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: apps.map(_toAppSummary).toList(),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
         error: '渠道不可用或未注册',
       );
     }
@@ -389,6 +474,22 @@ class ChannelManager {
     bool forceRefresh = false,
     List<ChannelType>? preferredOrder,
   }) async {
+    if (CoreFlags.channels) {
+      for (var channel in _getChannelsInOrder(preferredOrder)) {
+        final result = await getAllApps(
+          from: channel.info.type,
+          forceRefresh: forceRefresh,
+        );
+        if (result.success && result.data != null) {
+          return result;
+        }
+      }
+      return ChannelResult.failure(
+        from: _defaultChannelType,
+        error: '所有渠道均不可用',
+      );
+    }
+
     var channels = _getChannelsInOrder(preferredOrder);
 
     for (var channel in channels) {
@@ -415,6 +516,23 @@ class ChannelManager {
     bool forceRefresh = false,
     List<ChannelType>? preferredOrder,
   }) async {
+    if (CoreFlags.channels) {
+      for (var channel in _getChannelsInOrder(preferredOrder)) {
+        final result = await getAppInfo(
+          appId,
+          from: channel.info.type,
+          forceRefresh: forceRefresh,
+        );
+        if (result.success) {
+          return result;
+        }
+      }
+      return ChannelResult.failure(
+        from: _defaultChannelType,
+        error: '所有渠道均不可用',
+      );
+    }
+
     var channels = _getChannelsInOrder(preferredOrder);
 
     for (var channel in channels) {
@@ -440,6 +558,16 @@ class ChannelManager {
 
   /// 检查指定渠道的更新
   Future<ChannelResult<bool>> checkUpdate({ChannelType? from}) async {
+    if (CoreFlags.channels) {
+      final fromType = from ?? _defaultChannelType;
+      try {
+        final updated =
+            await RustChannelFacade.instance.checkUpdate(key: _rustChannelKey(from));
+        return ChannelResult.success(data: updated, from: fromType);
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
     var channel = _selectChannel(from);
     if (channel == null) {
       return ChannelResult.failure(
@@ -478,6 +606,14 @@ class ChannelManager {
   /// 检查所有启用渠道的更新
   Future<Map<ChannelType, ChannelResult<bool>>> checkAllUpdates() async {
     Map<ChannelType, ChannelResult<bool>> results = {};
+
+    if (CoreFlags.channels) {
+      for (var channel in enabledChannels) {
+        results[channel.info.type] =
+            await checkUpdate(from: channel.info.type);
+      }
+      return results;
+    }
 
     for (var channel in enabledChannels) {
       results[channel.info.type] = await channel.checkUpdate();

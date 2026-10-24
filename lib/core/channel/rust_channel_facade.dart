@@ -75,6 +75,13 @@ abstract class ChannelApiBackend {
 
   Future<bool> refresh({required String key});
 
+  Future<List<rust.ChannelAppInfo>> listApps({
+    required String key,
+    required bool forceRefresh,
+  });
+
+  Future<bool> checkUpdate({required String key});
+
   Future<List<rust.ChannelAppInfo>> search({
     required String key,
     required String keyword,
@@ -234,6 +241,17 @@ class FrbChannelApiBackend implements ChannelApiBackend {
       _call((api) => api.refresh(key: key));
 
   @override
+  Future<List<rust.ChannelAppInfo>> listApps({
+    required String key,
+    required bool forceRefresh,
+  }) =>
+      _call((api) => api.listApps(key: key, forceRefresh: forceRefresh));
+
+  @override
+  Future<bool> checkUpdate({required String key}) =>
+      _call((api) => api.checkUpdate(key: key));
+
+  @override
   Future<List<rust.ChannelAppInfo>> search({
     required String key,
     required String keyword,
@@ -385,6 +403,15 @@ class RustChannelFacade {
       _backend.envRemove(key: key, name: name);
 
   Future<bool> refresh({required String key}) => _backend.refresh(key: key);
+
+  Future<List<rust.ChannelAppInfo>> getAllApps({
+    required String key,
+    required bool forceRefresh,
+  }) =>
+      _backend.listApps(key: key, forceRefresh: forceRefresh);
+
+  Future<bool> checkUpdate({required String key}) =>
+      _backend.checkUpdate(key: key);
 
   Future<List<rust.ChannelAppInfo>> search({
     required String key,

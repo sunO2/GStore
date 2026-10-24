@@ -167,6 +167,21 @@ class _RecordingBackend implements ChannelApiBackend {
   }
 
   @override
+  Future<List<rust.ChannelAppInfo>> listApps({
+    required String key,
+    required bool forceRefresh,
+  }) async {
+    calls.add('listApps:$key:$forceRefresh');
+    return <rust.ChannelAppInfo>[app];
+  }
+
+  @override
+  Future<bool> checkUpdate({required String key}) async {
+    calls.add('checkUpdate:$key');
+    return true;
+  }
+
+  @override
   Future<List<rust.ChannelAppInfo>> search({
     required String key,
     required String keyword,
@@ -303,6 +318,13 @@ void main() {
     expect(await facade.envRemove(key: 'github', name: 'USER'), isTrue);
     expect(await facade.refresh(key: 'github'), isTrue);
     expect(
+      (await facade.getAllApps(key: 'github', forceRefresh: true))
+          .single
+          .appId,
+      'owner/repo',
+    );
+    expect(await facade.checkUpdate(key: 'github'), isTrue);
+    expect(
       (await facade.search(
         key: 'github',
         keyword: 'hello',
@@ -371,6 +393,8 @@ void main() {
       'envSet:github:USER:alice',
       'envRemove:github:USER',
       'refresh:github',
+      'listApps:github:true',
+      'checkUpdate:github',
       'search:github:hello:true',
       'getAppInfo:github:owner/repo:false',
       'getAppDetail:github:owner/repo:false',

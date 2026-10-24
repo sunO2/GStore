@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -57,6 +58,15 @@ Future<void> _setFlag({required bool jsChannel}) async {
   expect(CoreFlags.jsChannel, jsChannel);
 }
 
+/// 只切 `channels`（Rust 渠道 facade 接管读路径）；`jsChannel` 保持 false。
+Future<void> _setChannelsFlag({required bool channels}) async {
+  CoreFlags.installBackend(
+    _FakeFlagsBackend(CoreFlagsSnapshot(channels: channels)),
+  );
+  await CoreFlags.refresh();
+  expect(CoreFlags.channels, channels);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -110,5 +120,41 @@ void main() {
     CoreFlags.resetBackend();
     expect(CoreFlags.jsChannel, isFalse);
     expect(ChannelManager.instance.dartScriptChannelsEnabled, isTrue);
+  });
+
+  test('channel_import_zip_is_typed_when_flipped', () async {
+    // CoreFlags.channels=true 时旧 Dart 导入路径必须返回类型化错误，且不落盘。
+    await _setChannelsFlag(channels: true);
+
+    final dir = await Directory.systemTemp.createTemp('gstore_flag_import');
+    addTearDown(() => dir.delete(recursive: true));
+
+    Object? thrown;
+    try {
+      await ChannelLoader(directory: dir).importZip(
+        channelKey: 'js_flipped',
+        zipBytes: _zip(),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(
+      thrown,
+      isNotNull,
+      reason: 'flag on 必须返回类型化错误，不能静默写入后再由 registerChannel 拒绝',
+    );
+    debugPrint('importZip flipped error = $thrown');
+    expect(
+      thrown.toString(),
+      contains('CORE_E_CHANNEL_LEGACY_DISABLED'),
+      reason: '错误必须是稳定的 CORE_E_CHANNEL_LEGACY_DISABLED 代码',
+    );
+    expect(
+      File('${dir.path}/flipped.zip').existsSync(),
+      isFalse,
+      reason: 'flag on 时不得写入任何 zip 渠道包',
+    );
+    expect(ChannelManager.instance.getChannelByKey('js_flipped'), isNull);
   });
 }

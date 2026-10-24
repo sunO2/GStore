@@ -313,17 +313,16 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
     try {
       final currentPage = state.channelPages[code] ?? 1;
-      final channelInstance = _channelManager?.getChannelByCode(code);
-
-      if (channelInstance != null) {
-        // 暂时使用 forceRefresh 加载全部
-        final result = await channelInstance.getAllApps(forceRefresh: true);
-        if (result.success && result.data != null) {
-          state = state.copyWith(
-            channelApps: {...state.channelApps, code: result.data!},
-            channelPages: {...state.channelPages, code: currentPage + 1},
-          );
-        }
+      // flag on 时 ChannelManager 走 Rust facade；flag off 时回落到旧 IChannel。
+      final result = await _channelManager?.getAllAppsByCode(
+        code,
+        forceRefresh: true,
+      );
+      if (result != null && result.success && result.data != null) {
+        state = state.copyWith(
+          channelApps: {...state.channelApps, code: result.data!},
+          channelPages: {...state.channelPages, code: currentPage + 1},
+        );
       }
     } catch (e) {
       appLog.error('DiscoveryNotifier: 加载更多 $code 失败 - $e');
@@ -365,17 +364,20 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     debugPrint(
         'DiscoveryNotifier: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}');
 
-    final channels = <IChannel>[
-      ...manager.dynamicChannels,
-      ...manager.enabledChannels
-          .where((c) => !manager.dynamicChannels.contains(c)),
-    ];
+    final codes = <String>[];
+    for (final channel in manager.dynamicChannels) {
+      final code = channelCode(channel);
+      if (!codes.contains(code)) codes.add(code);
+    }
+    for (final channel in manager.enabledChannels) {
+      final code = channelCode(channel);
+      if (!codes.contains(code)) codes.add(code);
+    }
 
     var updated = state.channelApps;
-    for (var channel in channels) {
-      final code = channelCode(channel);
+    for (final code in codes) {
       try {
-        final result = await channel.getAllApps();
+        final result = await manager.getAllAppsByCode(code);
         debugPrint(
             'DiscoveryNotifier: 加载渠道 $code - success=${result.success}, count=${result.data?.length ?? 0}');
 
@@ -520,12 +522,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           false;
 
       // 重新加载该渠道的应用列表
-      final result = await channelInstance.getAllApps(forceRefresh: true);
-      if (result.success && result.data != null) {
-        state = state.copyWith(
-          channelApps: {...state.channelApps, code: result.data!},
-        );
-      }
+      await _refreshChannelApps(code);
 
       // 刷新已添加应用索引（更新入库状态图标）
       await _updateAddedAppsIndex();
@@ -641,10 +638,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 刷新指定渠道的应用列表
   Future<void> _refreshChannelApps(String code) async {
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+    if (_channelManager == null) return;
     try {
-      final result = await channelInstance.getAllApps(forceRefresh: true);
+      final result =
+          await _channelManager!.getAllAppsByCode(code, forceRefresh: true);
       if (result.success && result.data != null) {
         state = state.copyWith(
           channelApps: {...state.channelApps, code: result.data!},
@@ -1043,11 +1040,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 在指定渠道搜索
   Future<void> _searchInChannel(String code, String keyword) async {
-    final channel = _channelManager?.getChannelByCode(code);
-    if (channel == null) return;
+    final manager = _channelManager;
+    if (manager == null) return;
 
     try {
-      final result = await channel.searchApps(keyword, forceRefresh: true);
+      final result =
+          await manager.searchAppsByCode(code, keyword, forceRefresh: true);
       if (result.success && result.data != null) {
         state = state.copyWith(
           channelApps: {...state.channelApps, code: result.data!},
@@ -1282,7 +1280,8 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
     for (final channel in channels) {
       final code = channelCode(channel);
       try {
-        final result = await channel.searchApps(keyword, forceRefresh: true);
+        final result = await ChannelManager.instance
+            .searchAppsByCode(code, keyword, forceRefresh: true);
         if (result.success && result.data != null) {
           for (final app in result.data!) {
             newResults.add((app, code));

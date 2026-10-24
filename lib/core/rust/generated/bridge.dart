@@ -152,6 +152,9 @@ abstract class ChannelApi implements RustOpaqueInterface {
   Future<String> canonicalAppId(
       {required String key, required ChannelAppInfo app});
 
+  /// Checks whether a registered channel reports an update.
+  Future<bool> checkUpdate({required String key});
+
   /// Disables a registered channel without removing it.
   Future<ChannelEntry> disable({required String key});
 
@@ -207,6 +210,13 @@ abstract class ChannelApi implements RustOpaqueInterface {
 
   /// Lists every registered channel in deterministic key order.
   Future<List<ChannelEntry>> list();
+
+  /// Lists every app owned by a registered channel.
+  ///
+  /// Dart discovery reads this instead of calling its legacy `IChannel`
+  /// implementation when `CoreFlags.channels` is armed.
+  Future<List<ChannelAppInfo>> listApps(
+      {required String key, required bool forceRefresh});
 
   /// Runs the channel's update loop (`do_update`).
   Future<bool> refresh({required String key});

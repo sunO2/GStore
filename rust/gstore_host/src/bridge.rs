@@ -2885,6 +2885,30 @@ impl ChannelApi {
             .map_err(core_err)
     }
 
+    /// Lists every app owned by a registered channel.
+    ///
+    /// Dart discovery reads this instead of calling its legacy `IChannel`
+    /// implementation when `CoreFlags.channels` is armed.
+    pub fn list_apps(
+        &self,
+        key: String,
+        force_refresh: bool,
+    ) -> Result<Vec<ChannelAppInfo>, String> {
+        self.driver(&key)?
+            .get_all_apps(force_refresh)
+            .map_err(core_err)
+            .map(|apps| {
+                apps.into_iter()
+                    .map(ChannelAppInfo::from_summary)
+                    .collect()
+            })
+    }
+
+    /// Checks whether a registered channel reports an update.
+    pub fn check_update(&self, key: String) -> Result<bool, String> {
+        self.driver(&key)?.check_update().map_err(core_err)
+    }
+
     /// Searches one channel by keyword.
     pub fn search(
         &self,
@@ -4591,6 +4615,22 @@ mod channel_api_tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].app_id, "com.example.alpha");
         assert_eq!(hits[0].package_name.as_deref(), Some("com.example.alpha"));
+        let all_apps = api
+            .list_apps("local_db".to_string(), false)
+            .expect("list_apps");
+        assert_eq!(all_apps.len(), 1);
+        assert_eq!(all_apps[0].app_id, "com.example.alpha");
+        assert!(!api
+            .check_update("local_db".to_string())
+            .expect("check_update"));
+        let missing_channel_apps = api
+            .list_apps("js_contract".to_string(), false)
+            .expect_err("registered channel without a driver must be typed");
+        println!("channel_api_contract: no-driver list_apps error = {missing_channel_apps}");
+        assert!(
+            missing_channel_apps.starts_with("not_found:"),
+            "{missing_channel_apps}"
+        );
         let info = api
             .get_app_info(
                 "local_db".to_string(),

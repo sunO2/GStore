@@ -7,8 +7,27 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:path_provider/path_provider.dart';
+
+/// `CoreFlags.channels == true` 时旧 Dart 渠道包写入路径停用的类型化错误。
+///
+/// Rust core 接管 `channel` 域后，Dart 不得再写 zip 再让 `registerChannel`
+/// 静默拒绝；调用方按 [code] 呈现明确提示。
+class ChannelImportDisabledException implements Exception {
+  const ChannelImportDisabledException(this.message);
+
+  /// 稳定机器代码。
+  static const String code = 'CORE_E_CHANNEL_LEGACY_DISABLED';
+
+  /// 人类可读细节。
+  final String message;
+
+  @override
+  String toString() => '$code: $message';
+}
 
 /// 渠道包加载器：扫描渠道包目录 → 解析 zip 包 → 创建 [JsChannel] → 注册到 [ChannelManager]。
 ///
@@ -209,6 +228,12 @@ class ChannelLoader {
     required String channelKey,
     required Uint8List zipBytes,
   }) async {
+    await LegacyWriteGuard.assertAllowed('channel');
+    if (CoreFlags.channels ||
+        !ChannelManager.instance.dartScriptChannelsEnabled) {
+      throw const ChannelImportDisabledException(
+          'channels/jsChannel 已由 Rust core 接管，Dart 渠道包写入路径已停用');
+    }
     if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
       throw ArgumentError.value(
           channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
@@ -280,6 +305,7 @@ class ChannelLoader {
   /// 幂等：渠道未注册（仅残留文件/env）也清理文件与 env。
   /// env 清空失败不阻塞文件删除与注销（ConfigStore 未初始化等场景容错）。
   Future<void> removeChannel(String channelKey) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
       throw ArgumentError.value(
           channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
