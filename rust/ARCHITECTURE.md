@@ -50,6 +50,36 @@ core 的任何一条边都不得调用平台代码。
 `<files>/migration/cutover_v6.done`；之后的启动不再快照/重放。`Flags::DISABLED` 仍是
 全关退路；`CoreFlags.set` 仅是测试 seam（Rust 为权威，`core_writes` 永不由操作者设置）。
 
+**Wave 06 closeout（2026-10-24）：六域核心归属与 durable cutover**：
+
+| 域 | Rust 所有者（crate / API） | Dart facade（唯一入口） |
+|---|---|---|
+| `channels` | `gstore_core::channel`（注册表 + `PackStore`）；宿主 FRB `ChannelApi` | `lib/core/channel/rust_channel_facade.dart`（`RustChannelFacade`） |
+| `jsChannel` | `gstore_host::script_api`（FRB `ScriptApi`）+ `gstore_core` 脚本包存储（`script_db`） | `lib/core/script/script_api.dart`（`ScriptApi`）+ `ScriptChannelService` |
+| `catalog` | `gstore_core::catalog`；宿主 FRB `CatalogApi`（`AddedAppsApi` 同域） | `lib/core/catalog/catalog_facade.dart`（`CatalogFacade`） |
+| `update` | `gstore_core::update::UpdateService`；宿主 FRB `UpdateApi` | `lib/core/update/update_facade.dart`（`UpdateFacade`） |
+| `download` | `gstore_core` 下载端口（`download/port.rs`）；宿主 FRB `DownloadApi` → `gstore_mod_download` | `lib/core/download/download_facade.dart`（`DownloadFacade`）+ `RustDownloadService` |
+| `install` | `gstore_core::install::InstallService`；宿主 FRB `InstallApi` | `lib/core/install/install_facade.dart`（`InstallFacade`） |
+
+Durable cutover（一次性、进程默认即终态）：
+
+- **默认即终态**：`Flags::WAVE06_CLOSEOUT` 是 `Flags::default()` 与 `GLOBAL_FLAGS` 初值，六域全
+  true（`core_writes` 仍由 `core_writes` 表投影，不由 flag 默认 arm）。`Flags::DISABLED` 仅测试
+  退路；生产代码无 `CoreFlags.set(...true)`。
+- **一次性 marker**：`<files>/migration/cutover_v6.done` 由 Dart `CoreCutover` 原子写（temp +
+  rename）。marker 存在即跳过，永不二次快照/重放。
+- **唯一快照**：首个未完成启动取**一个** `pre-closeout-<millis>.db`（经 `CoreApi.exportSnapshot` /
+  `VACUUM INTO`）；中断重试复用**校验通过**的既有快照，损坏快照删除后重取，故"一个 pre-closeout
+  快照"在中断下也成立。
+- **重放顺序**：`channels → jsChannel → catalog → update`（`catalog` 必须先于 `update` 权威；
+  `jsChannel` 叠在 channel 注册表上）。
+- **fail-closed**：某域存在 legacy 数据但重放导入 0 行 → 抛 `CORE_E_CUTOVER_EMPTY_IMPORT`，
+  marker 不写（fresh install 允许 0 行）。parity 失败抛 `CORE_E_CUTOVER_PARITY`；快照失败抛
+  `CORE_E_CUTOVER_SNAPSHOT`；marker 写失败抛 `CORE_E_CUTOVER_MARKER`。`CoreBootstrap` 捕获后仅记
+  日志，下次启动重试（进程不崩）。
+- **旧写入者 quiesce 而非删除**：所有 legacy Dart 写入者保留但 `@Deprecated` 并以
+  `LegacyWriteGuard`（`core_writes` 域标记）fail-closed；无一处删除。
+
 **仅有的两个模块级例外**（均在 core 之外，且显式列在允许清单上）：
 
 1. `protect_fd(fd) -> bool` —— `gstore_mod_proxy` 在 Rust 内创建 socket 并交宿主保护，

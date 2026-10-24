@@ -101,6 +101,25 @@ runtime kernel selector. `DownloadCoreConfig` / `LazyDownloadService` are delete
   lags by one sweep, divergent dedup lineage is a hard conflict, `needs_restart` is a one-way
   door, and snapshot restore is failure-safe but not crash-safe.
 
+## Wave 06 closeout (2026-10-24)
+
+The prerequisites above are now exercised by a completed cutover rather than an opt-in
+experiment.
+
+- Core is authoritative for all six domains. The durable flip is `Flags::WAVE06_CLOSEOUT`,
+  guarded by `migration/cutover_v6.done` behind one `pre-closeout-<millis>.db` snapshot and the
+  ordered resync `channels -> jsChannel -> catalog -> update`; an empty import of present legacy
+  data fails closed (`CORE_E_CUTOVER_EMPTY_IMPORT`).
+- Dart retains only the facades plus the flag-off legacy backend; every legacy writer is
+  quiesced (`@Deprecated` + `LegacyWriteGuard`), none deleted. The per-domain marker stays
+  authoritative over the global flag (consequence 6), and the `needs_restart` one-way door
+  (consequence 4) now guards real user data rather than an experiment.
+- Notifications stay Dart-owned: the frontend posts download notifications and there is no Rust
+  notification implementation.
+- Supply-chain gate posture: the hard tier must pass; advisory findings live in
+  `rust/supply-chain-baseline.toml` with review dates, and gate mode reports `BLOCKED` rather
+  than `PASS` while baselined findings remain.
+
 ## Next step
 
 Wave 5 (`gstore-rust-core-android-wave05`) completed on `wave05-script`, and Wave 6B ran on

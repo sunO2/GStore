@@ -84,3 +84,26 @@ module owns its own DB (`gstore_mods/download/download.db`). The core treats the
 read-only: it opens it only through `legacy::open_read_only` for parity/reconcile/resync and
 never mutates module rows. The module remains authoritative for live progress, so the mirror
 can lag by one reconcile sweep and `resync` must never "fix" module state.
+
+## Wave 06 closeout (2026-10-24)
+
+The six-domain cutover is complete. This section records the shipped end state and the two
+ownership facts the sections above left implicit.
+
+- Core is authoritative for all six domains: `channels`, `jsChannel`, `catalog`, `update`,
+  `download`, `install`. The process default is `Flags::WAVE06_CLOSEOUT` (all six true); the
+  durable one-time flip is guarded by `migration/cutover_v6.done` behind a single
+  `pre-closeout-<millis>.db` snapshot (`CoreApi.exportSnapshot` / `VACUUM INTO`) and the ordered
+  resync `channels -> jsChannel -> catalog -> update`, fail-closed on an empty import
+  (`CORE_E_CUTOVER_EMPTY_IMPORT`).
+- Dart keeps only two things: the typed facades that route to the core (`RustChannelFacade`,
+  `ScriptApi`, `CatalogFacade`, `UpdateFacade`, `DownloadFacade`, `InstallFacade`) and the
+  flag-off legacy backend that is reachable only while a domain's flag is false. Legacy writers
+  are quiesced (`@Deprecated` + `LegacyWriteGuard`), never deleted.
+- Notification ownership stays on Dart: the frontend posts download notifications
+  (`DownloadNotificationService`). There is NO Rust notification implementation, so the cutover
+  does not suppress them and `CoreFlags.download` no longer gates the notification service.
+- Supply-chain gate posture: the hard tier (`cargo-deny` licenses / bans / sources per manifest)
+  must pass. Advisory findings are recorded in `rust/supply-chain-baseline.toml` with review
+  dates; in gate mode a baselined finding reports `BLOCKED` (exit 3) and is never reported as
+  `PASS`.
