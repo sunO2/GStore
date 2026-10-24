@@ -5,7 +5,7 @@
 #   install -> launch -> process alive -> channel list -> search -> detail ->
 #   local pack -> env migration -> parity -> flags (see modes below).
 #
-# Two matrix modes:
+# Three matrix modes (the flag check is mode-aware):
 #   (default, pre-removal)   the legacy route is still reachable and the
 #                            core-write guard must stay untouched:
 #                              flags-off  core_writes rows == 0
@@ -20,9 +20,18 @@
 #                              flags-on        core_writes has download+install
 #                                              and none of
 #                                              channel/catalog/update/js_channel
+#   --closeout               the Wave 6 durable cutover has flipped all six
+#                            domains; the closeout assertion is distinct from
+#                            the pre-cutover `flags-on`:
+#                              flags-on-closeout  core_writes domains ==
+#                                                 {channel,js_channel,catalog,
+#                                                  update,download,install}
+#                                                 (exactly six rows)
 #
-# `flags-off` is deliberately NOT part of the post-removal set (a post-removal
-# device legitimately has core_writes rows), so the two modes cannot contradict.
+# `flags-off` is deliberately NOT part of the post-removal/closeout sets (a
+# post-removal device legitimately has core_writes rows), and `flags-on`
+# deliberately keeps the pre-cutover two-domain contract, so the modes cannot
+# contradict each other.
 #
 # Deep channel probes assert the debug CoreSmoke fixtures, never mere table
 # existence:
@@ -35,12 +44,35 @@
 #   flags-off       core_writes rows                                == 0
 #   core-ownership  download_task/module_task_id/install_session_id + core_writes
 #   flags-on        core_writes domains == {download,install}
+#   flags-on-closeout  core_writes domains == all six (closeout mode only)
+#
+# Device-only probes (never part of --db / --self-test):
+#   notification    drive a download, then
+#                     adb shell dumpsys notification --noredact
+#                   must contain a $PKG record with channel=download_progress
+#                   and a foreground-service entry (channel=foreground_service
+#                   or isForegroundService=true); then cancel
+#                   (`adb shell am force-stop $PKG` or the in-app cancel) and
+#                   assert every download/foreground marker is gone.
+#   needs_restart   remove <files>/gstore_mods/download/download.db, relaunch,
+#                   assert the previously non-terminal rows are `needs_restart`
+#                   and the download center surfaces them (已暂停), then drive a
+#                   fresh download and assert a new module_task_id appears.
+#   statvfs         a production build cannot be forced full (FORCED_FREE_BYTES
+#                   is cfg(test)-only, rust/gstore_core/src/db.rs:36-50), so this
+#                   is BLOCKED (cannot force full disk) unless GSTORE_LOW_DISK=1
+#                   on a genuinely low-disk device.
+#   install_events  drive an install and assert the Dart subscriber receives the
+#                   gstore/install_events EventChannel payload
+#                   (`InstallManager: install_events 已上报` in logcat, or the
+#                   core install row reaching installed with installed_at).
 #
 # A zero/missing row or column is FAIL (exit 1), never SKIP and never PASS
 # (post-removal: zero non-terminal mirror rows and zero install attempts are
 # failures, because the matrix has just downloaded and installed an app).
-# SKIP is reserved for genuinely unavailable probes (no adb/device, non-ARM64,
-# release APK not debuggable, DB not found, host sqlite3 missing).
+# BLOCKED/SKIP is reserved for genuinely unavailable probes (no adb/device,
+# non-ARM64, release APK not debuggable, DB not found, host sqlite3 missing) and
+# for the un-forceable statvfs case; a blocked check is never a pass.
 #
 # Deep channel probes use one of two adb-visible contracts:
 #   1. --instrumentation PKG/RUNNER
@@ -59,18 +91,33 @@
 #       runs the same deep SQL checks against a local database file.
 #   scripts/qa/device-smoke.sh --self-test --post-removal
 #       self-test only the post-removal check set.
+#   scripts/qa/device-smoke.sh --self-test --closeout
+#       also exercise the closeout check set (flags-on-closeout).
+#   --self-test also runs the notification matcher on a good and a bad simulated
+#   dumpsys, proving the named probe can go red without a device.
 #
-# Exit-code contract (a skipped check is never a pass):
+# Notification probe, exact adb recipe (device attached):
+#   adb shell am start -W -n com.suno2.gstore/.MainActivity
+#   # start a download in the UI (search -> app -> download), then:
+#   adb shell dumpsys notification --noredact \
+#     | grep -E 'pkg=com.suno2.gstore|channel=download_progress|channel=foreground_service|isForegroundService'
+#   # cancel: in-app cancel, or the script's deterministic fallback:
+#   adb shell am force-stop com.suno2.gstore
+#   adb shell dumpsys notification --noredact \
+#     | grep -E 'channel=download_progress|channel=foreground_service' \
+#     || echo 'no download notification (removed)'
+#
+# Exit-code contract (a blocked/skipped check is never a pass):
 #   0  every check ran and passed
 #   1  a check ran and failed (including zero/missing smoke rows)
-#   3  SKIPPED: no adb, no device, non-ARM64 device, or deep probes genuinely
-#      unavailable (release build / instrumentation not provided)
+#   3  BLOCKED/SKIPPED: no adb, no adb device, non-ARM64 device, or deep probes
+#      genuinely unavailable (release build / instrumentation not provided)
 #   2  usage error
 #
 # Usage:
 #   scripts/qa/device-smoke.sh [--apk PATH] [--package PKG]
 #       [--instrumentation PKG/RUNNER] [--timeout SECONDS] [--no-install]
-#       [--post-removal] [--db PATH | --self-test]
+#       [--post-removal | --closeout] [--db PATH | --self-test]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,9 +132,13 @@ DO_INSTALL=1
 DB_PATH=""
 SELFTEST=0
 POST_REMOVAL=0
+CLOSEOUT=0
+MODE="pre"
+NOTIFY_WAIT="${GSTORE_NOTIFY_WAIT:-60}"
 
 PRE_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity flags-off"
 POST_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity core-ownership flags-on"
+CLOSEOUT_CHECKS="channel-list channel-search channel-detail local-pack env-migration parity core-ownership flags-on-closeout"
 
 usage() {
   cat <<'EOF'
@@ -101,6 +152,8 @@ usage: scripts/qa/device-smoke.sh [options]
   --no-install              skip the install step
   --post-removal            assert the post-cutover matrix: core ownership +
                             flags-on instead of flags-off (see header)
+  --closeout                assert the Wave 6 cutover matrix: core ownership +
+                            flags-on-closeout (all six domains; see header)
   --db PATH                 run only the deep SQL checks against a local DB
   --self-test               build valid/broken fixtures and assert PASS/FAIL
   -h, --help                show this help
@@ -115,6 +168,7 @@ while [ "$#" -gt 0 ]; do
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --no-install) DO_INSTALL=0; shift ;;
     --post-removal) POST_REMOVAL=1; shift ;;
+    --closeout) CLOSEOUT=1; shift ;;
     --db) DB_PATH="$2"; shift 2 ;;
     --self-test) SELFTEST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -122,9 +176,20 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$POST_REMOVAL" -eq 1 ]; then
+if [ "$CLOSEOUT" -eq 1 ] && [ "$POST_REMOVAL" -eq 1 ]; then
+  echo "ERROR: --post-removal and --closeout are mutually exclusive" >&2
+  usage >&2
+  exit 2
+fi
+
+if [ "$CLOSEOUT" -eq 1 ]; then
+  MODE="closeout"
+  DEEP_CHECKS="$CLOSEOUT_CHECKS"
+elif [ "$POST_REMOVAL" -eq 1 ]; then
+  MODE="post"
   DEEP_CHECKS="$POST_CHECKS"
 else
+  MODE="pre"
   DEEP_CHECKS="$PRE_CHECKS"
 fi
 
@@ -137,10 +202,28 @@ fi
 PASSED=0
 FAILED=0
 SKIPPED=0
+BLOCKED_COUNT=0
 
 pass() { echo "PASS: $*"; PASSED=$((PASSED + 1)); }
 fail() { echo "FAIL: $*" >&2; FAILED=$((FAILED + 1)); }
 skip() { echo "SKIP: $*"; SKIPPED=$((SKIPPED + 1)); }
+blocked() { echo "BLOCKED: $*"; SKIPPED=$((SKIPPED + 1)); BLOCKED_COUNT=$((BLOCKED_COUNT + 1)); }
+blocked_no_device() { echo "BLOCKED (no adb device): $*"; SKIPPED=$((SKIPPED + 1)); BLOCKED_COUNT=$((BLOCKED_COUNT + 1)); }
+
+report_blocked_device_cases() {
+  echo "BLOCKED (no adb device): notification probe -> adb shell dumpsys notification --noredact (then grep pkg=$PKG + download_progress/foreground_service)"
+  echo "BLOCKED (no adb device): needs_restart -> adb shell run-as $PKG mv files/gstore_mods/download/download.db files/gstore_mods/download/download.db.smoke-bak && adb shell am start -W -n $PKG/.MainActivity"
+  echo "BLOCKED (no adb device): statvfs -> adb shell df -k /data; adb logcat -d | grep CORE_E_SNAPSHOT_DISK"
+  echo "BLOCKED (no adb device): install_events -> adb logcat -c; <install>; adb logcat -d | grep 'InstallManager: install_events 已上报'"
+}
+
+expected_write_domains() {
+  if [ "$MODE" = "closeout" ]; then
+    printf '%s' "catalog,channel,download,install,js_channel,update"
+  else
+    printf '%s' "download,install"
+  fi
+}
 
 run_bounded() {
   if command -v timeout >/dev/null 2>&1; then timeout "$TIMEOUT" "$@"; else "$@"; fi
@@ -296,14 +379,15 @@ db_check_one() {
       sql_value "$db" "$sql"
       domains="$SQL_OUT"
       domains_rc="$SQL_RC"
+      domains_expected="$(expected_write_domains)"
       if [ "$nonterminal_rc" -eq 0 ] && is_uint "$nonterminal" && [ "$nonterminal" -ge 1 ] \
         && [ "$orphan_rc" -eq 0 ] && [ "$orphan" = "0" ] \
         && [ "$install_rc" -eq 0 ] && is_uint "$install_total" && [ "$install_total" -ge 1 ] \
         && [ "$install_orphan_rc" -eq 0 ] && [ "$install_orphan" = "0" ] \
-        && [ "$domains_rc" -eq 0 ] && [ "$domains" = "download,install" ]; then
+        && [ "$domains_rc" -eq 0 ] && [ "$domains" = "$domains_expected" ]; then
         pass "core ownership (non-terminal=$nonterminal all module_task_id; install-attempts=$install_total all install_session_id; core_writes=$domains)"
       else
-        fail "core ownership (need non-terminal>=1 with module_task_id, install-attempts>=1 with install_session_id, core_writes=download,install; non-terminal='${nonterminal:-<empty>}' rc=$nonterminal_rc orphan='${orphan:-<empty>}' rc=$orphan_rc install='${install_total:-<empty>}' rc=$install_rc install-orphan='${install_orphan:-<empty>}' rc=$install_orphan_rc domains='${domains:-<empty>}' rc=$domains_rc)"
+        fail "core ownership (need non-terminal>=1 with module_task_id, install-attempts>=1 with install_session_id, core_writes=$domains_expected; non-terminal='${nonterminal:-<empty>}' rc=$nonterminal_rc orphan='${orphan:-<empty>}' rc=$orphan_rc install='${install_total:-<empty>}' rc=$install_rc install-orphan='${install_orphan:-<empty>}' rc=$install_orphan_rc domains='${domains:-<empty>}' rc=$domains_rc)"
       fi
       ;;
     flags-on)
@@ -320,6 +404,22 @@ db_check_one() {
         pass "flags-on (download+install armed; channel/catalog/update/js_channel off)"
       else
         fail "flags-on (expected download+install=2 and other-four=0; armed='${armed:-<empty>}' rc=$armed_rc other='${other:-<empty>}' rc=$other_rc)"
+      fi
+      ;;
+    flags-on-closeout)
+      sql="SELECT COUNT(*) FROM core_writes WHERE domain IN ('channel','js_channel','catalog','update','download','install');"
+      sql_value "$db" "$sql"
+      six="$SQL_OUT"
+      six_rc="$SQL_RC"
+      sql="SELECT COUNT(*) FROM core_writes;"
+      sql_value "$db" "$sql"
+      total="$SQL_OUT"
+      total_rc="$SQL_RC"
+      if [ "$six_rc" -eq 0 ] && [ "$six" = "6" ] \
+        && [ "$total_rc" -eq 0 ] && [ "$total" = "6" ]; then
+        pass "flags-on-closeout (all six domains armed: channel,js_channel,catalog,update,download,install)"
+      else
+        fail "flags-on-closeout (expected exactly six core_writes domains channel/js_channel/catalog/update/download/install; six='${six:-<empty>}' rc=$six_rc total='${total:-<empty>}' rc=$total_rc)"
       fi
       ;;
     *)
@@ -390,6 +490,213 @@ deep_checks_db() {
 
   run_db_checks "$tmp/core.db" || true
   rm -rf "$tmp"
+}
+
+pull_core_db() {
+  local dest="$1" db_path pull_rc
+  set +e
+  db_path="$(adb_cmd shell run-as "$PKG" find . -name gstore_core.db 2>/dev/null | tr -d '\r' | head -n 1)"
+  if [ -n "$db_path" ]; then
+    adb_cmd exec-out run-as "$PKG" cat "$db_path" > "$dest" 2>/dev/null
+    pull_rc=$?
+  else
+    pull_rc=1
+  fi
+  set -e
+  [ "$pull_rc" -eq 0 ] && [ -s "$dest" ]
+}
+
+notification_dump() {
+  adb_cmd shell dumpsys notification --noredact 2>/dev/null || true
+}
+
+device_notification_probe() {
+  local dump="" i=0
+  echo
+  echo "== probe (device-only): download notifications + foreground service =="
+  echo "operator: start a download in $PKG; waiting up to ${NOTIFY_WAIT}s for channel=download_progress"
+  while [ "$i" -lt "$NOTIFY_WAIT" ]; do
+    dump="$(notification_dump)"
+    if printf '%s\n' "$dump" | notification_scope_pkg | grep -Fq 'download_progress'; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  notification_eval_present "$dump" || true
+
+  echo "cancel: in-app cancel, or the deterministic fallback: adb shell am force-stop $PKG"
+  adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  i=0
+  while [ "$i" -lt 10 ]; do
+    dump="$(notification_dump)"
+    if ! printf '%s\n' "$dump" | notification_scope_pkg | grep -Eq 'download_progress|foreground_service|isForegroundService=true'; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  notification_eval_removed "$dump" || true
+}
+
+device_needs_restart_case() {
+  local tmp module_db core_db before_ids before_total after_ids after_total=0
+  local all_ok=1 id waited=0 window_ok=0
+  echo
+  echo "== matrix case (device-only): needs_restart one-way door =="
+  echo "adb: adb shell run-as $PKG mv files/gstore_mods/download/download.db files/gstore_mods/download/download.db.smoke-bak"
+  echo "adb: adb shell am force-stop $PKG && adb shell am start -W -n $PKG/.MainActivity"
+  echo "adb: adb exec-out run-as $PKG cat files/gstore_core.db > core.db"
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    blocked "needs_restart case needs host sqlite3"
+    return
+  fi
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-needs-restart.XXXXXX")"
+  module_db="files/gstore_mods/download/download.db"
+  core_db="$tmp/core.db"
+  if ! adb_cmd shell run-as "$PKG" test -f "$module_db" >/dev/null 2>&1; then
+    blocked "module DB $module_db not found; start a download before the matrix"
+    rm -rf "$tmp"
+    return
+  fi
+  if ! pull_core_db "$core_db"; then
+    blocked "could not pull gstore_core.db"
+    rm -rf "$tmp"
+    return
+  fi
+  before_ids="$(sqlite3 "$core_db" "SELECT COALESCE(group_concat(module_task_id, ','), '') FROM download_task WHERE status NOT IN ('completed','cancelled','removed','failed') AND module_task_id IS NOT NULL AND module_task_id <> '';" 2>/dev/null || true)"
+  before_total="$(sqlite3 "$core_db" "SELECT COUNT(*) FROM download_task WHERE module_task_id IS NOT NULL AND module_task_id <> '';" 2>/dev/null || true)"
+  if [ -z "$before_ids" ] || ! is_uint "$before_total"; then
+    blocked "no non-terminal download_task rows to drive the one-way door"
+    rm -rf "$tmp"
+    return
+  fi
+
+  adb_cmd shell run-as "$PKG" mv "$module_db" "$module_db.smoke-bak" >/dev/null 2>&1 || true
+  adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  adb_cmd shell am start -W -n "$PKG/.MainActivity" >/dev/null 2>&1 || true
+  sleep 3
+  if ! pull_core_db "$core_db"; then
+    blocked "could not pull gstore_core.db after the module DB was removed"
+    rm -rf "$tmp"
+    return
+  fi
+  after_ids="$(sqlite3 "$core_db" "SELECT COALESCE(group_concat(module_task_id, ','), '') FROM download_task WHERE status='needs_restart';" 2>/dev/null || true)"
+  for id in ${before_ids//,/ }; do
+    case ",$after_ids," in
+      *",$id,"*) ;;
+      *) all_ok=0 ;;
+    esac
+  done
+  if [ "$all_ok" -eq 1 ]; then
+    pass "needs_restart one-way door (previously non-terminal rows now status=needs_restart: $before_ids)"
+  else
+    fail "needs_restart one-way door (expected $before_ids in status=needs_restart; got '${after_ids:-<empty>}')"
+  fi
+
+  adb_cmd shell uiautomator dump /sdcard/gstore-window.xml >/dev/null 2>&1 || true
+  if adb_cmd pull /sdcard/gstore-window.xml "$tmp/window.xml" >/dev/null 2>&1 && [ -s "$tmp/window.xml" ]; then
+    window_ok=1
+  fi
+  if [ "$window_ok" -eq 1 ] && grep -Fq '已暂停' "$tmp/window.xml"; then
+    pass "needs_restart surfaced in the download center (已暂停)"
+  elif [ "$window_ok" -eq 1 ]; then
+    fail "needs_restart not surfaced in the download center (no 已暂停 in the UI dump)"
+  else
+    blocked "UI dump unavailable; open the download center and rerun to assert needs_restart is surfaced"
+  fi
+
+  echo "operator: start a fresh download now; waiting up to ${NOTIFY_WAIT}s for a new module_task_id"
+  while [ "$waited" -lt "$NOTIFY_WAIT" ]; do
+    sleep 2
+    waited=$((waited + 2))
+    if ! pull_core_db "$core_db"; then
+      continue
+    fi
+    after_total="$(sqlite3 "$core_db" "SELECT COUNT(*) FROM download_task WHERE module_task_id IS NOT NULL AND module_task_id <> '';" 2>/dev/null || true)"
+    if is_uint "$after_total" && [ "$after_total" -gt "$before_total" ]; then
+      pass "fresh download created a new task after needs_restart ($before_total -> $after_total)"
+      break
+    fi
+  done
+  if ! is_uint "$after_total" || [ "$after_total" -le "$before_total" ]; then
+    blocked "fresh download not observed within ${NOTIFY_WAIT}s; drive one and rerun"
+  fi
+
+  if adb_cmd shell run-as "$PKG" test -f "$module_db" >/dev/null 2>&1; then
+    adb_cmd shell run-as "$PKG" rm "$module_db.smoke-bak" >/dev/null 2>&1 || true
+  else
+    adb_cmd shell run-as "$PKG" mv "$module_db.smoke-bak" "$module_db" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmp"
+}
+
+device_statvfs_case() {
+  local free_kb waited=0
+  echo
+  echo "== matrix case (device-only): on-device statvfs preflight =="
+  echo "adb: adb shell df -k /data"
+  if [ "${GSTORE_LOW_DISK:-0}" != "1" ]; then
+    blocked "cannot force full disk (FORCED_FREE_BYTES is cfg(test)-only; set GSTORE_LOW_DISK=1 only on a genuinely low-disk device)"
+    return
+  fi
+  free_kb="$(adb_cmd shell df -k /data 2>/dev/null | awk 'NR==2 {print $4}' | tr -d '\r' || true)"
+  if ! is_uint "$free_kb"; then
+    blocked "cannot read free KiB from df -k /data"
+    return
+  fi
+  if [ "$free_kb" -gt 65536 ]; then
+    blocked "device has ${free_kb}KiB free; not a low-disk device"
+    return
+  fi
+  echo "adb: adb logcat -c; <trigger a snapshot restore/import>; adb logcat -d | grep CORE_E_SNAPSHOT_DISK"
+  adb_cmd logcat -c >/dev/null 2>&1 || true
+  while [ "$waited" -lt "$NOTIFY_WAIT" ]; do
+    if adb_cmd logcat -d 2>/dev/null | grep -Fq 'CORE_E_SNAPSHOT_DISK'; then
+      pass "statvfs preflight rejected the restore with CORE_E_SNAPSHOT_DISK (free=${free_kb}KiB)"
+      return
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  fail "statvfs preflight did not report CORE_E_SNAPSHOT_DISK (free=${free_kb}KiB)"
+}
+
+device_install_events_case() {
+  local tmp dump waited=0 saw
+  echo
+  echo "== matrix case (device-only): install_events EventChannel =="
+  echo "adb: adb logcat -c; <install an app>; adb logcat -d | grep 'InstallManager: install_events 已上报'"
+  adb_cmd logcat -c >/dev/null 2>&1 || true
+  while [ "$waited" -lt "$NOTIFY_WAIT" ]; do
+    dump="$(adb_cmd logcat -d 2>/dev/null || true)"
+    if printf '%s' "$dump" | grep -Fq 'install_events 已上报'; then
+      pass "install_events delivered to Dart (InstallManager: install_events 已上报)"
+      return
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if command -v sqlite3 >/dev/null 2>&1; then
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-install-events.XXXXXX")"
+    if pull_core_db "$tmp/core.db"; then
+      saw="$(sqlite3 "$tmp/core.db" "SELECT COUNT(*) FROM download_task WHERE install_status='installed' AND installed_at IS NOT NULL;" 2>/dev/null || true)"
+      rm -rf "$tmp"
+      if is_uint "$saw" && [ "$saw" -ge 1 ]; then
+        pass "install_events delivered to Dart (core install row installed + installed_at=$saw)"
+        return
+      fi
+    else
+      rm -rf "$tmp"
+    fi
+  fi
+  fail "install_events not observed on the Dart side (no logcat line and no completed install row)"
+}
+
+device_matrix_cases() {
+  device_needs_restart_case
+  device_statvfs_case
+  device_install_events_case
 }
 
 # ---------------------------------------------------------------------------
@@ -514,7 +821,138 @@ PRAGMA user_version = 4;
 SQL
 }
 
-# selftest_expect <label> <db> <pass|fail> [pre|post]
+make_closeout_fixture() {
+  local db="$1"
+  make_post_removal_fixture "$db"
+  run_bounded sqlite3 "$db" <<'SQL'
+INSERT INTO core_writes(domain, first_write_at) VALUES
+    ('channel', 30),
+    ('js_channel', 40),
+    ('catalog', 50),
+    ('update', 60);
+PRAGMA user_version = 6;
+SQL
+}
+
+notification_scope_pkg() {
+  awk -v pkg="pkg=$PKG" '
+    /^[[:space:]]*NotificationRecord[(\{]/ {
+      inblk = index($0, pkg) > 0
+      if (inblk) print
+      next
+    }
+    inblk && /^[[:space:]]/ { print; next }
+    { inblk = 0 }
+  '
+}
+
+notification_eval_present() {
+  local dump="$1" scoped rc=0
+  scoped="$(printf '%s\n' "$dump" | notification_scope_pkg)"
+  if printf '%s' "$scoped" | grep -Fq 'download_progress'; then
+    pass "notification: $PKG download notification present (download_progress)"
+  else
+    fail "notification: $PKG download notification missing (expected download_progress in dumpsys notification --noredact)"
+    rc=1
+  fi
+  if printf '%s' "$scoped" | grep -Eq 'foreground_service|isForegroundService=true'; then
+    pass "notification: $PKG foreground-service entry present"
+  else
+    fail "notification: $PKG foreground-service entry missing (expected foreground_service or isForegroundService=true)"
+    rc=1
+  fi
+  return "$rc"
+}
+
+notification_eval_removed() {
+  local dump="$1" scoped leftover
+  scoped="$(printf '%s\n' "$dump" | notification_scope_pkg)"
+  leftover="$(printf '%s' "$scoped" | grep -Ec 'download_progress|foreground_service|isForegroundService=true' || true)"
+  [ -n "$leftover" ] || leftover=0
+  if [ "$leftover" -eq 0 ]; then
+    pass "notification: download + foreground-service notifications removed after cancel"
+    return 0
+  fi
+  fail "notification: $leftover download/foreground-service marker(s) still present after cancel"
+  return 1
+}
+
+notification_probe_case() {
+  local label="$1" dump="$2" want="$3" out rc_line got_rc
+  set +e
+  out="$(
+    PASSED=0
+    FAILED=0
+    notification_eval_present "$dump"
+    rc=$?
+    printf 'probe_rc=%s failed=%s\n' "$rc" "$FAILED"
+  )" 2>&1
+  set -e
+  printf '%s\n' "$out"
+  rc_line="$(printf '%s\n' "$out" | grep -E '^probe_rc=' | tail -n 1 || true)"
+  got_rc="${rc_line#probe_rc=}"
+  got_rc="${got_rc%% *}"
+  if [ "$got_rc" = "$want" ]; then
+    echo "SELFTEST PASS: $label"
+    return 0
+  fi
+  echo "SELFTEST FAIL: $label (want probe_rc=$want got '${rc_line:-<missing>}')"
+  return 1
+}
+
+notification_removed_case() {
+  local label="$1" dump="$2" want="$3" out rc_line got_rc
+  set +e
+  out="$(
+    PASSED=0
+    FAILED=0
+    notification_eval_removed "$dump"
+    rc=$?
+    printf 'probe_rc=%s failed=%s\n' "$rc" "$FAILED"
+  )" 2>&1
+  set -e
+  printf '%s\n' "$out"
+  rc_line="$(printf '%s\n' "$out" | grep -E '^probe_rc=' | tail -n 1 || true)"
+  got_rc="${rc_line#probe_rc=}"
+  got_rc="${got_rc%% *}"
+  if [ "$got_rc" = "$want" ]; then
+    echo "SELFTEST PASS: $label"
+    return 0
+  fi
+  echo "SELFTEST FAIL: $label (want probe_rc=$want got '${rc_line:-<missing>}')"
+  return 1
+}
+
+run_notification_probe_selftest() {
+  local good bad_absent bad_other good_removed bad_removed st_failed=0
+  good='NotificationRecord{0x1 pkg=com.suno2.gstore uid=10001}
+  channel=download_progress
+  isForegroundService=false
+NotificationRecord{0x2 pkg=com.suno2.gstore uid=10001}
+  channel=foreground_service
+  isForegroundService=true'
+  bad_absent='NotificationRecord{0x3 pkg=com.suno2.gstore uid=10001}
+  channel=foreground_service
+  isForegroundService=true'
+  bad_other='NotificationRecord{0x4 pkg=com.other.app uid=10002}
+  channel=download_progress
+  isForegroundService=true'
+  good_removed='NotificationRecord{0x5 pkg=com.other.app uid=10002}
+  channel=other_channel'
+  bad_removed='NotificationRecord{0x6 pkg=com.suno2.gstore uid=10001}
+  channel=download_progress'
+
+  echo
+  echo "== notification probe self-test (simulated dumpsys; no device) =="
+  notification_probe_case "notification probe accepts a download+FGS dump" "$good" 0 || st_failed=1
+  notification_probe_case "notification probe goes red when the download notification is absent" "$bad_absent" 1 || st_failed=1
+  notification_probe_case "notification probe ignores another package's notification" "$bad_other" 1 || st_failed=1
+  notification_removed_case "notification removal check accepts an empty package dump" "$good_removed" 0 || st_failed=1
+  notification_removed_case "notification removal check goes red while a download stays posted" "$bad_removed" 1 || st_failed=1
+  return "$st_failed"
+}
+
+# selftest_expect <label> <db> <pass|fail> [pre|post|closeout]
 selftest_expect() {
   local label="$1" db="$2" want="$3" mode="${4:-pre}"
   local out rc verdict ok
@@ -523,8 +961,11 @@ selftest_expect() {
     PASSED=0
     FAILED=0
     SKIPPED=0
+    MODE="$mode"
     if [ "$mode" = "post" ]; then
       DEEP_CHECKS="$POST_CHECKS"
+    elif [ "$mode" = "closeout" ]; then
+      DEEP_CHECKS="$CLOSEOUT_CHECKS"
     else
       DEEP_CHECKS="$PRE_CHECKS"
     fi
@@ -550,7 +991,13 @@ run_self_test() {
   local tmp st_failed=0 broken_total=0
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/gstore-device-smoke-selftest.XXXXXX")"
   echo "== device-smoke self-test =="
-  echo "mode: $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal+post-removal)"
+  if [ "$CLOSEOUT" -eq 1 ]; then
+    echo "mode: closeout"
+  elif [ "$POST_REMOVAL" -eq 1 ]; then
+    echo "mode: post-removal"
+  else
+    echo "mode: pre-removal+post-removal+closeout"
+  fi
   echo "fixtures: $tmp"
 
   if [ "$POST_REMOVAL" -eq 0 ]; then
@@ -647,6 +1094,23 @@ SQL
   selftest_expect "post-removal DB missing install ownership columns" \
     "$tmp/post-no-install-columns.db" fail post || st_failed=1
 
+  make_closeout_fixture "$tmp/closeout-valid.db"
+  selftest_expect "valid closeout DB (core ownership + flags-on-closeout)" \
+    "$tmp/closeout-valid.db" pass closeout || st_failed=1
+
+  make_closeout_fixture "$tmp/closeout-missing-js.db"
+  run_bounded sqlite3 "$tmp/closeout-missing-js.db" \
+    "DELETE FROM core_writes WHERE domain='js_channel';"
+  broken_total=$((broken_total + 1))
+  selftest_expect "closeout DB missing one of the six domains" \
+    "$tmp/closeout-missing-js.db" fail closeout || st_failed=1
+
+  broken_total=$((broken_total + 1))
+  selftest_expect "closeout DB is not a pre-cutover flags-on DB" \
+    "$tmp/closeout-valid.db" fail post || st_failed=1
+
+  run_notification_probe_selftest || st_failed=1
+
   echo
   echo "== self-test summary =="
   rm -rf "$tmp"
@@ -675,7 +1139,7 @@ fi
 
 if [ -n "$DB_PATH" ]; then
   echo "== device smoke (local DB) =="
-  echo "mode: $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal)"
+  echo "mode: $MODE"
   echo "db: $DB_PATH"
   if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "ERROR: --db requires host sqlite3" >&2
@@ -702,15 +1166,16 @@ if [ -n "$DB_PATH" ]; then
 fi
 
 echo "== device smoke =="
-echo "mode:    $([ "$POST_REMOVAL" -eq 1 ] && echo post-removal || echo pre-removal)"
+echo "mode:    $MODE"
 echo "package: $PKG"
 
 if ! command -v adb >/dev/null 2>&1; then
-  skip "adb not found; no device checks were run"
+  blocked_no_device "adb not found; no device checks were run"
+  report_blocked_device_cases
   echo
   echo "== summary =="
   echo "passed=$PASSED failed=$FAILED skipped=$SKIPPED"
-  echo "RESULT: SKIP"
+  echo "RESULT: BLOCKED (no adb device)"
   exit 3
 fi
 
@@ -720,21 +1185,22 @@ devices_rc=$?
 set -e
 printf '%s\n' "$devices_out"
 if [ "$devices_rc" -ne 0 ]; then
-  skip "adb devices failed (exit $devices_rc); no device checks were run"
+  blocked_no_device "adb devices failed (exit $devices_rc); no device checks were run"
   echo
   echo "== summary =="
   echo "passed=$PASSED failed=$FAILED skipped=$SKIPPED"
-  echo "RESULT: SKIP"
+  echo "RESULT: BLOCKED (no adb device)"
   exit 3
 fi
 
 SERIAL="$(printf '%s\n' "$devices_out" | awk 'NR > 1 && $2 == "device" { print $1; exit }')"
 if [ -z "$SERIAL" ]; then
-  skip "no adb device in state 'device'; start an ARM64 emulator or connect a device"
+  blocked_no_device "no adb device in state 'device'; start an ARM64 emulator or connect a device"
+  report_blocked_device_cases
   echo
   echo "== summary =="
   echo "passed=$PASSED failed=$FAILED skipped=$SKIPPED"
-  echo "RESULT: SKIP"
+  echo "RESULT: BLOCKED (no adb device)"
   exit 3
 fi
 echo "serial:  $SERIAL"
@@ -805,6 +1271,8 @@ else
     pass "no FATAL EXCEPTION in the crash buffer"
   fi
 
+  device_notification_probe
+
   if [ -n "$INSTRUMENTATION" ]; then
     for check in $DEEP_CHECKS; do
       deep_check_instrumentation "$check"
@@ -812,6 +1280,8 @@ else
   else
     deep_checks_db
   fi
+
+  device_matrix_cases
 fi
 
 echo
@@ -820,6 +1290,10 @@ echo "passed=$PASSED failed=$FAILED skipped=$SKIPPED"
 if [ "$FAILED" -gt 0 ]; then
   echo "RESULT: FAIL"
   exit 1
+fi
+if [ "$BLOCKED_COUNT" -gt 0 ]; then
+  echo "RESULT: BLOCKED (a blocked check is not a pass)"
+  exit 3
 fi
 if [ "$SKIPPED" -gt 0 ]; then
   echo "RESULT: SKIP (a skipped check is not a pass)"
