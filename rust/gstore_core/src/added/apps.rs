@@ -421,6 +421,10 @@ impl AddedAppsService {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         let value = f(&tx, (self.clock)())?;
+        // The added-apps tables belong to the `catalog` write domain: the first
+        // post-flip mutation arms the marker in the same transaction, mirroring
+        // `catalog::import` / `catalog::refresh`. Pre-flip writes stay inert.
+        crate::migration::mark_core_write_if_flipped(&tx, "catalog", None).map_err(db_error)?;
         tx.commit().map_err(sql_error)?;
         Ok(value)
     }

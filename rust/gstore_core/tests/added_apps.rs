@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gstore_core::added::apps::{AddedApp, AddedAppsService};
 use gstore_core::added::migration::{
@@ -14,6 +14,8 @@ use gstore_core::added::migration::{
 };
 use gstore_core::db::{DbError, DbHandle};
 use gstore_core::error::{Error, CODE_NOT_FOUND};
+use gstore_core::flags::{flags, reset_flags, set_flags, FlagsPatch};
+use gstore_core::migration::core_write_marker;
 use rusqlite::{params, Connection, ErrorCode, OpenFlags};
 
 static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
@@ -755,4 +757,44 @@ fn added_apps_duplicate_add_unique_constraint() {
         ),
         "expected UNIQUE constraint failure, got {error:?}"
     );
+}
+
+static FLAGS_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn added_apps_write_arms_catalog_marker_only_when_flipped() {
+    let _guard = FLAGS_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_flags();
+    let tmp = TempDir::new("catalog_marker");
+    let (db, service, _clock) = service(&tmp);
+
+    service.add("github", "owner/repo", None).unwrap();
+    let pre_flip = db
+        .with_reader(|conn| core_write_marker(conn, "catalog"))
+        .unwrap();
+    assert!(
+        pre_flip.is_none(),
+        "pre-flip added-apps write must not arm the catalog marker"
+    );
+    assert!(!flags().core_writes, "pre-flip projection must stay off");
+
+    set_flags(FlagsPatch {
+        catalog: Some(true),
+        ..FlagsPatch::default()
+    })
+    .unwrap();
+    service
+        .add_tag("github", "owner/repo", "favorite")
+        .unwrap();
+
+    let post_flip = db
+        .with_reader(|conn| core_write_marker(conn, "catalog"))
+        .unwrap();
+    assert!(
+        post_flip.is_some(),
+        "post-flip added-apps write must arm the catalog marker"
+    );
+    assert!(flags().core_writes, "marker must arm the global projection");
+
+    reset_flags();
 }

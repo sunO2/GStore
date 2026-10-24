@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:installed_apps/app_info.dart' as ia;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
@@ -120,7 +120,7 @@ class ApkInfoService {
   /// 统一编排：渠道记录 appId 迁移（owner/repo → 真实包名）+ 聚合库同步改名
   ///
   /// 分层：渠道表 schema/apprepo/extra 语义归 GitHubChannel.migrateAppId；
-  /// 聚合库 appId 归 AppAggregatorManager.renameApp（只动聚合引用，绝不重建渠道记录）；
+  /// 聚合库 appId 归 AddedAppsFacade.rename（只动聚合引用，绝不重建渠道记录）；
   /// 本服务仅做跨层编排。两个库（channel_apps.db / app_added.db）无法事务，
   /// 各自 try/catch 独立守卫（沿用"渠道保存失败不影响聚合"的容错哲学）。
   Future<void> _migrateAppId({
@@ -141,14 +141,16 @@ class ApkInfoService {
       if (migrated == null) return;
 
       try {
-        await AppAggregatorManager.instance.renameApp(
-          channelCode: 'github',
+        await renameAggregateAfterInstall(
           oldAppId: oldAppId,
-          newAppId: newPackageName,
+          newPackageName: newPackageName,
         );
       } catch (e) {
         appLog.error('ApkInfoService: 聚合记录改名失败 - $e');
       }
+    } on LegacyWriteBlocked catch (blocked) {
+      // 渠道库迁移同样可能被 `channel` 标记拦截：走 typed warning。
+      _reportBlockedWrite('migrateChannelAppId', blocked);
     } catch (e) {
       appLog.error('ApkInfoService: 迁移渠道记录失败 - $e');
     }
@@ -236,15 +238,62 @@ class ApkInfoService {
 
       // 聚合库不存 name/icon（只存引用，信息由渠道实时查）——无需重建聚合记录，
       // 仅通知首页刷新即可拉到新数据
-      if (await AppAggregatorManager.instance.isAppAdded(
-        channelCode: 'github',
-        appId: record.appId,
-      )) {
-        AppAggregatorManager.instance.notifyAppsChanged();
-      }
+      await notifyAggregateAfterInstall(record.appId);
+    } on LegacyWriteBlocked catch (blocked) {
+      // 后台任务被核心写标记拦截：按 typed warning 记录，不能静默吞掉。
+      _reportBlockedWrite('updateNameAndIcon', blocked);
     } catch (e) {
       appLog.error('ApkInfoService: 更新应用名/图标失败 - $e');
     }
+  }
+
+  /// 测试 seam：观察 typed 拦截告警（生产默认只写 appLog）。
+  @visibleForTesting
+  static void Function(CoreWriteBlockedWarning warning)? debugWarningSink;
+
+  /// 安装后聚合库改名（走 [AddedAppsFacade]）。
+  ///
+  /// 返回 typed warning 当 `catalog` 写标记拒绝旧写入；调用方不得吞掉。
+  @visibleForTesting
+  Future<CoreWriteBlockedWarning?> renameAggregateAfterInstall({
+    required String oldAppId,
+    required String newPackageName,
+  }) async {
+    try {
+      await AddedAppsFacade.instance.rename('github', oldAppId, newPackageName);
+      return null;
+    } on LegacyWriteBlocked catch (blocked) {
+      return _reportBlockedWrite('renameApp', blocked);
+    }
+  }
+
+  /// 安装后通知首页刷新（走 [AddedAppsFacade]，不直连 legacy 单例）。
+  @visibleForTesting
+  Future<CoreWriteBlockedWarning?> notifyAggregateAfterInstall(
+    String appId,
+  ) async {
+    try {
+      if (await AddedAppsFacade.instance.isAdded('github', appId)) {
+        await AddedAppsFacade.instance.notifyAppsChanged();
+      }
+      return null;
+    } on LegacyWriteBlocked catch (blocked) {
+      return _reportBlockedWrite('notifyAppsChanged', blocked);
+    }
+  }
+
+  CoreWriteBlockedWarning _reportBlockedWrite(
+    String operation,
+    LegacyWriteBlocked blocked,
+  ) {
+    final warning = CoreWriteBlockedWarning(
+      domain: blocked.domain,
+      operation: operation,
+      detail: 'post-install write refused; the Rust core owns this domain',
+    );
+    appLog.warning('ApkInfoService: $warning');
+    debugWarningSink?.call(warning);
+    return warning;
   }
 
   /// 等待应用安装完成，并获取已安装应用信息

@@ -41,7 +41,7 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/model/download_task_database.dart';
@@ -2944,11 +2944,11 @@ class AgentService {
   /// 管理已添加应用（list/add/remove/isAdded）
   Future<String> _manageApp(String action, String appId, String channel, String name) async {
     try {
-      final aggregator = AppAggregatorManager.instance;
+      final addedAppsFacade = AddedAppsFacade.instance;
 
       switch (action) {
         case 'list':
-          final apps = await aggregator.getAllAddedApps();
+          final apps = await addedAppsFacade.list();
           if (apps.isEmpty) return '我的应用中还没有添加任何应用。';
           final lines = apps
               .map((a) => '• ${a.appId} 渠道: ${a.channelId}')
@@ -2966,26 +2966,38 @@ class AgentService {
           if (!result.success || result.data == null) {
             return '获取应用信息失败: ${result.error ?? '未知错误'}';
           }
-          await aggregator.addApp(channelCode: channel, appInfo: result.data!);
+          await addedAppsFacade.add(
+            channel,
+            result.data!.appId,
+            appInfo: result.data,
+          );
           return '已添加 ${result.data!.name ?? appId} 到我的应用';
 
         case 'remove':
           if (appId.isEmpty || channel.isEmpty) {
             return '移除应用需要 appId 和 channel';
           }
-          await aggregator.removeApp(channelCode: channel, appId: appId);
+          await addedAppsFacade.remove(channel, appId);
           return '已移除 $name（$appId）';
 
         case 'isAdded':
           if (appId.isEmpty || channel.isEmpty) {
             return '检查需要 appId 和 channel';
           }
-          final isAdded = await aggregator.isAppAdded(channelCode: channel, appId: appId);
+          final isAdded = await addedAppsFacade.isAdded(channel, appId);
           return isAdded ? '$appId 已在我的应用中' : '$appId 尚未添加';
 
         default:
           return '未知操作: $action（支持 list/add/remove/isAdded）';
       }
+    } on LegacyWriteBlocked catch (blocked) {
+      final warning = CoreWriteBlockedWarning(
+        domain: blocked.domain,
+        operation: 'manageApp',
+        detail: 'agent write refused; the Rust core owns this domain',
+      );
+      appLog.warning('AgentService: $warning');
+      return '管理应用失败: $warning';
     } catch (e) {
       return '管理应用失败: $e';
     }

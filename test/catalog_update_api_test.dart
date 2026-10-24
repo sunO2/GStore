@@ -108,7 +108,8 @@ class _FakeAddedAppsBackend implements AddedAppsBackend {
   final List<String> calls = <String>[];
 
   @override
-  Future<void> add(String channel, String appId, {int? sortOrder}) async {
+  Future<void> add(String channel, String appId,
+      {int? sortOrder, AppSummary? appInfo}) async {
     calls.add('$label.add:$channel:$appId:$sortOrder');
   }
 
@@ -209,6 +210,11 @@ class _FakeAddedAppsBackend implements AddedAppsBackend {
     return <String, List<String>>{
       "github:owner/repo": <String>['favorite'],
     };
+  }
+
+  @override
+  Future<void> notifyChanged() async {
+    calls.add('$label.notifyChanged');
   }
 }
 

@@ -659,6 +659,11 @@ class BackupService implements IBackupService {
 
       // 导入数据（内部各阶段同步输出 onLog）
       final result = await importData(backupData, mode: mode, onLog: onLog);
+      if (!result.success) {
+        // 典型场景：恢复写被核心写标记拦截（typed警告已由 importData 输出）。
+        onLog?.call('恢复中止: ${result.error}', isError: true);
+        return result;
+      }
 
       // 写回脚本渠道 zip 包 + 重新注册（旧备份无 channels/ 条目时为空，自动跳过）
       if (channelZipEntries.isNotEmpty) {
@@ -684,10 +689,14 @@ class BackupService implements IBackupService {
     BackupImportMode mode = BackupImportMode.merge,
     BackupLogCallback? onLog,
   }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    if (!_isInitialized) await initialize();
-
     final result = BackupImportResult();
+
+    try {
+      await LegacyWriteGuard.assertAllowed('catalog');
+    } on LegacyWriteBlocked catch (blocked) {
+      return _reportBlockedRestore(result, blocked, onLog);
+    }
+    if (!_isInitialized) await initialize();
 
     appLog.info('BackupService: ========== 开始导入数据 ==========');
     debugPrint('BackupService: 应用数量: ${backupData.apps.length}');
@@ -1002,6 +1011,10 @@ class BackupService implements IBackupService {
       if (importedApps.length > 10) {
         debugPrint('BackupService:   ... 还有 ${importedApps.length - 10} 个');
       }
+    } on LegacyWriteBlocked catch (blocked) {
+      // 恢复写被核心写标记拦截（catalog/channel）：返回 typed warning，
+      // 不把原始异常抛给调用方，也不静默吞掉。
+      return _reportBlockedRestore(result, blocked, onLog);
     } catch (e, stackTrace) {
       result.success = false;
       result.error = e.toString();
@@ -1011,6 +1024,25 @@ class BackupService implements IBackupService {
     }
 
     appLog.info('BackupService: ========== 导入数据完成 ==========');
+    return result;
+  }
+
+  /// Surfaces a blocked restore as a typed warning on the result and log.
+  BackupImportResult _reportBlockedRestore(
+    BackupImportResult result,
+    LegacyWriteBlocked blocked,
+    BackupLogCallback? onLog,
+  ) {
+    final warning = CoreWriteBlockedWarning(
+      domain: blocked.domain,
+      operation: 'importData',
+      detail: 'restore write refused; the Rust core owns this domain',
+    );
+    result.success = false;
+    result.error = warning.toString();
+    result.writeWarnings.add(warning);
+    appLog.warning('BackupService: $warning');
+    onLog?.call(warning.toString(), isError: true);
     return result;
   }
 
@@ -1388,6 +1420,11 @@ class BackupImportResult {
   int addedCount = 0;
   int skippedCount = 0;
   String? error;
+
+  /// Typed warnings for writes refused by a Rust core marker
+  /// (`CORE_E_WRITE_BLOCKED`); empty on a clean restore.
+  final List<CoreWriteBlockedWarning> writeWarnings =
+      <CoreWriteBlockedWarning>[];
 
   Map<String, dynamic> toJson() => {
     'success': success,

@@ -17,7 +17,8 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// Injectable added-apps transport seam.
 abstract class AddedAppsBackend {
-  Future<void> add(String channel, String appId, {int? sortOrder});
+  Future<void> add(String channel, String appId,
+      {int? sortOrder, AppSummary? appInfo});
 
   Future<bool> remove(String channel, String appId);
 
@@ -52,6 +53,13 @@ abstract class AddedAppsBackend {
   Future<List<String>> tags(String channel, String appId);
 
   Future<Map<String, List<String>>> tagsIndex();
+
+  /// Announces that added-app data changed.
+  ///
+  /// The legacy backend fans out on the manager's `appsChangedStream`; the core
+  /// backend has no Dart-side stream, so it refreshes the authoritative
+  /// projection (the Rust core owns the `catalog.changed` event lane).
+  Future<void> notifyChanged();
 }
 
 /// Production FRB backend.
@@ -102,8 +110,13 @@ class FrbAddedAppsBackend implements AddedAppsBackend {
   }
 
   @override
-  Future<void> add(String channel, String appId, {int? sortOrder}) => _call(
-      (api) => api.add(channel: channel, appId: appId, sortOrder: sortOrder));
+  Future<void> add(String channel, String appId,
+          {int? sortOrder, AppSummary? appInfo}) =>
+      _call((api) => api.add(
+            channel: channel,
+            appId: appId,
+            sortOrder: sortOrder,
+          ));
 
   @override
   Future<bool> remove(String channel, String appId) =>
@@ -188,6 +201,13 @@ class FrbAddedAppsBackend implements AddedAppsBackend {
         },
       );
 
+  @override
+  Future<void> notifyChanged() async {
+    // Core path: re-read the authoritative projection. The Rust core emits and
+    // owns `catalog.changed`; there is no Dart-side broadcast stream here.
+    await _call((api) => api.list());
+  }
+
   List<AddedAppInfo> _mapApps(List<rust.AddedAppEntry> entries) =>
       entries.map(addedAppFromRust).toList(growable: false);
 }
@@ -233,10 +253,15 @@ class LegacyAddedAppsBackend implements AddedAppsBackend {
       );
 
   @override
-  Future<void> add(String channel, String appId, {int? sortOrder}) =>
+  Future<void> add(
+    String channel,
+    String appId, {
+    int? sortOrder,
+    AppSummary? appInfo,
+  }) =>
       _manager.addApp(
         channelCode: channel,
-        appInfo: _placeholder(appId),
+        appInfo: appInfo ?? _placeholder(appId),
         sortOrder: sortOrder,
       );
 
@@ -320,6 +345,9 @@ class LegacyAddedAppsBackend implements AddedAppsBackend {
 
   @override
   Future<Map<String, List<String>>> tagsIndex() => _manager.getAllTagsIndex();
+
+  @override
+  Future<void> notifyChanged() async => _manager.notifyAppsChanged();
 }
 
 /// Flag-gated added-apps facade.
@@ -354,8 +382,14 @@ class AddedAppsFacade {
       ? (backendOverride ?? _frb)
       : (legacyBackendOverride ?? _legacy);
 
-  Future<void> add(String channel, String appId, {int? sortOrder}) async =>
-      (await _backend()).add(channel, appId, sortOrder: sortOrder);
+  Future<void> add(
+    String channel,
+    String appId, {
+    int? sortOrder,
+    AppSummary? appInfo,
+  }) async =>
+      (await _backend())
+          .add(channel, appId, sortOrder: sortOrder, appInfo: appInfo);
 
   Future<bool> remove(String channel, String appId) async =>
       (await _backend()).remove(channel, appId);
@@ -404,4 +438,11 @@ class AddedAppsFacade {
 
   Future<Map<String, List<String>>> tagsIndex() async =>
       (await _backend()).tagsIndex();
+
+  /// Notifies listeners that added-app data changed.
+  ///
+  /// Flag off delegates to the legacy `AppAggregatorManager` broadcast stream;
+  /// flag on refreshes the core-owned projection. Callers (post-install,
+  /// backup restore) must not reach for the legacy singleton directly.
+  Future<void> notifyAppsChanged() async => (await _backend()).notifyChanged();
 }

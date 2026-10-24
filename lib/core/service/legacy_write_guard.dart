@@ -16,6 +16,37 @@ class LegacyWriteBlocked implements Exception {
   String toString() => 'LegacyWriteBlocked($domain): CORE_E_WRITE_BLOCKED';
 }
 
+/// Typed, non-throwing warning surfaced when a background write (post-install,
+/// backup restore) is refused by a core write marker.
+///
+/// These call sites are asynchronous and user-visible failures must not escape
+/// as raw exceptions, nor be silently swallowed: they catch [LegacyWriteBlocked]
+/// and report this value through the operation's callback/log instead.
+class CoreWriteBlockedWarning {
+  const CoreWriteBlockedWarning({
+    required this.domain,
+    required this.operation,
+    this.detail,
+  });
+
+  /// Core write domain that owns the refused write (`catalog`, `channel`, ...).
+  final String domain;
+
+  /// The refused operation, e.g. `renameApp`, `importData`.
+  final String operation;
+
+  /// Optional human-readable context appended to the stable code.
+  final String? detail;
+
+  /// Stable code mirrored from the Rust error string.
+  String get code => 'CORE_E_WRITE_BLOCKED';
+
+  @override
+  String toString() => detail == null
+      ? '$code ($operation/$domain)'
+      : '$code ($operation/$domain): $detail';
+}
+
 /// Fails legacy Dart writes closed once the Rust core owns a domain.
 ///
 /// The authoritative signal is the **per-domain marker** in the core's

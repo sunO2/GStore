@@ -13,7 +13,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
@@ -206,27 +207,25 @@ class UpdateManagerService {
       _notifyCheckLog();
       log(CheckLogLevel.info, '开始检测应用更新...');
 
-      final aggregator = AppAggregatorManager.instance;
       final manager = ChannelManager.instance;
-      final addedApps = await aggregator.getAllAddedApps();
+      // 已添加应用走 facade（flag off → legacy manager，flag on → core）。
+      final addedApps = await AddedAppsFacade.instance.list();
       final total = addedApps.length;
 
-      // 构建待检测应用名列表（优先聚合真实名，兜底 appId）供滚轮预填
+      // 构建待检测应用名列表（优先 catalog 真实名，兜底 appId）供滚轮预填
       List<String> appNames;
       try {
-        final aggregated = await aggregator.getAggregatedApps();
         final nameById = <String, String>{};
-        for (final a in aggregated) {
-          final name = a.appInfo.name.trim().isNotEmpty
-              ? a.appInfo.name.trim()
-              : a.appInfo.appId;
-          nameById[a.addedAppInfo.appId] = name;
+        for (final added in addedApps) {
+          final summary = await CatalogFacade.instance.getApp(added.appId);
+          final name = (summary?.name ?? '').trim();
+          nameById[added.appId] = name.isEmpty ? added.appId : name;
         }
         appNames = [
           for (final added in addedApps) nameById[added.appId] ?? added.appId,
         ];
       } catch (_) {
-        // 聚合获取失败时用 appId 兜底
+        // catalog 获取失败时用 appId 兜底
         appNames = [for (final added in addedApps) added.appId];
       }
       onCheckList?.call(appNames);
