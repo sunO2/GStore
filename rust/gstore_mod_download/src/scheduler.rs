@@ -823,6 +823,13 @@ impl ProgressSink for SchedulerSink {
                 changed
             };
             if changed {
+                // ★ 运行期即落库：快照一变就把分段明细写进 `download_segment`，
+                // 宿主 reconcile 才能在下载**进行中**把它折进核心行的 `segments_json`。
+                // 修复前这里只下发事件、不落库，分段整段运行都只活在内存里，
+                // 于是详情弹层要等引擎返回后的那次补写才看得到块。
+                // 复用既有 helper（DELETE+INSERT 全量替换），不复制 SQL；
+                // 收尾那次补写（run_task）保留，现在是幂等的最终 flush。
+                let _ = store::save_segments(&self.conn, self.task_id, &segs);
                 Some(
                     segs.iter()
                         .map(|s| crate::model::SegmentDto {
@@ -1171,6 +1178,126 @@ mod tests {
             "应说明为什么变成暂停，实际 {:?}",
             t.queue_reason
         );
+    }
+
+    /// 造一条落库的任务行，让 `download_segment` 的外键目标存在。
+    fn seed_task(conn: &SharedConn, key: &str) -> u64 {
+        let t = Task {
+            id: 0,
+            dedup_key: key.into(),
+            app_id: format!("app.{key}"),
+            app_name: key.into(),
+            version: "1.0".into(),
+            file_name: format!("{key}.bin"),
+            url: "http://x/y.bin".into(),
+            file_path: format!("/tmp/{key}.bin"),
+            total: 1000,
+            received: 0,
+            status: TaskStatus::Downloading,
+            ..Default::default()
+        };
+        store::upsert_task(conn, &t).unwrap()
+    }
+
+    /// 直接造一个进度出口，绕开引擎（本组测试只验证"变化即落库"）。
+    fn sink_for(conn: &SharedConn, id: u64) -> SchedulerSink {
+        SchedulerSink {
+            conn: conn.clone(),
+            emitter: None,
+            task_id: id,
+            last_segments: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// ★ THE GAP（Plan-Todo 10）：运行期分段快照必须在**变化的那一刻**落库。
+    ///
+    /// 修复前 `download_segment` 整段运行都是空的，宿主的 reconcile 只能等到
+    /// `engine::run` 返回后的那次补写才拿到分段——于是详情弹层在下载期间看不到
+    /// 任何分段块。此断言在修复前必然失败（0 行）。
+    #[test]
+    fn on_progress_ex_persists_changed_segment_snapshot_immediately() {
+        let conn = store::open(":memory:").unwrap();
+        let id = seed_task(&conn, "live");
+        let sink = sink_for(&conn, id);
+
+        let segs = vec![
+            Segment { index: 0, start_byte: 0, end_byte: 499, received: 500, done: true },
+            Segment { index: 1, start_byte: 500, end_byte: 999, received: 120, done: false },
+        ];
+        sink.on_progress_ex(620, 1000, Some(segs), 0, None);
+
+        // 经由宿主 fold 读的同一张表回读。
+        let got = store::get_task(&conn, id).unwrap().unwrap();
+        assert_eq!(
+            got.segments.len(),
+            2,
+            "变化的快照必须在运行期就落库，而不是等引擎返回后才补写"
+        );
+        assert!(got.segments[0].done, "已完成块必须原样回读");
+        assert_eq!(got.segments[1].received, 120, "未完成块的部分进度必须原样回读");
+    }
+
+    /// 未变化的快照不得重写（`changed` 闸门仍然生效）：
+    /// 背地里种下的哨兵值必须活过一次 no-op 调用。
+    #[test]
+    fn on_progress_ex_does_not_rewrite_unchanged_snapshot() {
+        let conn = store::open(":memory:").unwrap();
+        let id = seed_task(&conn, "same");
+        let sink = sink_for(&conn, id);
+
+        let segs = vec![Segment { index: 0, start_byte: 0, end_byte: 999, received: 999, done: false }];
+        sink.on_progress_ex(999, 1000, Some(segs.clone()), 0, None);
+
+        // 绕过 sink，直接往表里种一个哨兵值。
+        {
+            let c = conn.lock().unwrap();
+            c.execute(
+                "UPDATE download_segment SET received=7 WHERE task_id=?1 AND idx=0",
+                rusqlite::params![id as i64],
+            )
+            .unwrap();
+        }
+
+        // 再报一次**相同**快照 → changed == false → 必须完全不动表。
+        sink.on_progress_ex(999, 1000, Some(segs), 0, None);
+
+        let got = store::get_task(&conn, id).unwrap().unwrap();
+        assert_eq!(got.segments.len(), 1);
+        assert_eq!(
+            got.segments[0].received, 7,
+            "未变化的快照不得被重写（避免无谓的 DELETE+INSERT）"
+        );
+    }
+
+    /// 最终快照仍必须落地：连续变化以最新为准，`run_task` 的收尾补写是幂等 no-op。
+    #[test]
+    fn on_progress_ex_keeps_the_final_snapshot() {
+        let conn = store::open(":memory:").unwrap();
+        let id = seed_task(&conn, "final");
+        let sink = sink_for(&conn, id);
+
+        let mid = vec![
+            Segment { index: 0, start_byte: 0, end_byte: 499, received: 500, done: true },
+            Segment { index: 1, start_byte: 500, end_byte: 999, received: 0, done: false },
+        ];
+        sink.on_progress_ex(500, 1000, Some(mid), 0, None);
+
+        let done = vec![
+            Segment { index: 0, start_byte: 0, end_byte: 499, received: 500, done: true },
+            Segment { index: 1, start_byte: 500, end_byte: 999, received: 500, done: true },
+        ];
+        sink.on_progress_ex(1000, 1000, Some(done.clone()), 0, None);
+
+        // 引擎返回后 `run_task` 还会再补写一次同一快照——必须幂等，不能丢最终态。
+        store::save_segments(&conn, id, &done).unwrap();
+
+        let got = store::get_task(&conn, id).unwrap().unwrap();
+        assert_eq!(got.segments.len(), 2);
+        assert!(
+            got.segments.iter().all(|s| s.done),
+            "落库的必须是最新的（最终）快照"
+        );
+        assert!(got.segments.iter().all(|s| s.received == s.len()));
     }
 
     /// 测试用目标路径
