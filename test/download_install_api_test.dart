@@ -704,9 +704,15 @@ void main() {
       expect(backend.importCalls, 1,
           reason: 'the import gate is memoized across mirror changes');
 
-      await service.watchAll().toList();
-      expect(backend.calls, contains('watchAll'),
-          reason: 'watchAll always reads the core stream, mirror-off included');
+      // watchAll is now push-driven: it seeds from the authoritative core read
+      // (never a facade poll stream) and must not re-run the memoized import.
+      final sub = service.watchAll().listen((_) {});
+      await pumpEventQueue();
+      await sub.cancel();
+      expect(backend.events, contains('list'),
+          reason: 'watchAll seeds from the core list, mirror-off included');
+      expect(backend.calls, isNot(contains('watchAll')),
+          reason: 'watchAll no longer opens a facade poll subscription');
       expect(backend.importCalls, 1,
           reason: 'watchAll must not re-run the memoized import');
       debugPrint('legacy gate mirror-off: core_calls=${backend.events} '

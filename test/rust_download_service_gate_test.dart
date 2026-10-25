@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/download/core/download_request.dart';
@@ -12,7 +14,18 @@ import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
 import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
+import 'package:gstore/core/rust/generated/event_bridge.dart' show ModuleEvent;
 import 'package:mockito/mockito.dart';
+
+/// Builds a host module event with the module's `emit_event` payload convention.
+ModuleEvent _moduleEvent(String type, Map<String, dynamic> payload) =>
+    ModuleEvent(
+      moduleId: BigInt.one,
+      instanceId: BigInt.one,
+      eventType: type,
+      data: Uint8List.fromList(utf8.encode(jsonEncode(payload))),
+      timestampMs: 0,
+    );
 
 /// 伪造宿主模块句柄：只被 [ModuleBootstrap.debugConfigure] 的 `loadOverride`
 /// 原样返回，从不调用其任何宿主方法（无 FFI）。
@@ -112,7 +125,15 @@ class _FakeDownloadBackend implements DownloadBackend {
   Future<rust.DownloadTaskDto?> get(String moduleTaskId) async {
     _record('get:$moduleTaskId');
     _maybeThrow();
-    return task;
+    final current = task;
+    if (current == null) return null;
+    // Mirror the core: a cache-miss lookup for an id the fake was not seeded
+    // with still returns that id's row (id must match the requested task).
+    final requested = int.tryParse(moduleTaskId);
+    if (requested != null && current.id != requested) {
+      return _dto(id: requested);
+    }
+    return current;
   }
 
   @override
@@ -218,6 +239,7 @@ void main() {
     backend = _FakeDownloadBackend(task: _dto());
     DownloadFacade.backendOverride = backend;
     RustDownloadService.instance.resetCoreReadyForTest();
+    RustDownloadService.debugResetPushSeams();
     ModuleBootstrap.instance.debugReset();
     // Default: the `download` module mounts successfully.
     configureModuleSeams(
@@ -233,6 +255,7 @@ void main() {
   tearDown(() async {
     DownloadFacade.backendOverride = null;
     RustDownloadService.instance.resetCoreReadyForTest();
+    RustDownloadService.debugResetPushSeams();
     ModuleBootstrap.instance.debugReset();
     await backend.events.close();
   });
@@ -374,32 +397,65 @@ void main() {
       );
     });
 
-    test('watchAll relays the single backend stream as DownloadTask', () async {
-      final future = RustDownloadService.instance.watchAll().take(1).toList();
+    test('watchAll is driven by the download module push lane', () async {
+      final lane = StreamController<ModuleEvent>.broadcast();
+      addTearDown(lane.close);
+      RustDownloadService.downloadEventLaneOverride = () => lane.stream;
+
+      final got = <DownloadTask>[];
+      final sub = RustDownloadService.instance.watchAll().listen(got.add);
       await pumpEventQueue();
 
-      backend.events.add(_dto(id: 9));
-      final tasks = await future;
+      // Seed: the authoritative core read supplies full metadata exactly once.
+      expect(got.single.id, 7);
 
-      expect(tasks.single.id, 9);
-      expect(tasks.single.status, DownloadStatusEnum.downloading);
+      lane.add(_moduleEvent('download.progress', {
+        'taskId': 7,
+        'status': DownloadStatusEnum.downloading.index,
+        'total': 100,
+        'received': 55,
+        'speedBps': 2,
+        'etaSec': 5,
+      }));
+      await pumpEventQueue();
+
+      expect(got.last.received, 55);
+      expect(got.last.status, DownloadStatusEnum.downloading);
       expect(
         backend.watchAllCalls,
-        1,
-        reason: 'exactly one backend stream, no Dart/module event merge',
+        0,
+        reason: 'the module push lane is the only live source; no facade poll',
       );
+      await sub.cancel();
     });
 
-    test('watch(id) filters the same backend stream by id', () async {
-      final future = RustDownloadService.instance.watch(11).take(1).toList();
+    test('watch(id) filters the push lane by id', () async {
+      final lane = StreamController<ModuleEvent>.broadcast();
+      addTearDown(lane.close);
+      RustDownloadService.downloadEventLaneOverride = () => lane.stream;
+
+      final got = <DownloadTask>[];
+      final sub = RustDownloadService.instance.watch(11).listen(got.add);
       await pumpEventQueue();
 
-      backend.events.add(_dto(id: 7));
-      backend.events.add(_dto(id: 11));
-      final tasks = await future;
+      lane.add(_moduleEvent('download.progress', {
+        'taskId': 7,
+        'status': DownloadStatusEnum.downloading.index,
+        'total': 100,
+        'received': 10,
+      }));
+      lane.add(_moduleEvent('download.progress', {
+        'taskId': 11,
+        'status': DownloadStatusEnum.downloading.index,
+        'total': 100,
+        'received': 10,
+      }));
+      await pumpEventQueue();
 
-      expect(tasks.single.id, 11);
-      expect(backend.watchAllCalls, 1);
+      expect(got, isNotEmpty);
+      expect(got.map((task) => task.id), everyElement(11));
+      expect(backend.watchAllCalls, 0);
+      await sub.cancel();
     });
   });
 
@@ -439,15 +495,13 @@ void main() {
     });
 
     test('watchAll stream errors carrying the code become typed', () async {
+      backend.throwOn = Exception(
+        'CORE_E_DOWNLOAD_MODULE_UNAVAILABLE: not mounted',
+      );
       final errors = <Object>[];
       final sub = RustDownloadService.instance
           .watchAll()
           .listen((_) {}, onError: errors.add);
-      await pumpEventQueue();
-
-      backend.events.addError(
-        Exception('CORE_E_DOWNLOAD_MODULE_UNAVAILABLE: not mounted'),
-      );
       await pumpEventQueue();
 
       expect(errors.single, isA<DownloadModuleUnavailableException>());
@@ -474,7 +528,24 @@ void main() {
       expect(
         hits,
         isEmpty,
-        reason: 'the download layer must not read the module event bus:\n'
+        reason: 'the download layer must reach the module bus through the '
+            'typed DownloadEventSource gateway, never RustModuleManager '
+            'directly:\n${hits.join('\n')}',
+      );
+    });
+
+    test('lib/core/download/ never opens the facade poll stream', () {
+      // The 500 ms poll is gone: the only live source is the module push lane.
+      // If a future edit re-adds `DownloadFacade.instance.watchAll()` here, the
+      // per-subscription 500 ms native poll thread comes back.
+      final hits = _scanDartTree(
+        'lib/core/download',
+        <String>['DownloadFacade.instance.watchAll'],
+      );
+      expect(
+        hits,
+        isEmpty,
+        reason: 'the download layer must not open the 500 ms core poll:\n'
             '${hits.join('\n')}',
       );
     });

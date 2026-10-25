@@ -7,9 +7,12 @@ import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/rust/download_push_stream.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/download/DownloadEventSource.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/generated/event_bridge.dart' show ModuleEvent;
 
 /// [IDownloadService] 的 **Rust 内核实现**。
 ///
@@ -285,25 +288,47 @@ class RustDownloadService implements IDownloadService {
         .toList(growable: false);
   }
 
-  /// 全局任务流：**不过滤 id**，供通知栏 / 自动安装统一消费。
+  /// 全局任务流：**由下载模块推送事件驱动**，不再 500ms 轮询。
   ///
-  /// 唯一事件源是 [DownloadFacade.watchAll]（核心广播流）；不再合并 Dart /
-  /// 模块事件总线，因此不会出现双份进度或旧模块残留事件。
+  /// 唯一实时事件源是下载模块经 `emit_event` 上广播总线的事件
+  /// （`download.progress` / `download.done`，载荷带 `taskId`），Dart 侧按
+  /// `taskId` 解复用；订阅时先做一次权威核心行快照当种子，另有慢速安全网
+  /// （仅在有活跃任务时）兜底漏事件。**不合并** [DownloadFacade.watchAll] 的
+  /// 500ms 轮询流，因此同一 tick 不会出现双份进度。
   @override
   Stream<DownloadTask> watchAll() async* {
-    // Import resolves before the core stream is created, so reconnecting to
-    // an in-progress legacy task does not emit an empty first snapshot.
     await _ensureCoreReady();
-    yield* DownloadFacade.instance.watchAll().map(toDownloadTask);
+    yield* DownloadPushStream(
+      lane: downloadEventLane(),
+      loadAll: listTasks,
+      fetchOne: getTask,
+      safetyInterval: downloadSafetyNetInterval,
+    ).tasks();
   }
 
   @override
   Stream<DownloadTask> watch(int id) async* {
     await _ensureCoreReady();
-    // 与 watchAll 共用同一个核心事件源，按 id 过滤；单次调用只订阅一次。
-    await for (final dto in DownloadFacade.instance.watchAll()) {
-      final task = toDownloadTask(dto);
-      if (task.id == id) yield task;
-    }
+    // 与 watchAll 共用同一个推送事件源，按 id 过滤；单次调用只订阅一次。
+    yield* watchAll().where((task) => task.id == id);
+  }
+
+  /// 推送事件源接缝：生产读下载模块在宿主事件总线上的 lane；测试可替换。
+  @visibleForTesting
+  static Stream<ModuleEvent> Function()? downloadEventLaneOverride;
+
+  /// 慢速安全网间隔（仅在有活跃任务时触发一次全量对账）。
+  @visibleForTesting
+  static Duration downloadSafetyNetInterval = const Duration(seconds: 4);
+
+  /// 下载模块事件 lane（默认经 [DownloadEventSource] 读宿主总线）。
+  static Stream<ModuleEvent> downloadEventLane() =>
+      (downloadEventLaneOverride ?? () => DownloadEventSource.events)();
+
+  /// 测试专用：清空推送接缝覆盖。
+  @visibleForTesting
+  static void debugResetPushSeams() {
+    downloadEventLaneOverride = null;
+    downloadSafetyNetInterval = const Duration(seconds: 4);
   }
 }
