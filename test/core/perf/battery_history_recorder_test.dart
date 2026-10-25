@@ -359,6 +359,38 @@ void main() {
       expect(recorder.isRecording, isFalse);
       expect(recorder.isDisposed, isTrue);
     });
+
+    test('start 重复调用幂等：只起一个定时器（不重复落库）', () {
+      fakeAsync((async) {
+        final clock = _Clock();
+        final store = InMemoryBatteryHistoryStore();
+        final recorder = BatteryHistoryRecorder(
+          store: store,
+          clock: clock.now,
+          initialDelay: Duration.zero,
+          interval: const Duration(seconds: 3),
+          session: 1,
+          sampler: () async => _sample(),
+        );
+
+        recorder.start();
+        recorder.start(); // 幂等：no-op，不得起第二个定时器
+        clock.advance(1000);
+        async.elapse(const Duration(seconds: 3));
+        async.flushMicrotasks();
+
+        // 单定时器：初始 tick + 1 个周期 tick = 2；若重复起表则为 4。
+        expect(recorder.insertedCount, 2);
+
+        recorder.stop();
+        recorder.stop(); // 幂等：no-op
+        async.flushMicrotasks();
+        expect(recorder.isRecording, isFalse);
+
+        recorder.dispose();
+        async.flushMicrotasks();
+      });
+    });
   });
 
   group('默认采样器：探测缓存 + 无 per-tick dumpsys', () {
