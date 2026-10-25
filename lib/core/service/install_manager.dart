@@ -675,11 +675,18 @@ class InstallManager implements IInstallService {
   /// `install` marker is armed and a guard here would break manual installs).
   Future<(bool, InstallMethod)> _installApkDirect(String filePath) async {
     if (!_isAndroid || !filePath.endsWith('.apk')) {
+      appLog.error('InstallManager: 直接安装不可用（平台/扩展名）', data: {
+        'filePath': filePath,
+        'isAndroid': _isAndroid,
+      });
       return (false, _preferredMethod);
     }
 
     final file = File(filePath);
     if (!await file.exists()) {
+      appLog.error('InstallManager: 直接安装的 APK 不存在', data: {
+        'filePath': filePath,
+      });
       return (false, _preferredMethod);
     }
 

@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/model/download_task_database.dart';
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
@@ -385,7 +386,19 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     }
   }
 
-  /// 安装应用（Shizuku 静默安装优先，回退系统安装）
+  /// 平台判定接缝：默认读真实平台，测试注入以在非 Android 主机上驱动安装分支。
+  ///
+  /// 生产始终走 `Platform.isAndroid`；这里只为一处副作用（安装）提供可替身点，
+  /// 避免测试必须依赖真机 / 平台通道。
+  @visibleForTesting
+  static bool Function() isAndroidPlatform = () => Platform.isAndroid;
+
+  /// 安装应用（核心安装域优先，回退系统安装）。
+  ///
+  /// 安装有两条失败通道：`InstallManager.installApk` 返回的 `(ok, method)` 结果，
+  /// 以及核心抛出的类型化 [InstallCoreException]（`CORE_E_INSTALL_*`）。二者此前
+  /// 都被丢弃 / 未捕获，真机上表现为「点击安装无响应」。这里必须把每条失败都
+  /// 转成用户可见提示；成功也要给出反馈。
   Future<void> installApp(DownloadTask downStatus) async {
     // 安装模块下线 → 注册表取不到服务，降级提示不抛
     final manager = ModuleManager.instance.get<InstallManager>();
@@ -393,8 +406,40 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       AppDialogs.showWarning('安装模块未启用');
       return;
     }
-    if (Platform.isAndroid && downStatus.fileName.endsWith(".apk")) {
-      await manager.installApk(downStatus.filePath);
+    if (!isAndroidPlatform()) {
+      AppDialogs.showWarning('当前平台不支持安装 APK');
+      return;
+    }
+    // 非 APK 文件明确提示，绝不静默 no-op（此前该分支直接什么都不做）。
+    if (!downStatus.fileName.endsWith('.apk')) {
+      AppDialogs.showWarning('该文件不是可安装的 APK：${downStatus.fileName}');
+      return;
+    }
+
+    final name =
+        downStatus.appName.isNotEmpty ? downStatus.appName : downStatus.fileName;
+    try {
+      final (ok, method) = await manager.installApk(downStatus.filePath);
+      if (ok) {
+        appLog.info('下载面板: 安装成功 name=$name method=${method.name}');
+        AppDialogs.showSuccess('$name 安装完成');
+      } else {
+        appLog.error('下载面板: 安装失败 name=$name method=${method.name}', data: {
+          'filePath': downStatus.filePath,
+        });
+        AppDialogs.showError('$name 安装失败，请检查系统「安装未知应用」权限后重试',
+            title: '安装失败');
+      }
+    } on InstallCoreException catch (e) {
+      appLog.error('下载面板: 安装失败 [${e.code}] - ${e.message}', data: {
+        'filePath': downStatus.filePath,
+      });
+      AppDialogs.showError('$name 安装失败：${e.code}', title: '安装失败');
+    } catch (e) {
+      appLog.error('下载面板: 安装异常 - $e', data: {
+        'filePath': downStatus.filePath,
+      });
+      AppDialogs.showError('$name 安装失败：$e', title: '安装失败');
     }
   }
 

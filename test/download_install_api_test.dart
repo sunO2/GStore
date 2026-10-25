@@ -4,9 +4,11 @@ import 'dart:io';
 // fake_async 是 flutter_test 的传递依赖（未直接列入 pubspec，故忽略该 lint）。
 // ignore: depend_on_referenced_packages
 import 'package:fake_async/fake_async.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -14,6 +16,7 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart' show ModuleManager;
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
 import 'package:gstore/core/rust/ModuleManager.dart' show RustModuleInstance;
@@ -21,6 +24,7 @@ import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:mockito/mockito.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 
 /// 伪造宿主模块句柄：只被 [ModuleBootstrap.debugConfigure] 的 `loadOverride`
 /// 原样返回（无 FFI）。
@@ -291,6 +295,13 @@ class _RecordingInstallManager implements InstallManager {
   int installTaskCalls = 0;
   int installApkCalls = 0;
   String? lastModuleTaskId;
+  String? lastInstallApkPath;
+
+  /// [installApk] 的返回值（默认成功）。
+  (bool, InstallMethod) installApkResult = (true, InstallMethod.system);
+
+  /// 非空时 [installApk] 抛出该异常（用于模拟核心类型化失败）。
+  Object? installApkError;
 
   @override
   Future<(bool, InstallMethod)> installTask(
@@ -308,7 +319,10 @@ class _RecordingInstallManager implements InstallManager {
     bool moduleInstall = false,
   }) async {
     installApkCalls++;
-    return (true, InstallMethod.system);
+    lastInstallApkPath = filePath;
+    final error = installApkError;
+    if (error != null) throw error;
+    return installApkResult;
   }
 
   @override
@@ -329,14 +343,19 @@ class _FakeDownloadService implements IDownloadService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-DownloadTask _task(int id, {bool installAfterDownload = true}) => DownloadTask(
+DownloadTask _task(
+  int id, {
+  bool installAfterDownload = true,
+  String fileName = 'example.apk',
+}) =>
+    DownloadTask(
       id: id,
       appId: 'com.example.app',
       appName: 'Example',
       version: '1.2.3',
-      fileName: 'example.apk',
-      url: 'https://example.test/example.apk',
-      filePath: '/tmp/example.apk',
+      fileName: fileName,
+      url: 'https://example.test/$fileName',
+      filePath: '/tmp/$fileName',
       total: 100,
       received: 100,
       status: DownloadStatusEnum.completed,
@@ -800,6 +819,130 @@ void main() {
       expect(valid.segments!.single.endByte, 10);
       expect(valid.segments!.single.received, 5);
       expect(valid.headers['Authorization'], 'token');
+    });
+  });
+
+  group('installApp surfaces every install outcome to the user', () {
+    /// AppDialogs snackbar 需要挂载了 scaffoldMessengerKey 的 MaterialApp。
+    Future<void> pumpHost(WidgetTester tester) async {
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ));
+    }
+
+    Future<DownloadManagerNotifier> notifierFor() async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      return container.read(downloadManagerProvider.notifier);
+    }
+
+    Future<void> bindFake(_RecordingInstallManager manager) async {
+      ModuleManager.instance.bind<InstallManager>(manager);
+      addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+    }
+
+    setUp(() {
+      // 主机是 Linux：把平台判定接到 Android 分支，才能驱动真实 installApk 调用。
+      DownloadManagerNotifier.isAndroidPlatform = () => true;
+    });
+
+    tearDown(() {
+      DownloadManagerNotifier.isAndroidPlatform = () => Platform.isAndroid;
+    });
+
+    testWidgets('failed core install (false) yields a visible typed error',
+        (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkResult = (false, InstallMethod.system);
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 1,
+          reason: 'the real installApp must reach installApk');
+      expect(manager.lastInstallApkPath, '/tmp/example.apk');
+      expect(find.textContaining('安装失败'), findsWidgets,
+          reason: 'a false result must be surfaced, not swallowed');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('InstallCoreException surfaces its typed code', (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkError = const InstallCoreException(
+          'CORE_E_INSTALL_APK_MISSING',
+          'CORE_E_INSTALL_INVALID_ARG: '
+              'CORE_E_INSTALL_APK_MISSING: /tmp/example.apk',
+        );
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 1);
+      expect(find.textContaining('CORE_E_INSTALL_APK_MISSING'), findsWidgets,
+          reason: 'the typed core code must reach the user');
+      expect(tester.takeException(), isNull,
+          reason: 'the typed exception must not escape unhandled');
+    });
+
+    testWidgets('successful install reports success', (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkResult = (true, InstallMethod.shizuku);
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 1);
+      expect(find.textContaining('安装完成'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'non-APK file yields an explicit message and never calls installApk',
+        (tester) async {
+      final manager = _RecordingInstallManager();
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1, fileName: 'payload.bin'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 0,
+          reason: 'a non-APK must not silently no-op nor attempt an install');
+      expect(find.textContaining('不是可安装的 APK'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('non-Android platform yields an explicit message',
+        (tester) async {
+      DownloadManagerNotifier.isAndroidPlatform = () => false;
+      final manager = _RecordingInstallManager();
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 0);
+      expect(find.textContaining('当前平台不支持安装 APK'), findsWidgets);
+      expect(tester.takeException(), isNull);
     });
   });
 }
