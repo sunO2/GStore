@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -11,6 +12,7 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/core/service/install_resume_bridge.dart';
 
 /// `gstore/install_events` 的 Dart 侧契约测试。
 ///
@@ -440,6 +442,44 @@ void main() {
         InstallManager.instance.installEventsSubscriptionForTest,
         isNull,
       );
+    });
+  });
+
+  // 回前台校验桥：安装器前台期间隐式广播被 Android 拦截，用户从安装器返回
+  // （resumed）时是确认后台完成安装的关键时机。
+  group('InstallResumeBridge', () {
+    test('resumed triggers the handler once; dispose stops it', () async {
+      var calls = 0;
+      final bridge = InstallResumeBridge(onResumed: () async => calls++);
+      addTearDown(bridge.dispose);
+      bridge.start();
+      bridge.start(); // 幂等：重复 start 不重复注册
+
+      bridge.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await pumpEventQueue();
+      expect(calls, 1);
+
+      bridge.didChangeAppLifecycleState(AppLifecycleState.paused);
+      bridge.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      await pumpEventQueue();
+      expect(calls, 1, reason: 'only resumed triggers the check');
+
+      bridge.dispose();
+      bridge.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await pumpEventQueue();
+      expect(calls, 1, reason: 'a disposed bridge must not fire');
+    });
+
+    test('a throwing handler is swallowed', () async {
+      final bridge = InstallResumeBridge(
+        onResumed: () async => throw StateError('boom'),
+      );
+      addTearDown(bridge.dispose);
+      bridge.start();
+
+      bridge.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await pumpEventQueue();
+      // 未抛出即通过：桥必须吞掉异常，绝不从生命周期回调冒泡。
     });
   });
 }

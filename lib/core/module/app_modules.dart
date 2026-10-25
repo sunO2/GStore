@@ -35,6 +35,7 @@ import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/core/service/install_resume_bridge.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
@@ -254,6 +255,10 @@ class InstallModule extends AppModule {
   @override
   int get priority => 70;
 
+  /// 回前台安装校验桥：用户在系统安装器完成安装后返回前台时，对仍 `pending`
+  /// 的行做一次平台校验（隐式广播在后台被 Android 拦截，见桥内注释）。
+  InstallResumeBridge? _resumeBridge;
+
   @override
   Future<void> onRegister(ModuleContext context) async {
     context.bindService?.call(IInstallService, InstallManager.instance);
@@ -262,10 +267,17 @@ class InstallModule extends AppModule {
     context.bindService?.call(InstallManager, InstallManager.instance);
     // 全仓唯一的 `gstore/install_events` 订阅者：上线即消费终端安装结果。
     InstallManager.instance.startEventBridge();
+    // 回到前台时兜底校验仍 pending 的安装（安装器前台期间广播被拦截）。
+    (_resumeBridge ??= InstallResumeBridge(
+      onResumed: () => InstallManager.instance.recheckPendingInstalls(),
+    ))
+        .start();
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    _resumeBridge?.dispose();
+    _resumeBridge = null;
     await InstallManager.instance.stopEventBridge();
     context.unbindService?.call(IInstallService);
     context.unbindService?.call(InstallManager);

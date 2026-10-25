@@ -100,6 +100,34 @@ class InstallManager implements IInstallService {
   ) =>
       _appInstaller = installer;
 
+  /// 平台校验接缝：返回 [packageName] 的已安装版本名；未安装 / 查询失败 → null。
+  ///
+  /// 生产走 `gstore/platform.getInstalled`（`PlatformChannelClient`），测试可注入
+  /// 假件。用于 `pending` 行的终端确认兜底：系统安装器在前台运行时，Android 会
+  /// 拦截发往后台应用的隐式 `PACKAGE_ADDED` / `PACKAGE_REPLACED` 广播，
+  /// `install_events` 可能永远收不到终端结果（见 [recheckPendingInstalls]）。
+  static Future<String?> Function(String packageName) _installedVersionCheck =
+      _defaultInstalledVersion;
+
+  @visibleForTesting
+  static set installedVersionCheckForTest(
+    Future<String?> Function(String packageName) check,
+  ) =>
+      _installedVersionCheck = check;
+
+  /// 生产平台校验：读取已安装包的版本名；未安装 / 通道失败一律返回 null。
+  static Future<String?> _defaultInstalledVersion(String packageName) async {
+    if (packageName.isEmpty) return null;
+    try {
+      final info = await PlatformChannelClient().getInstalled(packageName);
+      final version = info?['version_name']?.toString();
+      return (version == null || version.isEmpty) ? null : version;
+    } catch (e) {
+      debugPrint('InstallManager: 平台安装校验失败（忽略） - $e');
+      return null;
+    }
+  }
+
   static const Set<String> _terminalInstallStatuses = <String>{
     'installed',
     'failed',
@@ -113,6 +141,10 @@ class InstallManager implements IInstallService {
 
   final Map<String, Timer> _installPollers = <String, Timer>{};
   bool _installRecoveryDone = false;
+
+  /// `pending` 行 → 该行持有中的安装请求（平台校验兜底使用；终态时移除）。
+  final Map<String, InstallRequest> _pendingInstallRequests =
+      <String, InstallRequest>{};
 
   /// 全仓唯一的 `gstore/install_events` 订阅（`startEventBridge` 幂等建立）。
   StreamSubscription<dynamic>? _installEventsSub;
@@ -275,6 +307,7 @@ class InstallManager implements IInstallService {
     installPendingDeadline = const Duration(seconds: 90);
     clock = DateTime.now;
     _appInstaller = AppInstaller.installApk;
+    _installedVersionCheck = _defaultInstalledVersion;
   }
 
   /// 当前是否视为 Android 平台
@@ -633,6 +666,9 @@ class InstallManager implements IInstallService {
     }
     final interval = installPollInterval;
     if (interval <= Duration.zero) return;
+    if (request != null) {
+      _pendingInstallRequests[moduleTaskId] = request;
+    }
     final deadline = installPendingDeadline < installPollTimeout
         ? installPendingDeadline
         : installPollTimeout;
@@ -644,23 +680,10 @@ class InstallManager implements IInstallService {
       if (ticks > maxTicks) {
         t.cancel();
         _installPollers.remove(moduleTaskId);
-        appLog.error('InstallManager: 安装结果等待超时（deadline）', data: {
-          'moduleTaskId': moduleTaskId,
-          'deadlineMs': deadline.inMilliseconds,
-        });
-        if (request != null) {
-          unawaited(_reportRequest(
-            request,
-            status: InstallReportStatus.timeout,
-            error: 'CORE_E_INSTALL_TIMEOUT: no install event within '
-                '${deadline.inSeconds}s',
-          ));
-          _surfaceInstallResult(
-            InstallReportStatus.timeout,
-            request.packageName,
-            null,
-          );
-        }
+        unawaited(_finishPendingInstall(
+          _pendingInstallRequests.remove(moduleTaskId),
+          deadline,
+        ));
         return;
       }
       unawaited(_pollInstallOnce(moduleTaskId, t));
@@ -668,26 +691,160 @@ class InstallManager implements IInstallService {
     _installPollers[moduleTaskId] = timer;
   }
 
+  /// 截止时的最后处置：先做一次平台校验，确认则报 `installed`，否则报 `timeout`。
+  ///
+  /// `request == null`（核心行已由其它路径落定）时什么都不做，与旧行为一致。
+  Future<void> _finishPendingInstall(
+    InstallRequest? request,
+    Duration deadline,
+  ) async {
+    if (request == null) return;
+    // 核心可能已由 `install_events` 落定（前台收到终端广播）：以核心为准，
+    // 既不再校验、也不再报 timeout（覆盖终态会丢真相）。
+    if (await _coreInstallSettled(request.moduleTaskId)) return;
+    // 安装可能恰好在 deadline 前完成，而系统广播仍被拦截（应用在后台）：
+    // 这是避免把一次成功安装误报为 timeout 的最后机会。
+    if (await _confirmPendingInstall(request)) return;
+    appLog.error('InstallManager: 安装结果等待超时（deadline）', data: {
+      'moduleTaskId': request.moduleTaskId,
+      'deadlineMs': deadline.inMilliseconds,
+    });
+    unawaited(_reportRequest(
+      request,
+      status: InstallReportStatus.timeout,
+      error: 'CORE_E_INSTALL_TIMEOUT: no install event within '
+          '${deadline.inSeconds}s',
+    ));
+    _surfaceInstallResult(
+      InstallReportStatus.timeout,
+      request.packageName,
+      null,
+    );
+  }
+
   Future<void> _pollInstallOnce(String moduleTaskId, Timer timer) async {
+    InstallRecord? record;
     try {
       await _installFacade.pendingRequests();
-      final record = await _installFacade.get(moduleTaskId);
-      final status = record?.status;
-      if (status == null || !_terminalInstallStatuses.contains(status)) {
-        return;
-      }
-      timer.cancel();
-      _installPollers.remove(moduleTaskId);
-      appLog.info('InstallManager: 核心安装结束', data: {
-        'moduleTaskId': moduleTaskId,
-        'status': status,
-        'error': record?.error,
-      });
+      record = await _installFacade.get(moduleTaskId);
     } catch (e) {
       appLog.error('InstallManager: 核心安装结果轮询失败 - $e', data: {
         'moduleTaskId': moduleTaskId,
       });
     }
+    final status = record?.status;
+    if (status != null && _terminalInstallStatuses.contains(status)) {
+      // 核心已落定（前台收到终端事件 / 核心清扫）：以核心为准，结束轮询。
+      _cancelInstallPoller(moduleTaskId, timer);
+      appLog.info('InstallManager: 核心安装结束', data: {
+        'moduleTaskId': moduleTaskId,
+        'status': status,
+        'error': record?.error,
+      });
+      return;
+    }
+    // 核心仍 `pending`：终端广播发往后台应用会被 Android 拦截
+    // （on-device：`BroadcastQueue: Background execution not allowed`），
+    // 包状态查询不依赖前台时机，是这种情况下唯一可靠的确认信号。
+    final pending = _pendingInstallRequests[moduleTaskId];
+    if (pending != null && await _confirmPendingInstall(pending)) {
+      _cancelInstallPoller(moduleTaskId, timer);
+    }
+  }
+
+  /// 核心行是否已落定（终态）。查询失败按「未落定」处理（保守，仍走校验/超时）。
+  Future<bool> _coreInstallSettled(String moduleTaskId) async {
+    try {
+      final record = await _installFacade.get(moduleTaskId);
+      final status = record?.status;
+      return status != null && _terminalInstallStatuses.contains(status);
+    } catch (e) {
+      appLog.error('InstallManager: 核心安装结果查询失败 - $e', data: {
+        'moduleTaskId': moduleTaskId,
+      });
+      return false;
+    }
+  }
+
+  /// 回到前台时对全部仍 `pending` 的安装做一次平台校验。
+  ///
+  /// 由 `InstallResumeBridge` 在 `AppLifecycleState.resumed` 时调用：用户从系统
+  /// 安装器返回，正是终端结果最可能已产生、而隐式广播最可能被拦截的时刻。
+  /// 幂等；无 `pending` 安装时安全 no-op。
+  Future<void> recheckPendingInstalls() async {
+    final ids = _pendingInstallRequests.keys.toList(growable: false);
+    for (final moduleTaskId in ids) {
+      final request = _pendingInstallRequests[moduleTaskId];
+      if (request == null) continue;
+      // 核心已落定则直接清理跟踪，不以平台校验覆盖核心终态。
+      if (await _coreInstallSettled(moduleTaskId)) {
+        _pendingInstallRequests.remove(moduleTaskId);
+        continue;
+      }
+      if (await _confirmPendingInstall(request)) {
+        final timer = _installPollers[moduleTaskId];
+        if (timer != null) {
+          _cancelInstallPoller(moduleTaskId, timer);
+        } else {
+          _pendingInstallRequests.remove(moduleTaskId);
+        }
+      }
+    }
+  }
+
+  /// 平台校验：目标包已按预期版本安装时上报 `installed`，返回是否已确认。
+  ///
+  /// 核心对重复上报返回 `changed:false`，因此与 `install_events` 路径天然幂等。
+  Future<bool> _confirmPendingInstall(InstallRequest request) async {
+    final packageName = request.packageName;
+    if (packageName.isEmpty) return false;
+    String? installed;
+    try {
+      installed = await _installedVersionCheck(packageName);
+    } catch (e) {
+      debugPrint('InstallManager: 平台安装校验失败（忽略） - $e');
+      return false;
+    }
+    if (installed == null || installed.isEmpty) return false;
+    if (!_versionMatches(request.versionName, installed)) {
+      debugPrint(
+        'InstallManager: 包已安装但版本不符，暂不确认 '
+        '（expected=${request.versionName} actual=$installed）',
+      );
+      return false;
+    }
+    appLog.info('InstallManager: 平台校验确认安装完成', data: {
+      'sessionId': request.sessionId,
+      'packageName': packageName,
+      'installedVersion': installed,
+    });
+    await _reportRequest(
+      request,
+      status: InstallReportStatus.installed,
+      installedVersion: installed,
+    );
+    _surfaceInstallResult(
+      InstallReportStatus.installed,
+      request.packageName,
+      null,
+    );
+    return true;
+  }
+
+  /// 期望版本与平台报告版本的比对。
+  ///
+  /// 期望版本缺失时只要求包存在；否则要求版本名一致（忽略首尾空白），避免把
+  /// 「旧版本仍在」误判为本次安装成功。
+  static bool _versionMatches(String expected, String actual) {
+    final trimmed = expected.trim();
+    if (trimmed.isEmpty) return true;
+    return trimmed == actual.trim();
+  }
+
+  void _cancelInstallPoller(String moduleTaskId, Timer timer) {
+    timer.cancel();
+    _installPollers.remove(moduleTaskId);
+    _pendingInstallRequests.remove(moduleTaskId);
   }
 
   /// Surfaces a terminal install result to the user.
@@ -725,6 +882,7 @@ class InstallManager implements IInstallService {
       timer.cancel();
     }
     _installPollers.clear();
+    _pendingInstallRequests.clear();
   }
 
   Future<String?> _findCoreTaskId(String filePath) async {

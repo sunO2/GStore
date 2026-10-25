@@ -622,6 +622,180 @@ void main() {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 后台完成确认（on-device 缺陷）：系统安装器在前台运行时，Android 拦截发往后台
+  // 应用的隐式 PACKAGE_ADDED / PACKAGE_REPLACED 广播（BroadcastQueue: Background
+  // execution not allowed），`install_events` 永远收不到终端结果。平台校验兜底在
+  // pending 期间查询目标包是否已按预期版本安装，命中即上报 installed；回到前台
+  // 时再校验一次。timeout 仍是最后手段。
+  // ───────────────────────────────────────────────────────────────────────────
+  group('backgrounded install completion is confirmed by the platform check', () {
+    InstallManager managerWithDeadline({
+      Duration interval = const Duration(milliseconds: 10),
+      Duration deadline = const Duration(milliseconds: 100),
+    }) {
+      InstallManager.installPollInterval = interval;
+      InstallManager.installPendingDeadline = deadline;
+      InstallManager.installPollTimeout = const Duration(seconds: 5);
+      return InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+    }
+
+    test(
+        'a pending row whose package becomes installed is reported installed '
+        '(no install_events event ever arrives)', () {
+      // 目标包在安装器确认后变为已安装；广播被系统拦截 → 只有平台校验能确认。
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedVersionCheckForTest = (packageName) async =>
+          packageName == 'com.example.app' ? '1.2.3' : null;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        hasLength(1),
+        reason: 'the platform check must confirm a backgrounded install',
+      );
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        isEmpty,
+        reason: 'a confirmed install must never be reported as timeout',
+      );
+    });
+
+    test('a pending row whose package never installs still ends in timeout', () {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      // 包始终未安装：校验返回 null，超时兜底必须生效。
+      InstallManager.installedVersionCheckForTest = (_) async => null;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason: 'an unconfirmed pending row must still time out',
+      );
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        isEmpty,
+      );
+    });
+
+    test(
+        'the blocked-broadcast scenario does not leave the row stuck: the '
+        'resume re-check confirms the install', () async {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      // 长 deadline / 长间隔：本测试不推进时间，证明「回到前台」本身就能确认，
+      // 不依赖前台恰好在安装完成的那一刻。
+      InstallManager.installPollInterval = const Duration(seconds: 30);
+      InstallManager.installPendingDeadline = const Duration(seconds: 60);
+      InstallManager.installPollTimeout = const Duration(seconds: 120);
+      var installed = false;
+      InstallManager.installedVersionCheckForTest = (_) async =>
+          installed ? '1.2.3' : null;
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final launched = await manager.installTask('task-1', apk.path);
+
+      // 启动安装器 Intent 不是完成：绝不谎报 installed。
+      expect(launched.$1, InstallOutcome.launched);
+      expect(backend.reports, isEmpty,
+          reason: 'launching the installer must not report a terminal status');
+
+      // 用户在后台完成安装；广播被系统拦截（无 install_events 事件）。
+      installed = true;
+      // 应用回到前台 → 校验桥调用 recheckPendingInstalls。
+      await manager.recheckPendingInstalls();
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        hasLength(1),
+        reason: 'the resume re-check must confirm the backgrounded install',
+      );
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        isEmpty,
+      );
+    });
+
+    test('a package installed at a DIFFERENT version is not falsely confirmed',
+        () async {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      // 目标包存在但版本与期望不符（例如旧版本仍在）→ 不得误判为本次安装成功。
+      InstallManager.installedVersionCheckForTest = (_) async => '9.9.9';
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(backend.reports.where((r) => r.status == 'installed'), isEmpty);
+      expect(backend.reports.where((r) => r.status == 'timeout'), hasLength(1));
+    });
+
+    test('a core-settled failed row is never overridden by the platform check',
+        () {
+      // 核心已由 install_events 落定 failed（前台收到终端广播），但设备上恰有
+      // 期望版本的包：不得以平台校验把 failed 覆盖成 installed。
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedVersionCheckForTest = (_) async => '1.2.3';
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        // 轮询期间核心落定 failed。
+        backend.start = InstallStart(record: _record(status: 'failed'));
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        isEmpty,
+        reason: 'a core-settled terminal row must not be overridden',
+      );
+    });
+  });
+
   group('apk import path materialisation', () {
     const channel = MethodChannel('gstore/apk_source');
     late List<MethodCall> calls;
