@@ -14,6 +14,7 @@ import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
@@ -270,8 +271,11 @@ abstract class IThemeService {
 
 /// 安装服务接口
 abstract class IInstallService {
-  /// 安装 APK（Shizuku 静默或系统安装器）
-  Future<(bool, dynamic)> installApk(String filePath);
+  /// 安装 APK（Shizuku 静默或系统安装器）。
+  ///
+  /// 返回 [InstallOutcome]：`installed` 只在有真实同步结果时成立；仅"发起"
+  /// 系统安装器 Intent 时返回 `launched`，绝不能谎报 `installed`。
+  Future<(InstallOutcome, dynamic)> installApk(String filePath);
 
   /// 卸载应用
   Future<bool> managePackage(String packageName, String action);

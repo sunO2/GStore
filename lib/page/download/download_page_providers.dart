@@ -395,10 +395,16 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 安装应用（核心安装域优先，回退系统安装）。
   ///
-  /// 安装有两条失败通道：`InstallManager.installApk` 返回的 `(ok, method)` 结果，
-  /// 以及核心抛出的类型化 [InstallCoreException]（`CORE_E_INSTALL_*`）。二者此前
-  /// 都被丢弃 / 未捕获，真机上表现为「点击安装无响应」。这里必须把每条失败都
-  /// 转成用户可见提示；成功也要给出反馈。
+  /// 安装有两条失败通道：`InstallManager.installApk` 返回的 [InstallOutcome]
+  /// 结果，以及核心抛出的类型化 [InstallCoreException]（`CORE_E_INSTALL_*`）。
+  /// 二者此前都被丢弃 / 未捕获，真机上表现为「点击安装无响应」。这里必须把每条
+  /// 失败都转成用户可见提示。
+  ///
+  /// **诚实契约**：系统安装器 Intent 的"启动"不等于"安装完成"——用户可能取消、
+  /// 系统可能因「安装未知应用」权限拒绝、安装器也可能失败。因此 [InstallOutcome.launched]
+  /// 只提示「已发起安装，等待系统确认」；真正的终端结果
+  /// (installed/denied/failed/timeout) 由 `InstallManager` 的 `install_events`
+  /// 订阅或超时截止在到达时提示（见 `_surfaceInstallResult`）。
   Future<void> installApp(DownloadTask downStatus) async {
     // 安装模块下线 → 注册表取不到服务，降级提示不抛
     final manager = ModuleManager.instance.get<InstallManager>();
@@ -419,16 +425,23 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     final name =
         downStatus.appName.isNotEmpty ? downStatus.appName : downStatus.fileName;
     try {
-      final (ok, method) = await manager.installApk(downStatus.filePath);
-      if (ok) {
-        appLog.info('下载面板: 安装成功 name=$name method=${method.name}');
-        AppDialogs.showSuccess('$name 安装完成');
-      } else {
-        appLog.error('下载面板: 安装失败 name=$name method=${method.name}', data: {
-          'filePath': downStatus.filePath,
-        });
-        AppDialogs.showError('$name 安装失败，请检查系统「安装未知应用」权限后重试',
-            title: '安装失败');
+      final (outcome, method) = await manager.installApk(downStatus.filePath);
+      switch (outcome) {
+        case InstallOutcome.installed:
+          appLog.info('下载面板: 安装完成 name=$name method=${method.name}');
+          AppDialogs.showSuccess('$name 安装完成');
+        case InstallOutcome.alreadyInstalled:
+          appLog.info('下载面板: 已安装 name=$name method=${method.name}');
+          AppDialogs.showSuccess('$name 已安装');
+        case InstallOutcome.launched:
+          appLog.info('下载面板: 已发起安装 name=$name method=${method.name}');
+          AppDialogs.showSuccess('$name 已发起安装，等待系统确认');
+        case InstallOutcome.failed:
+          appLog.error('下载面板: 安装失败 name=$name method=${method.name}', data: {
+            'filePath': downStatus.filePath,
+          });
+          AppDialogs.showError('$name 安装失败，请检查系统「安装未知应用」权限后重试',
+              title: '安装失败');
       }
     } on InstallCoreException catch (e) {
       appLog.error('下载面板: 安装失败 [${e.code}] - ${e.message}', data: {

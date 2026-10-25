@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart' show ModuleManager;
 import 'package:gstore/core/service/install_manager.dart'
@@ -70,7 +71,7 @@ class _ThrowingInstallManager implements InstallManager {
   String? lastModuleTaskId;
 
   @override
-  Future<(bool, InstallMethod)> installTask(
+  Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
@@ -80,7 +81,7 @@ class _ThrowingInstallManager implements InstallManager {
   }
 
   @override
-  Future<(bool, InstallMethod)> installApk(
+  Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
   }) async {

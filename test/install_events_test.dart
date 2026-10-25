@@ -473,22 +473,22 @@ class _RecordingInstallManager implements InstallManager {
   String? lastModuleTaskId;
 
   @override
-  Future<(bool, InstallMethod)> installTask(
+  Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
     installTaskCalls++;
     lastModuleTaskId = moduleTaskId;
-    return (true, InstallMethod.shizuku);
+    return (InstallOutcome.installed, InstallMethod.shizuku);
   }
 
   @override
-  Future<(bool, InstallMethod)> installApk(
+  Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
   }) async {
     installApkCalls++;
-    return (true, InstallMethod.system);
+    return (InstallOutcome.launched, InstallMethod.system);
   }
 
   @override

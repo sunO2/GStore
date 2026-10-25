@@ -162,6 +162,31 @@ abstract final class InstallReportStatus {
   static const Set<String> all = <String>{installed, failed, denied, timeout};
 }
 
+/// One frontend-observed install attempt outcome (distinct from the core's
+/// durable `install_status`).
+///
+/// The platform branch only *launches* the system installer intent; the real
+/// terminal result arrives asynchronously through `install_events` (or the
+/// frontend deadline). Reporting `installed` at launch time is therefore a
+/// lie — [launched] is the honest value and keeps the core row `pending` so a
+/// later tap re-executes instead of silently no-op'ing on a bogus `installed`.
+enum InstallOutcome {
+  /// The core row was already `installed`: idempotent hit, no effect ran.
+  alreadyInstalled,
+
+  /// A synchronous install completed (Shizuku `pm install` → `Success`).
+  installed,
+
+  /// The system installer intent was launched; the terminal result is pending.
+  launched,
+
+  /// Failed / user-denied / timed out before a launch could be confirmed.
+  failed;
+
+  /// Whether the install is confirmed (idempotent hit or synchronous success).
+  bool get isInstalled => this == alreadyInstalled || this == installed;
+}
+
 /// One terminal report sent back to the core.
 class InstallReport {
   const InstallReport({

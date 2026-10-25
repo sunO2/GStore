@@ -27,6 +27,7 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart' as mt;
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
@@ -2972,13 +2973,17 @@ class AgentService {
       }
 
       // 使用 InstallManager 统一安装（Shizuku 静默安装优先，回退系统安装）
-      final (success, method) = await manager.installApk(savePath);
-      if (!success) {
-        return '安装失败，请检查 APK 文件或重试';
+      final (outcome, _) = await manager.installApk(savePath);
+      switch (outcome) {
+        case InstallOutcome.launched:
+          return '安装请求已发送，请在弹出的系统安装界面确认。';
+        case InstallOutcome.installed:
+          return '已静默安装 $savePath';
+        case InstallOutcome.alreadyInstalled:
+          return '应用已安装';
+        case InstallOutcome.failed:
+          return '安装失败，请检查 APK 文件或重试';
       }
-      return method == InstallMethod.shizuku
-          ? '已静默安装 $savePath'
-          : '安装请求已发送，请在弹出的系统安装界面确认。';
     } catch (e) {
       return '安装失败: $e';
     }

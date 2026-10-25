@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+// fake_async 是 flutter_test 的传递依赖（未直接列入 pubspec，故忽略该 lint）。
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -184,13 +188,14 @@ InstallRecord _record({
       sessionId: sessionId,
     );
 
-InstallRequest _request({String apkPath = ''}) => InstallRequest(
+InstallRequest _request({String apkPath = '', String method = 'shizuku'}) =>
+    InstallRequest(
       moduleTaskId: 'task-1',
       sessionId: 'session-1',
       packageName: 'com.example.app',
       versionName: '1.2.3',
       apkPath: apkPath,
-      method: 'shizuku',
+      method: method,
       variant: const InstallVariant(
         abi: 'arm64-v8a',
         url: 'https://example.test/app.apk',
@@ -251,7 +256,7 @@ void main() {
 
     final result = await manager.installTask('task-1', apk.path);
 
-    expect(result, (true, InstallMethod.shizuku));
+    expect(result, (InstallOutcome.alreadyInstalled, InstallMethod.shizuku));
     expect(commands, 0, reason: 'a settled record must not run pm install');
     expect(
       backend.calls.where((call) => call.startsWith('reportResult')),
@@ -278,7 +283,7 @@ void main() {
 
     final result = await manager.installTask('task-1', apk.path);
 
-    expect(result, (true, InstallMethod.shizuku));
+    expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
     expect(commands, hasLength(1));
     expect(commands.single, contains('pm install -r'));
     expect(commands.single, contains("/data/local/tmp/gstore_install_"));
@@ -312,13 +317,15 @@ void main() {
 
     final result = await manager.installTask('task-1', apk.path);
 
-    expect(result.$1, isFalse);
+    expect(result.$1, InstallOutcome.failed);
     expect(commands, hasLength(1));
     expect(systemInstalls, 0, reason: 'user denial stops the fallback');
     expect(backend.reports.single.status, 'denied');
   });
 
-  test('a failed pm install falls back to the system installer', () async {
+  test(
+      'a failed pm install launches the system installer but reports NO terminal '
+      'status (the row stays pending for the event bridge)', () async {
     backend.start = InstallStart(
       record: _record(),
       request: _request(apkPath: apk.path),
@@ -333,9 +340,20 @@ void main() {
 
     final result = await manager.installTask('task-1', apk.path);
 
-    expect(result, (true, InstallMethod.shizuku));
-    expect(installedPaths, <String>[apk.path]);
-    expect(backend.reports.single.status, 'installed');
+    // The launch is honest: not `installed`, only `launched`.
+    expect(result, (InstallOutcome.launched, InstallMethod.shizuku));
+    expect(installedPaths, <String>[apk.path],
+        reason: 'the system installer intent must still be launched');
+    expect(
+      backend.reports.where((r) => r.status == 'installed'),
+      isEmpty,
+      reason: 'launching the installer intent must never report installed',
+    );
+    expect(
+      backend.calls.where((call) => call.startsWith('reportResult')),
+      isEmpty,
+      reason: 'no terminal report at launch; the terminal result is async',
+    );
   });
 
   test('an unknown session surfaces the typed CORE_E_INSTALL_SESSION error',
@@ -453,6 +471,155 @@ void main() {
     expect(handled, 1);
     expect(backend.reports.single.status, 'failed');
     expect(backend.reports.single.error, contains('CORE_E_INSTALL_APK_MISSING'));
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 点击安装无响应回归（failing-first）：启动系统安装器 Intent 不是"安装完成"。
+  // 平台分支只允许 `launched`；核心行保持 pending，由 install_events 或
+  // deadline 送达终端结果。绝不在 Intent 启动时谎报 installed。
+  // ───────────────────────────────────────────────────────────────────────────
+  group('platform launch is honest about the install result', () {
+    test('platform intent launch reports NO terminal status', () async {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      final launches = <String>[];
+      InstallManager.appInstallerForTest = (path) async => launches.add(path);
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result = await manager.installTask('task-1', apk.path);
+
+      expect(result.$1, InstallOutcome.launched);
+      expect(launches, <String>[apk.path]);
+      expect(
+        backend.reports,
+        isEmpty,
+        reason: 'launching the installer intent must report no terminal status',
+      );
+    });
+
+    test('a terminal install event after a launch produces the matching report',
+        () async {
+      final controller = StreamController<Object?>();
+      addTearDown(controller.close);
+      InstallManager.installEventsStreamForTest = controller.stream;
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+      manager.startEventBridge();
+      addTearDown(manager.stopEventBridge);
+
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+
+      final launched = await manager.installTask('task-1', apk.path);
+      expect(launched.$1, InstallOutcome.launched);
+      expect(backend.reports, isEmpty, reason: 'no terminal report at launch');
+
+      controller.add(<String, Object?>{
+        'sessionId': 'session-1',
+        'packageName': 'com.example.app',
+        'status': 'installed',
+        'method': 'platform',
+        'installedVersion': '1.2.3',
+        'error': null,
+      });
+      await pumpEventQueue();
+
+      expect(backend.reports, hasLength(1));
+      expect(backend.reports.single.status, 'installed');
+      expect(backend.reports.single.sessionId, 'session-1');
+    });
+
+    for (final terminal in <String>['denied', 'failed', 'timeout']) {
+      test('a terminal install event ($terminal) is reported verbatim',
+          () async {
+        final controller = StreamController<Object?>();
+        addTearDown(controller.close);
+        InstallManager.installEventsStreamForTest = controller.stream;
+        final manager = InstallManager.instance
+          ..setShizukuStateForTest(binder: true, permission: true)
+          ..setIsAndroidForTest(true);
+        manager.startEventBridge();
+        addTearDown(manager.stopEventBridge);
+
+        controller.add(<String, Object?>{
+          'sessionId': 'session-1',
+          'packageName': 'com.example.app',
+          'status': terminal,
+          'method': 'platform',
+          'installedVersion': null,
+          'error': 'CORE_E_INSTALL_$terminal',
+        });
+        await pumpEventQueue();
+
+        expect(backend.reports.single.status, terminal);
+        expect(backend.reports.single.error, 'CORE_E_INSTALL_$terminal');
+      });
+    }
+
+    test('no install event within the deadline reports timeout', () {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installPollInterval = const Duration(milliseconds: 10);
+      InstallManager.installPendingDeadline = const Duration(milliseconds: 50);
+      InstallManager.installPollTimeout = const Duration(seconds: 5);
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason: 'a pending row with no event must time out at the deadline',
+      );
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        isEmpty,
+        reason: 'a timeout must never be reported as installed',
+      );
+    });
+
+    test('a second tap on a still-pending row re-executes the install', () async {
+      backend.start = InstallStart(
+        record: _record(),
+        request: _request(method: 'platform', apkPath: apk.path),
+      );
+      final launches = <String>[];
+      InstallManager.appInstallerForTest = (path) async => launches.add(path);
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final first = await manager.installTask('task-1', apk.path);
+      final second = await manager.installTask('task-1', apk.path);
+
+      expect(first.$1, InstallOutcome.launched);
+      expect(second.$1, InstallOutcome.launched);
+      expect(
+        launches,
+        <String>[apk.path, apk.path],
+        reason: 'a still-pending row must re-execute, not silently no-op',
+      );
+      expect(backend.reports, isEmpty,
+          reason: 'neither tap may claim a terminal status at launch');
+    });
   });
 
   group('apk import path materialisation', () {

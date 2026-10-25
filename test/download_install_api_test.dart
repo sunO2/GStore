@@ -297,24 +297,25 @@ class _RecordingInstallManager implements InstallManager {
   String? lastModuleTaskId;
   String? lastInstallApkPath;
 
-  /// [installApk] 的返回值（默认成功）。
-  (bool, InstallMethod) installApkResult = (true, InstallMethod.system);
+  /// [installApk] 的返回值（默认：仅发起系统安装器，未确认安装）。
+  (InstallOutcome, InstallMethod) installApkResult =
+      (InstallOutcome.launched, InstallMethod.system);
 
   /// 非空时 [installApk] 抛出该异常（用于模拟核心类型化失败）。
   Object? installApkError;
 
   @override
-  Future<(bool, InstallMethod)> installTask(
+  Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
     installTaskCalls++;
     lastModuleTaskId = moduleTaskId;
-    return (true, InstallMethod.shizuku);
+    return (InstallOutcome.installed, InstallMethod.shizuku);
   }
 
   @override
-  Future<(bool, InstallMethod)> installApk(
+  Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
   }) async {
@@ -423,7 +424,7 @@ void main() {
 
       final result = await manager.installTask('task-1', apk.path);
 
-      expect(result, (true, InstallMethod.shizuku));
+      expect(result, (InstallOutcome.alreadyInstalled, InstallMethod.shizuku));
       expect(install.calls, <String>['pendingRequests', 'install:task-1']);
       expect(commands, 0, reason: 'installTask has no legacy Shizuku path');
     });
@@ -467,7 +468,7 @@ void main() {
       final uninstalled =
           await manager.managePackage('com.example.app', 'uninstall');
 
-      expect(result, (true, InstallMethod.shizuku));
+      expect(result, (InstallOutcome.alreadyInstalled, InstallMethod.shizuku));
       expect(uninstalled, isTrue);
       expect(install.calls, <String>[
         'pendingRequests',
@@ -494,7 +495,7 @@ void main() {
 
       final result = await manager.installApk('/tmp/example.apk');
 
-      expect(result.$1, isTrue);
+      expect(result.$1, InstallOutcome.alreadyInstalled);
       expect(downloads.calls, contains('list'));
       expect(install.calls, <String>['pendingRequests', 'install:7']);
       expect(commands, 0);
@@ -518,7 +519,7 @@ void main() {
 
       final result = await manager.installApk(apk.path);
 
-      expect(result, (true, InstallMethod.shizuku));
+      expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
       expect(commands, 1, reason: 'no mirrored row means the direct APK path');
       expect(install.calls, isEmpty);
       debugPrint('missing core task direct install result=$result '
@@ -544,7 +545,7 @@ void main() {
       final result =
           await manager.installApk(apk.path, moduleInstall: true);
 
-      expect(result, (true, InstallMethod.shizuku));
+      expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
       expect(commands, 1);
       expect(install.calls, isEmpty);
       debugPrint('module APK result=$result commands=$commands');
@@ -578,14 +579,14 @@ void main() {
         ..setShizukuStateForTest(binder: true, permission: true)
         ..setIsAndroidForTest(true);
 
-      late (bool, InstallMethod) result;
+      late (InstallOutcome, InstallMethod) result;
       fakeAsync((async) {
         manager.installApk('/tmp/example.apk').then((value) => result = value);
         async.flushMicrotasks();
         async.elapse(const Duration(milliseconds: 100));
       });
 
-      expect(result, (false, InstallMethod.packageInstaller));
+      expect(result, (InstallOutcome.failed, InstallMethod.packageInstaller));
       expect(install.getCalls, 2, reason: 'pending then terminal ends the pump');
       expect(install.pendingRequestsCalls, 3,
           reason: 'one recovery sweep plus one sweep per poll');
@@ -607,14 +608,14 @@ void main() {
         ..setShizukuStateForTest(binder: true, permission: true)
         ..setIsAndroidForTest(true);
 
-      late (bool, InstallMethod) result;
+      late (InstallOutcome, InstallMethod) result;
       fakeAsync((async) {
         manager.installApk('/tmp/example.apk').then((value) => result = value);
         async.flushMicrotasks();
         async.elapse(const Duration(milliseconds: 100));
       });
 
-      expect(result, (true, InstallMethod.shizuku));
+      expect(result, (InstallOutcome.alreadyInstalled, InstallMethod.shizuku));
       expect(install.calls.where((call) => call.startsWith('get:')), isEmpty);
       expect(
         install.calls.where((call) => call == 'pendingRequests'),
@@ -855,7 +856,7 @@ void main() {
     testWidgets('failed core install (false) yields a visible typed error',
         (tester) async {
       final manager = _RecordingInstallManager()
-        ..installApkResult = (false, InstallMethod.system);
+        ..installApkResult = (InstallOutcome.failed, InstallMethod.system);
       await bindFake(manager);
       await pumpHost(tester);
       final notifier = await notifierFor();
@@ -896,7 +897,7 @@ void main() {
 
     testWidgets('successful install reports success', (tester) async {
       final manager = _RecordingInstallManager()
-        ..installApkResult = (true, InstallMethod.shizuku);
+        ..installApkResult = (InstallOutcome.installed, InstallMethod.shizuku);
       await bindFake(manager);
       await pumpHost(tester);
       final notifier = await notifierFor();
@@ -907,6 +908,44 @@ void main() {
 
       expect(manager.installApkCalls, 1);
       expect(find.textContaining('安装完成'), findsWidgets);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'launching the system installer reports a truthful pending message',
+        (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkResult = (InstallOutcome.launched, InstallMethod.platform);
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 1);
+      expect(find.textContaining('已发起安装，等待系统确认'), findsWidgets,
+          reason: 'an intent launch must report the truthful pending message');
+      expect(find.textContaining('安装完成'), findsNothing,
+          reason: 'an intent launch is NOT a completed install');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an already-installed row reports 已安装, not 安装完成',
+        (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkResult =
+            (InstallOutcome.alreadyInstalled, InstallMethod.platform);
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.textContaining('已安装'), findsWidgets);
       expect(tester.takeException(), isNull);
     });
 

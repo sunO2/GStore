@@ -78,6 +78,14 @@ class InstallManager implements IInstallService {
   @visibleForTesting
   static Duration installPollTimeout = const Duration(seconds: 180);
 
+  /// 平台分支发起系统安装器后，等待终端安装事件的上限（deadline）。
+  ///
+  /// 超过即上报 [InstallReportStatus.timeout]，保证 `pending` 行不会永久挂起。
+  /// 默认 90s，明显短于核心 `InstallRules::timeout_secs`（默认 180s）的读驱动
+  /// 清扫窗口，确保由前端先给出超时结论（而不是被核心静默清成 `unknown`）。
+  @visibleForTesting
+  static Duration installPendingDeadline = const Duration(seconds: 90);
+
   /// 时钟接缝：上报 `reported_at` 用，测试注入固定值以做精确断言。
   @visibleForTesting
   static DateTime Function() clock = DateTime.now;
@@ -99,6 +107,9 @@ class InstallManager implements IInstallService {
     'timeout',
     'unknown',
   };
+
+  /// 核心的"进行中"状态：`_maybeStartInstallPoller` 只对它起轮询/截止计时。
+  static const String _pendingInstallStatus = 'pending';
 
   final Map<String, Timer> _installPollers = <String, Timer>{};
   bool _installRecoveryDone = false;
@@ -183,6 +194,12 @@ class InstallManager implements IInstallService {
         'InstallManager: install_events 已上报 '
         'sessionId=${event.sessionId} status=$status changed=${ack.changed}',
       );
+      // The launch path only reports "已发起安装，等待系统确认"; the real terminal
+      // result arrives here. Surface it once (the core reports `changed:false`
+      // for a duplicate/late event).
+      if (ack.changed) {
+        _surfaceInstallResult(status, event.packageName, event.error);
+      }
     } catch (e) {
       debugPrint('InstallManager: install_events 上报失败（忽略） - $e');
     }
@@ -255,6 +272,7 @@ class InstallManager implements IInstallService {
     installEventsStreamForTest = null;
     installPollInterval = const Duration(milliseconds: 500);
     installPollTimeout = const Duration(seconds: 180);
+    installPendingDeadline = const Duration(seconds: 90);
     clock = DateTime.now;
     _appInstaller = AppInstaller.installApk;
   }
@@ -372,7 +390,7 @@ class InstallManager implements IInstallService {
   /// flag-off legacy branch. A missing mirror row surfaces as the facade's
   /// typed [InstallCoreException] (`CORE_E_INSTALL_NOT_FOUND`); every other
   /// failure keeps the historical log-and-degrade behaviour.
-  Future<(bool, InstallMethod)> installTask(
+  Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
     String filePath,
   ) async {
@@ -380,7 +398,7 @@ class InstallManager implements IInstallService {
     return _installCoreTask(moduleTaskId, filePath);
   }
 
-  Future<(bool, InstallMethod)> _installCoreTask(
+  Future<(InstallOutcome, InstallMethod)> _installCoreTask(
     String moduleTaskId,
     String filePath,
   ) async {
@@ -392,7 +410,9 @@ class InstallManager implements IInstallService {
         // The core already settled this row: report it and DO NOT install.
         _maybeStartInstallPoller(moduleTaskId, start.record.status);
         return (
-          start.record.isInstalled,
+          start.record.isInstalled
+              ? InstallOutcome.alreadyInstalled
+              : InstallOutcome.failed,
           _mapInstallMethod(start.record.method),
         );
       }
@@ -411,15 +431,18 @@ class InstallManager implements IInstallService {
         'moduleTaskId': moduleTaskId,
         'filePath': filePath,
       });
-      return (false, InstallMethod.system);
+      return (InstallOutcome.failed, InstallMethod.system);
     }
   }
 
   /// Executes one durable [InstallRequest] and reports the terminal status.
   ///
-  /// The staged `pm install` path is unchanged (Shizuku); a failure falls back
-  /// to [AppInstaller.installApk] unless the user explicitly denied the install.
-  Future<(bool, InstallMethod)> _executeInstallRequest(
+  /// The staged `pm install` path is unchanged (Shizuku, a REAL synchronous
+  /// result). The system-installer fallback only *launches* the installer
+  /// intent: that is NOT a completed install, so it is never reported as
+  /// `installed` — the core row stays `pending` and the terminal result is
+  /// delivered by `install_events` (or [installPendingDeadline] → `timeout`).
+  Future<(InstallOutcome, InstallMethod)> _executeInstallRequest(
     InstallRequest request, {
     String? fallbackPath,
   }) async {
@@ -433,7 +456,7 @@ class InstallManager implements IInstallService {
         status: InstallReportStatus.failed,
         error: 'CORE_E_INSTALL_PLATFORM: install effects need Android',
       );
-      return (false, method);
+      return (InstallOutcome.failed, method);
     }
     if (!apkPath.endsWith('.apk') || !File(apkPath).existsSync()) {
       await _reportRequest(
@@ -441,7 +464,7 @@ class InstallManager implements IInstallService {
         status: InstallReportStatus.failed,
         error: 'CORE_E_INSTALL_APK_MISSING: $apkPath',
       );
-      return (false, method);
+      return (InstallOutcome.failed, method);
     }
 
     var ok = false;
@@ -476,9 +499,19 @@ class InstallManager implements IInstallService {
     if (!ok && status != InstallReportStatus.denied) {
       try {
         await _appInstaller(apkPath);
-        ok = true;
-        status = InstallReportStatus.installed;
-        error = null;
+        // Launching the installer intent is NOT a successful install: the user
+        // may cancel, the system may block it (unknown-sources permission), or
+        // it may fail. Do NOT report a terminal status — leaving the core row
+        // `pending` keeps `install()` idempotent-but-retryable so a second tap
+        // re-executes instead of silently succeeding (the reported
+        // "点击安装无响应"). The terminal result arrives via `install_events`,
+        // bounded by the deadline poller below.
+        _maybeStartInstallPoller(
+          request.moduleTaskId,
+          _pendingInstallStatus,
+          request: request,
+        );
+        return (InstallOutcome.launched, method);
       } catch (e) {
         status = InstallReportStatus.failed;
         error = '$e';
@@ -491,7 +524,7 @@ class InstallManager implements IInstallService {
       installedVersion: ok ? request.versionName : null,
       error: error,
     );
-    return (ok, method);
+    return (ok ? InstallOutcome.installed : InstallOutcome.failed, method);
   }
 
   Future<void> _reportRequest(
@@ -577,24 +610,57 @@ class InstallManager implements IInstallService {
     }
   }
 
-  void _maybeStartInstallPoller(String moduleTaskId, String status) {
-    if (status != 'pending' || _installPollers.containsKey(moduleTaskId)) {
+  /// Starts (once per module task) the pending-install watcher.
+  ///
+  /// Two jobs, one timer:
+  /// 1. Poll the core row so a terminal result delivered out-of-band
+  ///    (`install_events` → [reportResult]) ends the watcher.
+  /// 2. Enforce a DEADLINE: when [installPendingDeadline] elapses with the row
+  ///    still `pending`, report [InstallReportStatus.timeout] for [request].
+  ///    This is the only mechanism guaranteeing a `pending` row cannot hang
+  ///    forever (a launch that never yields an event still terminates).
+  ///
+  /// `installPollTimeout` remains the outer hard cap: the effective deadline is
+  /// the smaller of the two, so a misconfigured deadline still terminates.
+  void _maybeStartInstallPoller(
+    String moduleTaskId,
+    String status, {
+    InstallRequest? request,
+  }) {
+    if (status != _pendingInstallStatus ||
+        _installPollers.containsKey(moduleTaskId)) {
       return;
     }
-    final intervalMs = installPollInterval.inMilliseconds;
-    final maxTicks = intervalMs <= 0
-        ? 0
-        : installPollTimeout.inMilliseconds ~/ intervalMs;
+    final interval = installPollInterval;
+    if (interval <= Duration.zero) return;
+    final deadline = installPendingDeadline < installPollTimeout
+        ? installPendingDeadline
+        : installPollTimeout;
+    final maxTicks = deadline.inMilliseconds ~/ interval.inMilliseconds;
     var ticks = 0;
     late final Timer timer;
-    timer = Timer.periodic(installPollInterval, (t) {
+    timer = Timer.periodic(interval, (t) {
       ticks++;
       if (ticks > maxTicks) {
         t.cancel();
         _installPollers.remove(moduleTaskId);
-        appLog.error('InstallManager: 核心安装结果轮询超时', data: {
+        appLog.error('InstallManager: 安装结果等待超时（deadline）', data: {
           'moduleTaskId': moduleTaskId,
+          'deadlineMs': deadline.inMilliseconds,
         });
+        if (request != null) {
+          unawaited(_reportRequest(
+            request,
+            status: InstallReportStatus.timeout,
+            error: 'CORE_E_INSTALL_TIMEOUT: no install event within '
+                '${deadline.inSeconds}s',
+          ));
+          _surfaceInstallResult(
+            InstallReportStatus.timeout,
+            request.packageName,
+            null,
+          );
+        }
         return;
       }
       unawaited(_pollInstallOnce(moduleTaskId, t));
@@ -621,6 +687,36 @@ class InstallManager implements IInstallService {
       appLog.error('InstallManager: 核心安装结果轮询失败 - $e', data: {
         'moduleTaskId': moduleTaskId,
       });
+    }
+  }
+
+  /// Surfaces a terminal install result to the user.
+  ///
+  /// The download page's `installApp` only reports the immediate launch
+  /// ("已发起安装，等待系统确认"); the real terminal result arrives later through
+  /// the event bridge or the deadline, and is shown here so it is never
+  /// swallowed. [AppDialogs] no-ops when no `ScaffoldMessenger` is mounted, so
+  /// this is safe in tests and headless paths.
+  void _surfaceInstallResult(String status, String? appName, String? error) {
+    final name = (appName == null || appName.isEmpty) ? '应用' : appName;
+    switch (status) {
+      case InstallReportStatus.installed:
+        AppDialogs.showSuccess('$name 安装完成');
+      case InstallReportStatus.denied:
+        AppDialogs.showWarning(
+          '$name 安装被拒绝：请在系统设置中允许「安装未知应用」后重试',
+          title: '安装未完成',
+        );
+      case InstallReportStatus.timeout:
+        AppDialogs.showWarning('$name 安装超时，请重试', title: '安装未完成');
+      case InstallReportStatus.failed:
+        AppDialogs.showError(
+          error == null || error.isEmpty ? '$name 安装失败' : '$name 安装失败：$error',
+          title: '安装失败',
+        );
+      default:
+        // Non-terminal status: no user-visible message.
+        break;
     }
   }
 
@@ -656,8 +752,8 @@ class InstallManager implements IInstallService {
   ///
   /// [moduleInstall] is retained only for call-site source compatibility; the
   /// split no longer depends on it and the parameter is intentionally unused.
-  /// 返回 (是否成功, 使用的安装方式)
-  Future<(bool, InstallMethod)> installApk(
+  /// 返回 ([InstallOutcome], 使用的安装方式)
+  Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
   }) async {
@@ -673,13 +769,15 @@ class InstallManager implements IInstallService {
   /// Deliberately NOT a legacy core-state writer: it never creates or mutates a
   /// core row, so it is not guarded by `LegacyWriteGuard` (after the cutover the
   /// `install` marker is armed and a guard here would break manual installs).
-  Future<(bool, InstallMethod)> _installApkDirect(String filePath) async {
+  Future<(InstallOutcome, InstallMethod)> _installApkDirect(
+    String filePath,
+  ) async {
     if (!_isAndroid || !filePath.endsWith('.apk')) {
       appLog.error('InstallManager: 直接安装不可用（平台/扩展名）', data: {
         'filePath': filePath,
         'isAndroid': _isAndroid,
       });
-      return (false, _preferredMethod);
+      return (InstallOutcome.failed, _preferredMethod);
     }
 
     final file = File(filePath);
@@ -687,7 +785,7 @@ class InstallManager implements IInstallService {
       appLog.error('InstallManager: 直接安装的 APK 不存在', data: {
         'filePath': filePath,
       });
-      return (false, _preferredMethod);
+      return (InstallOutcome.failed, _preferredMethod);
     }
 
     // 尝试 Shizuku 静默安装（未检测时先检测）
@@ -702,7 +800,7 @@ class InstallManager implements IInstallService {
         final result = await _commandRunner(_stageAndInstallCommand(filePath));
         if (isPmSuccess(result)) {
           appLog.info('InstallManager: Shizuku 静默安装成功');
-          return (true, InstallMethod.shizuku);
+          return (InstallOutcome.installed, InstallMethod.shizuku);
         }
         if (_isUserRejected(result)) {
           // 用户明确拒绝安装：不再回退系统安装
@@ -710,7 +808,7 @@ class InstallManager implements IInstallService {
             'result': result,
             'filePath': filePath,
           });
-          return (false, InstallMethod.shizuku);
+          return (InstallOutcome.failed, InstallMethod.shizuku);
         }
         // 失败：记录完整输出（pm 的 Failure [...] 即失败原因），落入回退系统安装
         appLog.error('InstallManager: Shizuku 静默安装失败，回退系统安装', data: {
@@ -728,13 +826,13 @@ class InstallManager implements IInstallService {
       }
     }
 
-    // 回退系统安装
+    // 回退系统安装：仅"发起"系统安装器 Intent，真正的结果由系统界面决定。
     try {
       await AppInstaller.installApk(filePath);
-      return (true, InstallMethod.system);
+      return (InstallOutcome.launched, InstallMethod.system);
     } catch (e) {
       appLog.error('InstallManager: 系统安装失败 - $e');
-      return (false, InstallMethod.system);
+      return (InstallOutcome.failed, InstallMethod.system);
     }
   }
 

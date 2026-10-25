@@ -231,31 +231,33 @@ void main() {
         final result = await InstallManager.instance.installApk(tempApk.path);
 
         // 回归点：此前 result != null 判定会把 Failure 误判为 (true, shizuku)
-        expect(result, isNot((true, InstallMethod.shizuku)));
+        expect(result, isNot((InstallOutcome.installed, InstallMethod.shizuku)));
         // 已落入回退系统安装路径（测试宿主非 Android，AppInstaller no-op 返回成功）
         expect(result.$2, InstallMethod.system);
+        // 启动系统安装器 Intent 绝不等于"已安装"：只允许 launched。
+        expect(result.$1, InstallOutcome.launched);
       });
 
-      test('runCommand 返回 Success → (true, shizuku)', () async {
+      test('runCommand 返回 Success → (installed, shizuku)', () async {
         fakeApi.runResult = 'Success';
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, (true, InstallMethod.shizuku));
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
       });
 
       test('runCommand 返回 null → 落入回退系统安装，不误判成功', () async {
         fakeApi.runResult = null;
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, isNot((true, InstallMethod.shizuku)));
+        expect(result, isNot((InstallOutcome.installed, InstallMethod.shizuku)));
         expect(result.$2, InstallMethod.system);
       });
 
-      test('非 Android 平台 → 提前返回 (false, preferredMethod)', () async {
+      test('非 Android 平台 → 提前返回 (failed, preferredMethod)', () async {
         InstallManager.instance.setIsAndroidForTest(false);
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, (false, InstallMethod.system));
+        expect(result, (InstallOutcome.failed, InstallMethod.system));
         expect(fakeApi.commands, isEmpty);
       });
 
@@ -299,7 +301,7 @@ void main() {
 
         final result = await manager.installApk(tempApk.path);
 
-        expect(result, (true, InstallMethod.shizuku));
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
         expect(install.calls, isEmpty,
             reason: 'a direct APK install must create no core state');
         expect(fakeApi.commands, hasLength(1));
@@ -318,7 +320,7 @@ void main() {
 
         final result = await manager.installApk(tempApk.path);
 
-        expect(result, (true, InstallMethod.shizuku));
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
         expect(install.calls, isEmpty);
         expect(fakeApi.commands, hasLength(1));
       });
