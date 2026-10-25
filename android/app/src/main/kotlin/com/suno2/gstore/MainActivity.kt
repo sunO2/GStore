@@ -124,6 +124,10 @@ class MainActivity : FlutterActivity() {
         // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供
         // `gstore/platform.readFrameMetrics` 读取。幂等；失败静默。
         FrameMetricsCollector.attach(this)
+        // 高刷新率（120Hz 等）：Surface 在后台恢复后可能重建，重新应用设备支持的
+        // 最高 fps（幂等、best-effort；不支持 / 异常一律静默，绝不影响前台恢复）。
+        runCatching { DisplayRefreshChannel.applyHighestRefreshRate(this) }
+            .onFailure { Log.w(TAG, "高刷新率应用失败（忽略）: ${it.message}") }
     }
 
     override fun onPause() {
@@ -167,6 +171,9 @@ class MainActivity : FlutterActivity() {
         BatteryChannel.register(flutterEngine, applicationContext)
         // 平台能力 / 通知 / 安装终端事件：Dart 侧的行为入口（替代已删除的 JNI 桥）。
         PlatformChannel.register(flutterEngine.dartExecutor.binaryMessenger)
+        // 高刷新率请求通道：Dart 启动时调用，读设备支持模式并应用最高 fps
+        // （120Hz 等）。不新增依赖 / 权限，逻辑全在 DisplayRefreshChannel。
+        DisplayRefreshChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
         NotificationBridge.register(flutterEngine.dartExecutor.binaryMessenger)
         registerInstallEvents(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->

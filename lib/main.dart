@@ -184,6 +184,28 @@ void _startBatteryHistoryRecorder() {
   }
 }
 
+/// 请求设备显示支持的最高刷新率（120Hz / 90Hz / 144Hz 等）。
+///
+/// 经 Android 平台通道 `gstore/display_refresh` 调用原生
+/// [DisplayRefreshChannel]：读 `Display.getSupportedModes()` 选最高 fps 模式，
+/// 经 `preferredDisplayModeId` + `Surface.setFrameRate` 应用。非 Android /
+/// 通道缺失 / 设备不支持一律静默降级（返回 `null` 或抛错都忽略），
+/// 绝不阻塞或崩溃启动。幂等：可重复调用。
+Future<void> _applyHighestRefreshRate() async {
+  if (!Platform.isAndroid) return;
+  try {
+    const channel = MethodChannel('gstore/display_refresh');
+    final result = await channel.invokeMethod<dynamic>('applyHighestRefreshRate');
+    appLog.info('高刷新率：已请求设备最高刷新率', data: {
+      'result': result?.toString() ?? 'null',
+    });
+  } catch (e) {
+    appLog.warning('高刷新率：请求失败（已忽略，不影响启动）', data: {
+      'error': e.toString(),
+    });
+  }
+}
+
 /// llm 大体积 arm64 模块的安装确认处理（[ModuleInstallPolicy.confirm]）。
 ///
 /// 经统一底部弹层 [AppDialogs.showConfirmSheet] 呈现（GStore 设计规范：
@@ -267,6 +289,10 @@ Future<void> _initModuleManager(Stopwatch sw) async {
 
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 高刷新率（120Hz 等）：请求设备显示支持的最高 fps（见 _applyHighestRefreshRate）。
+  // 放在启动最前：越早生效，首帧即可跑在高刷；失败静默，绝不影响启动。
+  await _applyHighestRefreshRate();
 
   // 调试专用核心冒烟（F3 真机 QA）：仅当构建带
   // `--dart-define=GSTORE_CORE_SMOKE=true` 且 kDebugMode 时执行，正常启动
