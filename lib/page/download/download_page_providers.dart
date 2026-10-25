@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show compute, debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
@@ -87,14 +88,31 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   DownloadManagerNotifier({this.appInfoDB});
 
-  /// 各任务 watch 订阅（service.watch(task.id) 推送 DownloadTask 到 state）
-  final Map<int, StreamSubscription<DownloadTask>> _watchSubs = {};
-
+  /// 单一「列表级」watch 订阅（service.watchAll()）。
+  ///
+  /// 历史（操作卡顿根因）：曾对每个任务各建一条 `service.watch(id)` 订阅。内核的
+  /// `watchAll` 是**每条订阅一个** 500 ms 轮询线程，且每次轮询都跑一遍全量
+  /// `reconcile()` + `list_core()`（见 `rust/gstore_host/src/bridge.rs`
+  /// `DownloadApi::watch_all` 与 `download_host.rs` `refresh_and_list`）。
+  /// N 个任务 → N 条线程、N 份全量 sweep；而 `watch(id)` 只是 `watchAll()` 的
+  /// 按 id 过滤，于是每条线程都把全部变更行回灌 UI isolate → 每 tick 有
+  /// N×变更数 次事件，每次都整体替换 `state` → 列表反复重建 → 卡顿。
+  /// 现改为**一条** `watchAll()` 订阅，事件按任务扇出进 state；重试/复活类动作
+  /// 按需重建这一条订阅（拿到全新的内核 watch 状态，见 [_resetWatchSubscription]）。
+  StreamSubscription<DownloadTask>? _watchSub;
 
   /// watch 关闭/出错后的延迟重载（debounce，防 onDone 风暴）
   Timer? _reloadTimer;
 
   IDownloadService? _service;
+
+  /// loadTasks 合并：进行中再来的请求只标记一次待跑，避免 watch 首帧 + 动作刷新
+  /// 叠加成重载风暴。
+  bool _loadInFlight = false;
+  bool _reloadPending = false;
+
+  /// `_refreshMissingFiles` 上次扫描的「已完成任务签名」；未变化则跳过整轮扫描。
+  String? _missingScanKey;
 
   /// 应用信息并发加载中集合（防同一应用重复查询）
   final Set<String> _appInfoLoading = {};
@@ -103,10 +121,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   DownloadPageState build() {
     ref.onDispose(() {
       _reloadTimer?.cancel();
-      for (final sub in _watchSubs.values) {
-        sub.cancel();
-      }
-      _watchSubs.clear();
+      _watchSub?.cancel();
+      _watchSub = null;
     });
     return const DownloadPageState();
   }
@@ -114,6 +130,9 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 页面挂载后加载任务（view initState 调用，等价原 onReady）。
   Future<void> load() async {
     _service = ModuleManager.instance.get<IDownloadService>();
+    // 页面每次挂载都强制重扫「已完成文件是否存在」：缓存管理页等外部删除后
+    // 回到本页要能立刻显示「已删除」；其后的调用再按签名跳过重复扫描。
+    _missingScanKey = null;
     await loadTasks();
   }
 
@@ -145,57 +164,85 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 从新管线仓库加载全部任务并重建分组
   Future<void> loadTasks() async {
-    List<DownloadTask> tasks;
-    try {
-      tasks = await _allTasks();
-    } catch (e) {
-      debugPrint('下载列表加载失败: $e');
+    // 合并并发加载：watch 首帧、动作后刷新、debounce 重载可能同时到达；进行中
+    // 只记一次待跑，避免叠加成重载风暴。
+    if (_loadInFlight) {
+      _reloadPending = true;
       return;
     }
-    // 按创建时间倒序（与原 DAO createTime DESC 一致）
-    tasks.sort((a, b) {
-      // 方案 B：按「最后一次开始时间」置顶（重试/重新下载会刷新它，且**跨重启保留**）；
-      // 从未开始过的回落到创建时间
-      // createdAt 是 DateTime，lastStartedAt 是毫秒 → 统一成毫秒再比
-      final ta = a.lastStartedAt > 0
-          ? a.lastStartedAt
-          : a.createdAt.millisecondsSinceEpoch;
-      final tb = b.lastStartedAt > 0
-          ? b.lastStartedAt
-          : b.createdAt.millisecondsSinceEpoch;
-      return tb.compareTo(ta);
-    });
-    // 诊断：打印排序键，用于定位"继续任务被置顶"。
-    // last==created → 继续没有改时间（该任务本来就在最前）；
-    // last> created → 有路径在刷新"最后开始时间"，据此就能定位。
-    debugPrint('下载排序键: ${tasks.take(6).map((t) => '#${t.id} last=${t.lastStartedAt} '
-        'created=${t.createdAt.millisecondsSinceEpoch} ${t.status.name}').join(' | ')}');
-    _buildGroups(tasks);
-    _resubscribeWatches(tasks);
-    // 预取应用信息（异步，不阻塞 UI）
-    unawaited(_prefetchAppInfos(state.latestGroups));
-    // 异步核对已完成任务的文件是否仍存在（外部删除后更新缺失标记）
-    unawaited(_refreshMissingFiles(tasks));
+    _loadInFlight = true;
+    try {
+      List<DownloadTask> tasks;
+      try {
+        tasks = await _allTasks();
+      } catch (e) {
+        debugPrint('下载列表加载失败: $e');
+        return;
+      }
+      // 按创建时间倒序（与原 DAO createTime DESC 一致）
+      tasks.sort((a, b) {
+        // 方案 B：按「最后一次开始时间」置顶（重试/重新下载会刷新它，且**跨重启保留**）；
+        // 从未开始过的回落到创建时间
+        // createdAt 是 DateTime，lastStartedAt 是毫秒 → 统一成毫秒再比
+        final ta = a.lastStartedAt > 0
+            ? a.lastStartedAt
+            : a.createdAt.millisecondsSinceEpoch;
+        final tb = b.lastStartedAt > 0
+            ? b.lastStartedAt
+            : b.createdAt.millisecondsSinceEpoch;
+        return tb.compareTo(ta);
+      });
+      // 诊断：打印排序键，用于定位"继续任务被置顶"。
+      // last==created → 继续没有改时间（该任务本来就在最前）；
+      // last> created → 有路径在刷新"最后开始时间"，据此就能定位。
+      debugPrint('下载排序键: ${tasks.take(6).map((t) => '#${t.id} last=${t.lastStartedAt} '
+          'created=${t.createdAt.millisecondsSinceEpoch} ${t.status.name}').join(' | ')}');
+      _buildGroups(tasks);
+      _ensureWatchSubscription();
+      // 预取应用信息（异步，不阻塞 UI）
+      unawaited(_prefetchAppInfos(state.latestGroups));
+      // 异步核对已完成任务的文件是否仍存在（外部删除后更新缺失标记）
+      unawaited(_refreshMissingFiles(tasks));
+    } finally {
+      _loadInFlight = false;
+      if (_reloadPending) {
+        _reloadPending = false;
+        unawaited(loadTasks());
+      }
+    }
   }
 
   /// 检查已完成任务的主文件是否仍存在；缺失的记入 [missingFileIds]。
+  ///
+  /// 磁盘扫描（每个已完成任务一次 `File.exists`）在独立 isolate 里批量执行，
+  /// 不在 UI isolate 上堆叠回调；且当「已完成任务签名」(id + 路径) 与上次一致
+  /// 时整轮跳过，避免每次 loadTasks 都重扫磁盘。
   Future<void> _refreshMissingFiles(List<DownloadTask> tasks) async {
-    final missing = <int>{};
-    final checks = <Future<void>>[];
+    final completed = <DownloadTask>[];
     for (final t in tasks) {
-      final id = t.id;
-      if (id == null || t.status != DownloadStatusEnum.completed) continue;
-      checks.add(() async {
-        try {
-          final file = File(t.filePath);
-          if (!await file.exists()) missing.add(id);
-        } catch (_) {
-          missing.add(id);
-        }
-      }());
+      if (t.id != null && t.status == DownloadStatusEnum.completed) {
+        completed.add(t);
+      }
     }
-    await Future.wait(checks);
-    // 仅标记 completed 的缺失任务
+    // 变更签名：已完成任务的 (id, filePath) 集合。
+    final key =
+        (completed.map((t) => '${t.id}:${t.filePath}').toList()..sort()).join('|');
+    if (key == _missingScanKey) return;
+    _missingScanKey = key;
+
+    if (completed.isEmpty) {
+      if (state.missingFileIds.isNotEmpty) {
+        state = state.copyWith(missingFileIds: const {});
+      }
+      return;
+    }
+
+    final entries = completed
+        .map((t) => (t.id!, t.filePath))
+        .toList(growable: false);
+    // 磁盘扫描在独立 isolate 批量执行（生产默认），避免 UI isolate 上逐任务
+    // File.exists 回调堆叠。测试可注入同步实现，去掉 isolate 调度时序依赖。
+    final missing = await DownloadManagerNotifier.scanMissingFiles(entries);
     final prev = state.missingFileIds;
     final same = prev.length == missing.length && prev.containsAll(missing);
     if (!same) {
@@ -222,7 +269,10 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     }
   }
 
-  /// 由全量任务构建分组并发布
+  /// 由全量任务构建分组并发布。
+  ///
+  /// 数据未变化时**不替换 state**：Riverpod 只在 state 引用变化时通知，整体替换
+  /// 会让列表每 tick 重建一次。这里先比较分组，内容一致直接返回。
   void _buildGroups(List<DownloadTask> tasks) {
     var map = <String, List<DownloadTask>>{};
     for (var item in tasks) {
@@ -231,52 +281,45 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       list.add(item);
     }
     final latest = List<List<DownloadTask>>.from(map.values);
+    if (_sameGroups(latest, state.latestGroups)) return;
     state = state.copyWith(
       latestGroups: latest,
       groups: _applyFilter(latest, state.filter),
     );
   }
 
-  /// 为每个任务订阅 service.watch(id)，推送更新进 state
-  void _resubscribeWatches(List<DownloadTask> tasks) {
-    final ids = tasks.map((t) => t.id).whereType<int>().toSet();
-    // 取消已不存在任务的订阅
-    _watchSubs.removeWhere((id, sub) {
-      if (!ids.contains(id)) {
-        sub.cancel();
-        return true;
-      }
-      return false;
-    });
-    for (final id in ids) {
-      if (_watchSubs.containsKey(id)) continue;
-      final service = _service;
-      if (service == null) continue;
-      late StreamSubscription<DownloadTask> sub;
-      sub = service.watch(id).listen(
-            (task) => _onTaskUpdate(task),
-            onError: (_) {
-              _watchSubs.remove(id)?.cancel();
-              _scheduleReload();
-            },
-            onDone: () {
-              _watchSubs.remove(id)?.cancel();
-              _scheduleReload();
-            },
-          );
-      _watchSubs[id] = sub;
-    }
+  /// 建立**唯一**的列表级 watch 订阅（`service.watchAll()`）。
+  ///
+  /// 幂等：已订阅则直接返回。重试/复活类动作需要「全新订阅」以拿到全新的内核
+  /// watch 终态闩锁时，先 [_resetWatchSubscription] 再经 [loadTasks] 重建。
+  void _ensureWatchSubscription() {
+    if (_watchSub != null) return;
+    final service = _service;
+    if (service == null) return;
+    _watchSub = service.watchAll().listen(
+          _onTaskUpdate,
+          onError: (_) {
+            _resetWatchSubscription();
+            _scheduleReload();
+          },
+          onDone: () {
+            _resetWatchSubscription();
+            _scheduleReload();
+          },
+        );
   }
 
-  /// 丢弃某任务的 watch 订阅，使下一次 [loadTasks] 重新建立订阅。
+  /// 取消当前列表级订阅，使下一次 [loadTasks] 重建一条全新的订阅。
   ///
-  /// 内核的 watch 变更检测对**每个订阅**按 id 记住「终态只发一次」：一个
-  /// 曾处于 failed/completed 等终态的任务被 retry/restart 复活后，复用的旧
-  /// 订阅永远不会再推送它的新进度/完成（见
-  /// `rust/gstore_host/src/download_host.rs` 的 `DownloadWatchState`）。
-  /// 因此复活类动作必须换一条全新订阅，否则列表会一直停在旧状态。
-  void _dropWatch(int id) {
-    _watchSubs.remove(id)?.cancel();
+  /// 内核的 watch 变更检测对**每条订阅**按 id 记住「终态只发一次」：一个曾处于
+  /// failed/completed 等终态的任务被 retry/restart 复活后，复用的旧订阅永远不会
+  /// 再推送它的新进度/完成（见 `rust/gstore_host/src/download_host.rs` 的
+  /// `DownloadWatchState`）。因此复活类动作必须换一条全新订阅，否则列表会一直
+  /// 停在旧状态。改为单订阅后，重建整条订阅即重置了全部任务的终态闩锁。
+  void _resetWatchSubscription() {
+    final sub = _watchSub;
+    _watchSub = null;
+    if (sub != null) unawaited(sub.cancel());
   }
 
   /// 单个任务状态更新：替换到分组中并刷新 UI
@@ -288,6 +331,9 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       final group = latest[i];
       for (var j = 0; j < group.length; j++) {
         if (group[j].id == id) {
+          // 内容未变 → 不替换 state（不触发列表重建）。watch 首帧会重放全部
+          // 变更行，其中多数与本地一致，跳过它们避免整列表重建。
+          if (_sameTask(group[j], task)) return;
           final newGroup = List.of(group); // 复制内层，避免原地修改
           newGroup[j] = task;
           final nextLatest = List.of(latest);
@@ -300,7 +346,9 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
           // 清除旧的"已删除"标记
           if (task.status == DownloadStatusEnum.completed) {
             unawaited(_checkSingleFilePresence(task));
-          } else {
+          } else if (state.missingFileIds.contains(id)) {
+            // 仅当该任务此前被标记为「文件缺失」时才需要清理；否则不替换
+            // missingFileIds（否则每次进度更新都会多触发一次 state 通知/重建）。
             final nextMissing = Set<int>.from(state.missingFileIds)..remove(id);
             state = state.copyWith(missingFileIds: nextMissing);
           }
@@ -392,6 +440,20 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 避免测试必须依赖真机 / 平台通道。
   @visibleForTesting
   static bool Function() isAndroidPlatform = () => Platform.isAndroid;
+
+  /// 磁盘存在性扫描接缝：生产在独立 isolate（[compute]）批量扫描已完成任务文件，
+  /// 避免 UI isolate 上逐任务 `File.exists` 回调堆叠；测试注入同步实现以去掉
+  /// isolate 调度时序依赖。
+  @visibleForTesting
+  static Future<Set<int>> Function(List<(int, String)> entries) scanMissingFiles =
+      (entries) async {
+    try {
+      return await compute(_scanMissingFiles, entries);
+    } catch (_) {
+      // 受限环境 isolate 不可用 → 回落到 UI isolate 单批扫描。
+      return _scanMissingFiles(entries);
+    }
+  };
 
   /// 安装应用（核心安装域优先，回退系统安装）。
   ///
@@ -487,7 +549,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       return;
     }
     // 复活的终态任务必须换新订阅，否则旧订阅的终态闩锁会吞掉后续进度/完成。
-    _dropWatch(id);
+    _resetWatchSubscription();
     await loadTasks();
   }
 
@@ -502,7 +564,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     if (!await _runServiceAction('重新下载', (service) => service.restart(id))) {
       return;
     }
-    _dropWatch(id);
+    _resetWatchSubscription();
     await loadTasks();
   }
 
@@ -603,13 +665,16 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         )) {
           continue;
         }
-        // 失败任务属于终态：换新订阅，避免旧订阅的终态闩锁吞掉新进度。
-        _dropWatch(id);
+        // 失败任务属于终态：批量重试后统一换新订阅（见下方 _resetWatchSubscription），
+        // 避免旧订阅的终态闩锁吞掉新进度。
         retried = true;
       }
     }
     // 批量重试后必须重载：失败任务在列表里是终态，watch 不会主动刷新它们。
-    if (retried) await loadTasks();
+    if (retried) {
+      _resetWatchSubscription();
+      await loadTasks();
+    }
   }
 
   /// 删除单个下载记录
@@ -890,6 +955,76 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       groups: List.of(_applyFilter(state.latestGroups, filter)),
     );
   }
+}
+
+/// 批量扫描已完成任务的主文件是否存在，返回缺失文件的 id 集合。
+///
+/// 顶层函数：供 [compute] 在独立 isolate 中执行，避免 UI isolate 上逐任务
+/// `File.exists` 回调堆叠。
+Future<Set<int>> _scanMissingFiles(List<(int, String)> entries) async {
+  final missing = <int>{};
+  for (final (id, path) in entries) {
+    try {
+      if (!await File(path).exists()) missing.add(id);
+    } catch (_) {
+      missing.add(id);
+    }
+  }
+  return missing;
+}
+
+/// 两个任务在「列表可见字段」上是否等价（用于避免无变化时重建列表）。
+///
+/// 刻意忽略 createdAt / updatedAt：它们变化不改变列表外观，若纳入比较会让
+/// 内核每 tick 的 updated_at 刷新都触发一次整体重建。
+bool _sameTask(DownloadTask a, DownloadTask b) {
+  if (identical(a, b)) return true;
+  if (a.id != b.id ||
+      a.appId != b.appId ||
+      a.appName != b.appName ||
+      a.version != b.version ||
+      a.fileName != b.fileName ||
+      a.url != b.url ||
+      a.filePath != b.filePath ||
+      a.total != b.total ||
+      a.received != b.received ||
+      a.status != b.status ||
+      a.speedBps != b.speedBps ||
+      a.etaSec != b.etaSec ||
+      a.error != b.error ||
+      a.installAfterDownload != b.installAfterDownload ||
+      a.lastStartedAt != b.lastStartedAt) {
+    return false;
+  }
+  final sa = a.segments;
+  final sb = b.segments;
+  if (sa == null || sb == null) return sa == sb;
+  if (sa.length != sb.length) return false;
+  for (var i = 0; i < sa.length; i++) {
+    final x = sa[i];
+    final y = sb[i];
+    if (x.index != y.index ||
+        x.startByte != y.startByte ||
+        x.endByte != y.endByte ||
+        x.received != y.received) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// 两组分组在「列表可见字段」上是否等价。
+bool _sameGroups(List<List<DownloadTask>> a, List<List<DownloadTask>> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    final ga = a[i];
+    final gb = b[i];
+    if (ga.length != gb.length) return false;
+    for (var j = 0; j < ga.length; j++) {
+      if (!_sameTask(ga[j], gb[j])) return false;
+    }
+  }
+  return true;
 }
 
 final downloadManagerProvider =

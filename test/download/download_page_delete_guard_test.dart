@@ -39,8 +39,10 @@ import 'package:sqlite3/open.dart';
 /// records the id AND drops the row, so a post-action `loadTasks()` reflects the
 /// deletion (exactly how the core-backed list behaves).
 ///
-/// `watch(id)` returns a non-completing broadcast stream and counts how many
-/// times it was called, so tests can prove the retry path re-subscribes.
+/// `watchAll()` returns a non-completing broadcast stream and counts how many
+/// times it was called (= one core watch poll thread each), so tests can prove
+/// the panel keeps a SINGLE list-level subscription and rebuilds it on retry.
+/// `watch(id)` is still counted to prove the panel no longer subscribes per task.
 class _RecordingDownloadService implements IDownloadService {
   _RecordingDownloadService(this._tasks);
 
@@ -48,15 +50,19 @@ class _RecordingDownloadService implements IDownloadService {
   final List<int> removed = <int>[];
   final List<int> cancelled = <int>[];
   final List<int> retried = <int>[];
+  int watchAllCalls = 0;
   final Map<int, int> watchCalls = <int, int>{};
   final Map<int, StreamController<DownloadTask>> _watchers =
       <int, StreamController<DownloadTask>>{};
+  StreamController<DownloadTask>? _watchAllController;
 
   void dispose() {
     for (final controller in _watchers.values) {
       controller.close();
     }
     _watchers.clear();
+    _watchAllController?.close();
+    _watchAllController = null;
   }
 
   @override
@@ -104,7 +110,11 @@ class _RecordingDownloadService implements IDownloadService {
   }
 
   @override
-  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
+  Stream<DownloadTask> watchAll() {
+    watchAllCalls++;
+    return (_watchAllController ??= StreamController<DownloadTask>.broadcast())
+        .stream;
+  }
 
   @override
   Future<DownloadTask?> getTask(int id) async =>
@@ -325,8 +335,7 @@ void main() {
   });
 
   group('retry revives a terminal task: the watch must be re-subscribed', () {
-    test('retryDownload drops and re-creates the watch for the retried id',
-        () async {
+    test('retryDownload rebuilds the single list-level watch', () async {
       final tasks = <DownloadTask>[
         _task(1, status: DownloadStatusEnum.failed),
       ];
@@ -339,21 +348,25 @@ void main() {
       addTearDown(container.dispose);
       final notifier = container.read(downloadManagerProvider.notifier);
       await notifier.load();
-      expect(service.watchCalls[1], 1,
-          reason: 'the initial load subscribes once');
+      expect(service.watchAllCalls, 1,
+          reason: 'the initial load subscribes the list-level watch once');
+      expect(service.watchCalls, isEmpty,
+          reason: 'the panel must NOT subscribe per task');
 
       await notifier.retryDownload(tasks.first);
 
       expect(service.retried, <int>[1]);
-      expect(service.watchCalls[1], 2,
+      expect(service.watchAllCalls, 2,
           reason: 'a retried terminal task needs a FRESH subscription: the '
               'core watch emits a terminal row once per subscription and would '
-              'otherwise never report the task again');
+              'otherwise never report the task again. The single list-level '
+              'subscription is rebuilt, resetting the terminal latch.');
+      expect(service.watchCalls, isEmpty,
+          reason: 'the rebuild must stay list-level, never per task');
       expect(_visibleIds(container), <int>[1]);
     });
 
-    test('restartDownload drops and re-creates the watch for the restarted id',
-        () async {
+    test('restartDownload rebuilds the single list-level watch', () async {
       final tasks = <DownloadTask>[
         _task(1, status: DownloadStatusEnum.completed),
       ];
@@ -366,15 +379,15 @@ void main() {
       addTearDown(container.dispose);
       final notifier = container.read(downloadManagerProvider.notifier);
       await notifier.load();
-      expect(service.watchCalls[1], 1);
+      expect(service.watchAllCalls, 1);
 
       await notifier.restartDownload(tasks.first);
 
-      expect(service.watchCalls[1], 2);
+      expect(service.watchAllCalls, 2);
+      expect(service.watchCalls, isEmpty);
     });
 
-    test('retryAllFailed reloads and re-subscribes every failed task',
-        () async {
+    test('retryAllFailed reloads and rebuilds the watch exactly once', () async {
       final tasks = <DownloadTask>[
         _task(1, status: DownloadStatusEnum.failed),
         _task(2, fileName: 'b.apk', status: DownloadStatusEnum.failed),
@@ -394,10 +407,12 @@ void main() {
       await pumpEventQueue();
 
       expect(service.retried, containsAll(<int>[1, 2]));
-      expect(service.watchCalls[1], 2);
-      expect(service.watchCalls[2], 2);
-      expect(service.watchCalls[3], 1,
-          reason: 'a non-failed task must not be re-subscribed');
+      // initial load = 1, one rebuild after the batch = 2 (NOT one per failed id).
+      expect(service.watchAllCalls, 2,
+          reason: 'a batch retry rebuilds the single watch once, not per task');
+      expect(service.watchCalls, isEmpty,
+          reason: 'a non-failed task must not be re-subscribed, and nothing is '
+              'subscribed per task');
       // The refreshed list shows the revived tasks as downloading.
       expect(
         container
