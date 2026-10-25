@@ -1076,20 +1076,14 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (manager == null) return;
 
     try {
-      // Rust 脚本渠道：按关键字过滤已保存行（本地过滤，等价 JsChannel
-      // searchApps 的 getAllApps 兜底语义；不经 channel 域 facade）。
+      // Rust 脚本渠道：执行脚本自身的搜索入口（等价 JsChannel.searchApps：
+      // 先跑 searchApps，未实现则跑 getAllApps 本地过滤）。不按已保存行过滤
+      // ——新导入的包还没有 channel_apps 行，过滤会得到空结果（搜索渠道不显示）。
       final rustLane = RustScriptChannelLane.instance;
       if (rustLane.enabled && rustLane.packFor(code) != null) {
-        final apps = await rustLane.storedApps(code);
-        final kw = keyword.toLowerCase();
-        final filtered = apps
-            .where((app) =>
-                app.name.toLowerCase().contains(kw) ||
-                app.des.toLowerCase().contains(kw) ||
-                app.appId.toLowerCase().contains(kw))
-            .toList();
+        final apps = await rustLane.searchApps(code, keyword);
         state = state.copyWith(
-          channelApps: {...state.channelApps, code: filtered},
+          channelApps: {...state.channelApps, code: apps},
         );
         return;
       }

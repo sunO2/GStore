@@ -1,11 +1,13 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 
 /// Read-only, process-wide view of the Rust script-pack lane for the UI.
 ///
@@ -39,6 +41,7 @@ class RustScriptChannelLane {
   final ScriptApi? _apiOverride;
 
   List<rust_pack.ScriptPackInfo> _packs = const [];
+  Object? _loadError;
 
   ScriptApi get _api => _apiOverride ?? ScriptApi.instance;
 
@@ -47,6 +50,17 @@ class RustScriptChannelLane {
 
   /// Cached installed packs (empty while the flag is off or before refresh).
   List<rust_pack.ScriptPackInfo> get packs => List.unmodifiable(_packs);
+
+  /// Whether the last [refresh] failed to read the Rust lane.
+  ///
+  /// When this is true an empty [packs] means "unavailable", not "none
+  /// installed" — the failure must never be indistinguishable from an empty
+  /// lane. Callers that surface counts can consult this instead of silently
+  /// showing zero channels.
+  bool get hasLoadError => _loadError != null;
+
+  /// The reason the last [refresh] failed, or null when it succeeded.
+  String? get loadError => _loadError?.toString();
 
   /// Installed pack channel codes (`js_<stem>`), in the lane's key order.
   List<String> get codes =>
@@ -62,16 +76,79 @@ class RustScriptChannelLane {
 
   /// Refreshes the cache from the Rust lane. No-op (and clears the cache) while
   /// the flag is off, so the flag-off UI keeps reading only Dart channels.
+  ///
+  /// The Rust `ScriptApi.list()` reads the core `channel_packs` table and is only
+  /// valid after `ScriptApi.init()` has opened the DB. At import time that has
+  /// happened (`ScriptChannelService.importPack` initialises first), but at
+  /// STARTUP nothing has — so the lane ensures the shared service is initialised
+  /// before reading. Without this the read failed, the error was swallowed, and
+  /// an installed pack vanished on restart ("重启之后也没有了").
+  ///
+  /// Best-effort: a failure is logged at error level and recorded in
+  /// [hasLoadError]/[loadError] rather than thrown, and the previous cache is
+  /// kept — an empty result must not masquerade as "no packs installed".
   Future<void> refresh() async {
     if (!enabled) {
       _packs = const [];
+      _loadError = null;
       return;
     }
     try {
+      await ScriptChannelService.instance.ensureInitialized();
       _packs = await _api.list();
+      _loadError = null;
     } catch (error) {
+      _loadError = error;
       appLog.error('RustScriptChannelLane: 读取 Rust 脚本通道失败: $error');
     }
+  }
+
+  /// Runs the pack's search entry point and maps the result to [AppSummary].
+  ///
+  /// Mirrors `JsChannel.searchApps` for the Rust lane: it executes the script's
+  /// `searchApps` (via [ScriptApi.run], the same entry the Dart lane calls) and,
+  /// when the pack does not implement it, executes `getAllApps` and filters the
+  /// result locally. It never filters the saved `channel_apps` rows, so a freshly
+  /// imported pack (no saved rows yet) is still searchable. While the flag is off
+  /// this returns an empty list.
+  Future<List<AppSummary>> searchApps(String code, String keyword) async {
+    if (!enabled) return const [];
+    final searched = await _runAppList(code, 'searchApps', {'keyword': keyword});
+    if (searched != null) return searched;
+    // Script未实现 searchApps → 降级：跑 getAllApps 取全量后本地过滤
+    // （与 JsChannel.searchApps 同一语义）。
+    final all = await _runAppList(code, 'getAllApps', const {});
+    if (all == null) return const [];
+    final kw = keyword.toLowerCase();
+    return all
+        .where((app) =>
+            app.name.toLowerCase().contains(kw) ||
+            app.des.toLowerCase().contains(kw) ||
+            app.appId.toLowerCase().contains(kw))
+        .toList();
+  }
+
+  /// Runs [method] and maps a JSON-array result to [AppSummary]; returns null
+  /// when the script returned no array (unimplemented / failed), mirroring
+  /// `JsChannel._appsFromScript`'s "null = not implemented" contract.
+  Future<List<AppSummary>?> _runAppList(
+    String code,
+    String method,
+    Map<String, Object?> params,
+  ) async {
+    final raw = await _api.run(
+      key: code,
+      method: method,
+      paramsJson: jsonEncode(params),
+    );
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! List) return null;
+    final apps = <AppSummary>[];
+    for (final item in decoded) {
+      final app = appSummaryFromScript(item, channelKey: code);
+      if (app != null) apps.add(app);
+    }
+    return apps;
   }
 
   /// Returns the saved apps for [code] mapped to [AppSummary].
