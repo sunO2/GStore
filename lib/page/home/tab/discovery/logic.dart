@@ -15,6 +15,7 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 
+import 'search_channel.dart';
 import 'state.dart';
 import 'widgets/tag_picker_dialog.dart';
 
@@ -634,26 +635,51 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 保存搜索结果到渠道数据库（不直接入库首页）
   /// 用户需在渠道应用列表中选择"入库"才会加入首页
-  Future<bool> saveSearchToChannel(String code, AppSummary app) async {
+  ///
+  /// 返回类型化结果而非 `bool`：Rust 脚本通道（`js_*`）当前没有向 Dart 暴露
+  /// 保存 API（`ScriptApi` 无 add/save；`RustChannelFacade.addApp` 对没有 driver
+  /// 的 `js_*` 键返回 typed `not_found`），所以保存到通道包是
+  /// [SearchSaveFailed.laneUnsupported] 这一明确失败，而不是一个静默的 `false`。
+  Future<SearchSaveOutcome> saveSearchToChannel(
+    String code,
+    AppSummary app,
+  ) async {
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) {
+      appLog.error(
+          'DiscoveryNotifier: $code 由 Rust 脚本通道托管，当前无保存 API');
+      return const SearchSaveFailed(
+        SearchSaveFailed.laneUnsupported,
+        '该渠道由 Rust 脚本通道托管，暂不支持保存搜索结果',
+      );
+    }
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return false;
+    if (channelInstance == null) {
+      return const SearchSaveFailed(
+        SearchSaveFailed.channelUnavailable,
+        '渠道不可用或未注册',
+      );
+    }
     try {
       // 统一调用 IChannel.addApp（各渠道内部处理保存逻辑）
       final result = await channelInstance.addApp(app);
       if (!result.success) {
         appLog.error(
             'DiscoveryNotifier: $code 保存搜索结果失败 - ${result.error}');
-        return false;
+        return SearchSaveFailed(
+          SearchSaveFailed.writeFailed,
+          result.error ?? '保存失败',
+        );
       }
 
       // 刷新该渠道的应用列表（让保存的应用出现在渠道视图中）
       await _refreshChannelApps(code);
       // 刷新已添加应用索引（搜索入库后更新状态）
       await _updateAddedAppsIndex();
-      return true;
+      return const SearchSaved();
     } catch (e) {
       appLog.error('DiscoveryNotifier: 保存搜索结果失败 - $e');
-      return false;
+      return SearchSaveFailed(SearchSaveFailed.writeFailed, e.toString());
     }
   }
 
@@ -927,19 +953,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   /// 显示添加应用的 Bottom Sheet
   /// 直接弹出搜索框 + 渠道多选（默认 F-Droid，记忆上次选中）
   void showAddAppSheet(BuildContext context) {
-    final manager = _channelManager;
-    if (manager == null) return;
+    if (_channelManager == null) return;
 
-    // 枚举渠道 + 动态脚本渠道（channelKey 隔离），去重后过滤启用渠道。
-    final allChannels = <IChannel>[
-      ...manager.dynamicChannels,
-      ...manager.enabledChannels
-          .where((c) => !manager.dynamicChannels.contains(c)),
-    ];
-
-    // 过滤出启用的搜索渠道
-    final searchableChannels = allChannels.where((c) => c.info.enabled).toList();
-
+    // 可搜索渠道 = Dart 渠道（枚举/脚本渠道）+ Rust 脚本通道包，按 code 去重。
+    final searchableChannels = searchChannelOptions();
     if (searchableChannels.isEmpty) {
       AppDialogs.showInfo('当前没有可用的搜索渠道', title: '提示');
       return;
@@ -955,11 +972,54 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         builder: (sheetContext) => _AddAppSearchSheet(
           channels: searchableChannels,
           initialSelectedCodes: saved,
+          onSearch: searchChannelApps,
           onSaveToChannel: saveSearchToChannel,
           onSelectionChanged: _saveSelectedChannelCodes,
         ),
       );
     });
+  }
+
+  /// 搜索选择器可选渠道（Dart 渠道 + Rust 脚本通道包），按 code 去重并排序。
+  ///
+  /// Rust 脚本通道（`CoreFlags.jsChannel == true` 时 `dynamicChannels` 为空）的
+  /// 已安装通道包并入，使导入的 `js_*` 渠道在选择器里可选——与渠道列表
+  /// （[sortedChannelCodes]）用同一个真相源 [RustScriptChannelLane]。
+  /// 展示名取通道包名，缺失回退 code。Dart 渠道与通道包按 code 去重。
+  List<SearchChannelOption> searchChannelOptions() {
+    final manager = _channelManager;
+    if (manager == null) return const [];
+    final options = <String, SearchChannelOption>{};
+    for (final channel in manager.dynamicChannels) {
+      if (!channel.info.enabled) continue;
+      final code = channelCode(channel);
+      options.putIfAbsent(
+        code,
+        () => SearchChannelOption(code: code, name: channel.info.name),
+      );
+    }
+    for (final channel in manager.enabledChannels) {
+      final code = channelCode(channel);
+      options.putIfAbsent(
+        code,
+        () => SearchChannelOption(code: code, name: channel.info.name),
+      );
+    }
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled) {
+      for (final pack in rustLane.packs) {
+        options.putIfAbsent(
+          pack.key,
+          () => SearchChannelOption(
+            code: pack.key,
+            name: pack.name.isNotEmpty ? pack.name : pack.key,
+          ),
+        );
+      }
+    }
+    final result = options.values.toList()
+      ..sort((a, b) => a.code.compareTo(b.code));
+    return result;
   }
 
   /// 读取记忆的选中渠道（默认 F-Droid）
@@ -1070,33 +1130,40 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
   }
 
-  /// 在指定渠道搜索
+  /// 在指定渠道搜索并把结果写入发现页状态
   Future<void> _searchInChannel(String code, String keyword) async {
-    final manager = _channelManager;
-    if (manager == null) return;
-
+    if (_channelManager == null) return;
     try {
-      // Rust 脚本渠道：执行脚本自身的搜索入口（等价 JsChannel.searchApps：
-      // 先跑 searchApps，未实现则跑 getAllApps 本地过滤）。不按已保存行过滤
-      // ——新导入的包还没有 channel_apps 行，过滤会得到空结果（搜索渠道不显示）。
-      final rustLane = RustScriptChannelLane.instance;
-      if (rustLane.enabled && rustLane.packFor(code) != null) {
-        final apps = await rustLane.searchApps(code, keyword);
-        state = state.copyWith(
-          channelApps: {...state.channelApps, code: apps},
-        );
-        return;
-      }
-      final result =
-          await manager.searchAppsByCode(code, keyword, forceRefresh: true);
-      if (result.success && result.data != null) {
-        state = state.copyWith(
-          channelApps: {...state.channelApps, code: result.data!},
-        );
-      }
+      final apps = await searchChannelApps(code, keyword);
+      state = state.copyWith(
+        channelApps: {...state.channelApps, code: apps},
+      );
     } catch (e) {
       appLog.error('DiscoveryNotifier: 搜索 $code 失败 - $e');
     }
+  }
+
+  /// 在单个渠道搜索：Rust 脚本通道包执行脚本入口，其余走 [ChannelManager]。
+  ///
+  /// 发现页搜索栏（[_searchInChannel]）与搜索选择器（`_AddAppSearchSheet`）共用
+  /// 此路由，避免两条搜索路径的 lane 判定分叉。
+  ///
+  /// Rust 脚本渠道执行脚本自身的搜索入口（等价 JsChannel.searchApps：先跑
+  /// searchApps，未实现则跑 getAllApps 本地过滤），**不按已保存行过滤**——新导入
+  /// 的包还没有 channel_apps 行，过滤会得到空结果（搜索渠道不显示）。
+  Future<List<AppSummary>> searchChannelApps(
+    String code,
+    String keyword,
+  ) async {
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) {
+      return rustLane.searchApps(code, keyword);
+    }
+    if (_channelManager == null) return const [];
+    final result = await _channelManager!
+        .searchAppsByCode(code, keyword, forceRefresh: true);
+    if (result.success && result.data != null) return result.data!;
+    return const [];
   }
 
   /// 防抖搜索
@@ -1210,14 +1277,17 @@ final discoveryProvider = NotifierProvider.autoDispose<DiscoveryNotifier, Discov
 /// 添加应用搜索 Bottom Sheet
 /// 直接搜索，下方渠道多选（默认 F-Droid，记忆选中）
 class _AddAppSearchSheet extends StatefulWidget {
-  /// 可选搜索渠道
-  final List<IChannel> channels;
+  /// 可选搜索渠道（Dart 渠道 + Rust 脚本通道包的轻量描述）
+  final List<SearchChannelOption> channels;
 
   /// 初始选中的渠道 codes
   final List<String> initialSelectedCodes;
 
-  /// 保存到渠道回调（返回是否成功）
-  final Future<bool> Function(String code, AppSummary appInfo)
+  /// 单渠道搜索回调（发现页控制器按 code 路由到 lane / ChannelManager）
+  final Future<List<AppSummary>> Function(String code, String keyword) onSearch;
+
+  /// 保存到渠道回调（返回类型化结果）
+  final Future<SearchSaveOutcome> Function(String code, AppSummary appInfo)
       onSaveToChannel;
 
   /// 选中渠道变化回调（持久化）
@@ -1226,6 +1296,7 @@ class _AddAppSearchSheet extends StatefulWidget {
   const _AddAppSearchSheet({
     required this.channels,
     required this.initialSelectedCodes,
+    required this.onSearch,
     required this.onSaveToChannel,
     required this.onSelectionChanged,
   });
@@ -1252,11 +1323,16 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   /// 正在保存的 key
   String? _savingKey;
 
+  /// 渠道 code → 展示名（来自选择器选项；lane 通道包名为准）
+  late final Map<String, String> _channelNames = {
+    for (final option in widget.channels) option.code: option.name,
+  };
+
   @override
   void initState() {
     super.initState();
     // 初始选中 = 记忆的选中（过滤无效渠道），空则默认 fdroid
-    final validCodes = widget.channels.map(channelCode).toSet();
+    final validCodes = widget.channels.map((c) => c.code).toSet();
     final initial = widget.initialSelectedCodes.where(validCodes.contains).toSet();
     _selectedCodes = initial.isNotEmpty ? initial : {'fdroid'};
     _focusNode.requestFocus();
@@ -1304,7 +1380,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   /// 搜索所有选中渠道，聚合结果
   Future<void> _doSearch(String keyword) async {
     final channels = widget.channels
-        .where((c) => _selectedCodes.contains(channelCode(c)))
+        .where((c) => _selectedCodes.contains(c.code))
         .toList();
     if (channels.isEmpty) {
       setState(() {
@@ -1321,14 +1397,11 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
 
     final newResults = <(AppSummary, String)>[];
     for (final channel in channels) {
-      final code = channelCode(channel);
+      final code = channel.code;
       try {
-        final result = await ChannelManager.instance
-            .searchAppsByCode(code, keyword, forceRefresh: true);
-        if (result.success && result.data != null) {
-          for (final app in result.data!) {
-            newResults.add((app, code));
-          }
+        final apps = await widget.onSearch(code, keyword);
+        for (final app in apps) {
+          newResults.add((app, code));
         }
       } catch (e) {
         appLog.error('_AddAppSearchSheet: 搜索 $code 失败 - $e');
@@ -1426,7 +1499,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: widget.channels.map((channel) {
-                    final code = channelCode(channel);
+                    final code = channel.code;
                     final selected = _selectedCodes.contains(code);
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
@@ -1436,7 +1509,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                           size: 16,
                           color: selected ? scheme.onSecondaryContainer : null,
                         ),
-                        label: Text(channel.info.name),
+                        label: Text(channel.name),
                         selected: selected,
                         onSelected: (_) => _toggleChannel(code),
                         visualDensity: VisualDensity.compact,
@@ -1611,21 +1684,22 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   Future<void> _saveToChannel(String code, AppSummary app) async {
     final key = '$code:${app.appId}';
     setState(() => _savingKey = key);
-    final success = await widget.onSaveToChannel(code, app);
+    final outcome = await widget.onSaveToChannel(code, app);
     if (!mounted) return;
     setState(() {
       _savingKey = null;
-      if (success) {
-        _savedKeys.add(key);
-        AppDialogs.showSuccess(
-          '${app.name} 已保存，可到渠道列表中选择入库',
-          title: '已添加到${_channelName(code)}',
-        );
-      } else {
-        AppDialogs.showError(
-          '${app.name} 保存到${_channelName(code)}失败',
-          title: '添加失败',
-        );
+      switch (outcome) {
+        case SearchSaved():
+          _savedKeys.add(key);
+          AppDialogs.showSuccess(
+            '${app.name} 已保存，可到渠道列表中选择入库',
+            title: '已添加到${_channelName(code)}',
+          );
+        case SearchSaveFailed(:final message):
+          AppDialogs.showError(
+            '${app.name} 保存到${_channelName(code)}失败：$message',
+            title: '添加失败',
+          );
       }
     });
   }
@@ -1659,7 +1733,10 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
       case ChannelType.custom:
         return '自定义';
       case null:
-        // 脚本渠道：取渠道名，缺失回退 code
+        // 脚本渠道 / Rust 通道包：优先选择器提供的展示名（lane 包名），
+        // 其次 Dart 渠道名，缺失回退 code
+        final optionName = _channelNames[code];
+        if (optionName != null && optionName.isNotEmpty) return optionName;
         return ChannelManager.instance.getChannelByKey(code)?.info.name ?? code;
     }
   }
