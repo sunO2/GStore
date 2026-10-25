@@ -188,12 +188,16 @@ InstallRecord _record({
       sessionId: sessionId,
     );
 
-InstallRequest _request({String apkPath = '', String method = 'shizuku'}) =>
+InstallRequest _request({
+  String apkPath = '',
+  String method = 'shizuku',
+  String versionName = '1.2.3',
+}) =>
     InstallRequest(
       moduleTaskId: 'task-1',
       sessionId: 'session-1',
       packageName: 'com.example.app',
-      versionName: '1.2.3',
+      versionName: versionName,
       apkPath: apkPath,
       method: method,
       variant: const InstallVariant(
@@ -864,6 +868,189 @@ void main() {
         isEmpty,
         reason: 'a core-settled terminal row must not be overridden',
       );
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // pre/post 快照确认（on-device 假阴性修复）：核心 `version` 对 GitHub release
+  // 来源的下载是 **release tag**（`Release v3.5.0-20261024.1`），安装包的
+  // `version_name` 是 APK 自身版本名（`3.4.0`）。二者字符串本就不同，旧实现用
+  // 相等比较永远匹配不上 → 一次成功安装被误报为 timeout。改为安装前后快照差分：
+  // 包由「不存在」变「存在」，或已存在但 version_name / version_code 变化 → 确认。
+  // ───────────────────────────────────────────────────────────────────────────
+  group('install confirmation by pre/post snapshot diff', () {
+    InstallManager managerWithDeadline({
+      Duration interval = const Duration(milliseconds: 10),
+      Duration deadline = const Duration(milliseconds: 100),
+    }) {
+      InstallManager.installPollInterval = interval;
+      InstallManager.installPendingDeadline = deadline;
+      InstallManager.installPollTimeout = const Duration(seconds: 5);
+      return InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+    }
+
+    InstallStart platformStart({String versionName = '1.2.3'}) => InstallStart(
+          record: _record(),
+          request: _request(
+            method: 'platform',
+            apkPath: apk.path,
+            versionName: versionName,
+          ),
+        );
+
+    test(
+        '(a) target package ABSENT before and PRESENT after is confirmed '
+        '(the version string does NOT match)', () {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      // 安装前包不存在；安装器确认后包出现，版本名与核心 version 不同。
+      InstalledSnapshot? current;
+      InstallManager.installedSnapshotCheckForTest = (_) async => current;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        current = const InstalledSnapshot(versionName: '2.0.0', versionCode: 20);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        hasLength(1),
+        reason: 'absent→present must confirm, not time out',
+      );
+      expect(backend.reports.where((r) => r.status == 'timeout'), isEmpty);
+    });
+
+    test('(b) package PRESENT at v1 and now v2 is confirmed', () {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      var current =
+          const InstalledSnapshot(versionName: '1.0.0', versionCode: 10);
+      InstallManager.installedSnapshotCheckForTest = (_) async => current;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        current = const InstalledSnapshot(versionName: '2.0.0', versionCode: 20);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(backend.reports.where((r) => r.status == 'installed'), hasLength(1));
+      expect(backend.reports.where((r) => r.status == 'timeout'), isEmpty);
+    });
+
+    test(
+        '(b2) a version_code-only change (same version_name) is confirmed',
+        () {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      var current =
+          const InstalledSnapshot(versionName: '1.0.0', versionCode: 10);
+      InstallManager.installedSnapshotCheckForTest = (_) async => current;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        // 版本名不变，仅版本号前进 → 仍视为已安装落地。
+        current = const InstalledSnapshot(versionName: '1.0.0', versionCode: 11);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(backend.reports.where((r) => r.status == 'installed'), hasLength(1));
+      expect(backend.reports.where((r) => r.status == 'timeout'), isEmpty);
+    });
+
+    test('(c) an unchanged snapshot is NOT confirmed and still times out', () {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedSnapshotCheckForTest =
+          (_) async => const InstalledSnapshot(versionName: '1.0.0', versionCode: 10);
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(backend.reports.where((r) => r.status == 'installed'), isEmpty);
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason: 'an unchanged package must not be falsely confirmed',
+      );
+    });
+
+    test(
+        '(d) the on-device shape: core version is a release tag while the '
+        'installed version_name is a plain version → confirmed by the diff', () {
+      // 真实设备日志：expected=Release v3.5.0-20261024.1 actual=3.4.0 → 旧实现
+      // 报 timeout；安装后 version_name 变为 3.5.0，差分必须确认。
+      backend.start =
+          platformStart(versionName: 'Release v3.5.0-20261024.1');
+      InstallManager.appInstallerForTest = (_) async {};
+      var current =
+          const InstalledSnapshot(versionName: '3.4.0', versionCode: 34);
+      InstallManager.installedSnapshotCheckForTest = (_) async => current;
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        current = const InstalledSnapshot(versionName: '3.5.0', versionCode: 35);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        hasLength(1),
+        reason: 'the exact on-device tag-vs-versionName case must confirm',
+      );
+      expect(backend.reports.where((r) => r.status == 'timeout'), isEmpty);
+      expect(backend.reports.single.installedVersion, '3.5.0');
+    });
+
+    test(
+        'a failed pre-snapshot falls back conservatively: presence with a '
+        'different version is unconfirmed → timeout', () {
+      backend.start =
+          platformStart(versionName: 'Release v3.5.0-20261024.1');
+      InstallManager.appInstallerForTest = (_) async {};
+      // 安装前快照读取失败（平台错误）；确认阶段包已存在但版本名不同。
+      var throwOnRead = true;
+      InstallManager.installedSnapshotCheckForTest = (_) async {
+        if (throwOnRead) {
+          throw StateError('platform channel unavailable');
+        }
+        return const InstalledSnapshot(versionName: '3.5.0', versionCode: 35);
+      };
+      final manager = managerWithDeadline();
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        throwOnRead = false;
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        isEmpty,
+        reason: 'without a pre-snapshot the conservative rule must not confirm',
+      );
+      expect(backend.reports.where((r) => r.status == 'timeout'), hasLength(1));
     });
   });
 

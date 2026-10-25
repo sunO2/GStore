@@ -51,6 +51,49 @@ enum InstallMethod {
   platform,
 }
 
+/// 已安装包的一次观测快照：版本名 + 版本号（任一可为空）。
+///
+/// 平台通道 `getInstalled` 只返回包当前状态，没有 `last_update_time`，因此
+/// 「本次安装是否落地」只能靠安装前后的快照差分判定，而不能拿核心的
+/// `version`（对 GitHub release 来源的下载它是 **release tag**，如
+/// `Release v3.5.0-20261024.1`）去和安装包的 `version_name`（APK 自身的
+/// 版本名，如 `3.4.0`）做字符串相等比较——两者本来就不同，永远匹配不上。
+@immutable
+class InstalledSnapshot {
+  const InstalledSnapshot({this.versionName, this.versionCode});
+
+  final String? versionName;
+  final int? versionCode;
+
+  @override
+  bool operator ==(Object other) =>
+      other is InstalledSnapshot &&
+      other.versionName == versionName &&
+      other.versionCode == versionCode;
+
+  @override
+  int get hashCode => Object.hash(versionName, versionCode);
+
+  @override
+  String toString() =>
+      'InstalledSnapshot(versionName: $versionName, versionCode: $versionCode)';
+}
+
+/// 一次安装发起前的目标包快照。
+///
+/// [available] 为 false 表示平台读取失败（既不是「不存在」也无法差分），
+/// 此时确认退回保守规则：只接受与核心 `version` 精确相等的 `version_name`。
+/// 选择保守（宁可继续等/超时，也不误报 installed）是因为把一次未完成的安装
+/// 谎报为 `installed` 会让核心行落定、抑制重试，比一次 `timeout` 危害更大。
+@immutable
+class _PreInstallSnapshot {
+  const _PreInstallSnapshot(this.snapshot, {this.available = true});
+
+  /// null = 安装前目标包不存在。
+  final InstalledSnapshot? snapshot;
+  final bool available;
+}
+
 /// 应用安装管理器
 /// 统一管理安装方式：优先 Shizuku 静默安装，未授权时回退系统安装
 /// 使用策略模式，可灵活切换安装方式
@@ -100,14 +143,11 @@ class InstallManager implements IInstallService {
   ) =>
       _appInstaller = installer;
 
-  /// 平台校验接缝：返回 [packageName] 的已安装版本名；未安装 / 查询失败 → null。
+  /// 平台校验接缝（旧版：仅版本名）。默认 null → 生产走 [_installedSnapshotCheck]。
   ///
-  /// 生产走 `gstore/platform.getInstalled`（`PlatformChannelClient`），测试可注入
-  /// 假件。用于 `pending` 行的终端确认兜底：系统安装器在前台运行时，Android 会
-  /// 拦截发往后台应用的隐式 `PACKAGE_ADDED` / `PACKAGE_REPLACED` 广播，
-  /// `install_events` 可能永远收不到终端结果（见 [recheckPendingInstalls]）。
-  static Future<String?> Function(String packageName) _installedVersionCheck =
-      _defaultInstalledVersion;
+  /// 保留给既有测试注入 `(packageName) async => '1.2.3'`；非 null 时读到的
+  /// 版本名被包装成只带 [InstalledSnapshot.versionName] 的快照。
+  static Future<String?> Function(String packageName)? _installedVersionCheck;
 
   @visibleForTesting
   static set installedVersionCheckForTest(
@@ -115,16 +155,71 @@ class InstallManager implements IInstallService {
   ) =>
       _installedVersionCheck = check;
 
-  /// 生产平台校验：读取已安装包的版本名；未安装 / 通道失败一律返回 null。
-  static Future<String?> _defaultInstalledVersion(String packageName) async {
+  /// 平台快照接缝：返回 [packageName] 的 `(version_name, version_code)`；
+  /// 未安装 → null；平台异常向上抛出（调用方区分「不存在」与「读取失败」）。
+  ///
+  /// 生产走 `gstore/platform.getInstalled`（`PlatformChannelClient`），测试可注入
+  /// 假件。用于 `pending` 行的终端确认兜底：系统安装器在前台运行时，Android 会
+  /// 拦截发往后台应用的隐式 `PACKAGE_ADDED` / `PACKAGE_REPLACED` 广播，
+  /// `install_events` 可能永远收不到终端结果（见 [recheckPendingInstalls]）。
+  static Future<InstalledSnapshot?> Function(String packageName)
+      _installedSnapshotCheck = _defaultInstalledSnapshot;
+
+  @visibleForTesting
+  static set installedSnapshotCheckForTest(
+    Future<InstalledSnapshot?> Function(String packageName) check,
+  ) =>
+      _installedSnapshotCheck = check;
+
+  /// 统一读取：优先旧版版本名注入（映射为快照），否则走快照接缝。
+  static Future<InstalledSnapshot?> _readInstalledSnapshot(
+    String packageName,
+  ) async {
+    final legacy = _installedVersionCheck;
+    if (legacy != null) {
+      final version = await legacy(packageName);
+      return (version == null || version.isEmpty)
+          ? null
+          : InstalledSnapshot(versionName: version);
+    }
+    return _installedSnapshotCheck(packageName);
+  }
+
+  /// 生产平台校验：读取已安装包的版本名 + 版本号；未安装 → null。
+  ///
+  /// 平台异常不在此吞掉：调用方需要区分「包不存在」与「读取失败」，后者在
+  /// 安装前快照里降级为保守规则。
+  static Future<InstalledSnapshot?> _defaultInstalledSnapshot(
+    String packageName,
+  ) async {
     if (packageName.isEmpty) return null;
+    final info = await PlatformChannelClient().getInstalled(packageName);
+    if (info == null) return null;
+    final version = info['version_name']?.toString();
+    return InstalledSnapshot(
+      versionName: (version == null || version.isEmpty) ? null : version,
+      versionCode: _asInt(info['version_code']),
+    );
+  }
+
+  static int? _asInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse('${value ?? ''}');
+  }
+
+  /// 发起系统安装器前捕获目标包快照；平台读取失败 → [available]=false。
+  static Future<_PreInstallSnapshot> _capturePreInstallSnapshot(
+    String packageName,
+  ) async {
+    if (packageName.isEmpty) {
+      return const _PreInstallSnapshot(null, available: false);
+    }
     try {
-      final info = await PlatformChannelClient().getInstalled(packageName);
-      final version = info?['version_name']?.toString();
-      return (version == null || version.isEmpty) ? null : version;
+      return _PreInstallSnapshot(await _readInstalledSnapshot(packageName));
     } catch (e) {
-      debugPrint('InstallManager: 平台安装校验失败（忽略） - $e');
-      return null;
+      debugPrint('InstallManager: 安装前快照读取失败（保守回退） - $e');
+      return const _PreInstallSnapshot(null, available: false);
     }
   }
 
@@ -145,6 +240,11 @@ class InstallManager implements IInstallService {
   /// `pending` 行 → 该行持有中的安装请求（平台校验兜底使用；终态时移除）。
   final Map<String, InstallRequest> _pendingInstallRequests =
       <String, InstallRequest>{};
+
+  /// `pending` 行 → 发起系统安装器前捕获的目标包快照（快照差分确认使用；
+  /// 与 [_pendingInstallRequests] 同生命周期，终态时一并移除）。
+  final Map<String, _PreInstallSnapshot> _pendingInstallPreSnapshots =
+      <String, _PreInstallSnapshot>{};
 
   /// 全仓唯一的 `gstore/install_events` 订阅（`startEventBridge` 幂等建立）。
   StreamSubscription<dynamic>? _installEventsSub;
@@ -307,7 +407,8 @@ class InstallManager implements IInstallService {
     installPendingDeadline = const Duration(seconds: 90);
     clock = DateTime.now;
     _appInstaller = AppInstaller.installApk;
-    _installedVersionCheck = _defaultInstalledVersion;
+    _installedVersionCheck = null;
+    _installedSnapshotCheck = _defaultInstalledSnapshot;
   }
 
   /// 当前是否视为 Android 平台
@@ -547,6 +648,11 @@ class InstallManager implements IInstallService {
     }
 
     if (!ok && status != InstallReportStatus.denied) {
+      // 发起系统安装器前先记录目标包快照：核心 `version` 对 release 来源是
+      // release tag，和安装包的 `version_name` 本就不同，只有 pre/post 差分
+      // 能可靠判定「本次安装是否落地」（见 [_confirmPendingInstall]）。
+      final preSnapshot =
+          await _capturePreInstallSnapshot(request.packageName);
       try {
         await _appInstaller(apkPath);
         // Launching the installer intent is NOT a successful install: the user
@@ -560,6 +666,7 @@ class InstallManager implements IInstallService {
           request.moduleTaskId,
           _pendingInstallStatus,
           request: request,
+          preSnapshot: preSnapshot,
         );
         return (InstallOutcome.launched, method);
       } catch (e) {
@@ -676,6 +783,7 @@ class InstallManager implements IInstallService {
     String moduleTaskId,
     String status, {
     InstallRequest? request,
+    _PreInstallSnapshot? preSnapshot,
   }) {
     if (status != _pendingInstallStatus ||
         _installPollers.containsKey(moduleTaskId)) {
@@ -685,6 +793,9 @@ class InstallManager implements IInstallService {
     if (interval <= Duration.zero) return;
     if (request != null) {
       _pendingInstallRequests[moduleTaskId] = request;
+      if (preSnapshot != null) {
+        _pendingInstallPreSnapshots[moduleTaskId] = preSnapshot;
+      }
     }
     final deadline = installPendingDeadline < installPollTimeout
         ? installPendingDeadline
@@ -716,27 +827,32 @@ class InstallManager implements IInstallService {
     Duration deadline,
   ) async {
     if (request == null) return;
-    // 核心可能已由 `install_events` 落定（前台收到终端广播）：以核心为准，
-    // 既不再校验、也不再报 timeout（覆盖终态会丢真相）。
-    if (await _coreInstallSettled(request.moduleTaskId)) return;
-    // 安装可能恰好在 deadline 前完成，而系统广播仍被拦截（应用在后台）：
-    // 这是避免把一次成功安装误报为 timeout 的最后机会。
-    if (await _confirmPendingInstall(request)) return;
-    appLog.error('InstallManager: 安装结果等待超时（deadline）', data: {
-      'moduleTaskId': request.moduleTaskId,
-      'deadlineMs': deadline.inMilliseconds,
-    });
-    unawaited(_reportRequest(
-      request,
-      status: InstallReportStatus.timeout,
-      error: 'CORE_E_INSTALL_TIMEOUT: no install event within '
-          '${deadline.inSeconds}s',
-    ));
-    _surfaceInstallResult(
-      InstallReportStatus.timeout,
-      request.packageName,
-      null,
-    );
+    try {
+      // 核心可能已由 `install_events` 落定（前台收到终端广播）：以核心为准，
+      // 既不再校验、也不再报 timeout（覆盖终态会丢真相）。
+      if (await _coreInstallSettled(request.moduleTaskId)) return;
+      // 安装可能恰好在 deadline 前完成，而系统广播仍被拦截（应用在后台）：
+      // 这是避免把一次成功安装误报为 timeout 的最后机会。
+      if (await _confirmPendingInstall(request)) return;
+      appLog.error('InstallManager: 安装结果等待超时（deadline）', data: {
+        'moduleTaskId': request.moduleTaskId,
+        'deadlineMs': deadline.inMilliseconds,
+      });
+      unawaited(_reportRequest(
+        request,
+        status: InstallReportStatus.timeout,
+        error: 'CORE_E_INSTALL_TIMEOUT: no install event within '
+            '${deadline.inSeconds}s',
+      ));
+      _surfaceInstallResult(
+        InstallReportStatus.timeout,
+        request.packageName,
+        null,
+      );
+    } finally {
+      // 请求已在计时器回调里从 `_pendingInstallRequests` 移除；快照同生命周期。
+      _pendingInstallPreSnapshots.remove(request.moduleTaskId);
+    }
   }
 
   Future<void> _pollInstallOnce(String moduleTaskId, Timer timer) async {
@@ -796,6 +912,7 @@ class InstallManager implements IInstallService {
       // 核心已落定则直接清理跟踪，不以平台校验覆盖核心终态。
       if (await _coreInstallSettled(moduleTaskId)) {
         _pendingInstallRequests.remove(moduleTaskId);
+        _pendingInstallPreSnapshots.remove(moduleTaskId);
         continue;
       }
       if (await _confirmPendingInstall(request)) {
@@ -804,41 +921,61 @@ class InstallManager implements IInstallService {
           _cancelInstallPoller(moduleTaskId, timer);
         } else {
           _pendingInstallRequests.remove(moduleTaskId);
+          _pendingInstallPreSnapshots.remove(moduleTaskId);
         }
       }
     }
   }
 
-  /// 平台校验：目标包已按预期版本安装时上报 `installed`，返回是否已确认。
+  /// 平台校验：确认本次安装已落地时上报 `installed`，返回是否已确认。
   ///
-  /// 核心对重复上报返回 `changed:false`，因此与 `install_events` 路径天然幂等。
+  /// 确认规则（任一命中即接受）：
+  /// 1. 精确 `version_name` 匹配（保留的附加路径；核心 `version` 恰好就是
+  ///    APK 版本名时命中，无害）。
+  /// 2. 安装前快照差分：安装前包 **不存在**、现在存在；或安装前已存在、但
+  ///    `version_name` **或** `version_code` 发生变化。这对 GitHub release
+  ///    来源的下载是唯一可靠的信号——核心 `version` 是 release tag
+  ///    （如 `Release v3.5.0-20261024.1`），与安装包的 `version_name`
+  ///    （如 `3.4.0`→`3.5.0`）本就不同，字符串比较永远失败。
+  ///
+  /// 快照未变化 / 安装前快照读取失败（保守回退）→ 不确认，交由 deadline
+  /// 报 `timeout`。核心对重复上报返回 `changed:false`，与 `install_events`
+  /// 路径天然幂等。
   Future<bool> _confirmPendingInstall(InstallRequest request) async {
     final packageName = request.packageName;
     if (packageName.isEmpty) return false;
-    String? installed;
+    InstalledSnapshot? current;
     try {
-      installed = await _installedVersionCheck(packageName);
+      current = await _readInstalledSnapshot(packageName);
     } catch (e) {
       debugPrint('InstallManager: 平台安装校验失败（忽略） - $e');
       return false;
     }
-    if (installed == null || installed.isEmpty) return false;
-    if (!_versionMatches(request.versionName, installed)) {
+    // 包当前不存在 → 本次安装尚未落地。
+    if (current == null) return false;
+
+    final pre = _pendingInstallPreSnapshots[request.moduleTaskId];
+    final exactMatch =
+        _versionMatches(request.versionName, current.versionName ?? '');
+    final changed = _snapshotChanged(pre, current);
+    if (!exactMatch && !changed) {
       debugPrint(
-        'InstallManager: 包已安装但版本不符，暂不确认 '
-        '（expected=${request.versionName} actual=$installed）',
+        'InstallManager: 包已安装但快照未变化，暂不确认 '
+        '（expected=${request.versionName} installed=${current.versionName} '
+        'code=${current.versionCode} preAvailable=${pre?.available ?? false}）',
       );
       return false;
     }
     appLog.info('InstallManager: 平台校验确认安装完成', data: {
       'sessionId': request.sessionId,
       'packageName': packageName,
-      'installedVersion': installed,
+      'installedVersion': current.versionName,
+      'confirmedBy': exactMatch ? 'version-name-match' : 'snapshot-changed',
     });
     await _reportRequest(
       request,
       status: InstallReportStatus.installed,
-      installedVersion: installed,
+      installedVersion: current.versionName ?? request.versionName,
     );
     _surfaceInstallResult(
       InstallReportStatus.installed,
@@ -846,6 +983,23 @@ class InstallManager implements IInstallService {
       null,
     );
     return true;
+  }
+
+  /// 安装前快照 vs 当前快照是否发生变化。
+  ///
+  /// - [pre] 为 null 或 [pre.available] 为 false（平台读取失败）：无法差分 →
+  ///   返回 false（保守回退：只认精确 `version_name` 匹配）。
+  /// - 安装前不存在（[pre].snapshot == null）而现在存在 → 变化。
+  /// - 安装前已存在：`version_name` 或 `version_code` 任一变化 → 变化。
+  static bool _snapshotChanged(
+    _PreInstallSnapshot? pre,
+    InstalledSnapshot current,
+  ) {
+    if (pre == null || !pre.available) return false;
+    final before = pre.snapshot;
+    if (before == null) return true;
+    return before.versionName != current.versionName ||
+        before.versionCode != current.versionCode;
   }
 
   /// 期望版本与平台报告版本的比对。
@@ -862,6 +1016,7 @@ class InstallManager implements IInstallService {
     timer.cancel();
     _installPollers.remove(moduleTaskId);
     _pendingInstallRequests.remove(moduleTaskId);
+    _pendingInstallPreSnapshots.remove(moduleTaskId);
   }
 
   /// Surfaces a terminal install result to the user.
@@ -900,6 +1055,7 @@ class InstallManager implements IInstallService {
     }
     _installPollers.clear();
     _pendingInstallRequests.clear();
+    _pendingInstallPreSnapshots.clear();
   }
 
   Future<String?> _findCoreTaskId(String filePath) async {
