@@ -18,6 +18,20 @@ import 'state.dart';
 class DetailPage extends ConsumerStatefulWidget {
   const DetailPage({super.key});
 
+  /// 测试计数：整页根 `build` 次数。
+  ///
+  /// 用于证明「下载进度 tick 不重建整页」——修复前每个进度 tick 会因根节点
+  /// `ref.watch(detailStateProvider)` 失效而 +1，修复后保持 +0。
+  @visibleForTesting
+  static int debugBuildCount = 0;
+
+  /// 测试计数：FAB/进度区 `_buildFab` 次数。
+  ///
+  /// 进度区经独立 [ValueNotifier]（`state.downloadProgressRevision`）驱动，
+  /// 进度 tick 时只重建此处，不重建整页。
+  @visibleForTesting
+  static int debugProgressBuildCount = 0;
+
   @override
   ConsumerState<DetailPage> createState() => _DetailPageState();
 }
@@ -51,9 +65,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    DetailPage.debugBuildCount++;
     final logic = this.logic;
-    // 任一状态字段变更（channel 写入 / loadDetail / setActionBusy 等）
-    // → ref.watch 触发整页重建，等价原 Obx 覆盖范围。
+    // 任一「非下载进度」状态字段变更（channel 写入 / loadDetail / setActionBusy
+    // 等）→ ref.watch 触发整页重建，等价原 Obx 覆盖范围。
+    // 下载进度**不**经此 provider 通知：进度写入 state.currentDownload 时只递增
+    // state.downloadProgressRevision（独立 ValueNotifier），由下方 FAB 的
+    // ValueListenableBuilder 消费 → 进度 tick 不重建整页（滑动卡顿修复）。
     final state = ref.watch(detailStateProvider);
     // go_router extra（等价原路由 arguments）→ logic（start 前设置，幂等）
     logic.setRouteExtra(goRouterExtraOf(context));
@@ -65,7 +83,11 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       body: state.errorMessage.isNotEmpty
           ? _buildErrorBody(context, logic, state)
           : _buildBody(context, logic, state),
-      floatingActionButton: _buildFab(context, logic, state),
+      // 进度区独立订阅进度修订号：只有此子树随进度 tick 重建。
+      floatingActionButton: ValueListenableBuilder<int>(
+        valueListenable: state.downloadProgressRevision,
+        builder: (context, _, __) => _buildFab(context, logic, state),
+      ),
     );
   }
 
@@ -339,6 +361,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     DetailLogic logic,
     DetailState state,
   ) {
+    DetailPage.debugProgressBuildCount++;
     final data = state.currentDownload;
     if (data == null) return const SizedBox();
 

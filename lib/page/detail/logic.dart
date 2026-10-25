@@ -260,10 +260,13 @@ class DetailLogic
         final id = task.id;
         if (id != null) {
           downloadListenerSubscription?.cancel();
-          downloadListenerSubscription = service.watch(id).listen((da) {
+          // 列表级单订阅（service.watchAll）后按 id 过滤：不再为本任务单独建
+          // 一条 `service.watch(id)` → 不再多出一条 500ms 原生轮询线程
+          // （与 7f610d59 下载页的收口一致）。进度经 state.currentDownload 只
+          // 递增进度修订号，不 notifyListeners → 不重建整页。
+          downloadListenerSubscription = service.watchAll().listen((da) {
+            if (da.id != id) return;
             state.currentDownload = da;
-            // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
-            state.refresh();
             counterController.sink.add(da);
           });
         }
@@ -527,10 +530,10 @@ class DetailLogic
         downloadListenerSubscription?.cancel();
         final id = task.id;
         if (id != null) {
-          downloadListenerSubscription = service.watch(id).listen((da) {
+          // 与 startDownload 同款：列表级单订阅 + 按 id 过滤，杜绝 per-task 轮询。
+          downloadListenerSubscription = service.watchAll().listen((da) {
+            if (da.id != id) return;
             state.currentDownload = da;
-            // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
-            state.refresh();
             counterController.sink.add(da);
           });
         }

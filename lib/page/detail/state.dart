@@ -65,13 +65,30 @@ class DetailState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 当前下载任务（用于 FAB 进度显示）
+  /// 下载进度专用可监听对象（与整页状态解耦）。
+  ///
+  /// 下载服务每 ~500ms 原地更新同一 [DownloadTask] 实例。进度若走
+  /// [notifyListeners]，根节点 `ref.watch(detailStateProvider)` 会整页重建——
+  /// 详情页上下滑动时约 2 次/秒的整页重建即卡顿来源。进度只驱动 FAB，因此
+  /// 单独用一个 [ValueNotifier] 承载：页面根节点不监听它，只有 FAB 的
+  /// `ValueListenableBuilder` 监听。
+  ///
+  /// 用「修订号」而非 DownloadTask 值：下载服务原地更新同一实例时 `==` 不变，
+  /// [ValueNotifier] 的判重会吞掉通知，故每次进度回调递增修订号强制通知。
+  final ValueNotifier<int> downloadProgressRevision = ValueNotifier<int>(0);
+
+  bool _disposed = false;
+
+  /// 当前下载任务（用于 FAB 进度显示）。
+  ///
+  /// 赋值只递增 [downloadProgressRevision] 通知进度监听者，**不**触发
+  /// [notifyListeners]——进度变化不重建整页（详情页滑动卡顿修复）。
   DownloadTask? _currentDownload;
   DownloadTask? get currentDownload => _currentDownload;
   set currentDownload(DownloadTask? v) {
-    if (_currentDownload == v) return;
+    if (_disposed) return;
     _currentDownload = v;
-    notifyListeners();
+    downloadProgressRevision.value++;
   }
 
   /// 下载列表（分块加载独立注入，null=未就绪/失败降级）
@@ -137,12 +154,6 @@ class DetailState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 强制发出变更通知（等价旧 Rx 的 refresh）。
-  ///
-  /// 下载任务由下载服务原地更新进度、引用不变时，setter 判重会跳过通知，
-  /// 由调用方显式调用此方法保证 FAB 进度刷新。
-  void refresh() => notifyListeners();
-
   /// 获取当前显示的名称（优先使用详情，否则使用请求）
   String get displayName => detailInfo?.name ?? request?.name ?? '';
 
@@ -161,4 +172,16 @@ class DetailState extends ChangeNotifier {
 
   /// 是否已安装
   bool get isInstalled => installInfo != null;
+
+  /// 释放：随详情页 `autoDispose` 一起销毁进度通知器。
+  ///
+  /// 幂等：`ChangeNotifierProvider` 自身与 `ref.onDispose(state.dispose)` 都会
+  /// 触发本方法，重复调用不得二次 dispose 进度通知器。
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    downloadProgressRevision.dispose();
+    super.dispose();
+  }
 }
