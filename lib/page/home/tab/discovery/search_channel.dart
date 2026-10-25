@@ -40,9 +40,6 @@ final class SearchSaved extends SearchSaveOutcome {
 final class SearchSaveFailed extends SearchSaveOutcome {
   const SearchSaveFailed(this.code, this.message);
 
-  /// Rust 脚本通道当前没有向 Dart 暴露保存 API。
-  static const String laneUnsupported = 'CORE_E_SEARCH_SAVE_LANE_UNSUPPORTED';
-
   /// 渠道不可用 / 未注册（旧 Dart 路径）。
   static const String channelUnavailable =
       'CORE_E_SEARCH_SAVE_CHANNEL_UNAVAILABLE';
