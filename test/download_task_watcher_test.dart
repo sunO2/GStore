@@ -73,8 +73,9 @@ class _ThrowingInstallManager implements InstallManager {
   @override
   Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
-    String filePath,
-  ) async {
+    String filePath, {
+    bool force = false,
+  }) async {
     installTaskCalls++;
     lastModuleTaskId = moduleTaskId;
     throw StateError('installTask boom: $moduleTaskId');
@@ -84,6 +85,7 @@ class _ThrowingInstallManager implements InstallManager {
   Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
+    bool force = false,
   }) async {
     installApkCalls++;
     throw StateError('installApk must not be used after the cutover');

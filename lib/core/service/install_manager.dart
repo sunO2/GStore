@@ -423,25 +423,42 @@ class InstallManager implements IInstallService {
   /// flag-off legacy branch. A missing mirror row surfaces as the facade's
   /// typed [InstallCoreException] (`CORE_E_INSTALL_NOT_FOUND`); every other
   /// failure keeps the historical log-and-degrade behaviour.
+  ///
+  /// [force] requests an OVERWRITE install: when the core row is already
+  /// `installed` (the core settles it with no request), the downloaded APK is
+  /// re-installed through the direct path instead of reporting
+  /// [InstallOutcome.alreadyInstalled]. Defaults to false so the auto-install
+  /// watcher keeps today's idempotent behaviour.
   Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
-    String filePath,
-  ) async {
+    String filePath, {
+    bool force = false,
+  }) async {
     await DownloadFacade.instance.importLegacyOnce();
-    return _installCoreTask(moduleTaskId, filePath);
+    return _installCoreTask(moduleTaskId, filePath, force: force);
   }
 
   Future<(InstallOutcome, InstallMethod)> _installCoreTask(
     String moduleTaskId,
-    String filePath,
-  ) async {
+    String filePath, {
+    bool force = false,
+  }) async {
     try {
       await _ensureInstallRecovered();
       final start = await _installFacade.install(moduleTaskId);
       final request = start.request;
       if (request == null) {
-        // The core already settled this row: report it and DO NOT install.
+        // The core already settled this row: report it and DO NOT install —
+        // unless the caller explicitly asked to overwrite an installed app.
         _maybeStartInstallPoller(moduleTaskId, start.record.status);
+        if (force && start.record.isInstalled) {
+          // An explicit 安装 tap on an `installed` core row: overwrite-install
+          // the downloaded APK through the existing direct path (Shizuku, then
+          // the system installer intent) and return ITS outcome. A missing or
+          // invalid APK yields a typed [InstallOutcome.failed] there — never a
+          // silent no-op and never an [InstallOutcome.alreadyInstalled] lie.
+          return _installApkDirect(filePath);
+        }
         return (
           start.record.isInstalled
               ? InstallOutcome.alreadyInstalled
@@ -910,14 +927,22 @@ class InstallManager implements IInstallService {
   ///
   /// [moduleInstall] is retained only for call-site source compatibility; the
   /// split no longer depends on it and the parameter is intentionally unused.
+  ///
+  /// [force] requests an OVERWRITE install: when the resolved core row is
+  /// already `installed` (no request), the APK is re-installed through the
+  /// direct path instead of reporting [InstallOutcome.alreadyInstalled].
+  /// Defaults to false so every existing auto-install caller keeps today's
+  /// behaviour. A user-picked APK with no core row already takes the direct
+  /// path, so [force] only affects the core-resolved case.
   /// 返回 ([InstallOutcome], 使用的安装方式)
   Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
+    bool force = false,
   }) async {
     final coreTaskId = await _findCoreTaskId(filePath);
     if (coreTaskId != null) {
-      return _installCoreTask(coreTaskId, filePath);
+      return _installCoreTask(coreTaskId, filePath, force: force);
     }
     return _installApkDirect(filePath);
   }

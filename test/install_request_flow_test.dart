@@ -266,6 +266,77 @@ void main() {
     expect(backend.calls, <String>['pendingRequests', 'install:task-1']);
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 覆盖安装（用户需求）：核心行已是 `installed` 时，显式点击「安装」必须真正
+  // 重装（Shizuku/系统安装器），而不是只回报 alreadyInstalled 后什么都不做。
+  // 默认 force=false 保持自动安装路径的幂等语义不变。
+  // ───────────────────────────────────────────────────────────────────────────
+  group('force overwrite install', () {
+    test('force: true on an installed row runs the direct overwrite install',
+        () async {
+      backend.start = InstallStart(record: _record(status: 'installed'));
+      final commands = <String>[];
+      InstallManager.commandRunnerForTest = (command) async {
+        commands.add(command);
+        return 'Success';
+      };
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result = await manager.installTask('task-1', apk.path, force: true);
+
+      expect(result, (InstallOutcome.installed, InstallMethod.shizuku),
+          reason: 'a forced tap must overwrite-install the APK, not no-op');
+      expect(result.$1, isNot(InstallOutcome.alreadyInstalled));
+      expect(commands, hasLength(1),
+          reason: 'the overwrite install must run the installer');
+      expect(commands.single, contains('pm install -r'));
+      expect(commands.single, contains(apk.path));
+    });
+
+    test('force: false on the same installed row still no-ops', () async {
+      backend.start = InstallStart(record: _record(status: 'installed'));
+      var commands = 0;
+      InstallManager.commandRunnerForTest = (_) async {
+        commands++;
+        return 'Success';
+      };
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result = await manager.installTask('task-1', apk.path);
+
+      expect(result, (InstallOutcome.alreadyInstalled, InstallMethod.shizuku));
+      expect(commands, 0,
+          reason: 'the non-forced default must keep the idempotent no-op');
+      expect(backend.calls, <String>['pendingRequests', 'install:task-1']);
+    });
+
+    test('force: true with a missing APK yields a typed failure', () async {
+      backend.start = InstallStart(record: _record(status: 'installed'));
+      var commands = 0;
+      InstallManager.commandRunnerForTest = (_) async {
+        commands++;
+        return 'Success';
+      };
+      final manager = InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+
+      final result = await manager.installTask(
+        'task-1',
+        '${temp.path}/missing.apk',
+        force: true,
+      );
+
+      expect(result.$1, InstallOutcome.failed,
+          reason: 'a missing APK must be a typed failure, never a silent no-op');
+      expect(commands, 0, reason: 'no installer runs for a missing APK');
+    });
+  });
+
   test('request != null runs the staged pm install then reports installed',
       () async {
     backend.start = InstallStart(

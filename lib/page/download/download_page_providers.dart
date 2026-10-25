@@ -405,6 +405,10 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 只提示「已发起安装，等待系统确认」；真正的终端结果
   /// (installed/denied/failed/timeout) 由 `InstallManager` 的 `install_events`
   /// 订阅或超时截止在到达时提示（见 `_surfaceInstallResult`）。
+  ///
+  /// 显式点击「安装」意味着"安装/覆盖安装"：即使核心行已是 `installed` 也传
+  /// [force] = true，走覆盖安装（Shizuku/系统安装器），不再只提示「已安装」而
+  /// 什么都不做（用户需求：点击安装显示已安装，应可覆盖安装）。
   Future<void> installApp(DownloadTask downStatus) async {
     // 安装模块下线 → 注册表取不到服务，降级提示不抛
     final manager = ModuleManager.instance.get<InstallManager>();
@@ -425,7 +429,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     final name =
         downStatus.appName.isNotEmpty ? downStatus.appName : downStatus.fileName;
     try {
-      final (outcome, method) = await manager.installApk(downStatus.filePath);
+      final (outcome, method) =
+          await manager.installApk(downStatus.filePath, force: true);
       switch (outcome) {
         case InstallOutcome.installed:
           appLog.info('下载面板: 安装完成 name=$name method=${method.name}');

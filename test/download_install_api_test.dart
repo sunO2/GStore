@@ -297,6 +297,9 @@ class _RecordingInstallManager implements InstallManager {
   String? lastModuleTaskId;
   String? lastInstallApkPath;
 
+  /// 最近一次 [installApk] 收到的 [force] 值（下载页显式点击必须为 true）。
+  bool? lastInstallApkForce;
+
   /// [installApk] 的返回值（默认：仅发起系统安装器，未确认安装）。
   (InstallOutcome, InstallMethod) installApkResult =
       (InstallOutcome.launched, InstallMethod.system);
@@ -307,8 +310,9 @@ class _RecordingInstallManager implements InstallManager {
   @override
   Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
-    String filePath,
-  ) async {
+    String filePath, {
+    bool force = false,
+  }) async {
     installTaskCalls++;
     lastModuleTaskId = moduleTaskId;
     return (InstallOutcome.installed, InstallMethod.shizuku);
@@ -318,9 +322,11 @@ class _RecordingInstallManager implements InstallManager {
   Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
+    bool force = false,
   }) async {
     installApkCalls++;
     lastInstallApkPath = filePath;
+    lastInstallApkForce = force;
     final error = installApkError;
     if (error != null) throw error;
     return installApkResult;
@@ -929,6 +935,24 @@ void main() {
           reason: 'an intent launch must report the truthful pending message');
       expect(find.textContaining('安装完成'), findsNothing,
           reason: 'an intent launch is NOT a completed install');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('installApp requests an overwrite (force: true)',
+        (tester) async {
+      final manager = _RecordingInstallManager()
+        ..installApkResult = (InstallOutcome.launched, InstallMethod.platform);
+      await bindFake(manager);
+      await pumpHost(tester);
+      final notifier = await notifierFor();
+
+      await notifier.installApp(_task(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(manager.installApkCalls, 1);
+      expect(manager.lastInstallApkForce, isTrue,
+          reason: 'an explicit 安装 tap must request an overwrite install');
       expect(tester.takeException(), isNull);
     });
 

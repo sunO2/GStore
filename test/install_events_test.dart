@@ -429,6 +429,8 @@ void main() {
 
       expect(manager.installTaskCalls, 1);
       expect(manager.lastModuleTaskId, '11');
+      expect(manager.lastInstallTaskForce, isFalse,
+          reason: 'the auto-install watcher must keep the non-forced default');
       expect(manager.consumeCalls, 1);
       expect(manager.installApkCalls, 0,
           reason: 'the cutover default must never route through installApk');
@@ -512,13 +514,18 @@ class _RecordingInstallManager implements InstallManager {
   int consumeCalls = 0;
   String? lastModuleTaskId;
 
+  /// 最近一次 [installTask] 收到的 [force] 值（自动安装路径必须为 false）。
+  bool? lastInstallTaskForce;
+
   @override
   Future<(InstallOutcome, InstallMethod)> installTask(
     String moduleTaskId,
-    String filePath,
-  ) async {
+    String filePath, {
+    bool force = false,
+  }) async {
     installTaskCalls++;
     lastModuleTaskId = moduleTaskId;
+    lastInstallTaskForce = force;
     return (InstallOutcome.installed, InstallMethod.shizuku);
   }
 
@@ -526,6 +533,7 @@ class _RecordingInstallManager implements InstallManager {
   Future<(InstallOutcome, InstallMethod)> installApk(
     String filePath, {
     bool moduleInstall = false,
+    bool force = false,
   }) async {
     installApkCalls++;
     return (InstallOutcome.launched, InstallMethod.system);
