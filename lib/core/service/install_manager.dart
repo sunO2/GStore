@@ -246,6 +246,25 @@ class InstallManager implements IInstallService {
   final Map<String, _PreInstallSnapshot> _pendingInstallPreSnapshots =
       <String, _PreInstallSnapshot>{};
 
+  /// 已记录过的「每安装尝试一次」调试日志：键为 `moduleTaskId`，值为已记录过的
+  /// 原因集合。
+  ///
+  /// 平台校验在每个轮询 tick 都跑（生产间隔 ~500ms、deadline 90s），一次陈旧的
+  /// `pending` 安装若每 tick 都记日志会刷屏整个窗口。此表把同一安装尝试的同一
+  /// 原因压成一次；安装进入终态（[_cancelInstallPoller] / [_finishPendingInstall]）
+  /// 或不再被跟踪时清除，使下一次尝试重新可记——结果变化后信息不丢。
+  final Map<String, Set<String>> _installLogOnce = <String, Set<String>>{};
+
+  /// 按 `(moduleTaskId, reason)` 去重的调试日志：同一安装尝试同一原因只记一次。
+  ///
+  /// 从源头去重，不依赖 `debugPrint`（`debugPrintThrottled`）自身的节流——后者
+  /// 在轮询每 tick 触发时仍会让日志查看器刷屏。
+  void _logInstallOnce(String moduleTaskId, String reason, String message) {
+    final reasons = _installLogOnce.putIfAbsent(moduleTaskId, () => <String>{});
+    if (!reasons.add(reason)) return;
+    debugPrint(message);
+  }
+
   /// 全仓唯一的 `gstore/install_events` 订阅（`startEventBridge` 幂等建立）。
   StreamSubscription<dynamic>? _installEventsSub;
 
@@ -852,6 +871,7 @@ class InstallManager implements IInstallService {
     } finally {
       // 请求已在计时器回调里从 `_pendingInstallRequests` 移除；快照同生命周期。
       _pendingInstallPreSnapshots.remove(request.moduleTaskId);
+      _installLogOnce.remove(request.moduleTaskId);
     }
   }
 
@@ -913,6 +933,7 @@ class InstallManager implements IInstallService {
       if (await _coreInstallSettled(moduleTaskId)) {
         _pendingInstallRequests.remove(moduleTaskId);
         _pendingInstallPreSnapshots.remove(moduleTaskId);
+        _installLogOnce.remove(moduleTaskId);
         continue;
       }
       if (await _confirmPendingInstall(request)) {
@@ -922,6 +943,7 @@ class InstallManager implements IInstallService {
         } else {
           _pendingInstallRequests.remove(moduleTaskId);
           _pendingInstallPreSnapshots.remove(moduleTaskId);
+          _installLogOnce.remove(moduleTaskId);
         }
       }
     }
@@ -959,7 +981,10 @@ class InstallManager implements IInstallService {
         _versionMatches(request.versionName, current.versionName ?? '');
     final changed = _snapshotChanged(pre, current);
     if (!exactMatch && !changed) {
-      debugPrint(
+      // 节流：轮询每 tick 都会走到这里，只记一次（信息保留，但不刷屏）。
+      _logInstallOnce(
+        request.moduleTaskId,
+        'snapshot-unchanged',
         'InstallManager: 包已安装但快照未变化，暂不确认 '
         '（expected=${request.versionName} installed=${current.versionName} '
         'code=${current.versionCode} preAvailable=${pre?.available ?? false}）',
@@ -1017,6 +1042,7 @@ class InstallManager implements IInstallService {
     _installPollers.remove(moduleTaskId);
     _pendingInstallRequests.remove(moduleTaskId);
     _pendingInstallPreSnapshots.remove(moduleTaskId);
+    _installLogOnce.remove(moduleTaskId);
   }
 
   /// Surfaces a terminal install result to the user.
@@ -1056,6 +1082,7 @@ class InstallManager implements IInstallService {
     _installPollers.clear();
     _pendingInstallRequests.clear();
     _pendingInstallPreSnapshots.clear();
+    _installLogOnce.clear();
   }
 
   Future<String?> _findCoreTaskId(String filePath) async {

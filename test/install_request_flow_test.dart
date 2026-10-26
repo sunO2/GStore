@@ -5,6 +5,7 @@ import 'dart:io';
 // fake_async 是 flutter_test 的传递依赖（未直接列入 pubspec，故忽略该 lint）。
 // ignore: depend_on_referenced_packages
 import 'package:fake_async/fake_async.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -213,6 +214,21 @@ String _requestedEvent(InstallRequest request) => jsonEncode(
         'payload': <String, Object?>{'request': request.toJson()},
       },
     );
+
+/// 捕获 `debugPrint`（生产禁止 `log()`），用于断言「快照未变化」日志已被节流。
+///
+/// 不转发给原始实现：既避免测试期间把被节流前的刷屏日志打到控制台，也让
+/// 计数只反映源码里真正调用 `debugPrint` 的次数（与 `debugPrintThrottled`
+/// 自身的节流无关）。
+List<String> _captureDebugPrint() {
+  final logs = <String>[];
+  final original = debugPrint;
+  debugPrint = (String? message, {int? wrapWidth}) {
+    logs.add(message ?? '');
+  };
+  addTearDown(() => debugPrint = original);
+  return logs;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -1051,6 +1067,210 @@ void main() {
         reason: 'without a pre-snapshot the conservative rule must not confirm',
       );
       expect(backend.reports.where((r) => r.status == 'timeout'), hasLength(1));
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 校验日志节流 + pending 轮询终止（on-device 日志刷屏修复）：平台校验在每个
+  // 轮询 tick 都跑（生产间隔 ~500ms、deadline 90s），快照未变化时旧实现每 tick
+  // 都 `debugPrint`，一次陈旧的 pending 安装会刷屏整个窗口。改为按
+  // (moduleTaskId, reason) 只记一次；deadline 仍必须终止轮询并上报 timeout，
+  // 且不因回前台 / 重启而重新武装。
+  // ───────────────────────────────────────────────────────────────────────────
+  group('verify-log throttle and pending-poller termination', () {
+    InstallManager managerWithDeadline({
+      Duration interval = const Duration(milliseconds: 10),
+      Duration deadline = const Duration(milliseconds: 100),
+    }) {
+      InstallManager.installPollInterval = interval;
+      InstallManager.installPendingDeadline = deadline;
+      InstallManager.installPollTimeout = const Duration(seconds: 5);
+      return InstallManager.instance
+        ..setShizukuStateForTest(binder: true, permission: true)
+        ..setIsAndroidForTest(true);
+    }
+
+    InstallStart platformStart({String versionName = '1.2.3'}) => InstallStart(
+          record: _record(),
+          request: _request(
+            method: 'platform',
+            apkPath: apk.path,
+            versionName: versionName,
+          ),
+        );
+
+    // 目标包始终停在安装前的快照：既非精确版本名命中，也无 pre/post 差分。
+    const unchangedSnapshot =
+        InstalledSnapshot(versionName: '1.0.0', versionCode: 10);
+
+    test(
+        '(a) N poll ticks with an unchanged snapshot produce exactly ONE log '
+        'line, not N', () {
+      final logs = _captureDebugPrint();
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedSnapshotCheckForTest =
+          (_) async => unchangedSnapshot;
+      final manager = managerWithDeadline(
+        interval: const Duration(milliseconds: 10),
+        deadline: const Duration(milliseconds: 100),
+      );
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        // 覆盖整个 deadline 窗口（10ms × 10 ticks）并越过 deadline。
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      final unchangedLogs =
+          logs.where((line) => line.contains('包已安装但快照未变化')).toList();
+      expect(
+        unchangedLogs,
+        hasLength(1),
+        reason: 'a stale pending row must log the unchanged snapshot once, '
+            'not once per poll tick (production: ~2/s for the whole 90s window)',
+      );
+      expect(unchangedLogs.single, contains('expected=1.2.3'));
+      expect(unchangedLogs.single, contains('installed=1.0.0'));
+      expect(unchangedLogs.single, contains('code=10'));
+    });
+
+    test('(b) the poller stops at the deadline and reports timeout exactly once',
+        () {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedSnapshotCheckForTest =
+          (_) async => unchangedSnapshot;
+      final manager = managerWithDeadline(
+        interval: const Duration(milliseconds: 10),
+        deadline: const Duration(milliseconds: 100),
+      );
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+
+        final getsAtDeadline =
+            backend.calls.where((call) => call.startsWith('get:')).length;
+        // 继续推进远超 deadline 的时间：定时器必须已取消，不得再轮询。
+        async.elapse(const Duration(seconds: 5));
+        async.flushMicrotasks();
+        expect(
+          backend.calls.where((call) => call.startsWith('get:')).length,
+          getsAtDeadline,
+          reason: 'the deadline must cancel the poller for good',
+        );
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason: 'a pending row with no change must report timeout exactly once',
+      );
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        isEmpty,
+        reason: 'a timeout must never be reported as installed',
+      );
+    });
+
+    test('(c) a timed-out stale row never re-arms on resume or app restart',
+        () async {
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      InstallManager.installedSnapshotCheckForTest =
+          (_) async => unchangedSnapshot;
+      final manager = managerWithDeadline(
+        interval: const Duration(milliseconds: 10),
+        deadline: const Duration(milliseconds: 100),
+      );
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 300));
+        async.flushMicrotasks();
+      });
+
+      expect(backend.reports.where((r) => r.status == 'timeout'), hasLength(1));
+      final callsAfterDeadline = backend.calls.length;
+
+      // 同一实例上的多次「回前台」：行已不再被跟踪 → 纯 no-op。
+      await manager.recheckPendingInstalls();
+      await manager.recheckPendingInstalls();
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason: 'a resume after the deadline must not re-report or re-arm',
+      );
+      expect(
+        backend.calls.length,
+        callsAfterDeadline,
+        reason: 'the row is no longer tracked, so a resume is a pure no-op',
+      );
+
+      // 模拟一次全新的 App 启动：新实例，校验桥在任何安装点击之前触发。
+      InstallManager.resetForTest();
+      InstallManager.installFacadeForTest = InstallFacade(backend: backend);
+      InstallManager.installedSnapshotCheckForTest =
+          (_) async => unchangedSnapshot;
+      final fresh = InstallManager.instance..setIsAndroidForTest(true);
+      final callsBeforeRestart = backend.calls.length;
+      for (var i = 0; i < 3; i++) {
+        await fresh.recheckPendingInstalls();
+      }
+      expect(
+        backend.reports.where((r) => r.status == 'timeout'),
+        hasLength(1),
+        reason:
+            'a stale pending row must not re-arm a poller across app starts',
+      );
+      expect(
+        backend.calls.length,
+        callsBeforeRestart,
+        reason: 'a fresh instance tracks nothing, so resumes are pure no-ops',
+      );
+    });
+
+    test(
+        '(d) a genuine snapshot change still confirms immediately '
+        '(no regression of acacccea)', () {
+      final logs = _captureDebugPrint();
+      backend.start = platformStart();
+      InstallManager.appInstallerForTest = (_) async {};
+      var current = unchangedSnapshot;
+      InstallManager.installedSnapshotCheckForTest = (_) async => current;
+      final manager = managerWithDeadline(
+        interval: const Duration(milliseconds: 10),
+        deadline: const Duration(milliseconds: 500),
+      );
+
+      fakeAsync((async) {
+        manager.installTask('task-1', apk.path);
+        async.flushMicrotasks();
+        // 安装落地：版本前进 → 差分必须确认，且不得再轮询到 deadline。
+        current = const InstalledSnapshot(versionName: '2.0.0', versionCode: 20);
+        async.elapse(const Duration(milliseconds: 30));
+        async.flushMicrotasks();
+        async.elapse(const Duration(milliseconds: 700));
+        async.flushMicrotasks();
+      });
+
+      expect(
+        backend.reports.where((r) => r.status == 'installed'),
+        hasLength(1),
+        reason: 'a real pre/post change must still confirm immediately',
+      );
+      expect(backend.reports.where((r) => r.status == 'timeout'), isEmpty);
+      expect(
+        logs.where((line) => line.contains('包已安装但快照未变化')),
+        isEmpty,
+        reason: 'a genuine change must not log the unchanged message',
+      );
     });
   });
 
