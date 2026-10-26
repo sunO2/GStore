@@ -231,6 +231,19 @@ class ChannelManager {
     return ChannelType.fromCode(code) ?? ChannelType.custom;
   }
 
+  /// 门面尚未接通数据源的渠道：F-Droid 的仓库索引由 Dart 侧按「每源一个库」下载
+  /// (docs/fdroid_<hash>.db)，core HostRepoPort 既拿不到源配置
+  /// (CoreConfig.fdroid_sources 运行期恒空)，也从不下载索引（查的是另一个空库
+  /// <data>/repo.db）→ 门面搜索/列表恒空。core 侧接通源配置与索引后再移出此集合。
+  static const Set<String> _dartOnlyFacadeCodes = <String>{'fdroid'};
+
+  bool _facadeEligibleCode(String code) =>
+      CoreFlags.channels && !_dartOnlyFacadeCodes.contains(code);
+
+  bool _facadeEligibleType(ChannelType? from) =>
+      CoreFlags.channels &&
+      !_dartOnlyFacadeCodes.contains((from ?? _defaultChannelType).code);
+
   /// Rust `ChannelAppInfo` → Dart `AppSummary`（extra 仍是 JSON 对象）。
   AppSummary _toAppSummary(rust.ChannelAppInfo info) {
     Map<String, dynamic>? extra;
@@ -260,7 +273,7 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final apps = await RustChannelFacade.instance.getAllApps(
@@ -293,7 +306,7 @@ class ChannelManager {
     String code, {
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleCode(code)) {
       final fromType = _resultTypeForCode(code);
       try {
         final apps = await RustChannelFacade.instance.getAllApps(
@@ -324,7 +337,7 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final info = await RustChannelFacade.instance.getAppInfo(
@@ -356,7 +369,7 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final apps = await RustChannelFacade.instance.search(
@@ -388,7 +401,7 @@ class ChannelManager {
     String keyword, {
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleCode(code)) {
       final fromType = _resultTypeForCode(code);
       try {
         final apps = await RustChannelFacade.instance.search(
@@ -420,7 +433,7 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final apps = await RustChannelFacade.instance.searchByCategory(
@@ -451,7 +464,7 @@ class ChannelManager {
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final categories = await RustChannelFacade.instance.getAllCategories(
@@ -573,7 +586,7 @@ class ChannelManager {
 
   /// 检查指定渠道的更新
   Future<ChannelResult<bool>> checkUpdate({ChannelType? from}) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final updated =
@@ -598,7 +611,7 @@ class ChannelManager {
     ChannelType? from,
     Function(int current, int total)? onProgress,
   }) async {
-    if (CoreFlags.channels) {
+    if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
         final updated = await RustChannelFacade.instance
