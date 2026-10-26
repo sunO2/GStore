@@ -35,6 +35,7 @@ import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
@@ -184,6 +185,12 @@ class _RecordingScriptApiBackend implements ScriptApiBackend {
 
   @override
   Future<String> storedApps({required String key}) async => '[]';
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {}
 
   @override
   Future<void> releaseDetail({

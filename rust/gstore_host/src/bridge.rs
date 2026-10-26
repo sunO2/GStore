@@ -4497,6 +4497,18 @@ impl ScriptApi {
         self.inner.stored_apps(&key)
     }
 
+    /// Inserts one app into `key`'s saved `channel_apps` rows.
+    ///
+    /// This is the script-lane counterpart to `ChannelApi::add_app`: it writes
+    /// through the Rust script pack store — the same rows [`Self::stored_apps`]
+    /// reads — so a `js_*` pack never has to be registered as a channels-domain
+    /// channel. `key` must name an installed pack (`js_<stem>`): an unknown key
+    /// is a typed `pack_not_found` error and an empty `app.app_id` is
+    /// `invalid_argument`.
+    pub fn add_app(&self, key: String, app: ChannelAppInfo) -> Result<(), String> {
+        self.inner.add_app(&key, app.into_summary()?)
+    }
+
     /// Releases the `detail.js` runtime bound to `(key, app_id)`.
     ///
     /// Mirrors Dart `JsChannel.releaseDetailChannel`: idempotent, and the next

@@ -275,9 +275,10 @@ abstract class CoreApi implements RustOpaqueInterface {
   ///
   /// Faces for `channel_db`, `channel_env`, `fdroid_sources`, and `pack` route
   /// through [`gstore_core::channel_migration`]; `update_prefs` keeps the
-  /// original JSON-document path. The old source files are never moved or
-  /// deleted by this method (only successfully imported env/fdroid documents
-  /// are removed).
+  /// original JSON-document path. `added_apps_db` and `catalog_db` import the
+  /// legacy Floor catalog into the core `added_apps`/`app_config` tables. The
+  /// old source files are never moved or deleted by this method (only
+  /// successfully imported env/fdroid documents are removed).
   Future<int> importMigrationFile({required String kind, required String path});
 
   Future<int> importSnapshot({required String path});
@@ -541,6 +542,16 @@ abstract class ModuleHandle implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ScriptApi>>
 abstract class ScriptApi implements RustOpaqueInterface {
+  /// Inserts one app into `key`'s saved `channel_apps` rows.
+  ///
+  /// This is the script-lane counterpart to `ChannelApi::add_app`: it writes
+  /// through the Rust script pack store — the same rows [`Self::stored_apps`]
+  /// reads — so a `js_*` pack never has to be registered as a channels-domain
+  /// channel. `key` must name an installed pack (`js_<stem>`): an unknown key
+  /// is a typed `pack_not_found` error and an empty `app.app_id` is
+  /// `invalid_argument`.
+  Future<void> addApp({required String key, required ChannelAppInfo app});
+
   /// Installs one legacy flat pack from zip bytes.
   ///
   /// New packs are decoded with [`gstore_core::channel::PackPolicy::Strict`].

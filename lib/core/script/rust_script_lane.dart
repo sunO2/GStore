@@ -5,6 +5,7 @@ import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
@@ -162,6 +163,21 @@ class RustScriptChannelLane {
     return decodeStoredApps(raw);
   }
 
+  /// Inserts [app] into [code]'s saved `channel_apps` rows through the Rust
+  /// script lane — the same rows [storedApps] reads.
+  ///
+  /// Mirrors Dart `JsChannel.addApp` for the Rust lane: the row is written to
+  /// the script domain's `channel_apps` table (never the channels domain), so a
+  /// `js_*` pack never has to be registered as a channel. The [AppSummary] is
+  /// mapped field-for-field to the FRB `ChannelAppInfo` (no invented values).
+  /// While the flag is off this refuses via [ScriptApi].
+  Future<void> addApp(String code, AppSummary app) async {
+    if (!enabled) {
+      throw const ScriptApiDisabledException();
+    }
+    await _api.addApp(key: code, app: channelAppInfoFromSummary(app));
+  }
+
   /// Decodes the `ScriptApi.storedApps` JSON payload (snake_case `AppSummary`
   /// rows) into [AppSummary]. Exposed for tests.
   @visibleForTesting
@@ -215,3 +231,21 @@ class RustScriptChannelLane {
     return null;
   }
 }
+
+/// Maps [AppSummary] to the FRB `rust.ChannelAppInfo`, mirroring Rust
+/// `ChannelAppInfo::from_summary`: `category` defaults to an empty list, `extra`
+/// is encoded as a JSON object string (null stays null), and the rest pass
+/// through verbatim — no field is invented.
+rust.ChannelAppInfo channelAppInfoFromSummary(AppSummary app) =>
+    rust.ChannelAppInfo(
+      appId: app.appId,
+      packageName: app.packageName,
+      name: app.name,
+      user: app.user,
+      repositories: app.repositories,
+      icon: app.icon,
+      des: app.des,
+      readme: app.readme,
+      category: app.category ?? const <String>[],
+      extraJson: app.extra == null ? null : jsonEncode(app.extra),
+    );

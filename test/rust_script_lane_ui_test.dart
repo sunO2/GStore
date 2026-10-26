@@ -35,6 +35,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
@@ -146,6 +147,12 @@ class _FakeScriptBackend implements ScriptApiBackend {
   @override
   Future<String> storedApps({required String key}) async =>
       jsonEncode(stored[key] ?? const <Object?>[]);
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {}
 
   @override
   Future<void> releaseDetail({

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
 
@@ -92,6 +93,14 @@ class _RecordingScriptBackend implements ScriptApiBackend {
   Future<String> storedApps({required String key}) async {
     calls.add('storedApps:$key');
     return '[]';
+  }
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {
+    calls.add('addApp:$key');
   }
 
   @override

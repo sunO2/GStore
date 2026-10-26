@@ -63,6 +63,11 @@ abstract class ScriptApiBackend {
 
   Future<String> storedApps({required String key});
 
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  });
+
   Future<void> releaseDetail({
     required String key,
     required String appId,
@@ -139,6 +144,13 @@ class FrbScriptApiBackend implements ScriptApiBackend {
   @override
   Future<String> storedApps({required String key}) =>
       _instance.storedApps(key: key);
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) =>
+      _instance.addApp(key: key, app: app);
 
   @override
   Future<void> releaseDetail({
@@ -263,6 +275,20 @@ class ScriptApi {
   Future<String> storedApps({required String key}) async {
     _ensureEnabled();
     return _backend.storedApps(key: key);
+  }
+
+  /// Inserts one app into `key`'s saved `channel_apps` rows.
+  ///
+  /// This is the script-lane counterpart to `ChannelApi.addApp`: it writes the
+  /// script domain's rows (the same rows [storedApps] reads), so a `js_*` pack
+  /// never has to be registered as a channels-domain channel. `key` must name an
+  /// installed pack; the Rust lane rejects an unknown key or an empty `appId`.
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {
+    _ensureEnabled();
+    await _backend.addApp(key: key, app: app);
   }
 
   /// Releases the `detail.js` runtime bound to `(key, app_id)`.

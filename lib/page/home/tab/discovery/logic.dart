@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/core.dart';
@@ -14,7 +13,6 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/script/rust_script_lane.dart';
 
 import 'search_channel.dart';
@@ -639,11 +637,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   /// 用户需在渠道应用列表中选择"入库"才会加入首页
   ///
   /// 返回类型化结果而非 `bool`：
-  /// - Rust 脚本通道（`js_*`）：经 [RustChannelFacade.addApp]（FRB
-  ///   `ChannelApi.addApp`）把 [AppSummary] 映射成 `ChannelAppInfo` 后写入该通道
-  ///   的 `channel_apps` 行；facade 调用失败（例如通道无 driver 时的 typed
-  ///   `not_found`）→ 带真实错误信息的 [SearchSaveFailed]（writeFailed），
-  ///   绝不静默 `false`。
+  /// - Rust 脚本通道（`js_*`）：经 [RustScriptChannelLane.addApp]（FRB
+  ///   `ScriptApi.addApp`）把 [AppSummary] 映射成 `ChannelAppInfo` 后写入脚本域
+  ///   的 `channel_apps` 行；调用失败（例如未知 key 的 typed `pack_not_found`）
+  ///   → 带真实错误信息的 [SearchSaveFailed]（writeFailed），绝不静默 `false`。
   /// - Dart 渠道：走 [IChannel.addApp]（逐字节不变）。
   Future<SearchSaveOutcome> saveSearchToChannel(
     String code,
@@ -685,25 +682,22 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 保存搜索结果到 Rust 脚本通道包（`js_*`）。
   ///
-  /// 经 [RustChannelFacade.addApp]（FRB `ChannelApi.addApp` → `driver(key).add_app`）
-  /// 写入该通道的 `channel_apps` 行，成功后按 Dart 路径同一语义刷新渠道列表
-  /// （[_refreshChannelApps]）与已添加索引（[_updateAddedAppsIndex]）并返回成功。
-  /// facade 调用失败（通道未注册 / 无 driver 的 typed `not_found` 等）→ 返回
-  /// 带真实错误信息的 [SearchSaveFailed]（writeFailed），绝不静默 `false`、绝不
-  /// 写入旧 Dart 渠道库。
+  /// 经 [RustScriptChannelLane.addApp]（FRB `ScriptApi.addApp`）写入**脚本域**的
+  /// `channel_apps` 行——与 [RustScriptChannelLane.storedApps] 读取的行同一张表，
+  /// 因此 `js_*` 通道包无需注册为 channel 域的渠道。成功后按 Dart 路径同一语义
+  /// 刷新渠道列表（[_refreshChannelApps]）与已添加索引（[_updateAddedAppsIndex]）
+  /// 并返回成功。写入失败（未知 key 的 typed `pack_not_found`、非法 app 等）→
+  /// 返回带真实错误信息的 [SearchSaveFailed]（writeFailed），绝不静默 `false`、
+  /// 绝不写入旧 Dart 渠道库。
   Future<SearchSaveOutcome> _saveSearchToRustLane(
     String code,
     AppSummary app,
   ) async {
     try {
-      await RustChannelFacade.instance.addApp(
-        key: code,
-        app: _toChannelAppInfo(app),
-      );
+      await RustScriptChannelLane.instance.addApp(code, app);
     } catch (e) {
       appLog.error('DiscoveryNotifier: $code 保存搜索结果失败 - $e');
-      final message = e is ChannelApiException ? e.message : e.toString();
-      return SearchSaveFailed(SearchSaveFailed.writeFailed, message);
+      return SearchSaveFailed(SearchSaveFailed.writeFailed, e.toString());
     }
 
     // 刷新该渠道的应用列表（与 Dart 路径同一刷新语义：重读通道已保存行）
@@ -1314,23 +1308,6 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
   }
 }
-
-/// [AppSummary] → Rust `ChannelAppInfo`，逐字段镜像 Rust 侧
-/// `ChannelAppInfo::from_summary`（rust/gstore_host/src/bridge.rs:2192）：
-/// `category` 缺省空列表、`extra` 编码为 JSON 对象字符串（null 保持 null），
-/// 其余可选字段原样透传，不臆造值。
-rust.ChannelAppInfo _toChannelAppInfo(AppSummary app) => rust.ChannelAppInfo(
-      appId: app.appId,
-      packageName: app.packageName,
-      name: app.name,
-      user: app.user,
-      repositories: app.repositories,
-      icon: app.icon,
-      des: app.des,
-      readme: app.readme,
-      category: app.category ?? const <String>[],
-      extraJson: app.extra == null ? null : jsonEncode(app.extra),
-    );
 
 /// 发现页 provider（页面级 autoDispose：切走销毁，回来重建加载）。
 final discoveryProvider = NotifierProvider.autoDispose<DiscoveryNotifier, DiscoveryState>(

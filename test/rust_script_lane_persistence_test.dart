@@ -29,6 +29,7 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_api.dart';
@@ -127,6 +128,12 @@ class _InitGatedScriptBackend implements ScriptApiBackend {
     _requireInit();
     return jsonEncode(stored[key] ?? const <Object?>[]);
   }
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {}
 
   @override
   Future<void> releaseDetail({

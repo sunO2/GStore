@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use gstore_core::channel::{validate_channel_key, PackPolicy, PackStore, ScriptChannelStore};
 use gstore_core::db::DbHandle;
-use gstore_core::dto::ChannelKey;
+use gstore_core::dto::{AppSummary, ChannelKey};
 use gstore_core::ports::FileSecretStore;
 #[cfg(test)]
 use gstore_core::ports::HttpPort;
@@ -325,6 +325,27 @@ impl ScriptApiInner {
             .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
         serde_json::to_string(&apps)
             .map_err(|error| format!("internal: encode stored apps: {error}"))
+    }
+
+    /// Inserts one app into `key`'s saved `channel_apps` rows.
+    ///
+    /// Reuses the same bound [`ScriptChannelStore`] that `stored_apps` reads, so
+    /// an inserted row is immediately visible to `stored_apps` — the SQL lives
+    /// once in `script_db` and is never duplicated here. `key` must name an
+    /// installed pack: an unknown key is a typed `pack_not_found` error, never an
+    /// orphan row. An empty `app_id` is a typed `invalid_argument` error.
+    pub(crate) fn add_app(&self, key: &str, app: AppSummary) -> Result<(), String> {
+        let key = self.channel_key(key)?;
+        if app.app_id.trim().is_empty() {
+            return Err("invalid_argument: app.app_id is empty".to_string());
+        }
+        // An unknown key must not write an orphan row: require the pack to exist.
+        self.strict
+            .installed_pack(&key)
+            .map_err(|error| script_pack::pack_err(&error))?;
+        self.store
+            .insert_apps(&key, std::slice::from_ref(&app))
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))
     }
 
     /// Releases the `app_id` detail runtime; unknown ids are a no-op.

@@ -56,6 +56,17 @@ class _FakeScriptBackend implements ScriptApiBackend {
   final Map<String, List<Map<String, Object?>>> scriptResults = {};
   final List<String> runCalls = [];
 
+  /// Script-domain insert records (the lane save path).
+  final List<String> addAppKeys = [];
+  rust.ChannelAppInfo? lastAddedApp;
+
+  /// Invoked with the insert's `(key, app)` before recording, so a test can model
+  /// persistence (make the saved row readable through [storedApps]).
+  void Function(String key, rust.ChannelAppInfo app)? onAddApp;
+
+  /// When non-null, [addApp] throws it (the lane failure path).
+  Object? addAppError;
+
   @override
   Future<void> init({
     required String dataDir,
@@ -134,6 +145,18 @@ class _FakeScriptBackend implements ScriptApiBackend {
   @override
   Future<String> storedApps({required String key}) async =>
       jsonEncode(stored[key] ?? const <Object?>[]);
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {
+    final error = addAppError;
+    if (error != null) throw error;
+    onAddApp?.call(key, app);
+    addAppKeys.add(key);
+    lastAddedApp = app;
+  }
 
   @override
   Future<void> releaseDetail({
@@ -274,35 +297,21 @@ class _FakeEnumChannel extends IChannel {
   Future<void> dispose() async {}
 }
 
-/// Records the FRB `ChannelApi.addApp` calls made through [RustChannelFacade].
+/// The channels-domain facade seam (no FRB dylib in `flutter test`).
 ///
-/// This is the facade seam (no FRB dylib in `flutter test`): a lane save must
-/// route through it with the lane code as key and a faithfully-mapped app, and a
-/// thrown [addAppError] must surface as a typed failure — never a fake success.
-/// Every other facade method is unused by the save path and fails loudly.
+/// A lane save must NOT reach this seam: `ChannelApi.addApp` is for channels-
+/// domain channels and a `js_*` script pack is not one. It records every
+/// `addApp` call so a test can assert the lane path never used it; every other
+/// method is unused and fails loudly.
 class _FakeChannelApiBackend implements ChannelApiBackend {
-  _FakeChannelApiBackend({this.onAddApp, this.addAppError});
-
-  /// Invoked with the facade's `(key, app)` before recording, so a test can
-  /// model persistence (make the saved row readable through the ScriptApi seam).
-  final void Function(String key, rust.ChannelAppInfo app)? onAddApp;
-
-  /// When non-null, [addApp] throws it (the facade failure path).
-  final Object? addAppError;
-
   final List<String> addAppKeys = [];
-  rust.ChannelAppInfo? lastAddedApp;
 
   @override
   Future<void> addApp({
     required String key,
     required rust.ChannelAppInfo app,
   }) async {
-    final error = addAppError;
-    if (error != null) throw error;
-    onAddApp?.call(key, app);
     addAppKeys.add(key);
-    lastAddedApp = app;
   }
 
   @override
@@ -485,11 +494,13 @@ void main() {
           reason: 'the lane search must go through ScriptApi.run(searchApps)');
     });
 
-    test('save (a) saving a search result into a lane code calls the facade '
-        'addApp with a faithfully-mapped app and returns success', () async {
+    test('save (a) saving a search result into a lane code calls the '
+        'script-domain addApp with a faithfully-mapped app and returns success',
+        () async {
       final backend = _FakeScriptBackend();
       final code = await importLanePack(backend);
 
+      // (c) the channels-domain facade is installed but must NOT be used.
       final channelBackend = _FakeChannelApiBackend();
       RustChannelFacade.installBackend(channelBackend);
 
@@ -512,10 +523,12 @@ void main() {
       final outcome = await notifier.saveSearchToChannel(code, app);
 
       expect(outcome, isA<SearchSaved>(),
-          reason: 'a lane save must succeed when the facade write succeeds');
-      expect(channelBackend.addAppKeys, [code],
-          reason: 'the facade addApp must be called with the lane code as key');
-      final mapped = channelBackend.lastAddedApp!;
+          reason: 'a lane save must succeed when the script write succeeds');
+      expect(backend.addAppKeys, [code],
+          reason: 'the lane save must go through ScriptApi.addApp(key=code)');
+      expect(channelBackend.addAppKeys, isEmpty,
+          reason: 'ChannelApi.addApp must NOT be used for a lane code');
+      final mapped = backend.lastAddedApp!;
       expect(mapped.appId, 'com.probe');
       expect(mapped.packageName, 'com.probe.pkg');
       expect(mapped.name, 'Probe App');
@@ -534,9 +547,6 @@ void main() {
       final backend = _FakeScriptBackend();
       final code = await importLanePack(backend);
 
-      final channelBackend = _FakeChannelApiBackend();
-      RustChannelFacade.installBackend(channelBackend);
-
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
 
@@ -552,7 +562,7 @@ void main() {
         ),
       );
 
-      final mapped = channelBackend.lastAddedApp!;
+      final mapped = backend.lastAddedApp!;
       expect(mapped.packageName, isNull);
       expect(mapped.readme, isNull);
       expect(mapped.extraJson, isNull);
@@ -560,17 +570,13 @@ void main() {
           reason: 'a missing category must map to an empty list, not invented');
     });
 
-    test('save (b) a facade error surfaces as a typed failure, not a silent '
-        'success', () async {
+    test('save (b) a script-domain error surfaces as a typed failure, not a '
+        'silent success', () async {
       final backend = _FakeScriptBackend();
       final code = await importLanePack(backend);
 
-      RustChannelFacade.installBackend(_FakeChannelApiBackend(
-        addAppError: ChannelApiException(
-          'not_found',
-          'channel driver not registered: $code',
-        ),
-      ));
+      // The Rust lane rejects an unknown key with a typed `pack_not_found`.
+      backend.addAppError = Exception('pack_not_found: pack not installed: $code');
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
@@ -587,10 +593,10 @@ void main() {
         ),
       );
       expect(outcome, isA<SearchSaveFailed>(),
-          reason: 'a facade failure must never be a silent success');
+          reason: 'a script-domain failure must never be a silent success');
       final failed = outcome as SearchSaveFailed;
       expect(failed.code, SearchSaveFailed.writeFailed);
-      expect(failed.message, contains('channel driver not registered'));
+      expect(failed.message, contains('pack_not_found'));
     });
 
     test('save (d) a successful lane save runs the refresh hooks '
@@ -602,11 +608,9 @@ void main() {
       backend.stored[code] = [];
 
       // Model persistence: the added app becomes readable via ScriptApi.
-      RustChannelFacade.installBackend(_FakeChannelApiBackend(
-        onAddApp: (key, app) {
-          backend.stored[key] = [_storedRow(appId: app.appId, name: app.name)];
-        },
-      ));
+      backend.onAddApp = (key, app) {
+        backend.stored[key] = [_storedRow(appId: app.appId, name: app.name)];
+      };
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
