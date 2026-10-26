@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart' show JsChannelDetailProxy;
@@ -17,8 +18,15 @@ import 'package:gstore/page/detail/state.dart';
 /// [JsChannelDetailProxy] the Dart lane used, so the page loads its apps/detail
 /// instead of a silent blank.
 ///
-/// A failed/unimplemented resolution sets a typed `errorMessage` on the bound
-/// state (the page shows the retryable error body) — never `SizedBox.shrink()`.
+/// A script that returns no detail is **not** a hard failure: the Rust host
+/// collapses an unimplemented `getAppDetail` (undefined), a `{ok:false}` reply
+/// and a JS throw into the bare JSON `null`, so [ScriptApi.run] succeeds and
+/// returns `"null"`. That null reply keeps the prefill already rendered
+/// (appId/name/icon/description/packageName + empty `downloads`/`sections`) and
+/// logs a non-fatal signal — the page shows the request's basic info instead of
+/// a full-page error. Only a real exception (e.g. pack-not-found, a typed FRB
+/// failure, or malformed JSON) sets a typed `errorMessage` on the bound state
+/// (the page shows the retryable error body) — never `SizedBox.shrink()`.
 class RustScriptDetailChannel implements IDetailChannel {
   RustScriptDetailChannel({
     required this.appId,
@@ -79,8 +87,15 @@ class RustScriptDetailChannel implements IDetailChannel {
           detailData: Map<String, dynamic>.from(decoded),
         );
       } else {
-        // Typed failure, never a silent blank page.
-        state.errorMessage = '详情加载失败（脚本未返回详情数据）';
+        // Null / non-object reply = "the script has no detail for this app".
+        // The Rust host folds undefined (no `getAppDetail` case), `{ok:false}`
+        // and a JS throw into the bare JSON `null`, so this is NOT a failure:
+        // keep the prefill already rendered (the page shows the basic info,
+        // never a full-page error) and emit a non-fatal signal only.
+        debugPrint(
+          '[RustScriptDetailChannel] no detail from $channelKey for $appId '
+          '(script returned $raw); keeping the prefill',
+        );
       }
     } catch (e) {
       state.errorMessage = '详情加载失败: $e';
