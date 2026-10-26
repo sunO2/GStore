@@ -17,6 +17,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
@@ -148,7 +149,9 @@ class _PersistentScriptBackend implements ScriptApiBackend {
   }) async {}
 }
 
-/// Minimal aggregate seam: records `toggleApp` and serves a mutable index.
+/// Minimal aggregate seam: serves the added index (still read through
+/// [IAggregateService] by `_updateAddedAppsIndex`). Records any `toggleApp`
+/// call so a test can prove the write no longer goes through the aggregate.
 class _RecordingAggregate implements IAggregateService {
   final List<(String, String)> toggleCalls = [];
   Map<String, Set<String>> index = {};
@@ -171,6 +174,26 @@ class _RecordingAggregate implements IAggregateService {
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
       'unused aggregate method: ${invocation.memberName}');
+}
+
+/// Records the added-apps facade calls the 入库 path makes. The facade routes
+/// to this seam when `CoreFlags.catalog` is off (the case in this suite).
+class _RecordingAddedAppsBackend implements AddedAppsBackend {
+  final List<(String, String)> toggleCalls = [];
+  int notifyCalls = 0;
+
+  @override
+  Future<bool> toggle(String channel, String appId) async {
+    toggleCalls.add((channel, appId));
+    return true;
+  }
+
+  @override
+  Future<void> notifyChanged() async => notifyCalls++;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+      'unused added-apps backend method: ${invocation.memberName}');
 }
 
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -262,6 +285,8 @@ void main() {
     ScriptApi.resetBackend();
     ScriptChannelService.resetForTest();
     RustScriptChannelLane.resetForTest();
+    AddedAppsFacade.backendOverride = null;
+    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -317,11 +342,12 @@ void main() {
   });
 
   testWidgets(
-      'tapping 入库 (toggleApp) on a lane card reaches the home aggregate',
-      (tester) async {
+      'tapping 入库 (toggleApp) on a lane card reaches the home library '
+      'through the AddedAppsFacade', (tester) async {
     late _PersistentScriptBackend backend;
     late String code;
     late _RecordingAggregate agg;
+    late _RecordingAddedAppsBackend facadeBackend;
     late DiscoveryNotifier notifier;
     late ProviderContainer container;
 
@@ -331,10 +357,15 @@ void main() {
       backend = _PersistentScriptBackend();
       code = await importLanePack(backend);
       backend.stored[code] = [_row('com.probe', 'Probe App')];
+      // The index read still goes through IAggregateService.
       agg = _RecordingAggregate()..index = {
         code: {'com.probe'},
       };
       ModuleManager.instance.bindByType(IAggregateService, agg);
+      // `catalog` is off here, so the facade must route the write to the legacy
+      // seam — not the legacy AppAggregatorManager write (which is guarded).
+      facadeBackend = _RecordingAddedAppsBackend();
+      AddedAppsFacade.legacyBackendOverride = facadeBackend;
       final made = makeContainer();
       container = made.$1;
       notifier = made.$2;
@@ -361,8 +392,12 @@ void main() {
 
     await tester.runAsync(() => notifier.toggleApp(ctx, code, _rowApp));
 
-    expect(agg.toggleCalls, contains((code, 'com.probe')),
-        reason: '入库 on a lane code must reach IAggregateService.toggleApp');
+    expect(facadeBackend.toggleCalls, contains((code, 'com.probe')),
+        reason: '入库 on a lane code must reach the AddedAppsFacade.toggle');
+    expect(facadeBackend.notifyCalls, greaterThan(0),
+        reason: 'a successful 入库 must announce the change through the facade');
+    expect(agg.toggleCalls, isEmpty,
+        reason: 'the write must NOT go through the legacy aggregate writer');
   });
 }
 

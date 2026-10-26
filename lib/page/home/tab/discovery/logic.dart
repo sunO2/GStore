@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -277,11 +278,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         final isLane = channelInstance == null && _isRustLaneCode(channelCode);
         if (channelInstance != null || isLane) {
           try {
-            // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
-            await _aggregator?.toggleApp(
-              channelCode: channelCode,
-              appInfo: appInfo,
-            );
+            // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标。
+            // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
+            // flag off 回落旧 backend；不再经 _aggregator 的旧 catalog 写守卫。
+            await AddedAppsFacade.instance.toggle(channelCode, appInfo.appId);
             successCount++;
           } catch (e) {
             failCount++;
@@ -296,6 +296,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       selectedApps: const {},
       isMultiSelectMode: false,
     );
+
+    // 通知其余 UI（首页）刷新：flag on 刷新 core 投影，flag off 走旧广播流
+    await AddedAppsFacade.instance.notifyAppsChanged();
 
     // 刷新数据
     await _updateAddedAppsIndex();
@@ -544,15 +547,17 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (channelInstance == null && !isLane) return;
 
     try {
-      // 使用聚合管理器切换应用状态（aggregate 模块下线时降级为未添加）
-      final added = await _aggregator?.toggleApp(
-        channelCode: code,
-        appInfo: appInfo,
-      ) ??
-          false;
+      // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
+      // flag off 回落旧 backend。canonical id 取 appInfo.appId——不再经
+      // _aggregator 的旧 catalog 写守卫（flag on 时旧守卫抛
+      // LegacyWriteBlocked(catalog)，正是用户报告的报错）。
+      final added = await AddedAppsFacade.instance.toggle(code, appInfo.appId);
 
       // 重新加载该渠道的应用列表
       await _refreshChannelApps(code);
+
+      // 通知其余 UI（首页）刷新：flag on 刷新 core 投影，flag off 走旧广播流
+      await AddedAppsFacade.instance.notifyAppsChanged();
 
       // 刷新已添加应用索引（更新入库状态图标）
       await _updateAddedAppsIndex();
@@ -631,12 +636,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (result == null) return; // 取消，不保存
 
     try {
-      // 保存标签（用规范化 appId，与聚合库 key 一致）
-      await _aggregator?.setTags(
-        channelCode: code,
-        appId: canonicalId,
-        tags: result,
-      );
+      // 保存标签（用规范化 appId，与聚合库 key 一致）；走 facade 分流
+      await AddedAppsFacade.instance.setTags(code, canonicalId, result);
+      // 标签变化 → 通知其余 UI（首页）刷新（与旧 setTags 的 _notifyAppsChanged 同义）
+      await AddedAppsFacade.instance.notifyAppsChanged();
     } catch (e) {
       appLog.error('DiscoveryNotifier: 保存标签失败 - $e');
       if (!_disposed) {
@@ -910,10 +913,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (channelInstance == null && !isLane) return;
 
     try {
-      await _aggregator?.addApps(
-        channelCode: code,
-        appInfos: apps,
-      );
+      // 逐应用走 facade（facade 无批量等价方法）；canonical id = app.appId，
+      // flag on 写 Rust core / flag off 回落旧 backend，不再经旧 catalog 写守卫。
+      for (final app in apps) {
+        await AddedAppsFacade.instance.add(code, app.appId, appInfo: app);
+      }
+      await AddedAppsFacade.instance.notifyAppsChanged();
       if (!_disposed) {
         AppDialogs.showSuccess('已添加 ${apps.length} 个应用', title: '批量添加');
       }
@@ -930,7 +935,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (channelInstance == null) return;
 
     try {
-      await _aggregator?.clearChannel(code);
+      // 走 facade 分流：flag on 清 Rust core / flag off 回落旧 backend
+      await AddedAppsFacade.instance.clearChannel(code);
+      await AddedAppsFacade.instance.notifyAppsChanged();
       if (!_disposed) {
         AppDialogs.showInfo('已清空 $code 渠道的所有应用', title: '已清空');
       }
