@@ -21,6 +21,11 @@ import 'package:gstore/db/apps/AppInfo.dart' as db;
 
 /// Records every added-apps facade call so a test can prove which lane ran and
 /// which one did not.
+///
+/// The backend is stateful for the added-app store ([added]) so a test can drive
+/// a real write→read round trip: `add`/`toggle`/`remove` mutate [added] and
+/// `list`/`listChannel`/`isAdded` derive from it. That is what lets a test prove
+/// the badge index is rebuilt from the facade after a write.
 class RecordingAddedApps implements AddedAppsBackend {
   RecordingAddedApps(this.label);
 
@@ -30,28 +35,79 @@ class RecordingAddedApps implements AddedAppsBackend {
   final List<(String, String)> addCalls = [];
   final List<(String, String, List<String>)> setTagsCalls = [];
   final List<String> clearCalls = [];
+  final List<(String, String)> removeCalls = [];
+  final List<(String, String)> isAddedCalls = [];
+  final List<(String, String)> tagsCalls = [];
   int notifyCalls = 0;
+  int listCalls = 0;
+
+  /// The added-app store (channelId → set of appIds), mutated by the write
+  /// methods and read by [list]/[listChannel]/[isAdded].
+  final Map<String, Set<String>> added = {};
+
+  /// Per-app tag store keyed by `channel:appId`.
+  final Map<String, List<String>> tagsByApp = {};
 
   @override
   Future<void> add(String channel, String appId,
       {int? sortOrder, AppSummary? appInfo}) async {
     addCalls.add((channel, appId));
+    added.putIfAbsent(channel, () => <String>{}).add(appId);
   }
 
   @override
   Future<bool> toggle(String channel, String appId) async {
     toggleCalls.add((channel, appId));
+    final set = added.putIfAbsent(channel, () => <String>{});
+    if (set.remove(appId)) return false;
+    set.add(appId);
     return true;
+  }
+
+  @override
+  Future<bool> remove(String channel, String appId) async {
+    removeCalls.add((channel, appId));
+    return added[channel]?.remove(appId) ?? false;
+  }
+
+  @override
+  Future<bool> isAdded(String channel, String appId) async {
+    isAddedCalls.add((channel, appId));
+    return added[channel]?.contains(appId) ?? false;
+  }
+
+  @override
+  Future<List<AddedAppInfo>> list() async {
+    listCalls++;
+    return [
+      for (final entry in added.entries)
+        for (final appId in entry.value)
+          AddedAppInfo(channelId: entry.key, appId: appId),
+    ];
+  }
+
+  @override
+  Future<List<AddedAppInfo>> listChannel(String channel) async => [
+        for (final appId in added[channel] ?? const <String>{})
+          AddedAppInfo(channelId: channel, appId: appId),
+      ];
+
+  @override
+  Future<List<String>> tags(String channel, String appId) async {
+    tagsCalls.add((channel, appId));
+    return tagsByApp['$channel:$appId'] ?? const [];
   }
 
   @override
   Future<void> setTags(String channel, String appId, List<String> tags) async {
     setTagsCalls.add((channel, appId, tags));
+    tagsByApp['$channel:$appId'] = List.of(tags);
   }
 
   @override
   Future<void> clearChannel(String channel) async {
     clearCalls.add(channel);
+    added.remove(channel);
   }
 
   @override

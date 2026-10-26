@@ -424,12 +424,26 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   }
 
   /// 更新已添加应用索引
+  ///
+  /// 读路径与写路径同源：经 [AddedAppsFacade] 读取（flag on 读 Rust core 投影、
+  /// flag off 回落旧 backend）。此前这里直读旧 [IAggregateService]，flag on 时
+  /// 写入落 core、读却读旧 Dart 库 → 角标永远不亮（用户报告「选择后没有已入库
+  /// 角标」，且再次点击报「已从首页移除」，所有渠道均如此）。
   Future<void> _updateAddedAppsIndex() async {
-    // aggregate 模块下线 → 注册表取不到服务，跳过索引更新
-    final aggregator = _aggregator;
-    if (aggregator == null) return;
-    final index = await aggregator.getAddedAppsIndex();
+    final List<AddedAppInfo> apps;
+    try {
+      apps = await AddedAppsFacade.instance.list();
+    } catch (e) {
+      // 后端不可用（模块下线/DB 未就绪）时保留上一次索引，等价旧「取不到服务跳过」
+      appLog.error('DiscoveryNotifier: 读取已入库索引失败 - $e');
+      return;
+    }
     if (_disposed) return;
+    // 与旧 getAddedAppsIndex() 同形：channelId -> Set<appId>，供角标/筛选消费。
+    final index = <String, Set<String>>{};
+    for (final app in apps) {
+      index.putIfAbsent(app.channelId, () => <String>{}).add(app.appId);
+    }
     state = state.copyWith(addedAppsIndex: index);
   }
 
@@ -606,10 +620,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         ? await channelInstance.canonicalAppId(appInfo)
         : appInfo.appId;
 
-    // 读取当前标签（用规范化 appId）
-    final currentTags = await _aggregator
-            ?.getTags(channelCode: code, appId: canonicalId) ??
-        const [];
+    // 读取当前标签（用规范化 appId）；读路径与写路径同源：走 AddedAppsFacade
+    // （flag on 读 Rust core / flag off 回落旧 backend），不再直读旧聚合服务。
+    final currentTags =
+        await AddedAppsFacade.instance.tags(code, canonicalId);
 
     // 加载预置分类：本地库 AppCategory 的 description 作为标签值
     var presetTags = <String>[];
@@ -784,11 +798,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         return false;
       }
 
-      // 若已添加到首页，同步移除（aggregate 模块下线时跳过）
-      final aggregator = _aggregator;
-      if (aggregator == null) return false;
-      if (await aggregator.isAppAdded(channelCode: code, appId: appId)) {
-        await aggregator.removeApp(channelCode: code, appId: appId);
+      // 若已添加到首页，同步移除——读/写同源经 facade（flag on core / flag off
+      // 旧 backend）；不再直读旧聚合服务，避免 flag on 时「删了但索引仍在」。
+      if (await AddedAppsFacade.instance.isAdded(code, appId)) {
+        await AddedAppsFacade.instance.remove(code, appId);
       }
 
       // 刷新渠道列表

@@ -182,11 +182,22 @@ class _RecordingAddedAppsBackend implements AddedAppsBackend {
   final List<(String, String)> toggleCalls = [];
   int notifyCalls = 0;
 
+  /// The read side of the facade (`list`), so `_updateAddedAppsIndex` — which now
+  /// reads through the facade, not the aggregate — returns a real index.
+  final Map<String, Set<String>> added = {};
+
   @override
   Future<bool> toggle(String channel, String appId) async {
     toggleCalls.add((channel, appId));
     return true;
   }
+
+  @override
+  Future<List<AddedAppInfo>> list() async => [
+        for (final entry in added.entries)
+          for (final appId in entry.value)
+            AddedAppInfo(channelId: entry.key, appId: appId),
+      ];
 
   @override
   Future<void> notifyChanged() async => notifyCalls++;
@@ -357,15 +368,15 @@ void main() {
       backend = _PersistentScriptBackend();
       code = await importLanePack(backend);
       backend.stored[code] = [_row('com.probe', 'Probe App')];
-      // The index read still goes through IAggregateService.
-      agg = _RecordingAggregate()..index = {
-        code: {'com.probe'},
-      };
-      ModuleManager.instance.bindByType(IAggregateService, agg);
+      // The added index is now read through the facade; seed its read side.
       // `catalog` is off here, so the facade must route the write to the legacy
       // seam — not the legacy AppAggregatorManager write (which is guarded).
-      facadeBackend = _RecordingAddedAppsBackend();
+      facadeBackend = _RecordingAddedAppsBackend()
+        ..added[code] = {'com.probe'};
       AddedAppsFacade.legacyBackendOverride = facadeBackend;
+      // The aggregate must stay untouched: bind it so a stray write is recorded.
+      agg = _RecordingAggregate();
+      ModuleManager.instance.bindByType(IAggregateService, agg);
       final made = makeContainer();
       container = made.$1;
       notifier = made.$2;
@@ -396,6 +407,8 @@ void main() {
         reason: '入库 on a lane code must reach the AddedAppsFacade.toggle');
     expect(facadeBackend.notifyCalls, greaterThan(0),
         reason: 'a successful 入库 must announce the change through the facade');
+    expect(notifier.state.addedAppsIndex[code], contains('com.probe'),
+        reason: 'the added index must be rebuilt from the facade after 入库');
     expect(agg.toggleCalls, isEmpty,
         reason: 'the write must NOT go through the legacy aggregate writer');
   });

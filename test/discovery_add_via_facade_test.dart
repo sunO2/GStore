@@ -144,8 +144,9 @@ void main() {
           reason: 'a successful write must call notifyAppsChanged()');
     });
 
-    testWidgets('(d) refresh hooks run after a successful add',
-        (tester) async {
+    testWidgets(
+        '(d) refresh hooks run after a successful add, and the index is rebuilt '
+        'from the facade (not the legacy aggregate)', (tester) async {
       final core = RecordingAddedApps('core');
       AddedAppsFacade.backendOverride = core;
 
@@ -157,25 +158,24 @@ void main() {
 
       final (_, notifier) = await boot(tester, catalog: true, load: true);
 
-      // Bind the refreshed index only AFTER the initial load settles, so only
-      // the write's _updateAddedAppsIndex observes it.
-      final indexCallsBefore = agg.indexCalls;
+      // Capture the pre-write counters: only the write's refresh hooks may bump
+      // them (the initial load already settled).
       final refreshCallsBefore = channel.getAllAppsCalls;
-      agg.index = {
-        'fdroid': {'com.added'},
-      };
+      final listCallsBefore = core.listCalls;
 
       final ctx = await unmountedContext(tester);
       await tester.runAsync(() => notifier.toggleApp(ctx, 'fdroid', sampleApp));
 
       expect(channel.getAllAppsCalls, greaterThan(refreshCallsBefore),
           reason: '_refreshChannelApps must re-read the channel after the write');
-      expect(agg.indexCalls, greaterThan(indexCallsBefore),
-          reason: '_updateAddedAppsIndex must run after the write');
-      expect(notifier.state.addedAppsIndex['fdroid'], contains('com.added'),
-          reason: 'the refreshed index must be applied to state');
+      expect(core.listCalls, greaterThan(listCallsBefore),
+          reason: '_updateAddedAppsIndex must re-read the facade after the write');
+      expect(notifier.state.addedAppsIndex['fdroid'], contains(sampleApp.appId),
+          reason: 'the index rebuilt from the facade must reflect the add');
       expect(core.notifyCalls, greaterThan(0),
           reason: 'notifyAppsChanged() must run after the write');
+      expect(agg.indexCalls, 0,
+          reason: 'the read must NOT go through the legacy aggregate service');
     });
 
     testWidgets('(c2) batch addAllFromChannel adds each app through the facade',

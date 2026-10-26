@@ -22,6 +22,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
@@ -44,6 +45,8 @@ import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/home/tab/discovery/logic.dart';
 import 'package:gstore/page/home/tab/discovery/search_channel.dart';
+
+import 'support/discovery_facade_seams.dart';
 
 /// In-memory `ScriptApiBackend` (the FRB seam). Serves `list`/`storedApps`/`run`
 /// from its own maps and records `run` calls, so the assertions prove the UI
@@ -407,6 +410,8 @@ void main() {
     ScriptChannelService.resetForTest();
     RustScriptChannelLane.resetForTest();
     RustChannelFacade.resetBackend();
+    AddedAppsFacade.backendOverride = null;
+    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -600,7 +605,8 @@ void main() {
     });
 
     test('save (d) a successful lane save runs the refresh hooks '
-        '(_refreshChannelApps + _updateAddedAppsIndex)', () async {
+        '(_refreshChannelApps + _updateAddedAppsIndex through the facade)',
+        () async {
       final backend = _FakeScriptBackend();
       final code = await importLanePack(backend);
       // No saved rows yet: the slot starts empty, so the save must be what makes
@@ -623,15 +629,16 @@ void main() {
       expect(notifier.state.channelApps[code], isEmpty,
           reason: 'precondition: no saved rows before the save');
 
-      // Bind the aggregate seam only after the initial load settles, so ONLY the
-      // save's _updateAddedAppsIndex observes it.
-      final agg = _FakeAggregateService();
-      agg.index = {
-        code: {'com.new'},
-      };
+      // Bind the read seams only after the initial load settles, so ONLY the
+      // save's _updateAddedAppsIndex observes them. `catalog` is off here, so the
+      // facade routes the read to the legacy backend, NOT the aggregate service.
+      final legacyBackend = RecordingAddedApps('legacy')
+        ..added[code] = {'com.new'};
+      AddedAppsFacade.legacyBackendOverride = legacyBackend;
+      final agg = _FakeAggregateService()..index = {code: {'com.new'}};
       ModuleManager.instance.bindByType(IAggregateService, agg);
       addTearDown(() => ModuleManager.instance.unbindByType(IAggregateService));
-      final callsBefore = agg.getAddedAppsIndexCalls;
+      final listCallsBefore = legacyBackend.listCalls;
 
       final outcome = await notifier.saveSearchToChannel(
         code,
@@ -649,10 +656,12 @@ void main() {
       expect(notifier.state.channelApps[code]!.map((a) => a.appId),
           contains('com.new'),
           reason: '_refreshChannelApps must re-read the lane saved rows');
-      expect(agg.getAddedAppsIndexCalls, greaterThan(callsBefore),
-          reason: '_updateAddedAppsIndex must run after a lane save');
+      expect(legacyBackend.listCalls, greaterThan(listCallsBefore),
+          reason: '_updateAddedAppsIndex must read the facade after a lane save');
       expect(notifier.state.addedAppsIndex[code], contains('com.new'),
           reason: 'the refreshed added index must be applied to state');
+      expect(agg.getAddedAppsIndexCalls, 0,
+          reason: 'the read must NOT go through the legacy aggregate service');
     });
   });
 
