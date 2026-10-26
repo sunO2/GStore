@@ -10,6 +10,7 @@ import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/model/AppIdentity.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用聚合管理器
@@ -595,6 +596,14 @@ class AppAggregatorManager implements IAggregateService {
       try {
         final channel = _channelManager.getChannelByCode(channelCode);
         if (channel == null) {
+          // Rust 脚本通道（`js_<stem>`）刻意不注册为 Dart channel，
+          // getChannelByCode 恒返回 null；若直接丢弃，入库成功的 JS 应用永远
+          // 不出现在首页（"js渠道入库成功，但是首页不显示"）。flag on 且命中
+          // 通道包时走 lane 分支取真实元数据，其余未知渠道保持原有丢弃语义。
+          final lane = RustScriptChannelLane.instance;
+          if (lane.enabled && lane.packFor(channelCode) != null) {
+            return _aggregateRustLaneApp(addedApp, mergeCategories);
+          }
           debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
           return null;
         }
@@ -655,6 +664,40 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   // ==================== 私有方法 ====================
+
+  /// 聚合一个 Rust 脚本通道（`js_<stem>`）行。
+  ///
+  /// 通道包刻意不注册为 Dart channel，`getChannelByCode` 恒返回 null；此分支
+  /// （flag on 且 [RustScriptChannelLane.packFor] 命中）从通道已保存行
+  /// （[RustScriptChannelLane.storedApps]）按 appId 取真实元数据（name/icon/...），
+  /// 匹配不到则回落到 appId 占位；分类合并与其他分支一致。
+  ///
+  /// `channel` 用 [ChannelType.custom]（枚举无脚本类型；badge 渲染为 'APP' +
+  /// primary 品牌色，不改动枚举本身）。`isFromCache: false`：这是通道的真实数据，
+  /// 不是缓存兜底。读取失败由调用方的 catch 兜底（应用仍会出现）。
+  Future<AggregatedAppInfo> _aggregateRustLaneApp(
+    AddedAppInfo addedApp,
+    List<String> Function(AppSummary summary, String key) mergeCategories,
+  ) async {
+    final channelCode = addedApp.channelId;
+    final key = '${addedApp.channelId}:${addedApp.appId}';
+    final laneApps = await RustScriptChannelLane.instance.storedApps(channelCode);
+    var summary = _createAppSummaryFromAdded(addedApp);
+    for (final app in laneApps) {
+      if (app.appId == addedApp.appId) {
+        summary = app;
+        break;
+      }
+    }
+    final merged = mergeCategories(summary, key);
+    return AggregatedAppInfo(
+      addedAppInfo: addedApp,
+      appInfo: merged.isEmpty ? summary : summary.copyWith(category: merged),
+      channel: ChannelType.custom,
+      channelCode: channelCode,
+      isFromCache: false,
+    );
+  }
 
   /// 从 AddedAppInfo 创建占位 AppSummary（渠道查询失败时兜底）
   /// 聚合库只存引用，无应用信息副本；兜底显示 appId 与空图标（UI 占位）
