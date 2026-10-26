@@ -273,7 +273,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
       if (appInfo != null) {
         final channelInstance = _channelManager?.getChannelByCode(channelCode);
-        if (channelInstance != null) {
+        // Rust lane code 无 Dart 渠道实例；聚合层用原始 appId 落库，仍可入库。
+        final isLane = channelInstance == null && _isRustLaneCode(channelCode);
+        if (channelInstance != null || isLane) {
           try {
             // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
             await _aggregator?.toggleApp(
@@ -531,9 +533,15 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   }
 
   /// 添加/移除应用（添加到聚合管理器，用于首页显示）
+  ///
+  /// Rust 脚本通道（`js_*`）在 flag on 时不在 Dart 渠道注册表里，故不能要求
+  /// [ChannelManager.getChannelByCode] 命中——否则点卡片「入库」会静默 no-op
+  /// （用户报告「无法入库」）。聚合层 [IAggregateService] 对无渠道实例的 code
+  /// 用原始 appId 落库，因此 lane code 直接走聚合即可。
   Future<void> toggleApp(BuildContext context, String code, AppSummary appInfo) async {
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
 
     try {
       // 使用聚合管理器切换应用状态（aggregate 模块下线时降级为未添加）
@@ -586,8 +594,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     // 关键：标签 key 必须与聚合库一致——addApp 落库用的是 canonicalAppId 规范化后的 appId
     // （如 GitHub 收录后为真实包名），原始 appId（如 owner/repo）作 key 会匹配不到聚合库
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
-    final canonicalId = await channelInstance.canonicalAppId(appInfo);
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
+    // lane code 无 Dart 渠道可规范化：聚合层对无渠道实例的 code 用原始 appId，保持一致。
+    final canonicalId = channelInstance != null
+        ? await channelInstance.canonicalAppId(appInfo)
+        : appInfo.appId;
 
     // 读取当前标签（用规范化 appId）
     final currentTags = await _aggregator
@@ -631,6 +643,16 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         AppDialogs.showError('保存标签失败：$e');
       }
     }
+  }
+
+  /// Whether [code] names an installed Rust-lane pack (`js_*`) this process owns.
+  ///
+  /// The lane pack is deliberately NOT a Dart channels-domain channel, so a lane
+  /// code never resolves through [ChannelManager]; every "入库"/refresh path must
+  /// recognise it here instead of requiring a Dart channel instance.
+  bool _isRustLaneCode(String code) {
+    final lane = RustScriptChannelLane.instance;
+    return lane.enabled && lane.packFor(code) != null;
   }
 
   /// 保存搜索结果到渠道数据库（不直接入库首页）
@@ -884,7 +906,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     final apps = state.channelApps[code] ?? [];
     if (apps.isEmpty) return;
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
 
     try {
       await _aggregator?.addApps(

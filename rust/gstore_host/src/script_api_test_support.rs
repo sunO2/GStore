@@ -66,6 +66,26 @@ pub(crate) fn harness_with_cumulative(
     Harness { api, root }
 }
 
+/// Re-opens the same data/files/cache roots as a fresh `ScriptApiInner`.
+///
+/// Simulates an app restart: a brand-new core `DbHandle` over the same files, so
+/// a row that survives here really is on disk and not just in a live connection.
+pub(crate) fn reopen(harness: &Harness) -> ScriptApiInner {
+    let data = harness.root.join("data");
+    let files = harness.root.join("files");
+    let cache = harness.root.join("cache");
+    ScriptApiInner::init_with_ports(
+        data.to_string_lossy().into_owned(),
+        files.to_string_lossy().into_owned(),
+        cache.to_string_lossy().into_owned(),
+        std::sync::Arc::new(FakeHttpPort::new()),
+        Duration::from_millis(200),
+        Duration::from_millis(100),
+        gstore_script::SandboxLimits::default().cumulative_eval_budget,
+    )
+    .expect("reopen ScriptApi")
+}
+
 /// Harness with a caller-supplied bounded script transport (transport-cap tests).
 pub(crate) fn harness_with_script_http(
     tag: &str,
