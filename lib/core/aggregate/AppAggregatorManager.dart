@@ -502,7 +502,7 @@ class AppAggregatorManager implements IAggregateService {
   @override
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
     final addedApps = await getAllAddedApps();
-    return _aggregateWithMeta(addedApps);
+    return aggregateWithMeta(addedApps, tagsIndex: await getAllTagsIndex());
   }
 
   /// 分页获取聚合应用详情
@@ -522,19 +522,26 @@ class AppAggregatorManager implements IAggregateService {
     }
 
     final end = (offset + limit > total) ? total : offset + limit;
-    final apps = await _aggregateWithMeta(addedApps.sublist(offset, end));
+    final apps = await aggregateWithMeta(
+      addedApps.sublist(offset, end),
+      tagsIndex: await getAllTagsIndex(),
+    );
     return (apps, total);
   }
 
-  /// 读取标签索引 + 分类映射，并对给定切片执行分片并行渠道详情聚合
-  Future<List<AggregatedAppInfo>> _aggregateWithMeta(
-    List<AddedAppInfo> addedApps,
-  ) async {
+  /// 读取分类映射，并对给定切片执行分片并行渠道详情聚合。
+  ///
+  /// **纯合并**：行与标签索引由调用方提供（`addedApps` + `tagsIndex`），本方法
+  /// 不再读聚合库（无 `getAllAddedApps()` / `getAllTagsIndex()`），只做渠道详情
+  /// 分片查询与分类归一化。因此 `AddedAppsFacade` 可以按 flag 从核心/旧 backend
+  /// 取行与标签后委托此方法——本方法既不读 catalog 库也不回调 facade，任意 flag
+  /// 取值都不会递归。
+  Future<List<AggregatedAppInfo>> aggregateWithMeta(
+    List<AddedAppInfo> addedApps, {
+    required Map<String, List<String>> tagsIndex,
+  }) async {
     const sliceSize = 8;
     debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
-
-    // 一次性读取全部用户标签索引（channelId:appId → tags），供合并展示
-    final tagsIndex = await getAllTagsIndex();
 
     // 一次性读取 localdb 渠道分类映射（英文 ID → 中文 description）；
     // 失败/缺失时为空映射，mergeCategories 降级为原样合并

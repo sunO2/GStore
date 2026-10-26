@@ -249,6 +249,15 @@ class CoreFlags {
     _snapshot = CoreFlagsSnapshot.disabled;
   }
 
+  /// Test seam: drops the serialized-queue tail so a test that runs in its own
+  /// FakeAsync zone starts from a queue created in that zone. Without this, a
+  /// second `testWidgets` in the same file chains onto a queue bound to the
+  /// first test's (now disposed) zone and deadlocks.
+  @visibleForTesting
+  static void resetQueueForTest() {
+    _queue = Future<void>.value();
+  }
+
   /// Restores the FRB backend and the all-false mirror (test teardown).
   @visibleForTesting
   static void resetBackend() {

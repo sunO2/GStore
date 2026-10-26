@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatf
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -89,9 +90,6 @@ class DetailLogic
   /// 调用时读取，不把页面 callbacks 固化进 channel 初始化。
   ScriptUiBinding? _scriptUiBinding;
 
-  /// 聚合管理器（标签读写）
-  late IAggregateService? _aggregator;
-
   static const List<String> _fallbackPresetTags = [
     '工具', '游戏', '社交', '影音', '阅读', '效率', '系统',
   ];
@@ -102,7 +100,6 @@ class DetailLogic
     if (_started) return;
     _started = true;
     _channelManager = ModuleManager.instance.get<ChannelManager>();
-    _aggregator = ModuleManager.instance.get<IAggregateService>();
     _initializeFromArguments();
     await _initAndLoad();
   }
@@ -333,16 +330,15 @@ class DetailLogic
         appLog.error('DetailLogic: 解析 canonical appId 失败 - $e');
       }
     }
-    final aggregator = _aggregator;
     var currentTags = <String>[];
     var presetTags = <String>[];
     try {
-      if (aggregator != null) {
-        currentTags = await aggregator.getTags(
-          channelCode: req.channelCode ?? req.channel.code,
-          appId: canonicalId,
-        );
-      }
+      // 读路径与写路径同源：走 AddedAppsFacade（flag on 读 Rust core / flag off
+      // 回落旧 backend），不再直读旧聚合服务（flag on 时读旧库 → 标签陈旧）。
+      currentTags = await AddedAppsFacade.instance.tags(
+        req.channelCode ?? req.channel.code,
+        canonicalId,
+      );
       try {
         final categories =
             await "gstore".repoDB.db.dao.getAllCategory();
@@ -379,15 +375,15 @@ class DetailLogic
     );
     if (result == null) return;
     try {
-      if (aggregator == null) {
-        AppDialogs.showError('聚合模块未启用，标签未保存');
-        return;
-      }
-      await aggregator.setTags(
-        channelCode: req.channelCode ?? req.channel.code,
-        appId: canonicalId,
-        tags: result,
+      // 写路径走 facade（flag on 写 Rust core / flag off 回落旧 backend）——
+      // 旧 catalog 写守卫在 flag on 时抛 LegacyWriteBlocked(catalog)。
+      await AddedAppsFacade.instance.setTags(
+        req.channelCode ?? req.channel.code,
+        canonicalId,
+        result,
       );
+      // 标签变化 → 通知首页刷新（与旧 setTags 的 _notifyAppsChanged 同义）
+      await AddedAppsFacade.instance.notifyAppsChanged();
       AppDialogs.showSuccess('分类标签已更新', title: '保存成功');
     } catch (e) {
       AppDialogs.showError('保存标签失败: $e', title: '保存失败');

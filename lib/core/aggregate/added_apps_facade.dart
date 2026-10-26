@@ -424,6 +424,39 @@ class AddedAppsFacade {
   Future<int> countChannel(String channel) async =>
       (await _backend()).countChannel(channel);
 
+  /// Flag-routed aggregated read: rows and tags come from the backend selected
+  /// by `CoreFlags.catalog`; the metadata join is delegated to the (now pure)
+  /// [AppAggregatorManager.aggregateWithMeta], which reads no catalog DB and
+  /// never calls back into this facade — so it cannot recurse at any flag value.
+  Future<(List<AggregatedAppInfo>, int)> getAggregatedAppsPage({
+    required int offset,
+    required int limit,
+  }) async {
+    final backend = await _backend();
+    final rows = await backend.list();
+    final tags = await backend.tagsIndex();
+    final total = rows.length;
+    if (offset >= total || limit <= 0) {
+      return (<AggregatedAppInfo>[], total);
+    }
+    final end = (offset + limit > total) ? total : offset + limit;
+    final apps = await AppAggregatorManager.instance.aggregateWithMeta(
+      rows.sublist(offset, end),
+      tagsIndex: tags,
+    );
+    return (apps, total);
+  }
+
+  /// Flag-routed full aggregated read (no slicing); see
+  /// [getAggregatedAppsPage] for the recursion argument.
+  Future<List<AggregatedAppInfo>> getAggregatedApps() async {
+    final backend = await _backend();
+    final rows = await backend.list();
+    final tags = await backend.tagsIndex();
+    return AppAggregatorManager.instance
+        .aggregateWithMeta(rows, tagsIndex: tags);
+  }
+
   Future<void> setTags(String channel, String appId, List<String> tags) async =>
       (await _backend()).setTags(channel, appId, tags);
 
@@ -444,5 +477,15 @@ class AddedAppsFacade {
   /// Flag off delegates to the legacy `AppAggregatorManager` broadcast stream;
   /// flag on refreshes the core-owned projection. Callers (post-install,
   /// backup restore) must not reach for the legacy singleton directly.
-  Future<void> notifyAppsChanged() async => (await _backend()).notifyChanged();
+  ///
+  /// Refresh bridge: core writes (via FRB) emit nothing Dart-side, but the home
+  /// list still listens on `AppAggregatorManager.appsChangedStream` (fed only by
+  /// legacy DB events / legacy manager writes). After the backend notify we also
+  /// poke that Dart stream so the home page reloads — via this facade, not the
+  /// poked payload. The poked payload is read from the legacy DB and may be
+  /// stale; consumers must not rely on it.
+  Future<void> notifyAppsChanged() async {
+    await (await _backend()).notifyChanged();
+    AppAggregatorManager.instance.notifyAppsChanged();
+  }
 }

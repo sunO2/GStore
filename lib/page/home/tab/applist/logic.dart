@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -158,13 +159,15 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     _loadedOffset = 0; // 重置分页游标
 
     try {
-      final aggregator = _aggregator;
       debugPrint('ApplistNotifier: 调用 getAggregatedAppsPage(0, $_pageSize)');
-      final (apps, total) = await aggregator?.getAggregatedAppsPage(
-            offset: 0,
-            limit: _pageSize,
-          ) ??
-          (const <AggregatedAppInfo>[], 0);
+      // 读路径与写路径同源：走 AddedAppsFacade（flag 在 facade 内部分流，
+      // flag on 读 Rust core 投影 / flag off 回落旧 backend），不再直读旧
+      // IAggregateService（flag on 时旧库读不到 core 写入的行 → 首页空）。
+      final (apps, total) =
+          await AddedAppsFacade.instance.getAggregatedAppsPage(
+        offset: 0,
+        limit: _pageSize,
+      );
       if (_disposed) return;
       appLog.info('ApplistNotifier: ✅ 获取到 ${apps.length} 个聚合应用（共 $total）');
 
@@ -193,8 +196,6 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
   /// 滚动到底部时加载更多（追加到 apps，再重新应用筛选）
   Future<void> loadMoreApps() async {
-    final aggregator = _aggregator;
-    if (aggregator == null) return;
     // 首屏加载或已在上拉加载中 → 跳过（防重入）
     if (state.isLoading || state.isLoadingMore) return;
     // 已全部加载 → 跳过
@@ -202,7 +203,9 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
     state = state.copyWith(isLoadingMore: true);
     try {
-      final (moreApps, total) = await aggregator.getAggregatedAppsPage(
+      // 与首屏同源：走 facade 分页（flag on 读 core / flag off 回落旧 backend）
+      final (moreApps, total) =
+          await AddedAppsFacade.instance.getAggregatedAppsPage(
         offset: _loadedOffset,
         limit: _pageSize,
       );
@@ -406,10 +409,11 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   /// 移除应用
   Future<void> removeApp(AggregatedAppInfo app) async {
     try {
-      await _aggregator?.removeApp(
-        channelCode: app.channelCode,
-        appId: app.appInfo.appId,
-      );
+      // 写路径与读路径同源：走 facade（flag on 写 Rust core / flag off 回落旧
+      // backend），不再经旧 catalog 写守卫（flag on 时抛 LegacyWriteBlocked）。
+      await AddedAppsFacade.instance.remove(app.channelCode, app.appInfo.appId);
+      // 通知刷新：flag on 刷新 core 投影并 poke 旧广播流（首页经 facade 重载）
+      await AddedAppsFacade.instance.notifyAppsChanged();
       AppDialogs.showSuccess(app.appInfo.name.isNotEmpty
           ? '已移除：${app.appInfo.name}'
           : '已移除');
