@@ -4468,8 +4468,8 @@ impl ScriptApi {
     /// Runs `main(method, params)` and returns the JSON result as a string.
     ///
     /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
-    /// `getAppDetail`, `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig`
-    /// (entry script) and `versionOptions`, `switchVersion`, `buildHistory`,
+    /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
+    /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
     /// `detailMenu` (detail script). The string is the same JSON the Dart
     /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
     /// the script's `{version, proxy}` payload; parity is defined on the mapped

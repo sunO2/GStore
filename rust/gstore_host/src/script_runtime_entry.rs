@@ -266,9 +266,9 @@ impl ScriptEntry {
 /// Entry methods use `entry.js`; page methods use `detail.js`.
 pub(crate) fn classify(method: &str) -> Option<RuntimeKind> {
     match method {
-        "getAllApps" | "searchApps" | "getAppInfo" | "getAppDetail" | "checkAppUpdate"
-        | "checkUpdate" | "doUpdate" | "getConfig" => Some(RuntimeKind::Entry),
-        "versionOptions" | "switchVersion" | "buildHistory" | "detailMenu" => {
+        "getAllApps" | "searchApps" | "getAppInfo" | "checkAppUpdate" | "checkUpdate"
+        | "doUpdate" | "getConfig" => Some(RuntimeKind::Entry),
+        "getAppDetail" | "versionOptions" | "switchVersion" | "buildHistory" | "detailMenu" => {
             Some(RuntimeKind::Detail)
         }
         _ => None,

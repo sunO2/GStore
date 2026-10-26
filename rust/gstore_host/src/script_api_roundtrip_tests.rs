@@ -262,3 +262,42 @@ fn script_api_ui_roundtrip_timeout_envelope_and_expired_id() {
     println!("[timeout] expired request_id={request_id} respond_error={late}");
     assert!(late.starts_with(ui_api::UI_UNKNOWN_REQUEST), "{late}");
 }
+
+const ENTRY_NO_DETAIL: &str = r#"
+function main(method, params) { return { ok: false, error: 'entry: ' + method }; }
+"#;
+const DETAIL_ONLY: &str = r#"
+function main(method, params) {
+  if (method === 'getAppDetail') {
+    return { ok: true, data: { appId: params.appId, name: 'detail-only', downloads: [] } };
+  }
+  return { ok: false, error: 'unexpected ' + method };
+}
+"#;
+
+#[test]
+fn get_app_detail_routes_to_detail_runtime() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = harness(
+        "detailroute",
+        Duration::from_millis(500),
+        Duration::from_millis(100),
+    );
+    let zip = zip_with(
+        ENTRY_NO_DETAIL,
+        Some(DETAIL_ONLY),
+        Some(r#"{"name":"DetailOnly"}"#),
+    );
+    harness
+        .api
+        .import(zip, Some("js_detailonly".to_string()))
+        .expect("import");
+    let run = harness
+        .api
+        .run("js_detailonly", "getAppDetail", r#"{"appId":"a"}"#)
+        .expect("run");
+    let value: Value = serde_json::from_str(&run).expect("run JSON");
+    println!("[detail-route] run={run}");
+    assert_eq!(value["name"], "detail-only", "{run}"); // fails pre-fix: "null"
+    assert_eq!(value["appId"], "a", "{run}");
+}
