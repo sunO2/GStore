@@ -19,6 +19,11 @@ ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStor
 MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
 # 需要构建的可下载模块（crate 名 -> 目录）
 MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo" "gstore_mod_download" "gstore_mod_proxy" "gstore_mod_perf")
+# 需要「随 APK 内置」的模块（crate 名）：除发布到 release-modules 外，额外安装到
+# jniLibs（ANDROID_LIB_DIR），随 APK 打包。运行时加载器优先命中内置产物，无需下载。
+# 注意：内置模块**不做签名**——不生成 `.sig` 侧车；信任层（gstore_host/src/trust.rs）
+# 把「无 .sig」视为随包内置并直接放行（与 APK 同信任锚），故这里绝不调用签名工具。
+BUILTIN_MODULES=("gstore_mod_download")
 # 模块构建失败数（汇总时与宿主 FAILED 一并判定，避免"部分模块失败却报全成功"）
 MODULE_FAILED=0
 
@@ -246,6 +251,15 @@ EOF
     fi
 }
 
+# 该 crate 是否需随 APK 内置（见 BUILTIN_MODULES）。
+module_is_builtin() {
+    local m
+    for m in "${BUILTIN_MODULES[@]}"; do
+        [ "$m" = "$1" ] && return 0
+    done
+    return 1
+}
+
 # 构建可下载模块（zxing-cpp 等重依赖独立成 .so，不进 APK）
 # 自包含：独立生成 cmake toolchain 包装 + 设置 NDK 环境（不依赖 build_arch）
 build_module() {
@@ -341,6 +355,14 @@ EOF
             cp "target/$target/release/lib${module}.so" "$out_dir/"
             # 体积用 ls 而不是 du：du 统计磁盘块，实测会报出与实际不符的值（曾报 1.0K）
             echo_success "✓ $module/$arch_name: $(ls -lh "$out_dir/lib${module}.so" | awk '{print $5}')"
+
+            # 内置模块：额外安装到 jniLibs（随 APK 打包），运行时经内置链路加载，无需下载。
+            # 直接复制产物、不写任何 `.sig`（无签名 = 内置信任，见 BUILTIN_MODULES 注释）。
+            if module_is_builtin "$module"; then
+                mkdir -p "$ANDROID_LIB_DIR/$arch_name"
+                cp "target/$target/release/lib${module}.so" "$ANDROID_LIB_DIR/$arch_name/"
+                echo_info "✓ built-in → $ANDROID_LIB_DIR/$arch_name/lib${module}.so"
+            fi
         else
             echo_error "✗ $module build failed for $arch_name"
             MODULE_FAILED=$((MODULE_FAILED + 1))
