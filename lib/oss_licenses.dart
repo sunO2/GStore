@@ -32,6 +32,11 @@ const allDependencies = <Package>[
   _cached_network_image,
   _cached_network_image_platform_interface,
   _cached_network_image_web,
+  _camera,
+  _camera_android_camerax,
+  _camera_avfoundation,
+  _camera_platform_interface,
+  _camera_web,
   _characters,
   _charcode,
   _checked_yaml,
@@ -64,7 +69,9 @@ const allDependencies = <Package>[
   _floor_annotation,
   _floor_common,
   _floor_generator,
+  _flutter,
   _flutter_cache_manager,
+  _flutter_driver,
   _flutter_foreground_task,
   _flutter_gen_ai_chat_ui,
   _flutter_html,
@@ -85,6 +92,7 @@ const allDependencies = <Package>[
   _flutter_markdown_plus,
   _flutter_math_fork,
   _flutter_plugin_android_lifecycle,
+  _flutter_riverpod,
   _flutter_rust_bridge,
   _flutter_secure_storage,
   _flutter_secure_storage_linux,
@@ -95,14 +103,17 @@ const allDependencies = <Package>[
   _flutter_streaming_text_markdown,
   _flutter_svg,
   _flutter_svg_provider,
+  _flutter_tabler_icons,
   _flutter_web_plugins,
   _freezed_annotation,
   _frontend_server_client,
+  _fuchsia_remote_debug_protocol,
+  _gal,
   _genkit,
   _genkit_google_genai,
   _genkit_openai,
-  _get,
   _glob,
+  _go_router,
   _google_fonts,
   _gpt_markdown,
   _graphs,
@@ -113,6 +124,7 @@ const allDependencies = <Package>[
   _http_parser,
   _http_profile,
   _installed_apps,
+  _integration_test,
   _intl,
   _io,
   _jovial_misc,
@@ -161,6 +173,7 @@ const allDependencies = <Package>[
   _plugin_platform_interface,
   _pool,
   _pretty_dio_logger,
+  _process,
   _process_run,
   _protobuf,
   _provider,
@@ -168,12 +181,12 @@ const allDependencies = <Package>[
   _pubspec_parse,
   _qr,
   _qr_flutter,
-  _quickjs_engine,
   _quiver,
   _rational,
   _retrofit,
   _retrofit_generator,
   _rhttp,
+  _riverpod,
   _rxdart,
   _schemantic,
   _shared_preferences,
@@ -201,6 +214,7 @@ const allDependencies = <Package>[
   _sqlite3,
   _sqlparser,
   _stack_trace,
+  _state_notifier,
   _stream_channel,
   _stream_transform,
   _string_scanner,
@@ -232,6 +246,7 @@ const allDependencies = <Package>[
   _web,
   _web_socket,
   _web_socket_channel,
+  _webdriver,
   _win32,
   _win32_registry,
   _xdg_directories,
@@ -241,10 +256,12 @@ const allDependencies = <Package>[
 
 /// Direct `dependencies`.
 const dependencies = <Package>[
+  _flutter,
   _retrofit,
   _logger,
   _json_annotation,
-  _get,
+  _flutter_riverpod,
+  _go_router,
   _flutter_markdown_plus,
   _markdown,
   _yaml,
@@ -255,6 +272,7 @@ const dependencies = <Package>[
   _installed_apps,
   _jovial_svg,
   _path_provider,
+  _crypto,
   _dio,
   _rhttp,
   _app_installer,
@@ -263,7 +281,6 @@ const dependencies = <Package>[
   _shared_preferences,
   _sprintf,
   _flutter_inappwebview,
-  _quickjs_engine,
   _qr_flutter,
   _pretty_dio_logger,
   _flutter_html,
@@ -278,17 +295,23 @@ const dependencies = <Package>[
   _genkit,
   _genkit_google_genai,
   _genkit_openai,
+  _openai_dart,
   _device_info_plus,
   _shizuku_api,
   _flutter_local_notifications,
   _flutter_foreground_task,
   _flutter_gen_ai_chat_ui,
   _flutter_svg,
-  _package_info_plus
+  _flutter_tabler_icons,
+  _package_info_plus,
+  _gal,
+  _camera,
+  _protobuf
 ];
 
 /// Direct `dev_dependencies`.
 const devDependencies = <Package>[
+  _integration_test,
   _retrofit_generator,
   _build_runner,
   _json_serializable,
@@ -707,7 +730,7 @@ const _app_installer = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [],
   );
 
@@ -1254,7 +1277,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('cached_network_image_platform_interface'), PackageRef('cached_network_image_web'), PackageRef('flutter_cache_manager'), PackageRef('octo_image')],
+    dependencies: [PackageRef('cached_network_image_platform_interface'), PackageRef('cached_network_image_web'), PackageRef('flutter'), PackageRef('flutter_cache_manager'), PackageRef('octo_image')],
     devDependencies: [PackageRef('file'), PackageRef('flutter_lints')],
   );
 
@@ -1288,7 +1311,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_cache_manager')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_cache_manager')],
     devDependencies: [PackageRef('file'), PackageRef('flutter_lints')],
   );
 
@@ -1322,8 +1345,198 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('cached_network_image_platform_interface'), PackageRef('flutter_cache_manager'), PackageRef('web')],
+    dependencies: [PackageRef('cached_network_image_platform_interface'), PackageRef('flutter'), PackageRef('flutter_cache_manager'), PackageRef('web')],
     devDependencies: [PackageRef('file'), PackageRef('flutter_lints')],
+  );
+
+/// camera 0.12.1
+const _camera = Package(
+    name: 'camera',
+    description: 'A Flutter plugin for controlling the camera. Supports previewing the camera feed, capturing images and video, and streaming image buffers to Dart.',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/camera/camera',
+    authors: [],
+    version: '0.12.1',
+    license: '''Copyright 2013 The Flutter Authors
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('camera_android_camerax'), PackageRef('camera_avfoundation'), PackageRef('camera_platform_interface'), PackageRef('camera_web'), PackageRef('flutter'), PackageRef('flutter_plugin_android_lifecycle')],
+    devDependencies: [PackageRef('leak_tracker_flutter_testing'), PackageRef('mockito'), PackageRef('plugin_platform_interface')],
+  );
+
+/// camera_android_camerax 0.7.4+7
+const _camera_android_camerax = Package(
+    name: 'camera_android_camerax',
+    description: 'Android implementation of the camera plugin using the CameraX library.',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/camera/camera_android_camerax',
+    authors: [],
+    version: '0.7.4+7',
+    license: '''Copyright 2013 The Flutter Authors
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('async'), PackageRef('camera_platform_interface'), PackageRef('flutter'), PackageRef('meta'), PackageRef('stream_transform')],
+    devDependencies: [PackageRef('args'), PackageRef('build_runner'), PackageRef('leak_tracker_flutter_testing'), PackageRef('logging'), PackageRef('mockito'), PackageRef('path')],
+  );
+
+/// camera_avfoundation 0.10.3
+const _camera_avfoundation = Package(
+    name: 'camera_avfoundation',
+    description: 'iOS implementation of the camera plugin.',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/camera/camera_avfoundation',
+    authors: [],
+    version: '0.10.3',
+    license: '''Copyright 2013 The Flutter Authors
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('camera_platform_interface'), PackageRef('flutter'), PackageRef('meta'), PackageRef('stream_transform')],
+    devDependencies: [PackageRef('async'), PackageRef('build_runner'), PackageRef('leak_tracker_flutter_testing'), PackageRef('mockito')],
+  );
+
+/// camera_platform_interface 2.13.1
+const _camera_platform_interface = Package(
+    name: 'camera_platform_interface',
+    description: 'A common platform interface for the camera plugin.',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/camera/camera_platform_interface',
+    authors: [],
+    version: '2.13.1',
+    license: '''Copyright 2013 The Flutter Authors
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('cross_file'), PackageRef('flutter'), PackageRef('plugin_platform_interface'), PackageRef('stream_transform')],
+    devDependencies: [PackageRef('async'), PackageRef('leak_tracker_flutter_testing')],
+  );
+
+/// camera_web 0.3.5+6
+const _camera_web = Package(
+    name: 'camera_web',
+    description: 'A Flutter plugin for getting information about and controlling the camera on Web.',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/camera/camera_web',
+    authors: [],
+    version: '0.3.5+6',
+    license: '''Copyright 2013 The Flutter Authors
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('camera_platform_interface'), PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('stream_transform'), PackageRef('web')],
+    devDependencies: [],
   );
 
 /// characters 1.4.1
@@ -1926,7 +2139,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
     dependencies: [],
-    devDependencies: [],
+    devDependencies: [PackageRef('flutter')],
   );
 
 /// dart_pubspec_licenses 3.0.12
@@ -2678,7 +2891,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('device_info_plus_platform_interface'), PackageRef('ffi'), PackageRef('file'), PackageRef('flutter_web_plugins'), PackageRef('meta'), PackageRef('web'), PackageRef('win32'), PackageRef('win32_registry')],
+    dependencies: [PackageRef('device_info_plus_platform_interface'), PackageRef('ffi'), PackageRef('file'), PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('meta'), PackageRef('web'), PackageRef('win32'), PackageRef('win32_registry')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('mockito')],
   );
 
@@ -2719,7 +2932,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('meta'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('meta'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('mockito')],
   );
 
@@ -3224,7 +3437,7 @@ const _dynamic_color = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('material_color_utilities')],
+    dependencies: [PackageRef('flutter'), PackageRef('material_color_utilities')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('meta')],
   );
 
@@ -3586,7 +3799,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_web_plugins'), PackageRef('flutter_plugin_android_lifecycle'), PackageRef('plugin_platform_interface'), PackageRef('ffi'), PackageRef('path'), PackageRef('win32'), PackageRef('cross_file'), PackageRef('web')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('flutter_plugin_android_lifecycle'), PackageRef('plugin_platform_interface'), PackageRef('ffi'), PackageRef('path'), PackageRef('win32'), PackageRef('cross_file'), PackageRef('web')],
     devDependencies: [PackageRef('lints')],
   );
 
@@ -3815,7 +4028,7 @@ const _floor = Package(
       of your accepting any such warranty or additional liability.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('collection'), PackageRef('floor_annotation'), PackageRef('floor_common'), PackageRef('meta'), PackageRef('path'), PackageRef('sqflite'), PackageRef('sqflite_common_ffi'), PackageRef('sqflite_common_ffi_web'), PackageRef('sqlparser')],
+    dependencies: [PackageRef('collection'), PackageRef('floor_annotation'), PackageRef('floor_common'), PackageRef('flutter'), PackageRef('meta'), PackageRef('path'), PackageRef('sqflite'), PackageRef('sqflite_common_ffi'), PackageRef('sqflite_common_ffi_web'), PackageRef('sqlparser')],
     devDependencies: [PackageRef('build_runner'), PackageRef('floor_generator'), PackageRef('matcher'), PackageRef('mockito')],
   );
 
@@ -4386,6 +4599,44 @@ const _floor_generator = Package(
     devDependencies: [PackageRef('dart_style'), PackageRef('mockito'), PackageRef('path'), PackageRef('pub_semver')],
   );
 
+/// flutter 3.44.8
+const _flutter = Package(
+    name: 'flutter',
+    description: 'A framework for writing Flutter applications',
+    homepage: 'https://flutter.dev',
+    authors: [],
+    version: '3.44.8',
+    license: '''Copyright 2014 The Flutter Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: true,
+    dependencies: [PackageRef('characters'), PackageRef('collection'), PackageRef('material_color_utilities'), PackageRef('meta'), PackageRef('vector_math')],
+    devDependencies: [PackageRef('flutter_driver'), PackageRef('fake_async'), PackageRef('leak_tracker_flutter_testing'), PackageRef('leak_tracker_testing'), PackageRef('leak_tracker'), PackageRef('web'), PackageRef('clock'), PackageRef('file'), PackageRef('path'), PackageRef('platform')],
+  );
+
 /// flutter_cache_manager 3.4.1
 const _flutter_cache_manager = Package(
     name: 'flutter_cache_manager',
@@ -4416,8 +4667,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('clock'), PackageRef('collection'), PackageRef('file'), PackageRef('http'), PackageRef('path'), PackageRef('path_provider'), PackageRef('rxdart'), PackageRef('sqflite'), PackageRef('uuid')],
+    dependencies: [PackageRef('clock'), PackageRef('collection'), PackageRef('file'), PackageRef('flutter'), PackageRef('http'), PackageRef('path'), PackageRef('path_provider'), PackageRef('rxdart'), PackageRef('sqflite'), PackageRef('uuid')],
     devDependencies: [PackageRef('build_runner'), PackageRef('flutter_lints'), PackageRef('mockito')],
+  );
+
+/// flutter_driver null
+const _flutter_driver = Package(
+    name: 'flutter_driver',
+    description: 'Integration and performance test API for Flutter applications',
+    homepage: 'https://flutter.dev',
+    authors: [],
+    isMarkdown: false,
+    isSdk: true,
+    dependencies: [PackageRef('file'), PackageRef('flutter'), PackageRef('fuchsia_remote_debug_protocol'), PackageRef('path'), PackageRef('meta'), PackageRef('vm_service'), PackageRef('webdriver'), PackageRef('matcher')],
+    devDependencies: [PackageRef('fake_async')],
   );
 
 /// flutter_foreground_task 10.0.0
@@ -4450,7 +4713,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('plugin_platform_interface'), PackageRef('shared_preferences'), PackageRef('platform')],
+    dependencies: [PackageRef('flutter'), PackageRef('plugin_platform_interface'), PackageRef('shared_preferences'), PackageRef('platform')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -4485,8 +4748,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_markdown_plus'), PackageRef('google_fonts'), PackageRef('shimmer'), PackageRef('flutter_streaming_text_markdown'), PackageRef('url_launcher'), PackageRef('flutter_math_fork')],
-    devDependencies: [PackageRef('flutter_lints'), PackageRef('provider')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_markdown_plus'), PackageRef('google_fonts'), PackageRef('shimmer'), PackageRef('flutter_streaming_text_markdown'), PackageRef('url_launcher'), PackageRef('flutter_math_fork')],
+    devDependencies: [PackageRef('flutter_lints'), PackageRef('integration_test'), PackageRef('provider')],
   );
 
 /// flutter_html 3.0.0-beta.2
@@ -4519,7 +4782,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('html'), PackageRef('csslib'), PackageRef('collection'), PackageRef('list_counter')],
+    dependencies: [PackageRef('html'), PackageRef('csslib'), PackageRef('collection'), PackageRef('list_counter'), PackageRef('flutter')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('meta')],
   );
 
@@ -4734,8 +4997,8 @@ const _flutter_inappwebview = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_platform_interface'), PackageRef('flutter_inappwebview_android'), PackageRef('flutter_inappwebview_ios'), PackageRef('flutter_inappwebview_macos'), PackageRef('flutter_inappwebview_web'), PackageRef('flutter_inappwebview_windows')],
-    devDependencies: [PackageRef('flutter_lints'), PackageRef('build_runner')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface'), PackageRef('flutter_inappwebview_android'), PackageRef('flutter_inappwebview_ios'), PackageRef('flutter_inappwebview_macos'), PackageRef('flutter_inappwebview_web'), PackageRef('flutter_inappwebview_windows')],
+    devDependencies: [PackageRef('flutter_driver'), PackageRef('flutter_lints'), PackageRef('build_runner')],
   );
 
 /// flutter_inappwebview_android 1.1.3
@@ -4949,7 +5212,7 @@ const _flutter_inappwebview_android = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -5378,7 +5641,7 @@ const _flutter_inappwebview_ios = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -5593,7 +5856,7 @@ const _flutter_inappwebview_macos = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -5808,7 +6071,7 @@ const _flutter_inappwebview_platform_interface = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_internal_annotations'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_internal_annotations'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('build_runner')],
   );
 
@@ -6023,7 +6286,7 @@ const _flutter_inappwebview_web = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_web_plugins'), PackageRef('web'), PackageRef('flutter_inappwebview_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('web'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -6238,7 +6501,7 @@ const _flutter_inappwebview_windows = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_inappwebview_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -6316,8 +6579,8 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('clock'), PackageRef('flutter_local_notifications_linux'), PackageRef('flutter_local_notifications_windows'), PackageRef('flutter_local_notifications_web'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('timezone')],
-    devDependencies: [PackageRef('flutter_lints'), PackageRef('mockito'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('clock'), PackageRef('flutter'), PackageRef('flutter_local_notifications_linux'), PackageRef('flutter_local_notifications_windows'), PackageRef('flutter_local_notifications_web'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('timezone')],
+    devDependencies: [PackageRef('flutter_driver'), PackageRef('flutter_lints'), PackageRef('mockito'), PackageRef('plugin_platform_interface')],
   );
 
 /// flutter_local_notifications_linux 8.0.1
@@ -6356,7 +6619,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('dbus'), PackageRef('ffi'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('path'), PackageRef('xdg_directories')],
+    dependencies: [PackageRef('dbus'), PackageRef('ffi'), PackageRef('flutter'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('path'), PackageRef('xdg_directories')],
     devDependencies: [PackageRef('build_runner'), PackageRef('flutter_lints'), PackageRef('mockito')],
   );
 
@@ -6436,7 +6699,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('collection'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('timezone'), PackageRef('web')],
+    dependencies: [PackageRef('collection'), PackageRef('flutter'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('timezone'), PackageRef('web')],
     devDependencies: [PackageRef('build_runner'), PackageRef('flutter_lints')],
   );
 
@@ -6476,7 +6739,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('meta'), PackageRef('timezone'), PackageRef('xml')],
+    dependencies: [PackageRef('flutter'), PackageRef('ffi'), PackageRef('flutter_local_notifications_platform_interface'), PackageRef('meta'), PackageRef('timezone'), PackageRef('xml')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -6514,7 +6777,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('markdown'), PackageRef('meta'), PackageRef('path')],
+    dependencies: [PackageRef('flutter'), PackageRef('markdown'), PackageRef('meta'), PackageRef('path')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('leak_tracker_flutter_testing'), PackageRef('mockito')],
   );
 
@@ -6728,7 +6991,7 @@ const _flutter_math_fork = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_svg'), PackageRef('provider'), PackageRef('meta'), PackageRef('collection'), PackageRef('tuple')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_svg'), PackageRef('provider'), PackageRef('meta'), PackageRef('collection'), PackageRef('tuple')],
     devDependencies: [],
   );
 
@@ -6766,8 +7029,44 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [],
+  );
+
+/// flutter_riverpod 2.6.1
+const _flutter_riverpod = Package(
+    name: 'flutter_riverpod',
+    description: '''A reactive caching and data-binding framework. Riverpod makes working with asynchronous code a breeze.
+''',
+    homepage: 'https://riverpod.dev',
+    repository: 'https://github.com/rrousselGit/riverpod',
+    authors: [],
+    version: '2.6.1',
+    license: '''MIT License
+
+Copyright (c) 2020 Remi Rousselet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('collection'), PackageRef('flutter'), PackageRef('meta'), PackageRef('riverpod'), PackageRef('state_notifier')],
+    devDependencies: [PackageRef('mockito'), PackageRef('stack_trace')],
   );
 
 /// flutter_rust_bridge 2.11.1
@@ -6842,7 +7141,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_secure_storage_linux'), PackageRef('flutter_secure_storage_macos'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('flutter_secure_storage_web'), PackageRef('flutter_secure_storage_windows'), PackageRef('meta')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_secure_storage_linux'), PackageRef('flutter_secure_storage_macos'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('flutter_secure_storage_web'), PackageRef('flutter_secure_storage_windows'), PackageRef('meta')],
     devDependencies: [],
   );
 
@@ -6884,7 +7183,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_secure_storage_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_secure_storage_platform_interface')],
     devDependencies: [],
   );
 
@@ -6926,7 +7225,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_secure_storage_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_secure_storage_platform_interface')],
     devDependencies: [],
   );
 
@@ -6968,7 +7267,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('mockito')],
   );
 
@@ -7010,7 +7309,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_secure_storage_platform_interface'), PackageRef('flutter_web_plugins'), PackageRef('js')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('flutter_web_plugins'), PackageRef('js')],
     devDependencies: [],
   );
 
@@ -7052,7 +7351,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('path'), PackageRef('path_provider'), PackageRef('win32')],
+    dependencies: [PackageRef('ffi'), PackageRef('flutter'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('path'), PackageRef('path_provider'), PackageRef('win32')],
     devDependencies: [],
   );
 
@@ -7087,7 +7386,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('gpt_markdown'), PackageRef('characters')],
+    dependencies: [PackageRef('flutter'), PackageRef('gpt_markdown'), PackageRef('characters')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -7119,7 +7418,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('http'), PackageRef('vector_graphics'), PackageRef('vector_graphics_codec'), PackageRef('vector_graphics_compiler')],
+    dependencies: [PackageRef('flutter'), PackageRef('http'), PackageRef('vector_graphics'), PackageRef('vector_graphics_codec'), PackageRef('vector_graphics_compiler')],
     devDependencies: [],
   );
 
@@ -7333,8 +7632,43 @@ const _flutter_svg_provider = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('http'), PackageRef('flutter_svg')],
+    dependencies: [PackageRef('flutter'), PackageRef('http'), PackageRef('flutter_svg')],
     devDependencies: [PackageRef('flutter_lints')],
+  );
+
+/// flutter_tabler_icons 1.43.0
+const _flutter_tabler_icons = Package(
+    name: 'flutter_tabler_icons',
+    description: 'Tabler Icons for flutter using icons from https://github.com/tabler/tabler-icons by Paweł Kuna @codecalm',
+    homepage: 'https://github.com/bigbadbob2003/flutter_tabler_icons',
+    repository: 'https://github.com/bigbadbob2003/flutter_tabler_icons',
+    authors: [],
+    version: '1.43.0',
+    license: '''MIT License
+
+Copyright (c) 2020 bigbadbob2003
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('flutter')],
+    devDependencies: [],
   );
 
 /// flutter_web_plugins null
@@ -7345,7 +7679,7 @@ const _flutter_web_plugins = Package(
     authors: [],
     isMarkdown: false,
     isSdk: true,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [],
   );
 
@@ -7422,6 +7756,59 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isSdk: false,
     dependencies: [PackageRef('async'), PackageRef('path')],
     devDependencies: [PackageRef('package_config'), PackageRef('shelf'), PackageRef('vm_service')],
+  );
+
+/// fuchsia_remote_debug_protocol null
+const _fuchsia_remote_debug_protocol = Package(
+    name: 'fuchsia_remote_debug_protocol',
+    description: 'Provides an API to test/debug Flutter applications on remote Fuchsia devices and emulators.',
+    homepage: 'https://flutter.dev',
+    authors: [],
+    isMarkdown: false,
+    isSdk: true,
+    dependencies: [PackageRef('process'), PackageRef('vm_service'), PackageRef('meta')],
+    devDependencies: [],
+  );
+
+/// gal 2.3.3
+const _gal = Package(
+    name: 'gal',
+    description: 'Flutter plugin to save images/videos to photos gallery with permission handling',
+    homepage: 'https://pub.dev/packages/gal',
+    repository: 'https://github.com/natsuk4ze/gal',
+    authors: [],
+    version: '2.3.3',
+    license: '''Copyright (c) 2023 Midori Design Studio by @natsuk4ze
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the Midori Design Studio nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('flutter')],
+    devDependencies: [PackageRef('flutter_lints')],
   );
 
 /// genkit 0.15.1
@@ -8066,40 +8453,6 @@ const _genkit_openai = Package(
     devDependencies: [PackageRef('build_runner'), PackageRef('mockito')],
   );
 
-/// get 4.7.2
-const _get = Package(
-    name: 'get',
-    description: 'Open screens/snackbars/dialogs without context, manage states and inject dependencies easily with GetX.',
-    homepage: 'https://github.com/jonataslaw/getx',
-    authors: [],
-    version: '4.7.2',
-    license: '''MIT License
-
-Copyright (c) 2019 Jonny Borges
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.''',
-    isMarkdown: false,
-    isSdk: false,
-    dependencies: [PackageRef('web')],
-    devDependencies: [PackageRef('flutter_lints')],
-  );
-
 /// glob 2.1.3
 const _glob = Package(
     name: 'glob',
@@ -8140,6 +8493,44 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     devDependencies: [],
   );
 
+/// go_router 14.8.1
+const _go_router = Package(
+    name: 'go_router',
+    description: 'A declarative router for Flutter based on Navigation 2 supporting deep linking, data-driven routes and more',
+    repository: 'https://github.com/flutter/packages/tree/main/packages/go_router',
+    authors: [],
+    version: '14.8.1',
+    license: '''Copyright 2013 The Flutter Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google Inc. nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('collection'), PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('logging'), PackageRef('meta')],
+    devDependencies: [PackageRef('io'), PackageRef('leak_tracker_flutter_testing'), PackageRef('path')],
+  );
+
 /// google_fonts 8.2.1
 const _google_fonts = Package(
     name: 'google_fonts',
@@ -8174,7 +8565,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('crypto'), PackageRef('http'), PackageRef('path_provider')],
+    dependencies: [PackageRef('crypto'), PackageRef('flutter'), PackageRef('http'), PackageRef('path_provider')],
     devDependencies: [PackageRef('mockito'), PackageRef('path_provider_platform_interface'), PackageRef('plugin_platform_interface'), PackageRef('protobuf')],
   );
 
@@ -8199,7 +8590,7 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_math_fork')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_math_fork')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -8864,7 +9255,18 @@ const _installed_apps = Package(
    limitations under the License.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
+    devDependencies: [],
+  );
+
+/// integration_test null
+const _integration_test = Package(
+    name: 'integration_test',
+    description: 'Runs tests that use the flutter_test API as integration tests.',
+    authors: [],
+    isMarkdown: false,
+    isSdk: true,
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_driver'), PackageRef('path'), PackageRef('vm_service')],
     devDependencies: [],
   );
 
@@ -9022,7 +9424,7 @@ ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('xml'), PackageRef('collection'), PackageRef('args'), PackageRef('vector_math'), PackageRef('jovial_misc'), PackageRef('http'), PackageRef('meta')],
+    dependencies: [PackageRef('xml'), PackageRef('collection'), PackageRef('args'), PackageRef('vector_math'), PackageRef('jovial_misc'), PackageRef('http'), PackageRef('meta'), PackageRef('flutter')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -9259,7 +9661,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('leak_tracker'), PackageRef('leak_tracker_testing'), PackageRef('matcher'), PackageRef('meta')],
+    dependencies: [PackageRef('flutter'), PackageRef('leak_tracker'), PackageRef('leak_tracker_testing'), PackageRef('matcher'), PackageRef('meta')],
     devDependencies: [],
   );
 
@@ -10112,7 +10514,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [],
   );
 
@@ -10146,7 +10548,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -10476,7 +10878,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('flutter_web_plugins'), PackageRef('http'), PackageRef('meta'), PackageRef('path'), PackageRef('package_info_plus_platform_interface'), PackageRef('web'), PackageRef('win32'), PackageRef('clock')],
+    dependencies: [PackageRef('ffi'), PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('http'), PackageRef('meta'), PackageRef('path'), PackageRef('package_info_plus_platform_interface'), PackageRef('web'), PackageRef('win32'), PackageRef('clock')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -10517,7 +10919,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('meta'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('meta'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('mockito'), PackageRef('flutter_lints')],
   );
 
@@ -10628,8 +11030,8 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('path_provider_android'), PackageRef('path_provider_foundation'), PackageRef('path_provider_linux'), PackageRef('path_provider_platform_interface'), PackageRef('path_provider_windows')],
-    devDependencies: [PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('path_provider_android'), PackageRef('path_provider_foundation'), PackageRef('path_provider_linux'), PackageRef('path_provider_platform_interface'), PackageRef('path_provider_windows')],
+    devDependencies: [PackageRef('integration_test'), PackageRef('plugin_platform_interface')],
   );
 
 /// path_provider_android 2.2.15
@@ -10666,8 +11068,8 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('path_provider_platform_interface')],
-    devDependencies: [],
+    dependencies: [PackageRef('flutter'), PackageRef('path_provider_platform_interface')],
+    devDependencies: [PackageRef('integration_test')],
   );
 
 /// path_provider_foundation 2.4.1
@@ -10704,7 +11106,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('path_provider_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('path_provider_platform_interface')],
     devDependencies: [PackageRef('build_runner'), PackageRef('mockito'), PackageRef('path')],
   );
 
@@ -10742,7 +11144,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('path'), PackageRef('path_provider_platform_interface'), PackageRef('xdg_directories')],
+    dependencies: [PackageRef('ffi'), PackageRef('flutter'), PackageRef('path'), PackageRef('path_provider_platform_interface'), PackageRef('xdg_directories')],
     devDependencies: [],
   );
 
@@ -10780,7 +11182,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('platform'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('platform'), PackageRef('plugin_platform_interface')],
     devDependencies: [],
   );
 
@@ -10818,7 +11220,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('path'), PackageRef('path_provider_platform_interface')],
+    dependencies: [PackageRef('ffi'), PackageRef('flutter'), PackageRef('path'), PackageRef('path_provider_platform_interface')],
     devDependencies: [],
   );
 
@@ -10852,7 +11254,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('meta'), PackageRef('permission_handler_android'), PackageRef('permission_handler_apple'), PackageRef('permission_handler_html'), PackageRef('permission_handler_windows'), PackageRef('permission_handler_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('meta'), PackageRef('permission_handler_android'), PackageRef('permission_handler_apple'), PackageRef('permission_handler_html'), PackageRef('permission_handler_windows'), PackageRef('permission_handler_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('mockito'), PackageRef('plugin_platform_interface')],
   );
 
@@ -10886,7 +11288,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('permission_handler_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('permission_handler_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -10920,7 +11322,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('permission_handler_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('permission_handler_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );
 
@@ -10954,7 +11356,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_web_plugins'), PackageRef('permission_handler_platform_interface'), PackageRef('web')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('permission_handler_platform_interface'), PackageRef('web')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('mockito'), PackageRef('build_runner')],
   );
 
@@ -10988,7 +11390,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('meta'), PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('meta'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('mockito'), PackageRef('flutter_lints')],
   );
 
@@ -11022,7 +11424,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('permission_handler_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('permission_handler_platform_interface')],
     devDependencies: [PackageRef('plugin_platform_interface')],
   );
 
@@ -11213,6 +11615,46 @@ SOFTWARE.''',
     devDependencies: [PackageRef('lints')],
   );
 
+/// process 5.0.6
+const _process = Package(
+    name: 'process',
+    description: 'A pluggable, mockable process invocation abstraction for Dart.',
+    repository: 'https://github.com/dart-lang/tools/tree/main/pkgs/process',
+    authors: [],
+    version: '5.0.6',
+    license: '''Copyright 2013, the Dart project authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+    * Neither the name of Google LLC nor the names of its
+      contributors may be used to endorse or promote products derived
+      from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('file'), PackageRef('path'), PackageRef('platform')],
+    devDependencies: [PackageRef('lints')],
+  );
+
 /// process_run 1.2.2+1
 const _process_run = Package(
     name: 'process_run',
@@ -11319,7 +11761,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('collection'), PackageRef('nested')],
+    dependencies: [PackageRef('collection'), PackageRef('flutter'), PackageRef('nested')],
     devDependencies: [PackageRef('leak_tracker'), PackageRef('mockito')],
   );
 
@@ -11481,112 +11923,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('qr')],
+    dependencies: [PackageRef('flutter'), PackageRef('qr')],
     devDependencies: [],
-  );
-
-/// quickjs_engine 0.1.3
-const _quickjs_engine = Package(
-    name: 'quickjs_engine',
-    description: """Modern QuickJS-NG 0.14.0 (2026) bundled for Flutter — same JS engine on every platform (Android, iOS, macOS, Linux, Windows). API-compatible fork of flutter_js with the bridge patched against QuickJS-NG's new API.
-""",
-    homepage: 'https://github.com/denisnadey/flutter_full_svg_support',
-    repository: 'https://github.com/denisnadey/flutter_full_svg_support',
-    authors: [],
-    version: '0.1.3',
-    license: '''MIT License
-
-Copyright (c) 2026 Denis Nadey
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-================================================================================
-This package bundles and is derived from third-party software.
-The full text of each upstream license is reproduced below as required by
-the MIT license terms.
-================================================================================
-
-
-----------------------------------------------------------------------
-flutter_js (https://pub.dev/packages/flutter_js)
-The Dart FFI bridge and JavaScriptCore bindings under lib/ are a fork of
-flutter_js 0.8.7 by Ábner Oliveira.
-----------------------------------------------------------------------
-
-MIT License
-
-Copyright (c) 2019 Ábner Oliveira
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-----------------------------------------------------------------------
-QuickJS-NG (https://github.com/quickjs-ng/quickjs)
-The C sources under native/cxx/quickjs/ are an unmodified vendor of
-QuickJS-NG (version 0.14.0).
-----------------------------------------------------------------------
-
-The MIT License (MIT)
-
-Copyright (c) 2017-2026 Fabrice Bellard
-Copyright (c) 2017-2024 Charlie Gordon
-Copyright (c) 2023-2026 Ben Noordhuis
-Copyright (c) 2023-2026 Saúl Ibarra Corretgé
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.''',
-    isMarkdown: false,
-    isSdk: false,
-    dependencies: [PackageRef('ffi'), PackageRef('http'), PackageRef('sync_http')],
-    devDependencies: [PackageRef('flutter_lints')],
   );
 
 /// quiver 3.2.2
@@ -12117,8 +12455,44 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_rust_bridge'), PackageRef('freezed_annotation'), PackageRef('http'), PackageRef('http_profile'), PackageRef('meta')],
-    devDependencies: [PackageRef('build_runner'), PackageRef('ffi'), PackageRef('flutter_lints')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_rust_bridge'), PackageRef('freezed_annotation'), PackageRef('http'), PackageRef('http_profile'), PackageRef('meta')],
+    devDependencies: [PackageRef('build_runner'), PackageRef('ffi'), PackageRef('flutter_lints'), PackageRef('integration_test')],
+  );
+
+/// riverpod 2.6.1
+const _riverpod = Package(
+    name: 'riverpod',
+    description: '''A reactive caching and data-binding framework. Riverpod makes working with asynchronous code a breeze.
+''',
+    homepage: 'https://riverpod.dev',
+    repository: 'https://github.com/rrousselGit/riverpod',
+    authors: [],
+    version: '2.6.1',
+    license: '''MIT License
+
+Copyright (c) 2020 Remi Rousselet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('collection'), PackageRef('meta'), PackageRef('stack_trace'), PackageRef('state_notifier')],
+    devDependencies: [PackageRef('analyzer'), PackageRef('mockito')],
   );
 
 /// rxdart 0.28.0
@@ -12584,7 +12958,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('shared_preferences_android'), PackageRef('shared_preferences_foundation'), PackageRef('shared_preferences_linux'), PackageRef('shared_preferences_platform_interface'), PackageRef('shared_preferences_web'), PackageRef('shared_preferences_windows')],
+    dependencies: [PackageRef('flutter'), PackageRef('shared_preferences_android'), PackageRef('shared_preferences_foundation'), PackageRef('shared_preferences_linux'), PackageRef('shared_preferences_platform_interface'), PackageRef('shared_preferences_web'), PackageRef('shared_preferences_windows')],
     devDependencies: [PackageRef('path')],
   );
 
@@ -12622,7 +12996,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('shared_preferences_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('shared_preferences_platform_interface')],
     devDependencies: [],
   );
 
@@ -12660,7 +13034,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('shared_preferences_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('shared_preferences_platform_interface')],
     devDependencies: [],
   );
 
@@ -12698,7 +13072,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('file'), PackageRef('path'), PackageRef('path_provider_linux'), PackageRef('path_provider_platform_interface'), PackageRef('shared_preferences_platform_interface')],
+    dependencies: [PackageRef('file'), PackageRef('flutter'), PackageRef('path'), PackageRef('path_provider_linux'), PackageRef('path_provider_platform_interface'), PackageRef('shared_preferences_platform_interface')],
     devDependencies: [],
   );
 
@@ -12736,7 +13110,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('plugin_platform_interface')],
     devDependencies: [],
   );
 
@@ -12774,7 +13148,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_web_plugins'), PackageRef('shared_preferences_platform_interface'), PackageRef('web')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('shared_preferences_platform_interface'), PackageRef('web')],
     devDependencies: [],
   );
 
@@ -12812,7 +13186,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('file'), PackageRef('path'), PackageRef('path_provider_platform_interface'), PackageRef('path_provider_windows'), PackageRef('shared_preferences_platform_interface')],
+    dependencies: [PackageRef('file'), PackageRef('flutter'), PackageRef('path'), PackageRef('path_provider_platform_interface'), PackageRef('path_provider_windows'), PackageRef('shared_preferences_platform_interface')],
     devDependencies: [],
   );
 
@@ -12933,7 +13307,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [],
+    dependencies: [PackageRef('flutter')],
     devDependencies: [],
   );
 
@@ -13620,7 +13994,7 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.''',
     isMarkdown: false,
     isSdk: true,
-    dependencies: [PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('flutter_lints')],
   );
 
@@ -13987,7 +14361,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('sqflite_android'), PackageRef('sqflite_darwin'), PackageRef('sqflite_platform_interface'), PackageRef('sqflite_common'), PackageRef('path')],
+    dependencies: [PackageRef('flutter'), PackageRef('sqflite_android'), PackageRef('sqflite_darwin'), PackageRef('sqflite_platform_interface'), PackageRef('sqflite_common'), PackageRef('path')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('process_run'), PackageRef('http'), PackageRef('test_api'), PackageRef('pub_semver')],
   );
 
@@ -14025,7 +14399,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('sqflite_common'), PackageRef('path'), PackageRef('sqflite_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('sqflite_common'), PackageRef('path'), PackageRef('sqflite_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('process_run'), PackageRef('http'), PackageRef('test_api'), PackageRef('pub_semver')],
   );
 
@@ -14177,7 +14551,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('sqflite_platform_interface'), PackageRef('meta'), PackageRef('sqflite_common'), PackageRef('path')],
+    dependencies: [PackageRef('flutter'), PackageRef('sqflite_platform_interface'), PackageRef('meta'), PackageRef('sqflite_common'), PackageRef('path')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('process_run'), PackageRef('http'), PackageRef('test_api'), PackageRef('pub_semver')],
   );
 
@@ -14215,7 +14589,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('platform'), PackageRef('sqflite_common'), PackageRef('plugin_platform_interface'), PackageRef('meta')],
+    dependencies: [PackageRef('flutter'), PackageRef('platform'), PackageRef('sqflite_common'), PackageRef('plugin_platform_interface'), PackageRef('meta')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('test_api'), PackageRef('pub_semver')],
   );
 
@@ -14326,6 +14700,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isSdk: false,
     dependencies: [PackageRef('path')],
     devDependencies: [],
+  );
+
+/// state_notifier 1.0.0
+const _state_notifier = Package(
+    name: 'state_notifier',
+    description: 'ValueNotifier, but outside Flutter and with some extra perks',
+    homepage: 'https://github.com/rrousselGit/state_notifier',
+    authors: [],
+    version: '1.0.0',
+    license: '''MIT License
+
+Copyright (c) 2020 Remi Rousselet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('meta')],
+    devDependencies: [PackageRef('mockito')],
   );
 
 /// stream_channel 2.1.4
@@ -14890,7 +15298,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('url_launcher_android'), PackageRef('url_launcher_ios'), PackageRef('url_launcher_linux'), PackageRef('url_launcher_macos'), PackageRef('url_launcher_platform_interface'), PackageRef('url_launcher_web'), PackageRef('url_launcher_windows')],
+    dependencies: [PackageRef('flutter'), PackageRef('url_launcher_android'), PackageRef('url_launcher_ios'), PackageRef('url_launcher_linux'), PackageRef('url_launcher_macos'), PackageRef('url_launcher_platform_interface'), PackageRef('url_launcher_web'), PackageRef('url_launcher_windows')],
     devDependencies: [PackageRef('mockito'), PackageRef('plugin_platform_interface')],
   );
 
@@ -14928,7 +15336,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('meta'), PackageRef('url_launcher_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('meta'), PackageRef('url_launcher_platform_interface')],
     devDependencies: [PackageRef('mockito'), PackageRef('plugin_platform_interface')],
   );
 
@@ -14966,7 +15374,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('url_launcher_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('url_launcher_platform_interface')],
     devDependencies: [PackageRef('build_runner'), PackageRef('mockito'), PackageRef('plugin_platform_interface')],
   );
 
@@ -15004,7 +15412,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('url_launcher_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('url_launcher_platform_interface')],
     devDependencies: [],
   );
 
@@ -15042,7 +15450,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('url_launcher_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('url_launcher_platform_interface')],
     devDependencies: [],
   );
 
@@ -15080,7 +15488,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('plugin_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('plugin_platform_interface')],
     devDependencies: [PackageRef('mockito')],
   );
 
@@ -15118,7 +15526,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter_web_plugins'), PackageRef('url_launcher_platform_interface'), PackageRef('web')],
+    dependencies: [PackageRef('flutter'), PackageRef('flutter_web_plugins'), PackageRef('url_launcher_platform_interface'), PackageRef('web')],
     devDependencies: [],
   );
 
@@ -15156,7 +15564,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('url_launcher_platform_interface')],
+    dependencies: [PackageRef('flutter'), PackageRef('url_launcher_platform_interface')],
     devDependencies: [],
   );
 
@@ -15215,7 +15623,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('http'), PackageRef('vector_graphics_codec')],
+    dependencies: [PackageRef('flutter'), PackageRef('http'), PackageRef('vector_graphics_codec')],
     devDependencies: [PackageRef('vector_graphics_compiler')],
   );
 
@@ -15292,7 +15700,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     isMarkdown: false,
     isSdk: false,
     dependencies: [PackageRef('args'), PackageRef('meta'), PackageRef('path'), PackageRef('path_parsing'), PackageRef('vector_graphics_codec'), PackageRef('xml')],
-    devDependencies: [PackageRef('vector_graphics'), PackageRef('vector_math')],
+    devDependencies: [PackageRef('flutter'), PackageRef('vector_graphics'), PackageRef('vector_math')],
   );
 
 /// vector_math 2.2.0
@@ -15553,6 +15961,220 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     devDependencies: [],
   );
 
+/// webdriver 3.2.0
+const _webdriver = Package(
+    name: 'webdriver',
+    description: 'Provides WebDriver bindings for Dart. Supports WebDriver JSON interface and W3C spec. Requires the use of WebDriver remote server.',
+    repository: 'https://github.com/google/webdriver.dart',
+    authors: [],
+    version: '3.2.0',
+    license: '''Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2013 Google LLC
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('matcher'), PackageRef('path'), PackageRef('stack_trace'), PackageRef('sync_http'), PackageRef('web')],
+    devDependencies: [PackageRef('archive')],
+  );
+
 /// win32 5.15.0
 const _win32 = Package(
     name: 'win32',
@@ -15743,12 +16365,12 @@ SOFTWARE.''',
     devDependencies: [PackageRef('path')],
   );
 
-/// gstore 1.0.27+1
+/// gstore 1.0.34+1
 const _gstore = Package(
     name: 'gstore',
     description: 'github 资源的应用商店',
     authors: [],
-    version: '1.0.27+1',
+    version: '1.0.34+1',
     license: '''GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
@@ -16425,7 +17047,7 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('retrofit'), PackageRef('logger'), PackageRef('json_annotation'), PackageRef('get'), PackageRef('flutter_markdown_plus'), PackageRef('markdown'), PackageRef('yaml'), PackageRef('async'), PackageRef('cupertino_icons'), PackageRef('http'), PackageRef('cached_network_image'), PackageRef('installed_apps'), PackageRef('jovial_svg'), PackageRef('path_provider'), PackageRef('dio'), PackageRef('rhttp'), PackageRef('app_installer'), PackageRef('dynamic_color'), PackageRef('floor'), PackageRef('shared_preferences'), PackageRef('sprintf'), PackageRef('flutter_inappwebview'), PackageRef('quickjs_engine'), PackageRef('qr_flutter'), PackageRef('pretty_dio_logger'), PackageRef('flutter_html'), PackageRef('sqflite'), PackageRef('flutter_secure_storage'), PackageRef('file_picker'), PackageRef('permission_handler'), PackageRef('archive'), PackageRef('flutter_rust_bridge'), PackageRef('path'), PackageRef('xml'), PackageRef('genkit'), PackageRef('genkit_google_genai'), PackageRef('genkit_openai'), PackageRef('device_info_plus'), PackageRef('shizuku_api'), PackageRef('flutter_local_notifications'), PackageRef('flutter_foreground_task'), PackageRef('flutter_gen_ai_chat_ui'), PackageRef('flutter_svg'), PackageRef('package_info_plus')],
-    devDependencies: [PackageRef('retrofit_generator'), PackageRef('build_runner'), PackageRef('json_serializable'), PackageRef('flutter_svg_provider'), PackageRef('permission_handler'), PackageRef('path_provider'), PackageRef('app_installer'), PackageRef('jovial_svg'), PackageRef('floor_generator'), PackageRef('flutter_lints'), PackageRef('sqflite_common_ffi'), PackageRef('mockito'), PackageRef('dart_pubspec_licenses')],
+    dependencies: [PackageRef('flutter'), PackageRef('retrofit'), PackageRef('logger'), PackageRef('json_annotation'), PackageRef('flutter_riverpod'), PackageRef('go_router'), PackageRef('flutter_markdown_plus'), PackageRef('markdown'), PackageRef('yaml'), PackageRef('async'), PackageRef('cupertino_icons'), PackageRef('http'), PackageRef('cached_network_image'), PackageRef('installed_apps'), PackageRef('jovial_svg'), PackageRef('path_provider'), PackageRef('crypto'), PackageRef('dio'), PackageRef('rhttp'), PackageRef('app_installer'), PackageRef('dynamic_color'), PackageRef('floor'), PackageRef('shared_preferences'), PackageRef('sprintf'), PackageRef('flutter_inappwebview'), PackageRef('qr_flutter'), PackageRef('pretty_dio_logger'), PackageRef('flutter_html'), PackageRef('sqflite'), PackageRef('flutter_secure_storage'), PackageRef('file_picker'), PackageRef('permission_handler'), PackageRef('archive'), PackageRef('flutter_rust_bridge'), PackageRef('path'), PackageRef('xml'), PackageRef('genkit'), PackageRef('genkit_google_genai'), PackageRef('genkit_openai'), PackageRef('openai_dart'), PackageRef('device_info_plus'), PackageRef('shizuku_api'), PackageRef('flutter_local_notifications'), PackageRef('flutter_foreground_task'), PackageRef('flutter_gen_ai_chat_ui'), PackageRef('flutter_svg'), PackageRef('flutter_tabler_icons'), PackageRef('package_info_plus'), PackageRef('gal'), PackageRef('camera'), PackageRef('protobuf')],
+    devDependencies: [PackageRef('integration_test'), PackageRef('retrofit_generator'), PackageRef('build_runner'), PackageRef('json_serializable'), PackageRef('flutter_svg_provider'), PackageRef('permission_handler'), PackageRef('path_provider'), PackageRef('app_installer'), PackageRef('jovial_svg'), PackageRef('floor_generator'), PackageRef('flutter_lints'), PackageRef('sqflite_common_ffi'), PackageRef('mockito'), PackageRef('dart_pubspec_licenses')],
   );
 
