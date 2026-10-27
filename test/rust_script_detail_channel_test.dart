@@ -38,7 +38,7 @@ import 'package:gstore/page/detail/state.dart';
 /// In-memory `ScriptApiBackend` (the FRB seam): the raw JSON string the Rust
 /// `run` would return, or a thrown exception. No FRB dylib is loaded.
 class _FakeScriptBackend implements ScriptApiBackend {
-  _FakeScriptBackend({this.reply = 'null', this.throwError, this.replies});
+  _FakeScriptBackend({this.reply = 'null', this.throwError, this.replies, this.replyFor});
 
   /// Raw JSON string the script reply decodes to (`'null'` = no detail).
   String reply;
@@ -48,6 +48,12 @@ class _FakeScriptBackend implements ScriptApiBackend {
 
   /// Per-method raw JSON overrides; a method absent here falls back to [reply].
   Map<String, String>? replies;
+
+  /// When non-null, consulted AFTER [replies] and BEFORE [reply]: lets a test
+  /// vary the reply by method AND request params (e.g. `buildHistory` per
+  /// requested version, proving the channel asked for the tracked version's
+  /// builds). Methods present in [replies] still win.
+  String Function(String method, String paramsJson)? replyFor;
 
   final List<Map<String, Object?>> runCalls = [];
 
@@ -64,6 +70,8 @@ class _FakeScriptBackend implements ScriptApiBackend {
     if (byMethod != null && byMethod.containsKey(method)) {
       return byMethod[method]!;
     }
+    final byFn = replyFor;
+    if (byFn != null) return byFn(method, paramsJson);
     return reply;
   }
 
@@ -766,6 +774,190 @@ void main() {
           reason: 'showUAPicker/refreshDetail handlers must not re-enter the script');
       expect(cb.refreshCalls.last['name'], 'X');
       ScriptUiHandlerRegistry.instance.resetForTest();
+    });
+  });
+
+  group('RustScriptDetailChannel — 历史构建 uses the tracked current version', () {
+    // ROOT CAUSE: the pack's `getVersionOptions` (scripts/channels/src/pingan/
+    // detail.js :696) defaults `currentVersion` to `versions[0].version` (latest)
+    // and the pack's `main('versionOptions')` (:1042) does NOT forward the pack's
+    // own `_currentVersion` (set by getAppDetail :643 / switchVersion :754). So
+    // reading the version from `versionOptions['currentVersion']` always yields
+    // the entry/latest version — after switching versions the 历史构建 sheet
+    // showed the OLD version's builds. The Rust lane bypasses the pack's
+    // `jsBuildHistory` (which uses `_currentVersion`, :915) to avoid the
+    // parked-eval deadlock, so it must track the current version itself.
+
+    String entryDetailJson() => jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'App One',
+          'version': 'A', // pack getAppDetail :642 sets detail.version = group.version
+          'extra': {'env': 'sit'}, // pack buildDetailFromGroup :357 extra.env = cred.env
+          'downloads': <Object?>[],
+        });
+
+    // `currentVersion: 'A'` mirrors the pack default (latest == entry here):
+    // BEFORE the fix this is what 历史构建 used even after switching to B.
+    String versionOptionsJson() => jsonEncode({
+          'envs': ['sit', 'prod'],
+          'versions': [
+            {'version': 'A', 'envs': ['sit'], 'buildCount': 3},
+            {'version': 'B', 'envs': ['sit'], 'buildCount': 1},
+          ],
+          'currentEnv': 'sit',
+          'currentVersion': 'A',
+        });
+
+    String switchVersionJson(String version) => jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'Switched $version',
+          'version': version,
+          'extra': {'env': 'sit'},
+          'downloads': <Object?>[],
+        });
+
+    String buildHistoryJson(String version) => jsonEncode({
+          'builds': [
+            {'num': version == 'B' ? 20 : 10, 'ipaName': '$version.apk'},
+          ],
+        });
+
+    /// Backend whose `buildHistory`/`switchVersion` replies vary by the requested
+    /// version, so the assertions prove WHICH version's builds were fetched.
+    _FakeScriptBackend trackedBackend({
+      String? getAppDetail,
+    }) =>
+        _FakeScriptBackend(
+          replies: {
+            'getAppDetail': getAppDetail ?? entryDetailJson(),
+            'detailMenu': jsonEncode([
+              {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+              {'action': '历史构建', 'jscall': 'jsBuildHistory'},
+            ]),
+            'versionOptions': versionOptionsJson(),
+          },
+          replyFor: (method, params) {
+            final p = jsonDecode(params) as Map;
+            switch (method) {
+              case 'switchVersion':
+                return switchVersionJson(p['version']?.toString() ?? '');
+              case 'buildHistory':
+                return buildHistoryJson(p['version']?.toString() ?? '');
+              default:
+                return 'null';
+            }
+          },
+        );
+
+    test('(i) after switchVersion B, 历史构建 issues buildHistory with version B',
+        () async {
+      final backend = trackedBackend();
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+      cb.versionSelection = (env: 'sit', version: 'B');
+
+      await channel.load(); // getAppDetail → version A (tracked)
+      backend.runCalls.clear();
+
+      // 切换版本 → top-level versionOptions + switchVersion (tracks current = B)
+      await channel.getActions().first.onTap();
+      backend.runCalls.clear();
+
+      // 历史构建 → buildHistory must use the tracked B, not versionOptions' A
+      await channel.getActions()[1].onTap();
+
+      final bhCall = backend.runCalls.singleWhere(
+        (c) => c['method'] == 'buildHistory',
+      );
+      expect(
+        (jsonDecode(bhCall['params']! as String) as Map)['version'],
+        'B',
+        reason: 'must use the tracked current version, not the latest/entry A',
+      );
+      expect(cb.buildHistoryCalls, hasLength(1));
+      expect(cb.buildHistoryCalls.single['version'], 'B');
+      expect(cb.buildHistoryCalls.single['env'], 'sit');
+      // The sheet received B's builds (not A's), proving the request was B.
+      expect(
+        (cb.buildHistoryCalls.single['builds'] as List).single,
+        {'num': 20, 'ipaName': 'B.apk'},
+      );
+    });
+
+    test('(ii) before any switch, 历史构建 uses the entry version A', () async {
+      final backend = trackedBackend();
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+
+      await channel.load(); // tracked = A
+      backend.runCalls.clear();
+
+      await channel.getActions()[1].onTap();
+
+      final bhCall = backend.runCalls.singleWhere(
+        (c) => c['method'] == 'buildHistory',
+      );
+      expect(
+        (jsonDecode(bhCall['params']! as String) as Map)['version'],
+        'A',
+      );
+      expect(cb.buildHistoryCalls.single['version'], 'A');
+      expect(
+        (cb.buildHistoryCalls.single['builds'] as List).single,
+        {'num': 10, 'ipaName': 'A.apk'},
+      );
+    });
+
+    test('(iii) 切换版本 issues versionOptions carrying the tracked currentVersion',
+        () async {
+      final backend = trackedBackend();
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+      // No versionSelection → the picker only records the options payload.
+
+      await channel.load(); // tracked = A
+      backend.runCalls.clear();
+
+      await channel.getActions().first.onTap();
+
+      final voCall = backend.runCalls.singleWhere(
+        (c) => c['method'] == 'versionOptions',
+      );
+      expect(
+        (jsonDecode(voCall['params']! as String) as Map)['currentVersion'],
+        'A',
+        reason: 'the picker must be told the tracked current version (A)',
+      );
+      expect(cb.versionPickerCalls, hasLength(1));
+    });
+
+    test('(iv) null tracked version → 历史构建 falls back to versionOptions.currentVersion',
+        () async {
+      // getAppDetail WITHOUT a `version` → `_currentVersion` stays null.
+      final backend = trackedBackend(
+        getAppDetail: jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'App One',
+          'extra': {'env': 'sit'},
+        }),
+      );
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      await channel.getActions()[1].onTap();
+
+      final bhCall = backend.runCalls.singleWhere(
+        (c) => c['method'] == 'buildHistory',
+      );
+      expect(
+        (jsonDecode(bhCall['params']! as String) as Map)['version'],
+        'A',
+        reason: 'null tracked version must fall back to versionOptions.currentVersion',
+      );
+      expect(cb.buildHistoryCalls.single['version'], 'A');
     });
   });
 }

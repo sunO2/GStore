@@ -56,6 +56,19 @@ class RustScriptDetailChannel implements IDetailChannel {
   DetailState? _boundState;
   DetailCallbacks? _boundCallbacks;
 
+  /// 当前版本（本通道自持）。pack 的 `getAppDetail`/`switchVersion` 只在其内部
+  /// 记录 `_currentVersion`（`scripts/channels/src/pingan/detail.js` :643 / :754），
+  /// 而顶层 `versionOptions` 不回传该 pack 的当前版本：pack 的
+  /// `main('versionOptions')`（:1042）不带 `_currentVersion` 调 `getVersionOptions`，
+  /// 后者缺省回退到最新版本（:696 `currentVersion || versions[0].version`）。
+  /// Rust 通道因避开 parked-eval 死锁（见 [_runAction]）而不跑 pack 的
+  /// `jsBuildHistory`，故必须自持当前版本供 `_openBuildHistory` 使用，否则切换
+  /// 版本后历史构建列表仍按入口/最新版本取。
+  String? _currentVersion;
+
+  /// 当前环境（同上，来自 detail 的 `extra.env` / `switchVersion` 的 env 参数）。
+  String? _currentEnv;
+
   /// [getActions] 返回的操作项缓存（[load] 时从脚本 detailMenu 刷新）。
   List<DetailAction> _actions = const [];
 
@@ -89,6 +102,11 @@ class RustScriptDetailChannel implements IDetailChannel {
         await callbacks.refreshDetail(
           detailData: Map<String, dynamic>.from(decoded),
         );
+        // 记录 pack 的当前版本/环境（pack `getAppDetail` :642-643 设
+        // `detail.version`/内部 `_currentVersion`；:539 设 `_currentEnv` =
+        // `cred.env`，后者经 buildDetailFromGroup 落进 detail 的 `extra.env`）。
+        _currentVersion = decoded['version']?.toString();
+        _currentEnv = ((decoded['extra'] as Map?)?['env'])?.toString();
       } else {
         // Null / non-object reply = "the script has no detail for this app".
         // The Rust host folds undefined (no `getAppDetail` case), `{ok:false}`
@@ -218,8 +236,12 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// 切换版本入口：顶层拉 `versionOptions` → 经 [DetailCallbacks.showVersionPicker]
   /// 弹选择器。选择后的 `switchVersion`/`refreshDetail` 与 `onEnvChanged`/
   /// `onBuildHistory` 回调均由 mixin 顶层发起（无 parked eval → 无嵌套 `run`）。
+  ///
+  /// 传入跟踪到的 `_currentVersion` 作 `currentVersion`，使选择器预选中当前版本
+  /// （pack 的 `getVersionOptions` 缺省恒回退最新版本，不传则预选错位）。
   Future<void> _openVersionPicker() async {
-    final options = await versionOptions(appId);
+    final options =
+        await versionOptions(appId, currentVersion: _currentVersion);
     if (options == null) return;
     await _boundCallbacks?.showVersionPicker(options: options, appId: appId);
   }
@@ -228,11 +250,17 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// → 顶层拉 `buildHistory` → 经 [DetailCallbacks.showBuildHistory] 弹构建历史。
   /// builds 形状与 registry（`script_ui_handler_registry.dart`
   /// `showBuildHistory`）一致：`List<Map<String, dynamic>>`。
+  ///
+  /// 版本/环境优先用本通道跟踪到的 `_currentVersion`/`_currentEnv`：pack 的
+  /// `versionOptions` 缺省恒回退最新版本（见 `_currentVersion` 注释），切换版本后
+  /// 仍会给出入口/最新版本 → 历史构建列表陈旧的根因。仅在未跟踪到时才回退到
+  /// `versionOptions` 的 `currentVersion`/`currentEnv`。
   Future<void> _openBuildHistory() async {
     final options = await versionOptions(appId);
     if (options == null) return;
-    final version = options['currentVersion']?.toString() ?? '';
-    final env = options['currentEnv']?.toString() ?? '';
+    final version =
+        _currentVersion ?? options['currentVersion']?.toString() ?? '';
+    final env = _currentEnv ?? options['currentEnv']?.toString() ?? '';
     final history = await buildHistory(appId: appId, version: version, env: env);
     if (history == null) return;
     final builds = ((history['builds'] as List?) ?? <Object?>[])
@@ -252,16 +280,21 @@ class RustScriptDetailChannel implements IDetailChannel {
   Future<void> startDownload(DownloadInfo info) async {}
 
   /// 版本/环境切换选项（脚本 detail.js 的 `versionOptions`）→ 解码后的 Map；
-  /// `env` 为空时省略该键（pingan 侧会误判）。脚本未实现/失败 → null。
+  /// `env`/`currentVersion` 为空时省略该键（pingan 侧会误判）。脚本未实现/失败
+  /// → null。
+  ///
+  /// `currentVersion` 供选择器预选中当前版本（pack `getVersionOptions` 第三参
+  /// 缺省回退最新版本）；它是本类扩展的可选参数，不改变 [IDetailChannel] 契约。
   @override
   Future<Map<String, dynamic>?> versionOptions(String appId,
-      {String? env}) async {
+      {String? env, String? currentVersion}) async {
     final raw = await _api.run(
       key: channelKey,
       method: 'versionOptions',
       paramsJson: jsonEncode({
         'appId': appId,
         if (env != null) 'env': env,
+        if (currentVersion != null) 'currentVersion': currentVersion,
       }),
     );
     final Object? decoded = jsonDecode(raw);
@@ -290,6 +323,11 @@ class RustScriptDetailChannel implements IDetailChannel {
     );
     final Object? decoded = jsonDecode(raw);
     if (decoded is! Map) return null;
+    // pack `switchVersion` :753-754 设其内部 `_currentEnv`/`_currentVersion`（env
+    // 参数覆盖凭证默认 env）。返回的 detail 顶层未带 `version`（版本在
+    // `extra.version`，由 buildDetailFromGroup 落），故回退到传入的 `version` 参数。
+    _currentVersion = decoded['version']?.toString() ?? version;
+    _currentEnv = env;
     return Map<String, dynamic>.from(decoded);
   }
 
