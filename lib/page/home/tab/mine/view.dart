@@ -8,6 +8,7 @@ import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/perf/perf_target_store.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -34,6 +35,9 @@ class _MinePageState extends ConsumerState<MinePage>
 
   /// 工具卡片展开状态（默认展开）
   bool _toolsExpanded = true;
+
+  /// 性能监控「上次选择的第三方应用」展示名（无则为 null）。
+  String? _perfLastTargetLabel;
 
   /// 备份逻辑控制器（页面私有实例；操作区监听其 ChangeNotifier 驱动重建）
   late final BackupLogic _backupLogic;
@@ -85,6 +89,7 @@ class _MinePageState extends ConsumerState<MinePage>
     _backupLogic = BackupLogic();
     _backupLogic.addListener(_reloadBackupArea);
     _checkWebDavConfig();
+    _loadPerfLastTarget();
 
     // 监听 webdav 模块上下线：下线隐藏备份入口，上线恢复
     _webdavModuleOnline = ModuleManager.instance.isModuleEnabled('webdav');
@@ -230,6 +235,17 @@ class _MinePageState extends ConsumerState<MinePage>
           _hasWebDavConfig = false;
         });
       }
+    }
+  }
+
+  /// 读取性能监控最近选择的第三方应用，驱动入口副标题文案。
+  Future<void> _loadPerfLastTarget() async {
+    try {
+      final target = await const SharedPrefsPerfTargetStore().load();
+      if (!mounted || target == null) return;
+      setState(() => _perfLastTargetLabel = target.label);
+    } catch (e) {
+      appLog.error('MinePage: 读取性能监控最近目标失败（忽略） - $e');
     }
   }
 
@@ -451,206 +467,185 @@ class _MinePageState extends ConsumerState<MinePage>
     );
   }
 
-  /// 构建宫格区域标题栏（图标 + 标题；可选尾部控件）
-  Widget _buildGridSectionHeader(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    Widget? trailing,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Icon(
-          icon,
-          size: AppTypography.iconMD,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        const SizedBox(width: AppSpacing.md),
-        Text(
-          title,
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: AppTypography.weightSemiBold,
-              ),
-        ),
-        if (trailing != null) ...[
-          const Spacer(),
-          trailing,
-        ],
-      ],
-    );
-  }
-
-  /// 构建快捷功能区（独立宫格区域；不额外承载卡片背景/边框）
+  /// 构建快捷功能卡片（始终显示）
   Widget _buildQuickActionsCard(BuildContext context) {
-    // 快捷入口数据（AI 助手入口随 agent_tools 模块上下线显隐）
-    final items = <({IconData icon, String label, String route})>[
-      if (_agentModuleOnline)
-        (
-          icon: TablerIcons.sparkles,
-          label: 'AI 助手',
-          route: AppRoute.agent,
-        ),
-      (
-        icon: TablerIcons.brand_android,
-        label: '已安装应用',
-        route: AppRoute.installedApps,
-      ),
-      (
-        icon: TablerIcons.settings_filled,
-        label: '设置',
-        route: AppRoute.settings,
-      ),
-    ];
-
-    // 与工具宫格保持一致的列数节奏（手机 4 列，宽屏最多 6 列）
-    return Padding(
-      padding: AppSpacing.allLG,
+    return Card(
+      elevation: 0,
+      shape: _cardShape,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildGridSectionHeader(
-            context,
-            icon: TablerIcons.bolt,
-            title: '快捷功能',
+          // AI 助手入口随 agent_tools 模块上下线显隐（隐藏时其下方 Divider 一并隐藏）
+          if (_agentModuleOnline) ...[
+            ListTile(
+              leading: const Icon(TablerIcons.sparkles,
+                  size: AppTypography.iconMD),
+              title: const Text('AI 助手'),
+              trailing:
+                  const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
+              onTap: () => context.push(AppRoute.agent),
+            ),
+            const Divider(height: 1),
+          ],
+          ListTile(
+            leading: const Icon(TablerIcons.brand_android, size: AppTypography.iconMD),
+            title: const Text('已安装应用'),
+            trailing:
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => context.push(AppRoute.installedApps),
           ),
-          const SizedBox(height: AppSpacing.lg),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final columns =
-                  (constraints.maxWidth / 78).floor().clamp(4, 6).toInt();
-              return GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                padding: EdgeInsets.zero,
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  crossAxisSpacing: AppSpacing.sm,
-                  mainAxisSpacing: AppSpacing.sm,
-                  mainAxisExtent: 88,
-                ),
-                itemCount: items.length,
-                itemBuilder: (context, index) {
-                  final item = items[index];
-                  return _MineGridTile(
-                    icon: item.icon,
-                    label: item.label,
-                    onTap: () => context.push(item.route),
-                  );
-                },
-              );
-            },
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(TablerIcons.settings_filled, size: AppTypography.iconMD),
+            title: const Text('设置'),
+            trailing:
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => context.push(AppRoute.settings),
           ),
         ],
       ),
     );
   }
 
-  /// 构建工具入口区（默认展开；宫格不额外承载卡片背景/边框）
+  /// 构建工具卡片（默认展开；内含各工具入口）
   Widget _buildToolsCard(BuildContext context) {
-    return Padding(
-      padding: AppSpacing.allLG,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 标题栏（带展开/收起按钮）
-          _buildGridSectionHeader(
-            context,
-            icon: TablerIcons.tools,
-            title: '工具',
-            trailing: InkWell(
-              onTap: _toggleToolsExpanded,
-              borderRadius: BorderRadius.circular(20),
-              child: const SizedBox(
-                width: 32,
-                height: 32,
-                child: Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(6),
-                    child: Icon(
-                      TablerIcons.chevron_down,
-                      size: 18,
-                      color: AppColors.textSecondary,
+    return Card(
+      elevation: 0,
+      shape: _cardShape,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 标题栏（带展开/收起按钮）
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  TablerIcons.tools,
+                  size: AppTypography.iconMD,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Text(
+                  '工具',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: AppTypography.weightSemiBold,
+                      ),
+                ),
+                const Spacer(),
+                InkWell(
+                  onTap: _toggleToolsExpanded,
+                  borderRadius: BorderRadius.circular(20),
+                  child: const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(6),
+                        child: Icon(
+                          TablerIcons.chevron_down,
+                          size: 18,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
                     ),
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.lg),
+
+            // 折叠区：工具入口列表
+            SizeTransition(
+              sizeFactor: _toolsAnimation,
+              axis: Axis.vertical,
+              axisAlignment: -1.0, // 从顶部开始
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.history,
+                        size: AppTypography.iconMD),
+                    title: const Text('应用快照'),
+                    subtitle: const Text('查看已生成快照的应用'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.appSnapshotList),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.qrcode,
+                        size: AppTypography.iconMD),
+                    title: const Text('二维码'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.qrTool),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.category,
+                        size: AppTypography.iconMD),
+                    title: const Text('开发者工具箱'),
+                    subtitle: const Text('离线可用的开发小工具集'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.itTools),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.shield,
+                        size: AppTypography.iconMD),
+                    title: const Text('网络调试'),
+                    subtitle: const Text('VPN / 局域网与流量'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.proxy),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.api,
+                        size: AppTypography.iconMD),
+                    title: const Text('请求调试'),
+                    subtitle: const Text('集合 / 历史 / 环境 / 改写规则'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.requestDebug),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.bug,
+                        size: AppTypography.iconMD),
+                    title: const Text('查看日志'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.logViewer),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.gauge,
+                        size: AppTypography.iconMD),
+                    title: const Text('性能监控'),
+                    subtitle: Text(
+                      _perfLastTargetLabel == null
+                          ? '帧率 / CPU / 内存 / 电池 / 温度'
+                          : '上次: $_perfLastTargetLabel',
+                    ),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.perfMonitor),
+                  ),
+                ],
               ),
             ),
-          ),
-          const SizedBox(height: AppSpacing.lg),
-
-          // 折叠区：工具入口宫格
-          SizeTransition(
-            sizeFactor: _toolsAnimation,
-            axis: Axis.vertical,
-            axisAlignment: -1.0, // 从顶部开始
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                // 依可用宽度自适应列数：手机 4 列，宽屏最多 6 列
-                final columns =
-                    (constraints.maxWidth / 78).floor().clamp(4, 6).toInt();
-                final items = <({IconData icon, String label, String route})>[
-                  (
-                    icon: TablerIcons.history,
-                    label: '应用快照',
-                    route: AppRoute.appSnapshotList,
-                  ),
-                  (
-                    icon: TablerIcons.qrcode,
-                    label: '二维码',
-                    route: AppRoute.qrTool,
-                  ),
-                  (
-                    icon: TablerIcons.category,
-                    label: '开发工具箱',
-                    route: AppRoute.itTools,
-                  ),
-                  (
-                    icon: TablerIcons.shield,
-                    label: '网络调试',
-                    route: AppRoute.proxy,
-                  ),
-                  (
-                    icon: TablerIcons.api,
-                    label: '请求调试',
-                    route: AppRoute.requestDebug,
-                  ),
-                  (
-                    icon: TablerIcons.bug,
-                    label: '查看日志',
-                    route: AppRoute.logViewer,
-                  ),
-                  (
-                    icon: TablerIcons.gauge,
-                    label: '性能监控',
-                    route: AppRoute.perfMonitor,
-                  ),
-                ];
-
-                return GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  padding: EdgeInsets.zero,
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    crossAxisSpacing: AppSpacing.sm,
-                    mainAxisSpacing: AppSpacing.sm,
-                    mainAxisExtent: 88,
-                  ),
-                  itemCount: items.length,
-                  itemBuilder: (context, index) {
-                    final item = items[index];
-                    return _MineGridTile(
-                      icon: item.icon,
-                      label: item.label,
-                      onTap: () => context.push(item.route),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1441,81 +1436,6 @@ class _ColorPresetButton extends StatelessWidget {
                 size: 20,
               )
             : null,
-      ),
-    );
-  }
-}
-
-/// “我的”页宫格磁贴：圆角图标容器 + 标签（与区域标题图标左对齐）。
-class _MineGridTile extends StatelessWidget {
-  /// 磁贴图标
-  final IconData icon;
-
-  /// 磁贴标签
-  final String label;
-
-  /// 点击回调
-  final VoidCallback onTap;
-
-  const _MineGridTile({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    final tileRadius = BorderRadius.circular(AppRadius.md);
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: tileRadius,
-      child: Padding(
-        padding: AppSpacing.onlyVerticalXS,
-        child: Column(
-          // 左对齐：磁贴图标与区域标题图标保持同一左边界
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // 圆角图标容器：主题容器色 + 对应前景色
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: colorScheme.primaryContainer,
-                borderRadius: tileRadius,
-              ),
-              child: Center(
-                child: Icon(
-                  icon,
-                  size: AppTypography.iconLG,
-                  color: colorScheme.onPrimaryContainer,
-                ),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            // 文字与图标同轴居中：文字宽度超过图标宽度时，以图标中轴为基准
-            // 向两侧对称溢出（仅占用少量列间距，不会压到相邻磁贴）
-            SizedBox(
-              width: 44,
-              height: 18,
-              child: OverflowBox(
-                alignment: Alignment.topCenter,
-                maxWidth: double.infinity,
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  softWrap: false,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.visible,
-                  style: textTheme.labelMedium,
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
