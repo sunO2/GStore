@@ -5,21 +5,141 @@ import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
+import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/settle.dart';
 
+/// In-memory `ScriptApiBackend` (FRB seam): the settings import/env/delete flows
+/// reach the Rust script lane, never a Dart `JsChannel` (deleted).
+class _FakeScriptBackend implements ScriptApiBackend {
+  final Map<String, rust_pack.ScriptPackInfo> packs = {};
+  final List<String> removed = [];
+  final List<String> envSets = [];
+  final Map<String, Map<String, String>> lastEnv = {};
+
+  @override
+  Future<void> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) async {}
+
+  @override
+  Future<rust_pack.ScriptPackInfo> import_({
+    required List<int> packZipBytes,
+    String? expectedKey,
+  }) async {
+    final key = expectedKey ?? 'js_unknown';
+    final info = rust_pack.ScriptPackInfo(
+      key: key,
+      name: '示例渠道',
+      description: '示例描述',
+      icon: '',
+      hasDetail: false,
+    );
+    packs[key] = info;
+    return info;
+  }
+
+  @override
+  Future<void> remove({required String key}) async {
+    removed.add(key);
+    packs.remove(key);
+  }
+
+  @override
+  Future<rust_pack.ScriptPackInfo> refresh({required String key}) async =>
+      packs[key] ??
+      rust_pack.ScriptPackInfo(
+        key: key,
+        name: '',
+        description: '',
+        icon: '',
+        hasDetail: false,
+      );
+
+  @override
+  Future<void> setEnv({
+    required String key,
+    required Map<String, String> env,
+  }) async {
+    envSets.add(key);
+    lastEnv[key] = Map.of(env);
+  }
+
+  @override
+  Future<Map<String, String>> getEnv({required String key}) async =>
+      Map.of(lastEnv[key] ?? const {});
+
+  @override
+  Future<void> setConfig({
+    required String key,
+    required Map<String, String> config,
+  }) async {}
+
+  @override
+  Future<String> run({
+    required String key,
+    required String method,
+    required String paramsJson,
+  }) async =>
+      'null';
+
+  @override
+  Future<List<rust_pack.ScriptPackInfo>> list() async => packs.values.toList();
+
+  @override
+  Future<String> storedApps({required String key}) async => '[]';
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {}
+
+  @override
+  Future<void> releaseDetail({
+    required String key,
+    required String appId,
+  }) async {}
+}
+
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  _FakeFlagsBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    snapshot = CoreFlagsSnapshot(
+      channels: patch.channel ?? snapshot.channels,
+      catalog: patch.catalog ?? snapshot.catalog,
+      update: patch.update ?? snapshot.update,
+      download: patch.download ?? snapshot.download,
+      install: patch.install ?? snapshot.install,
+      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
+      coreWrites: snapshot.coreWrites,
+    );
+  }
+}
+
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
-/// （MethodChannel mock 无效：path_provider_linux 注册了自己的平台实例）
 class _FakePathProvider extends PathProviderPlatform {
   final String path;
   _FakePathProvider(this.path);
@@ -71,10 +191,10 @@ void main() {
 
   late Directory tempDir;
   late PathProviderPlatform originalPathProvider;
+  late _FakeScriptBackend backend;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    // env 持久化走内存存储（敏感键自动路由，channel_env_ui_test 同款）
     ConfigStore.instance.resetForTest();
     await ConfigStore.instance
         .initialize(storages: [MemoryConfigStorage(), MemoryConfigStorage()]);
@@ -83,15 +203,30 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('settings_script_import');
     originalPathProvider = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
+
+    // Rust script lane is the shipping path (CoreFlags.jsChannel ON).
+    CoreFlags.installBackend(
+        _FakeFlagsBackend(const CoreFlagsSnapshot(jsChannel: true)));
+    await CoreFlags.refresh();
+    backend = _FakeScriptBackend();
+    ScriptApi.installBackend(backend);
+    ScriptChannelService.installForTest(ScriptChannelService(
+      coreDirs: () async => (
+        '${tempDir.path}/core/data',
+        '${tempDir.path}/core/files',
+        '${tempDir.path}/core/cache',
+      ),
+      ensureRust: () async {},
+    ));
+    RustScriptChannelLane.resetForTest();
   });
 
   tearDown(() async {
     PathProviderPlatform.instance = originalPathProvider;
-    for (final channel in ChannelManager.instance.dynamicChannels) {
-      if (channel is JsChannel) {
-        ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
-      }
-    }
+    CoreFlags.resetBackend();
+    ScriptApi.resetBackend();
+    ScriptChannelService.resetForTest();
+    RustScriptChannelLane.resetForTest();
     await tempDir.delete(recursive: true);
   });
 
@@ -114,7 +249,6 @@ void main() {
     WidgetTester tester, {
     required Future<({String name, Uint8List bytes})?> Function() pick,
   }) async {
-    // 入口位于「数据源管理」分组，小视口下需先滚动到可见再点
     await tester.ensureVisible(find.text('脚本渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('脚本渠道'));
@@ -126,7 +260,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('① 从文件选择 .zip → 校验通过 → importZip 注册成功 + 文件落盘',
+  testWidgets('① 从文件选择 .zip → 校验通过 → 导入 Rust 脚本通道 + 成功提示',
       (tester) async {
     var picked = false;
     final zipBytes = makeZip(entry: _script);
@@ -135,7 +269,6 @@ void main() {
       return (name: 'vivo.zip', bytes: zipBytes);
     });
 
-    // 入口存在（数据源管理分组），文案为渠道包语义
     expect(find.text('脚本渠道'), findsOneWidget);
 
     await selectZip(tester, pick: () async => (name: 'vivo.zip', bytes: zipBytes));
@@ -148,30 +281,16 @@ void main() {
     // 确认导入
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 固定等待换成有界轮询：注册 + QuickJS 初始化 + 文件落盘都是真实异步，
-    // 并发下可能远超固定 900ms。断言不变，仅等待机制变化。
     await settleUntil(
       tester,
-      () {
-        final c = ChannelManager.instance.getChannelByKey('js_vivo');
-        return c is JsChannel &&
-            c.isInitialized &&
-            File('${tempDir.path}/channels/vivo.zip').existsSync();
-      },
-      reason: '导入后必须注册 js_vivo、完成初始化并落盘渠道包',
+      () => RustScriptChannelLane.instance.packFor('js_vivo') != null,
+      reason: '导入后必须把 js_vivo 装进 Rust 脚本通道并刷新 lane 缓存',
     );
 
-    // 渠道已注册（key = js_vivo）
-    final channel = ChannelManager.instance.getChannelByKey('js_vivo');
-    expect(channel, isNotNull);
-    expect(channel, isA<JsChannel>());
-    expect((channel as JsChannel).isInitialized, isTrue);
-
-    // 成功提示
+    // 装进 Rust 通道（不再有 Dart JsChannel / 旧渠道目录落盘）
+    expect(backend.packs.containsKey('js_vivo'), isTrue);
+    expect(RustScriptChannelLane.instance.codes, contains('js_vivo'));
     expect(find.textContaining('渠道包已导入'), findsOneWidget);
-
-    // 文件已写入渠道目录（key 去 js_ 前缀 + .zip 渠道包）
-    expect(File('${tempDir.path}/channels/vivo.zip').existsSync(), isTrue);
   });
 
   testWidgets('② 无效 zip（缺 entry.js）→ 提示错误，不导入', (tester) async {
@@ -184,13 +303,13 @@ void main() {
 
     // 校验失败提示（AppDialogs.showError）
     expect(find.textContaining('无效的渠道包'), findsOneWidget);
-    expect(ChannelManager.instance.getChannelByKey('js_bad'), isNull);
+    expect(backend.packs.containsKey('js_bad'), isFalse);
 
     // 未选中包时点导入 → 提示先选择文件，仍不导入
     await tester.tap(find.text('导入'));
     await tester.pumpAndSettle();
     expect(find.textContaining('请先选择'), findsOneWidget);
-    expect(ChannelManager.instance.getChannelByKey('js_bad'), isNull);
+    expect(backend.packs.containsKey('js_bad'), isFalse);
   });
 
   testWidgets('③ 合法 zip + meta → 导入确认前预览显示包名称/描述', (tester) async {
@@ -203,24 +322,18 @@ void main() {
 
     await selectZip(tester, pick: () async => (name: 'demo.zip', bytes: zipBytes));
 
-    // 预览显示 meta 名称/描述 + 渠道标识（文件名去 .zip）
     expect(find.textContaining('示例渠道'), findsOneWidget);
     expect(find.textContaining('示例描述'), findsOneWidget);
     expect(find.textContaining('js_demo'), findsOneWidget);
 
-    // 预览后确认导入成功
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 注册 + QuickJS 初始化都是真实异步；有界轮询，断言不变。
     await settleUntil(
       tester,
-      () {
-        final c = ChannelManager.instance.getChannelByKey('js_demo');
-        return c is JsChannel && c.isInitialized;
-      },
-      reason: '导入后必须注册 js_demo 并完成初始化',
+      () => RustScriptChannelLane.instance.packFor('js_demo') != null,
+      reason: '导入后必须把 js_demo 装进 Rust 脚本通道',
     );
-    expect(ChannelManager.instance.getChannelByKey('js_demo'), isNotNull);
+    expect(backend.packs.containsKey('js_demo'), isTrue);
   });
 
   testWidgets('④ 取消选择 → 不导入', (tester) async {
@@ -228,17 +341,14 @@ void main() {
 
     await selectZip(tester, pick: () async => null);
 
-    // 未选中任何包 → 导入按钮提示先选择文件，渠道未注册
     await tester.tap(find.text('导入'));
     await tester.pumpAndSettle();
     expect(find.textContaining('请先选择'), findsOneWidget);
-    expect(ChannelManager.instance.dynamicChannels.whereType<JsChannel>(),
-        isEmpty);
+    expect(RustScriptChannelLane.instance.packs, isEmpty);
   });
 
   testWidgets('⑤ 环境变量区保留：导入时配置 env → 导入后 setEnv 持久化',
       (tester) async {
-    // meta.json 声明 requiredEnvVars → 选包后环境变量编辑器自动渲染
     final zipBytes = makeZip(entry: _script,
         metaJson: '{"requiredEnvVars": ["PINGAN_USER"]}');
     await pumpSettings(tester,
@@ -247,39 +357,26 @@ void main() {
     await selectZip(tester,
         pick: () async => (name: 'envch.zip', bytes: zipBytes));
 
-    // requiredEnvVars 预填行：键只读，仅填值（channel_env_ui_test ② 同款模式）
+    // requiredEnvVars 预填行：键只读，仅填值
     await tester.enterText(
         find.byKey(const Key('script_channel_env_value_0')), 'alice');
 
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 导入链（渠道加载 + 逐项 setEnv 持久化）既需要推进测试时钟（内部 await/
-    // 定时器），也需要真实事件循环（真实 IO）：交替 runAsync 与 pump，并以
-    // 「环境变量真正落盘」为退出条件、有界——而不是赌固定 ~900ms（并发负载
-    // 下曾在写入完成前就断言）。断言强度不变：到点仍未持久化则下面的 expect
-    // 照旧失败。
     await settleUntil(
       tester,
-      () async {
-        final c = ChannelManager.instance.getChannelByKey('js_envch');
-        if (c is! JsChannel) return false;
-        final env = await c.getAllEnv();
-        return env['PINGAN_USER'] == 'alice' &&
-            find.textContaining('host.env.get').evaluate().isNotEmpty;
-      },
-      reason: '导入后必须持久化 PINGAN_USER=alice 并显示 host.env.get 提示',
+      () =>
+          backend.lastEnv['js_envch']?['PINGAN_USER'] == 'alice' &&
+          find.textContaining('host.env.get').evaluate().isNotEmpty,
+      reason: '导入后必须经 ScriptApi.setEnv 持久化 PINGAN_USER=alice 并显示提示',
     );
 
-    JsChannel? channel;
-    final registered = ChannelManager.instance.getChannelByKey('js_envch');
-    channel = registered is JsChannel ? registered : null;
-    expect(channel, isNotNull, reason: '导入后必须能取到渠道 js_envch');
-    expect(await channel!.getAllEnv(), {'PINGAN_USER': 'alice'});
-    // 提示包含 host.env.get 说明
+    expect(backend.envSets, contains('js_envch'));
+    expect(backend.lastEnv['js_envch'], {'PINGAN_USER': 'alice'});
     expect(find.textContaining('host.env.get'), findsOneWidget);
   });
 
-  testWidgets('⑥ 已导入渠道列表/删除（zip 渠道）', (tester) async {
+  testWidgets('⑥ 已导入渠道列表/删除（Rust 脚本通道）', (tester) async {
     final zipBytes = makeZip(entry: _script);
     await pumpSettings(tester,
         filePicker: () async => (name: 'vivo.zip', bytes: zipBytes));
@@ -287,22 +384,15 @@ void main() {
         pick: () async => (name: 'vivo.zip', bytes: zipBytes));
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 注册 + QuickJS 初始化 + 文件落盘都是真实异步；有界轮询，断言不变。
     await settleUntil(
       tester,
-      () {
-        final c = ChannelManager.instance.getChannelByKey('js_vivo');
-        return c is JsChannel &&
-            c.isInitialized &&
-            File('${tempDir.path}/channels/vivo.zip').existsSync();
-      },
-      reason: '导入后必须注册 js_vivo、完成初始化并落盘渠道包',
+      () => RustScriptChannelLane.instance.packFor('js_vivo') != null,
+      reason: '导入后必须把 js_vivo 装进 Rust 脚本通道',
     );
 
     // 管理入口 subtitle 显示数量
     expect(find.text('1 个渠道包'), findsOneWidget);
 
-    // 已导入渠道列表显示渠道（名称来自脚本 CHANNEL_META）
     await tester.ensureVisible(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
@@ -311,28 +401,22 @@ void main() {
     expect(
         find.byKey(const Key('script_channel_manage_js_vivo')), findsOneWidget);
     expect(find.text('js_vivo'), findsOneWidget);
-    expect(find.text('A 渠道'), findsOneWidget);
 
-    // 删除 → 危险确认 → 注销 + 文件删除
+    // 删除 → 危险确认 → ScriptApi.remove
     await tester.tap(find.byKey(const Key('script_channel_delete_js_vivo')));
     await tester.pumpAndSettle();
     expect(find.text('删除渠道包'), findsOneWidget);
     await tester.tap(find.text('删除'));
     await tester.pump();
-    // 注销 + 文件删除 + 提示都是真实异步；有界轮询，断言不变。
     await settleUntil(
       tester,
-      () {
-        final c = ChannelManager.instance.getChannelByKey('js_vivo');
-        return c == null &&
-            !File('${tempDir.path}/channels/vivo.zip').existsSync() &&
-            find.textContaining('渠道包已删除').evaluate().isNotEmpty;
-      },
-      reason: '删除后必须注销 js_vivo、删除文件并显示提示',
+      () =>
+          backend.removed.contains('js_vivo') &&
+          find.textContaining('渠道包已删除').evaluate().isNotEmpty,
+      reason: '删除后必须调 ScriptApi.remove 并显示提示',
     );
 
-    expect(ChannelManager.instance.getChannelByKey('js_vivo'), isNull);
-    expect(File('${tempDir.path}/channels/vivo.zip').existsSync(), isFalse);
+    expect(backend.removed, contains('js_vivo'));
     expect(find.textContaining('渠道包已删除'), findsOneWidget);
   });
 }

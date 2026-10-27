@@ -9,10 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_manager.dart';
@@ -22,6 +20,7 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/service/core_snapshot_backup.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
@@ -264,42 +263,41 @@ class BackupService implements IBackupService {
     }
 
     // 导出脚本渠道环境变量（channelKey → env map）
-    // zip 本体经 tar.gz 的 channels/ 条目原样打包；env 随 apps.json 的 extras 走（JSON 明文）
+    // zip 本体经 tar.gz 的 channels/ 条目原样打包；env 随 apps.json 的 extras 走（JSON 明文）。
+    //
+    // Rust 脚本通道（CoreFlags.jsChannel=true，生产默认）：渠道包 env 存 Rust
+    // `channel_env` 表 + FileSecretStore，经 `ScriptApi.getEnv` 逐包读取导出
+    // （与脚本 `host.env.get` 同一份存储，敏感项从密钥存储解析）。
     try {
       final jsEnvs = <String, Map<String, String>>{};
-      for (final channel in ChannelManager.instance.dynamicChannels) {
-        if (channel is JsChannel) {
-          final env = await channel.getAllEnv();
-          if (env.isNotEmpty) {
-            jsEnvs[channel.channelKey] = env;
+      final omitted = <String>[];
+      if (CoreFlags.jsChannel) {
+        await RustScriptChannelLane.instance.refresh();
+        for (final pack in RustScriptChannelLane.instance.packs) {
+          try {
+            final env = await ScriptApi.instance.getEnv(key: pack.key);
+            if (env.isNotEmpty) jsEnvs[pack.key] = env;
+          } catch (e) {
+            // 单个包读取失败不阻塞其他包；显式记录遗漏，绝不静默丢弃。
+            omitted.add(pack.key);
+            appLog.warning(
+                'BackupService: Rust 脚本渠道包 ${pack.key} 的 env 读取失败: $e');
           }
         }
       }
       if (jsEnvs.isNotEmpty) {
-        extras['js_envs'] = jsEnvs.map((k, v) => MapEntry(k, v));
+        extras['js_envs'] = jsEnvs;
         appLog.info('BackupService: 导出脚本渠道环境变量 ${jsEnvs.length} 个渠道');
+      }
+      if (omitted.isNotEmpty) {
+        // 读取失败的渠道包键记录于 extras.js_envs_rust_lane_omitted（可见性，不静默丢弃）。
+        extras['js_envs_rust_lane_omitted'] = omitted;
+        appLog.warning(
+            'BackupService: ${omitted.length} 个 Rust 脚本渠道包的 env 未导出'
+            '（键记录于 extras.js_envs_rust_lane_omitted）');
       }
     } catch (e) {
       appLog.error('BackupService: 导出脚本渠道环境变量失败 - $e');
-    }
-
-    // Rust 脚本通道（CoreFlags.jsChannel=true）：渠道包 env 存 Rust `channel_env`
-    // 表 + FileSecretStore，Dart 侧无 env 读取 API，无法枚举导出。显式记录该遗漏
-    // （extras 标记 + 日志），绝不静默丢弃——见 238-jschannel-ui.txt residual。
-    try {
-      if (CoreFlags.jsChannel) {
-        await RustScriptChannelLane.instance.refresh();
-        final rustPacks = RustScriptChannelLane.instance.packs;
-        if (rustPacks.isNotEmpty) {
-          extras['js_envs_rust_lane_omitted'] =
-              rustPacks.map((pack) => pack.key).toList();
-          appLog.warning(
-              'BackupService: ${rustPacks.length} 个 Rust 脚本渠道包的 env 未导出'
-              '（ScriptApi 无 env 读取 API；键记录于 extras.js_envs_rust_lane_omitted）');
-        }
-      }
-    } catch (e) {
-      appLog.error('BackupService: 记录 Rust 脚本通道 env 遗漏失败 - $e');
     }
 
     // 导出用户分类标签（v2.1 新增）
@@ -1049,13 +1047,13 @@ class BackupService implements IBackupService {
           }
         }
 
-        // JS 脚本渠道环境变量（channelKey → env map；备份含敏感配置明文，markSensitive 路由加密存储）
+        // JS 脚本渠道环境变量（channelKey → env map；备份含敏感配置明文，Rust 侧经
+        // FileSecretStore 加密存储）。恢复走 `ScriptApi.setEnv`（与脚本 host.env.get
+        // 同一份存储）。
         final jsEnvs = backupData.extras!['js_envs'];
         if (jsEnvs is Map && jsEnvs.isNotEmpty) {
           onLog?.call('恢复脚本渠道环境变量（${jsEnvs.length} 个渠道）...');
           try {
-            // 确保 ConfigStore 就绪（ConfigJsChannelEnvStore 依赖）
-            await ConfigInitializer.initialize();
             var restoredCount = 0;
             for (final entry in jsEnvs.entries) {
               final key = entry.key.toString();
@@ -1063,7 +1061,7 @@ class BackupService implements IBackupService {
               if (envRaw is! Map) continue;
               final env = envRaw.map((k, v) => MapEntry(k.toString(), v.toString()));
               if (env.isEmpty) continue;
-              await ConfigJsChannelEnvStore(key).save(env);
+              await ScriptApi.instance.setEnv(key: key, env: env);
               restoredCount++;
             }
             appLog.info('BackupService: ✅ 脚本渠道环境变量恢复完成（$restoredCount 个）');
@@ -1276,19 +1274,14 @@ class BackupService implements IBackupService {
         version == BackupVersion.v2_1;
   }
 
-  /// 测试用：注入聚合数据库（跳过 initialize 的 path_provider 依赖）
+  /// 测试用：标记服务已初始化（跳过 initialize 的 path_provider 依赖）
   ///
-  /// 运行时聚合读写走 flag 路由的 [AddedAppsFacade]；catalog 关时它委派给旧
-  /// `AppAggregatorManager`（facade 的 legacy backend 内部持有该 manager 单例），
-  /// 故注入的测试库必须同时绑到该 manager 的旧车道，否则 flag-off 的恢复会
-  /// 落到未初始化的 manager 库上。
+  /// 运行时聚合读写走核心 [AddedAppsFacade]；旧 Floor 聚合库
+  /// (`AppAddedDatabase`) 已删除，测试直接设 [AddedAppsFacade.backendOverride]
+  /// 注入内存 backend，避免触碰 FRB/sqflite。
   @visibleForTesting
-  void setTestDatabases(AppAddedDatabase aggregatorDb) {
+  void setTestInitialized() {
     _isInitialized = true;
-    // ignore: invalid_use_of_visible_for_testing_member
-    AppAggregatorManager.instance.debugDatabase = aggregatorDb;
-    // ignore: invalid_use_of_visible_for_testing_member
-    AppAggregatorManager.instance.debugChannelManager = ChannelManager.instance;
   }
 
   /// 测试用：注入渠道数据库（跳过 initialize 的 path_provider 依赖）

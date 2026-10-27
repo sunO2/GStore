@@ -46,8 +46,8 @@ typedef ScriptRustInit = Future<void> Function();
 /// This is the missing production consumer of `ScriptApi`: the app's startup
 /// load (`ChannelLoader.loadAndRegister` from `ChannelIntegration.initialize`)
 /// and the settings import action both go through here once
-/// `CoreFlags.jsChannel` is on. While the flag is off this class is never
-/// reached, so the legacy Dart `JsChannel` lane keeps owning packs.
+/// `CoreFlags.jsChannel` is on. The Dart `JsChannel` lane was deleted in the
+/// pure-Rust cleanup, so while the flag is off there is no script-pack lane.
 ///
 /// Invariants:
 /// * `init` is single-flight and safe to call again (Rust opens the same DB and

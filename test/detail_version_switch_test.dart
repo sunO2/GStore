@@ -8,8 +8,7 @@ import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
-import 'package:gstore/core/channel/impl/js_detail_channel.dart';
+import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
@@ -20,12 +19,13 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
-import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
+import 'package:gstore/page/detail/state.dart';
 import 'package:gstore/page/detail/view.dart';
 import 'package:gstore/page/detail/widgets.dart';
 
@@ -40,7 +40,7 @@ import 'support/discovery_facade_seams.dart';
 /// ④ 历史构建：onBuildHistory 被调返回 builds → 选 build → onBuildSelect（无匹配下载 → 提示）
 /// ⑤ 取消 → 不调 switchVersion、detailInfo 不变
 ///
-/// 脚本渠道用 _FakeJsChannel（extends JsChannel，覆写脚本方法，不初始化 JS 引擎）。
+/// 脚本渠道用 _FakeScriptChannel（extends JsChannel，覆写脚本方法，不初始化 JS 引擎）。
 
 /// mock InstalledApps 插件方法通道：视为未安装（详情加载的安装检测不触发
 /// getAppInfo；testWidgets 假异步下未 mock 的平台调用会挂起）。
@@ -57,165 +57,80 @@ void _mockInstalledApps() {
   });
 }
 
-/// 内存版 env store（避免 ConfigStore 依赖）
-class _FakeEnvStore implements JsChannelEnvStore {
-  @override
-  Future<Map<String, String>> load() async => const {};
+/// Test-local native-host registry (replaces the deleted `JSNativeHost`):
+/// maps `ns.method` → handler, mirroring the old `host.native.call` dispatch.
+typedef _NativeHandler = Future<Object?> Function(Map<String, dynamic> payload);
 
-  @override
-  Future<void> save(Map<String, String> env) async {}
+class _NativeHost {
+  final Map<String, _NativeHandler> _handlers = {};
+
+  void register(String ns, String method, _NativeHandler handler) {
+    _handlers['$ns.$method'] = handler;
+  }
+
+  _NativeHandler? operator [](String name) => _handlers[name];
 }
 
-/// 假脚本渠道：覆写 versionOptions/switchVersion/buildHistory/getAppInfo/getAppDetail
-class _FakeJsChannel extends JsChannel {
-  _FakeJsChannel({super.channelKey = 'js.version'})
-      : super(
-          script: '// fake',
-          envStore: _FakeEnvStore(),
-        );
+/// 假脚本渠道（替代已删除的 Dart `JsChannel`）：`DynamicChannel` + 详情页工厂。
+/// 只实现详情页实际消费的成员（getDetailChannel / releaseDetailChannel /
+/// getAppInfo / getAppDetail），其余经 noSuchMethod 兜底（测试不触达）。
+class _FakeScriptChannel implements IChannel, DynamicChannel {
+  _FakeScriptChannel({this.channelKey = 'js.version'});
 
-  Map<String, dynamic>? versionOptionsResult;
-  Map<String, dynamic>? switchVersionResult;
-  Map<String, dynamic>? buildHistoryResult;
+  @override
+  final String channelKey;
 
-  int versionOptionsCalls = 0;
-  int switchVersionCalls = 0;
-  int buildHistoryCalls = 0;
-  int getAppInfoCalls = 0;
-  String? lastSwitchEnv;
-  String? lastSwitchVersion;
-  Map<String, dynamic>? lastSwitchBuild;
-  String? lastVersionOptionsEnv;
-  String? lastBuildHistoryVersion;
-  String? lastBuildHistoryEnv;
+  @override
+  ChannelInfo get info => ChannelInfo(
+        type: ChannelType.custom,
+        name: channelKey,
+        description: 'fake script channel',
+      );
 
-  // ---- Wave B：detailMenu / setNativeHost / invokeScriptMethod ----
-  List<Map<String, dynamic>>? detailMenuResult;
-  int detailMenuCalls = 0;
+  @override
+  bool isInitialized = false;
 
-  // ---- Wave 3：zip 包 detail.js（页面级 detailChannel）----
+  @override
+  Future<void> initialize() async => isInitialized = true;
+
+  @override
+  bool get supportsProgressiveLoading => false;
+
+  @override
+  Future<bool> checkAvailable() async => true;
+
+  @override
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Future<void> dispose() async {}
+
+  // ---- 详情页消费 ----
   bool hasDetailScript = false;
   IDetailChannel? detailChannel;
   int releaseDetailChannelCalls = 0;
   int getAppDetailCalls = 0;
+  int getAppInfoCalls = 0;
+  int detailMenuCalls = 0;
+  int versionOptionsCalls = 0;
+  int switchVersionCalls = 0;
   ChannelResult<IDetailInfo>? getAppDetailResult;
 
   @override
   IDetailChannel? getDetailChannel(String appId) {
     if (!hasDetailScript) return null;
-    return detailChannel ??= _FakeJsDetailChannel(appId: 'test-app');
+    return detailChannel ??= _FakeDetailChannel(appId: 'test-app');
   }
 
   @override
   void releaseDetailChannel(String appId) {
     releaseDetailChannelCalls++;
-    super.releaseDetailChannel(appId);
-  }
-
-  /// setNativeHost 捕获的 JSNativeHost 注册表（fake 模拟脚本内部经
-  /// host.native.call('showVersionPicker'/'refreshDetail') 驱动交互）
-  JSNativeHost? capturedNativeHost;
-
-  int invokeScriptMethodCalls = 0;
-  String? lastInvokedMethod;
-  Map<String, dynamic>? lastInvokedParams;
-
-  @override
-  Future<void> initialize() async {}
-
-  @override
-  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
-    detailMenuCalls++;
-    return detailMenuResult;
-  }
-
-  @override
-  void setNativeHost(JSNativeHost host) {
-    capturedNativeHost = host;
-  }
-
-  @override
-  Future<dynamic> invokeScriptMethod(
-    String method, [
-    Map<String, dynamic>? params,
-  ]) async {
-    invokeScriptMethodCalls++;
-    lastInvokedMethod = method;
-    lastInvokedParams = params;
-    // 模拟脚本内部：jscall 经 host.native.call('showVersionPicker') 驱动交互
-    // （注入的 Flutter 实现被调）
-    switch (method) {
-      case 'jsswitchVersion':
-        return capturedNativeHost?['ui.showVersionPicker']?.call({
-          'title': '切换版本',
-          'envs': ['prod', 'test'],
-          'versions': [
-            {
-              'version': '1.0.0',
-              'envs': ['prod', 'test'],
-              'buildCount': 3
-            },
-            {
-              'version': '2.0.0',
-              'envs': ['prod'],
-              'buildCount': 1
-            },
-          ],
-          'currentEnv': 'prod',
-          'currentVersion': '1.0.0',
-        });
-      case 'jsrefresh':
-        await capturedNativeHost?['ui.refreshDetail']?.call({
-          'appId': 'com.example.one',
-          'env': 'prod',
-          'version': '2.0.0',
-        });
-        return {'ok': true};
-    }
-    return null;
-  }
-
-  @override
-  Future<Map<String, dynamic>?> versionOptions(
-    String appId, {
-    String? env,
-  }) async {
-    versionOptionsCalls++;
-    lastVersionOptionsEnv = env;
-    return versionOptionsResult;
-  }
-
-  @override
-  Future<Map<String, dynamic>?> switchVersion({
-    required String appId,
-    required String env,
-    required String version,
-    Map<String, dynamic>? build,
-  }) async {
-    switchVersionCalls++;
-    lastSwitchEnv = env;
-    lastSwitchVersion = version;
-    lastSwitchBuild = build;
-    return switchVersionResult;
-  }
-
-  @override
-  Future<Map<String, dynamic>?> buildHistory({
-    required String appId,
-    required String version,
-    required String env,
-  }) async {
-    buildHistoryCalls++;
-    lastBuildHistoryVersion = version;
-    lastBuildHistoryEnv = env;
-    return buildHistoryResult;
   }
 
   @override
   Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
-    String? version,
   }) async {
     getAppInfoCalls++;
     return ChannelResult.success(data: null, from: ChannelType.custom);
@@ -225,7 +140,6 @@ class _FakeJsChannel extends JsChannel {
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
-    String? version,
   }) async {
     getAppDetailCalls++;
     return getAppDetailResult ??
@@ -234,16 +148,23 @@ class _FakeJsChannel extends JsChannel {
           from: ChannelType.custom,
         );
   }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-/// 假 detail 通道（zip 包 detail.js 页面级 runtime）：覆写脚本方法，
-/// 不初始化 JS 引擎；断言详情页消费走 detailChannel 而非 entry。
-class _FakeJsDetailChannel extends JsDetailChannel {
-  _FakeJsDetailChannel({required super.appId})
-      : super(
-          channelKey: 'js.version',
-          detailScript: '// fake detail',
-        );
+/// 假详情通道（替代已删除的 Dart `JsDetailChannel`）：自持页面级 detail 行为，
+/// 详情页只经 `IDetailChannel` 消费（versionOptions/switchVersion/buildHistory/
+/// getActions）。`bind` 注册 host.native 处理器（镜像已删除实现的注册表），
+/// `callMain` 模拟脚本经 host.native 驱动 UI 交互。
+class _FakeDetailChannel implements IDetailChannel {
+  _FakeDetailChannel({required this.appId});
+
+  @override
+  final String appId;
+
+  @override
+  bool get drivesOwnDownloads => false;
 
   Map<String, dynamic>? getAppDetailResult;
   Map<String, dynamic>? versionOptionsResult;
@@ -264,17 +185,211 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   String? lastBuildHistoryVersion;
   String? lastBuildHistoryEnv;
 
-  /// setNativeHost 捕获的 JSNativeHost 注册表（模拟 detail.js 内部经
-  /// host.native.call('showVersionPicker'/'refreshDetail'/'updateDownloadList') 驱动交互）
-  JSNativeHost? capturedNativeHost;
+  _NativeHost? capturedNativeHost;
+
+  DetailState? _state;
+  DetailCallbacks? _callbacks;
+  List<DetailAction> _actions = const [];
+  bool _receivedUpdateDetail = false;
 
   @override
+  void bind(DetailState state, DetailCallbacks callbacks) {
+    _state = state;
+    _callbacks = callbacks;
+    _installNativeHost(callbacks);
+  }
+
+  /// 镜像已删除 `JsDetailChannel._installNativeHost` 的 ui.* 处理器注册。
+  void _installNativeHost(DetailCallbacks cb) {
+    final host = _NativeHost()
+      ..register('ui', 'showVersionPicker', (p) async {
+        await cb.showVersionPicker(
+          options: Map<String, dynamic>.from(p),
+          appId: appId,
+        );
+        return null;
+      })
+      ..register('ui', 'showBuildHistory', (p) async {
+        final builds = ((p['builds'] as List?) ?? [])
+            .map((b) => Map<String, dynamic>.from(b as Map))
+            .toList();
+        await cb.showBuildHistory(
+          builds: builds,
+          appId: appId,
+          version: p['version']?.toString() ?? '',
+          env: p['env']?.toString() ?? '',
+        );
+        return null;
+      })
+      ..register('ui', 'refreshDetail', (p) async {
+        await cb.refreshDetail(detailData: Map<String, dynamic>.from(p));
+        return null;
+      })
+      ..register('ui', 'updateDownloadList', (p) async {
+        final downloads = (p['downloads'] as List?) ?? [];
+        final parsed = JsChannelDetailProxy({'downloads': downloads}).downloads;
+        await cb.updateDownloadList(downloads: parsed);
+        return null;
+      })
+      ..register('ui', 'showUAPicker', (p) async {
+        final uas = ((p['options'] as List?) ?? [])
+            .map((e) => (e as Map)['ua']?.toString() ?? '')
+            .where((s) => s.isNotEmpty)
+            .toList();
+        final current = (p['current'] as String?)?.isNotEmpty == true
+            ? p['current'] as String
+            : null;
+        return await cb.showUAPicker(
+            uaOptions: uas, appId: appId, current: current);
+      })
+      ..register('ui', 'updateDetail', (p) async {
+        _receivedUpdateDetail = true;
+        await cb.updateDetail(partial: Map<String, dynamic>.from(p));
+        return null;
+      })
+      ..register('ui', 'setBusy', (p) async {
+        await cb.setActionBusy(
+            visible: p['visible'] == true,
+            label: p['label']?.toString() ?? '');
+        return null;
+      })
+      ..register('ui', 'download', (p) async {
+        final url = p['url']?.toString() ?? '';
+        if (url.isEmpty) return {'ok': false, 'error': '下载地址为空'};
+        final info = DownloadInfo(
+          url: url,
+          name: p['name']?.toString() ?? '',
+          size: (p['size'] as num?)?.toInt(),
+          version: p['version']?.toString() ?? 'unknown',
+        );
+        await cb.startDownload(info, downloadSize: info.size, fromScript: true);
+        return {'ok': true};
+      });
+    capturedNativeHost = host;
+  }
+
+  @override
+  Future<void> load() async {
+    final state = _state;
+    final callbacks = _callbacks;
+    if (state == null || callbacks == null) return;
+    _receivedUpdateDetail = false;
+    state.isLoadingDetail = true;
+    try {
+      await callbacks.refreshDetail(detailData: _buildPrefill(state));
+      state.downloadsLoading = true;
+      state.readmeLoading = true;
+      state.statisticsLoading = true;
+      final raw = await getAppDetail(appId);
+      if (raw != null) {
+        await callbacks.refreshDetail(detailData: raw);
+        state.downloadsLoading = false;
+        state.readmeLoading = false;
+        state.statisticsLoading = false;
+        await _refreshActions();
+      }
+    } finally {
+      state.isLoadingDetail = false;
+      state.downloadsLoading = false;
+      state.readmeLoading = false;
+      state.statisticsLoading = false;
+    }
+  }
+
+  Map<String, dynamic> _buildPrefill(DetailState state) {
+    final req = state.request;
+    final prefill = <String, dynamic>{
+      'downloads': const <Object?>[],
+      'sections': const ['downloads'],
+    };
+    if (req == null) return prefill;
+    if (req.appId.isNotEmpty) prefill['appId'] = req.appId;
+    if (req.name.isNotEmpty) prefill['name'] = req.name;
+    final icon = req.icon;
+    if (icon != null && icon.isNotEmpty) prefill['icon'] = icon;
+    final description = req.description;
+    if (description != null && description.isNotEmpty) {
+      prefill['description'] = description;
+    }
+    final packageName = req.packageName;
+    if (packageName != null && packageName.isNotEmpty) {
+      prefill['packageName'] = packageName;
+      prefill['extra'] = {'packageName': packageName};
+    }
+    return prefill;
+  }
+
+  @override
+  List<DetailAction> getActions() => _actions;
+
+  Future<void> _refreshActions() async {
+    final menu = await detailMenu(appId);
+    if (menu == null) {
+      _actions = const [];
+      return;
+    }
+    _actions = menu.map((e) {
+      final label = e['action']?.toString() ?? '';
+      final jscall = e['jscall']?.toString() ?? '';
+      return DetailAction(
+        label: label.isEmpty ? (jscall.isEmpty ? '未知动作' : jscall) : label,
+        onTap: () async {
+          if (jscall.isEmpty) return;
+          await callMain(jscall, {'appId': appId});
+        },
+      );
+    }).toList();
+  }
+
   Future<Map<String, dynamic>?> getAppDetail(
     String appId, {
     String? version,
   }) async {
     getAppDetailCalls++;
     return getAppDetailResult;
+  }
+
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
+    detailMenuCalls++;
+    return detailMenuResult;
+  }
+
+  void setNativeHost(_NativeHost host) {
+    capturedNativeHost = host;
+  }
+
+  Future<dynamic> callMain(String method,
+      [Map<String, dynamic>? params]) async {
+    callMainCalls++;
+    switch (method) {
+      case 'jsswitchVersion':
+        return capturedNativeHost?['ui.showVersionPicker']?.call({
+          'title': '切换版本',
+          'envs': ['prod', 'test'],
+          'versions': [
+            {
+              'version': '1.0.0',
+              'envs': ['prod', 'test'],
+              'buildCount': 3
+            },
+            {
+              'version': '2.0.0',
+              'envs': ['prod'],
+              'buildCount': 1
+            },
+          ],
+          'currentEnv': 'prod',
+          'currentVersion': '1.0.0',
+        });
+      case 'jsrefresh':
+        await capturedNativeHost?['ui.refreshDetail']?.call({
+          'appId': 'com.example.one',
+          'env': 'prod',
+          'version': '2.0.0',
+        });
+        return {'ok': true};
+    }
+    return null;
   }
 
   @override
@@ -314,52 +429,21 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   }
 
   @override
-  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
-    detailMenuCalls++;
-    return detailMenuResult;
-  }
+  Future<void> startDownload(DownloadInfo info) async {}
 
   @override
-  void setNativeHost(JSNativeHost host) {
-    capturedNativeHost = host;
-  }
-
-  @override
-  Future<dynamic> callMain(String method,
-      [Map<String, dynamic>? params]) async {
-    callMainCalls++;
-    // 模拟 detail.js 内部：jscall 经 host.native.call('showVersionPicker') 驱动交互
-    // （注入的 Flutter 实现被调）
-    switch (method) {
-      case 'jsswitchVersion':
-        return capturedNativeHost?['ui.showVersionPicker']?.call({
-          'title': '切换版本',
-          'envs': ['prod', 'test'],
-          'versions': [
-            {
-              'version': '1.0.0',
-              'envs': ['prod', 'test'],
-              'buildCount': 3
-            },
-            {
-              'version': '2.0.0',
-              'envs': ['prod'],
-              'buildCount': 1
-            },
-          ],
-          'currentEnv': 'prod',
-          'currentVersion': '1.0.0',
-        });
-      case 'jsrefresh':
-        await capturedNativeHost?['ui.refreshDetail']?.call({
-          'appId': 'com.example.one',
-          'env': 'prod',
-          'version': '2.0.0',
-        });
-        return {'ok': true};
+  Future<void> updateDownloads(List<DownloadInfo> downloads) async {
+    final state = _state;
+    final current = state?.detailInfo;
+    if (current is JsChannelDetailProxy) {
+      final data = Map<String, dynamic>.from(current.data);
+      data['downloads'] = downloads;
+      state!.detailInfo = JsChannelDetailProxy(data);
     }
-    return null;
   }
+
+  @override
+  Future<void> dispose() async {}
 }
 
 /// 非脚本渠道（用于 ①b：确认非脚本渠道不注入"切换版本"）
@@ -621,8 +705,8 @@ final Map<String, dynamic> _detailJsBasics = {
 };
 
 /// 脚本渠道（detail.js 页面级）通用设置：hasDetailScript → getDetailChannel
-/// 返回缓存的 _FakeJsDetailChannel；detailMenuResult 声明宫格动作。
-void _setupDetailJs(_FakeJsChannel js, _FakeJsDetailChannel dc) {
+/// 返回缓存的 _FakeDetailChannel；detailMenuResult 声明宫格动作。
+void _setupDetailJs(_FakeScriptChannel js, _FakeDetailChannel dc) {
   js.hasDetailScript = true;
   js.detailChannel = dc;
   ChannelManager.instance.registerChannel(js);
@@ -637,7 +721,6 @@ void main() {
     // backends (no native lib in unit tests).
     CoreFlags.installBackend(FakeFlagsBackend(const CoreFlagsSnapshot()));
     AddedAppsFacade.backendOverride = RecordingAddedApps('core');
-    AddedAppsFacade.legacyBackendOverride = RecordingAddedApps('legacy');
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
     ModuleManager.instance
         .bindByType(IAggregateService, _FakeAggregateService());
@@ -647,7 +730,6 @@ void main() {
   tearDown(() {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
   });
 
   DetailLogic buildLogic({ChannelType channel = ChannelType.custom}) {
@@ -698,8 +780,8 @@ void main() {
   }
 
   testWidgets('① 脚本渠道 → 更多动作含"切换版本"', (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -727,8 +809,8 @@ void main() {
   });
 
   testWidgets('② versionOptions 返回 null → 选择器空列表提示（不崩）', (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -752,8 +834,8 @@ void main() {
 
   testWidgets('③ 正常：选 env+version 确认 → switchVersion → detailInfo 刷新',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -795,8 +877,8 @@ void main() {
 
   testWidgets('④ 历史构建：onBuildHistory 返回 builds → 选 build → 无匹配下载提示',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -828,8 +910,8 @@ void main() {
   });
 
   testWidgets('⑤ 取消 → 不调 switchVersion、detailInfo 不变', (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -856,8 +938,8 @@ void main() {
 
   testWidgets('⑥ 打开切换版本 → env 切换按需单 env 拉取 versionOptions（初始不预拉取）',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -883,8 +965,8 @@ void main() {
 
   testWidgets('⑦ 无 env 交互 → versionOptions 零调用（脚本 options 自带版本列表）',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -904,8 +986,8 @@ void main() {
 
   testWidgets('⑧ 脚本渠道：detailMenu 声明动作 → 宫格用脚本 actions（替换写死"切换版本"）',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
@@ -928,8 +1010,8 @@ void main() {
 
   testWidgets('⑨ 脚本渠道：detailMenu 未实现（null）→ 维持现状：宫格无脚本动作（不崩）',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = null; // 脚本未实现 detailMenu
     _setupDetailJs(js, dc);
@@ -948,8 +1030,8 @@ void main() {
 
   testWidgets('⑩ 点击脚本 action → 关弹框 + 调 jscall + host.native 版本选择器生效',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
@@ -980,8 +1062,8 @@ void main() {
 
   testWidgets('⑪ 点击脚本 action → jscall 模拟 host.native.refreshDetail → 详情刷新',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '刷新详情', 'jscall': 'jsrefresh', 'clickIsDimiss': true},
@@ -1003,8 +1085,8 @@ void main() {
 
   testWidgets('⑫ 点"更多"：canonical 解析 getAppInfo 仅一次 + detailMenu 走 detailChannel',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
@@ -1024,8 +1106,8 @@ void main() {
   testWidgets(
       '⑬ 点"更多"仅调 detailMenu：零 versionOptions/buildHistory/switchVersion 请求',
       (tester) async {
-    final js = _FakeJsChannel();
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final js = _FakeScriptChannel();
+    final dc = _FakeDetailChannel(appId: 'test-app');
     dc.getAppDetailResult = _detailJsBasics;
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
@@ -1052,9 +1134,9 @@ void main() {
 
   testWidgets('ⓐ 有 detail.js → 详情加载走 detailChannel.getAppDetail（entry 不被调）',
       (tester) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final dc = _FakeDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
     dc.getAppDetailResult = {
       'appId': 'com.example.one',
@@ -1079,7 +1161,7 @@ void main() {
 
   testWidgets('ⓑ 无 detail.js（getDetailChannel null）→ 详情加载走 entry 原路径（兼容）',
       (tester) async {
-    final js = _FakeJsChannel(); // hasDetailScript = false
+    final js = _FakeScriptChannel(); // hasDetailScript = false
     js.getAppDetailResult = ChannelResult.success(
       data: JsChannelDetailProxy({
         'appId': 'com.example.one',
@@ -1103,9 +1185,9 @@ void main() {
   testWidgets(
       'ⓒ 有 detail.js → detailMenu 走 detailChannel（entry 不被调）+ host.native 注入',
       (tester) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final dc = _FakeDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
     dc.getAppDetailResult = _detailJsBasics; // load 前置：raw 非 null 才会刷 detailMenu 动作
     dc.detailMenuResult = [
@@ -1134,9 +1216,9 @@ void main() {
   testWidgets(
       'ⓓ 有 detail.js → versionOptions/switchVersion 走 detailChannel（entry 不被调）',
       (tester) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final dc = _FakeDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
     dc.getAppDetailResult = _detailJsBasics; // load 前置：非 null 才加载 detailMenu 动作
     // 脚本声明"切换版本"入口（detail.js 无内置写死入口）
@@ -1178,7 +1260,7 @@ void main() {
 
   testWidgets('ⓔ 页面退出（onClose）→ JsChannel.releaseDetailChannel 被调（工厂缓存清理）',
       (tester) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
     ChannelManager.instance.registerChannel(js);
 
@@ -1209,12 +1291,12 @@ void main() {
 
   /// 预置脚本渠道 + detail.js（先注册渠道再 buildLogic，保证 _initDetailChannel
   /// 拿到 detailChannel）+ 注入 host.native 能力（openMoreActions 触发 setNativeHost）。
-  Future<(DetailLogic, _FakeJsDetailChannel)> setupDetailChannel(
+  Future<(DetailLogic, _FakeDetailChannel)> setupDetailChannel(
     WidgetTester tester,
   ) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final dc = _FakeDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
     ChannelManager.instance.registerChannel(js);
 
@@ -1323,9 +1405,9 @@ void main() {
   });
 
   testWidgets('ⓚ 真实下载区消费：pump 详情页 → 注入回调 → 下载区显示新下载项', (tester) async {
-    final js = _FakeJsChannel();
+    final js = _FakeScriptChannel();
     js.hasDetailScript = true;
-    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    final dc = _FakeDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
     ChannelManager.instance.registerChannel(js);
 

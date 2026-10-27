@@ -10,7 +10,6 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
@@ -188,41 +187,34 @@ class _FakeEnumChannel extends IChannel {
   Future<void> dispose() async {}
 }
 
-/// 合法脚本 A：应用名含 'A'
-const String _scriptA = '''
-const CHANNEL_META = { name: 'A 渠道', description: 'A 描述' };
+/// 假脚本渠道：`DynamicChannel` + 只读本地库语义（从注入的 appDao 读该 key 的
+/// 已保存行）。替代已删除的 Dart `JsChannel`（发现页按 code 独立槽位测试用）。
+class _FakeDynamicChannel extends _FakeEnumChannel implements DynamicChannel {
+  _FakeDynamicChannel(this.channelKey, this._appDao)
+      : super(ChannelType.custom, const []);
 
-const apps = [
-  { appId: 'com.a.one', name: 'App A One', icon: 'icon://a1', des: 'A 第一个' }
-];
+  @override
+  final String channelKey;
 
-async function main(method, params) {
-  switch (method) {
-    case 'getAllApps':
-      return { ok: true, data: apps };
-    default:
-      return null;
+  final _FakeAppDao _appDao;
+
+  @override
+  ChannelInfo get info => ChannelInfo(
+        type: ChannelType.custom,
+        name: channelKey,
+        description: 'fake script channel',
+      );
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> getAllApps(
+          {bool forceRefresh = false}) async {
+    final rows = await _appDao.getAppsByChannel(channelKey);
+    return ChannelResult.success(
+      data: rows.map(AppSummary.fromChannelAddedApp).toList(),
+      from: ChannelType.custom,
+    );
   }
 }
-''';
-
-/// 合法脚本 B：应用名含 'B'
-const String _scriptB = '''
-const CHANNEL_META = { name: 'B 渠道' };
-
-const apps = [
-  { appId: 'com.b.one', name: 'App B One', icon: 'icon://b1', des: 'B 第一个' }
-];
-
-async function main(method, params) {
-  switch (method) {
-    case 'getAllApps':
-      return { ok: true, data: apps };
-    default:
-      return null;
-  }
-}
-''';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -255,8 +247,9 @@ void main() {
   tearDown(() {
     // 清理本次测试注册的动态渠道（单例隔离）
     for (final channel in ChannelManager.instance.dynamicChannels) {
-      if (channel is JsChannel) {
-        ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
+      if (channel is DynamicChannel) {
+        ChannelManager.instance
+            .unregisterChannelByKey((channel as DynamicChannel).channelKey);
       }
     }
     // 清理枚举渠道（custom 槽位可能残留脚本渠道，一并清空）
@@ -268,13 +261,8 @@ void main() {
     ModuleManager.instance.unbind<ChannelManager>();
   });
 
-  Future<JsChannel> registerScriptChannel(String key, String script) async {
-    final channel = JsChannel(
-      channelKey: key,
-      script: script,
-      dio: dio,
-      appDao: appDao,
-    );
+  Future<_FakeDynamicChannel> registerScriptChannel(String key) async {
+    final channel = _FakeDynamicChannel(key, appDao);
     await channel.initialize();
     ChannelManager.instance.registerChannel(channel);
     return channel;
@@ -310,8 +298,8 @@ void main() {
 
     test('② 注册两个脚本渠道 → sortedChannelCodes 含两个 code（未加载也占位）',
         () async {
-      await registerScriptChannel('js_pingan', _scriptA);
-      await registerScriptChannel('js_vivo', _scriptB);
+      await registerScriptChannel('js_pingan');
+      await registerScriptChannel('js_vivo');
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
@@ -328,8 +316,8 @@ void main() {
       await seedAppsFor('js_vivo', [
         (appId: 'com.b.one', name: 'App B One'),
       ]);
-      await registerScriptChannel('js_pingan', _scriptA);
-      await registerScriptChannel('js_vivo', _scriptB);
+      await registerScriptChannel('js_pingan');
+      await registerScriptChannel('js_vivo');
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
@@ -352,8 +340,8 @@ void main() {
       await seedAppsFor('js_vivo', [
         (appId: 'com.b.one', name: 'App B One'),
       ]);
-      await registerScriptChannel('js_pingan', _scriptA);
-      await registerScriptChannel('js_vivo', _scriptB);
+      await registerScriptChannel('js_pingan');
+      await registerScriptChannel('js_vivo');
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
@@ -389,8 +377,8 @@ void main() {
       await seedAppsFor('js_vivo', [
         (appId: 'com.b.one', name: 'App B One'),
       ]);
-      await registerScriptChannel('js_pingan', _scriptA);
-      await registerScriptChannel('js_vivo', _scriptB);
+      await registerScriptChannel('js_pingan');
+      await registerScriptChannel('js_vivo');
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
@@ -400,12 +388,13 @@ void main() {
 
       // 模拟重启：注销全部脚本渠道后重新注册（新实例、同 key）
       for (final channel in ChannelManager.instance.dynamicChannels.toList()) {
-        if (channel is JsChannel) {
-          ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
+        if (channel is DynamicChannel) {
+          ChannelManager.instance
+              .unregisterChannelByKey((channel as DynamicChannel).channelKey);
         }
       }
-      await registerScriptChannel('js_pingan', _scriptA);
-      await registerScriptChannel('js_vivo', _scriptB);
+      await registerScriptChannel('js_pingan');
+      await registerScriptChannel('js_vivo');
 
       await notifier.loadData();
 

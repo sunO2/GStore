@@ -35,9 +35,7 @@ import 'package:gstore/page/cache_manage/state.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
@@ -2859,36 +2857,18 @@ class AgentService {
   /// [channel] 脚本渠道 channelKey（如 js_pingan）；
   /// [method] 脚本 main 分发的函数名（如 getConfig/versionOptions/自定义方法）；
   /// [params] 透传给脚本的参数 map。
-  /// 依赖 JsChannel.callMethod 入口；脚本未实现/失败 → 返回 null 提示降级。
+  /// 依赖 Rust `ScriptApi.run` 入口；脚本未实现/失败 → 返回提示降级。
   Future<String> _runJsChannel(String channel, String method, dynamic params) async {
     if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
     if (method.isEmpty) return '执行脚本渠道方法需要 method';
 
-    // jsChannel 切轨后脚本渠道不在 Dart ChannelManager 注册表里（结构门禁拒绝
-    // Dart 脚本渠道），执行入口必须落到 Rust `ScriptApi.run`；flag off 时保持
-    // 旧的 JsChannel.callMethod 路径逐字节不变。
-    if (CoreFlags.jsChannel && channel.startsWith('js_')) {
-      return _runScriptLaneChannel(channel, method, params);
+    // Dart `JsChannel` 已随纯 Rust 清理删除：脚本渠道一律落到 Rust `ScriptApi.run`
+    // （flag off 时 `ScriptApi` 抛 ScriptApiDisabledException，由
+    // `_runScriptLaneChannel` 捕获降级为提示字符串）。
+    if (!channel.startsWith('js_')) {
+      return '渠道 $channel 不是脚本渠道（js_xxx），无法执行脚本方法';
     }
-
-    try {
-      final inst = _resolveChannel(channel);
-      if (inst is! JsChannel) {
-        return '渠道 $channel 不是脚本渠道（js_xxx），无法执行脚本方法';
-      }
-      final args = params is Map
-          ? params.map((k, v) => MapEntry(k.toString(), v))
-          : null;
-      _updateToolStep('执行脚本方法 $method…');
-      final result = await inst.callMethod(method, args);
-      _updateToolStep('脚本方法 $method 已返回');
-      if (result == null) {
-        return '脚本 $channel 未实现方法 $method 或执行失败（返回 null）';
-      }
-      return '脚本 $channel.$method 返回：\n${result.toString()}';
-    } catch (e) {
-      return '执行脚本方法失败: $e';
-    }
+    return _runScriptLaneChannel(channel, method, params);
   }
 
   /// Runs one method through the Rust script lane (`ScriptApi.run`).

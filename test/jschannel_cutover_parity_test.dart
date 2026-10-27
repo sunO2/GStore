@@ -28,13 +28,9 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/database/channel_added_app.dart';
-import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core_flags.dart';
-import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/script_api.dart';
@@ -61,58 +57,6 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
       coreWrites: snapshot.coreWrites,
     );
   }
-}
-
-/// In-memory `ChannelAddedAppDao` so the real writer executes without Floor.
-class _FakeAppDao implements ChannelAddedAppDao {
-  final List<ChannelAddedApp> apps = <ChannelAddedApp>[];
-
-  @override
-  Future<void> insertApp(ChannelAddedApp app) async {
-    apps
-      ..removeWhere(
-          (a) => a.channelCode == app.channelCode && a.appId == app.appId)
-      ..add(app);
-  }
-
-  @override
-  Future<void> insertApps(List<ChannelAddedApp> rows) async {
-    for (final row in rows) {
-      await insertApp(row);
-    }
-  }
-
-  @override
-  Future<void> removeApp(String appId, String channelCode) async {
-    apps.removeWhere((a) => a.appId == appId && a.channelCode == channelCode);
-  }
-
-  @override
-  Future<List<ChannelAddedApp>> getAppsByChannel(String channelCode) async =>
-      apps.where((a) => a.channelCode == channelCode).toList();
-
-  @override
-  Future<int?> getCountByChannel(String channelCode) async =>
-      apps.where((a) => a.channelCode == channelCode).length;
-
-  @override
-  Future<ChannelAddedApp?> getApp(String appId, String channelCode) async {
-    for (final a in apps) {
-      if (a.appId == appId && a.channelCode == channelCode) return a;
-    }
-    return null;
-  }
-
-  @override
-  Future<void> clearChannel(String channelCode) async {
-    apps.removeWhere((a) => a.channelCode == channelCode);
-  }
-
-  @override
-  Future<List<ChannelAddedApp>> getAllApps() async => List.of(apps);
-
-  @override
-  Future<int?> getTotalCount() async => apps.length;
 }
 
 /// Records exactly what the `ScriptApi` facade forwards.
@@ -248,43 +192,23 @@ void main() {
     await ChannelManager.instance.disposeAll();
   });
 
-  test('jschannel_flip_removes_dart_channels', () async {
+  test('jschannel_flip_routes_to_the_rust_lane', () async {
     final manager = ChannelManager.instance;
-    final dao = _FakeAppDao();
 
-    // --- flag off: the Dart channel registers and writes on its own path.
+    // --- flag off: the Dart script lane was removed; an import is a typed refusal.
     await _setFlag(jsChannel: false);
     expect(manager.dartScriptChannelsEnabled, isTrue);
-
-    final dartChannel = JsChannel(
-      channelKey: 'js_flip',
-      script: _flipScript,
-      appDao: dao,
+    await expectLater(
+      ChannelLoader().importZip(
+        channelKey: 'js_flip',
+        zipBytes: _zipOf('function main(){ return null; }'),
+      ),
+      throwsA(isA<ChannelImportDisabledException>()),
     );
-    manager.registerChannel(dartChannel);
-    expect(manager.getChannelByKey('js_flip'), isNotNull);
-
-    final probedDomains = <String>[];
-    LegacyWriteGuard.probeOverride = (String domain) async {
-      probedDomains.add(domain);
-      return false;
-    };
-    final offWrite =
-        await manager.getChannelByKey('js_flip')!.addApp(const AppSummary(
-              appId: 'app.off',
-              name: 'Off',
-              user: 'u',
-              repositories: 'r',
-              icon: 'i',
-              des: 'd',
-            ));
-    expect(offWrite.success, isTrue);
-    expect(probedDomains, isNotEmpty);
-    expect(dao.apps.map((a) => a.appId), contains('app.off'));
+    expect(manager.dynamicChannels, isEmpty);
     await manager.disposeAll();
 
-    // --- flip on: registration path is gone, and the residual Dart writer is
-    // owned by the `js_channel` marker, not the `channel` marker.
+    // --- flip on: the load path is the Rust lane; no Dart dynamic channel exists.
     await _setFlag(jsChannel: true);
     expect(manager.dartScriptChannelsEnabled, isFalse,
         reason: 'the flip must retire Dart script channels');
@@ -299,35 +223,11 @@ void main() {
     _installScriptService();
 
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
-    expect(loaded, isEmpty,
-        reason: 'ChannelLoader must not build Dart JsChannels when flipped');
+    expect(loaded, isNotEmpty,
+        reason: 'ChannelLoader imports into the Rust lane when flipped');
     expect(manager.getChannelByKey('js_flip'), isNull);
     expect(manager.dynamicChannels, isEmpty);
-
-    final rejected = JsChannel(
-      channelKey: 'js_rejected',
-      script: _flipScript,
-      appDao: dao,
-    );
-    manager.registerChannel(rejected);
-    expect(manager.getChannelByKey('js_rejected'), isNull);
     expect(manager.getChannel(ChannelType.custom), isNull);
-
-    // Residual Dart writer: after the flip the owning marker is `js_channel`.
-    LegacyWriteGuard.probeOverride =
-        (String domain) async => domain == 'js_channel';
-    final onWrite = await rejected.addApp(const AppSummary(
-      appId: 'app.on',
-      name: 'On',
-      user: 'u',
-      repositories: 'r',
-      icon: 'i',
-      des: 'd',
-    ));
-    expect(onWrite.success, isFalse,
-        reason: 'the Dart JS writer must be blocked by the js_channel marker');
-    expect(onWrite.error, contains('LegacyWriteBlocked'));
-    expect(dao.apps.where((a) => a.appId == 'app.on'), isEmpty);
   });
 
   test('jschannel_marker_only_after_flip', () {
@@ -382,7 +282,7 @@ void main() {
     _installScriptService();
 
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
-    expect(loaded, isEmpty);
+    expect(loaded, isNotEmpty);
     expect(manager.dynamicChannels, isEmpty);
 
     // SEAM-BACKED (b): the facade forwards the exact method name and payload to

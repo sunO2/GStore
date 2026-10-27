@@ -25,7 +25,6 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
@@ -261,8 +260,8 @@ void main() {
       'loadAndRegister imports stored packs into the real Rust lane and run returns the script value',
       () async {
         final loaded = await ChannelLoader(directory: channelDir).loadAndRegister();
-        expect(loaded, isEmpty,
-            reason: 'flag on must not build Dart JsChannels');
+        expect(loaded.map((p) => p.key).toSet(), <String>{'js_example', 'js_sendmsg'},
+            reason: 'flag on imports the packs into the Rust lane');
 
         final packs = await ScriptApi.instance.list();
         expect(packs.map((p) => p.key).toSet(),
@@ -314,7 +313,7 @@ void main() {
     );
   });
 
-  group('legacy Dart lane (jsChannel OFF)', () {
+  group('Dart script lane removed (jsChannel OFF)', () {
     late Directory root;
     late _RecordingScriptApiBackend backend;
 
@@ -332,17 +331,15 @@ void main() {
       if (await root.exists()) await root.delete(recursive: true);
     });
 
-    test('loadAndRegister keeps the Dart JsChannel path and never calls ScriptApi',
-        () async {
+    test('flag off builds no Dart channel and never calls ScriptApi', () async {
       final dir = Directory('${root.path}/channels')..createSync(recursive: true);
       await File('${dir.path}/gate.zip').writeAsBytes(_zip(_sendMessageScript));
 
       final loaded = await ChannelLoader(directory: dir).loadAndRegister();
 
-      expect(loaded.map((channel) => channel.channelKey), <String>['js_gate']);
-      expect(loaded.single, isA<JsChannel>());
-      expect(ChannelManager.instance.getChannelByKey('js_gate'),
-          same(loaded.single));
+      expect(loaded, isEmpty, reason: 'the Dart script lane was removed');
+      expect(ChannelManager.instance.getChannelByKey('js_gate'), isNull);
+      expect(ChannelManager.instance.dynamicChannels, isEmpty);
       expect(backend.calls, isEmpty,
           reason: 'flag off must never reach the Rust pack store');
     });

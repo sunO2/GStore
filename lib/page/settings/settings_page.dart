@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -6,10 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
-import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
@@ -52,15 +49,14 @@ typedef _SelectedPackage = ({
   Uint8List bytes,
 });
 
-/// 已导入渠道的统一视图（Dart 旧轨 [JsChannel] / Rust 脚本通道二选一）。
+/// 已导入渠道的统一视图（Rust 脚本通道；Dart 旧轨 [JsChannel] 已随纯 Rust 清理删除）。
 ///
-/// [rust] 决定 env 读取/保存与删除走哪条通道：true → `ScriptApi.setEnv` /
-/// `ChannelLoader.removeChannel`（Rust 侧），false → `JsChannel` 旧路径。
+/// env 读取/保存与删除均走 Rust 脚本通道（`ScriptApi.getEnv/setEnv`、
+/// `ChannelLoader.removeChannel`）。
 typedef _ImportedChannel = ({
   String key,
   String name,
   String description,
-  bool rust,
 });
 
 class _SettingsPageState extends State<SettingsPage> {
@@ -100,28 +96,15 @@ class _SettingsPageState extends State<SettingsPage> {
     return ChannelManager.instance.dynamicChannels.length;
   }
 
-  /// 已导入渠道视图列表（两轨统一供管理对话框消费）。
+  /// 已导入渠道视图列表（Rust 脚本通道；Dart 旧轨已删除）。
   List<_ImportedChannel> _importedChannels() {
     final lane = RustScriptChannelLane.instance;
-    if (lane.enabled) {
-      return [
-        for (final pack in lane.packs)
-          (
-            key: pack.key,
-            name: pack.name.isEmpty ? pack.key : pack.name,
-            description: pack.description,
-            rust: true,
-          ),
-      ];
-    }
     return [
-      for (final channel
-          in ChannelManager.instance.dynamicChannels.whereType<JsChannel>())
+      for (final pack in lane.packs)
         (
-          key: channel.channelKey,
-          name: channel.info.name,
-          description: channel.info.description,
-          rust: false,
+          key: pack.key,
+          name: pack.name.isEmpty ? pack.key : pack.name,
+          description: pack.description,
         ),
     ];
   }
@@ -605,23 +588,11 @@ class _SettingsPageState extends State<SettingsPage> {
                         final channelKey = 'js_$baseName';
                         // 尝试加载已存在的环境变量（回显之前填过的值）：
                         // Rust 轨读 ScriptApi 的渠道 env（与脚本 host.env.get 同一
-                        // 存储，敏感项从密钥存储解析），Dart 旧轨读 ConfigStore。
+                        // 存储，敏感项从密钥存储解析）。Dart 旧轨已删除。
                         var existingEnv = <String, String>{};
                         try {
-                          if (RustScriptChannelLane.instance.enabled) {
-                            existingEnv = await ScriptApi.instance
-                                .getEnv(key: channelKey);
-                          } else {
-                            final existingRaw = await ConfigStore.instance
-                                .readString('channel_env_$channelKey');
-                            if (existingRaw != null && existingRaw.isNotEmpty) {
-                              final decoded = jsonDecode(existingRaw);
-                              if (decoded is Map) {
-                                existingEnv = decoded.map((k, v) =>
-                                    MapEntry(k.toString(), v.toString()));
-                              }
-                            }
-                          }
+                          existingEnv = await ScriptApi.instance
+                              .getEnv(key: channelKey);
                         } catch (_) {
                           // 读取失败不影响，使用空值
                         }
@@ -713,33 +684,19 @@ class _SettingsPageState extends State<SettingsPage> {
         channelKey: pkg.channelKey,
         zipBytes: pkg.bytes,
       );
-      // Lane decided by CoreFlags.jsChannel inside ChannelLoader: legacy Dart
-      // registers a JsChannel; the Rust lane returns the installed pack and the
-      // env snapshot goes through ScriptApi.setEnv. Both paths write nothing to
-      // the legacy channel directory while the flag is on.
-      switch (imported) {
-        case LegacyChannelImport(:final channel):
-          if (envVars.isNotEmpty) {
-            for (final entry in envVars.entries) {
-              await channel.setEnv(entry.key, entry.value);
-            }
-            AppDialogs.showSuccess(
-                '渠道包已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
-          } else {
-            AppDialogs.showSuccess(
-                '渠道包已导入（${channel.info.name}），可切到发现页查看');
-          }
-        case ScriptLaneChannelImport(:final pack):
-          if (envVars.isNotEmpty) {
-            await ScriptApi.instance.setEnv(
-              key: pack.key,
-              env: envVars,
-            );
-            AppDialogs.showSuccess(
-                '渠道包已导入（${pack.name}），环境变量已保存，脚本通过 host.env.get 读取');
-          } else {
-            AppDialogs.showSuccess('渠道包已导入（${pack.name}），可切到发现页查看');
-          }
+      // CoreFlags.jsChannel inside ChannelLoader routes to the Rust lane: the
+      // installed pack is returned and the env snapshot goes through
+      // ScriptApi.setEnv. Nothing is written to the legacy channel directory.
+      final pack = imported.pack;
+      if (envVars.isNotEmpty) {
+        await ScriptApi.instance.setEnv(
+          key: pack.key,
+          env: envVars,
+        );
+        AppDialogs.showSuccess(
+            '渠道包已导入（${pack.name}），环境变量已保存，脚本通过 host.env.get 读取');
+      } else {
+        AppDialogs.showSuccess('渠道包已导入（${pack.name}），可切到发现页查看');
       }
       if (mounted) setState(() {});
     } catch (e) {
@@ -848,17 +805,11 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 读取渠道当前环境变量（两轨统一）。
+  /// 读取渠道当前环境变量（Rust 脚本通道）。
   ///
-  /// Rust 通道走 `ScriptApi.getEnv`（读 Rust 脚本存储，与脚本 `host.env.get`
-  /// 同一份数据，敏感项从密钥存储解析）；Dart 旧轨仍读 `JsChannel.getAllEnv`。
-  /// 读取失败仅作空初值，不影响编辑器。
+  /// 走 `ScriptApi.getEnv`（读 Rust 脚本存储，与脚本 `host.env.get`
+  /// 同一份数据，敏感项从密钥存储解析）。读取失败仅作空初值，不影响编辑器。
   Future<Map<String, String>> _loadChannelEnv(_ImportedChannel channel) async {
-    if (!channel.rust) {
-      final dartChannel = ChannelManager.instance.getChannelByKey(channel.key);
-      if (dartChannel is JsChannel) return dartChannel.getAllEnv();
-      return const {};
-    }
     try {
       return await ScriptApi.instance.getEnv(key: channel.key);
     } catch (_) {
@@ -911,24 +862,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
     if (saved != true) return;
 
-    if (channel.rust) {
-      await ScriptApi.instance.setEnv(key: channel.key, env: envVars);
-    } else {
-      final dartChannel = ChannelManager.instance.getChannelByKey(channel.key);
-      if (dartChannel is JsChannel) {
-        // 差异应用：新增/修改 → setEnv；删除 → removeEnv
-        for (final entry in envVars.entries) {
-          if (initial[entry.key] != entry.value) {
-            await dartChannel.setEnv(entry.key, entry.value);
-          }
-        }
-        for (final key in initial.keys) {
-          if (!envVars.containsKey(key)) {
-            await dartChannel.removeEnv(key);
-          }
-        }
-      }
-    }
+    // Rust 脚本通道：全量替换语义（脚本下次 host.env.get 立即生效）。
+    await ScriptApi.instance.setEnv(key: channel.key, env: envVars);
     if (context.mounted) {
       AppDialogs.showSuccess('环境变量已保存，脚本通过 host.env.get 读取');
     }
@@ -983,9 +918,6 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           // 版本（异步读取平台包信息，真实 versionName）
           const _AboutVersionTile(),
-          const Divider(height: 1),
-          // 数据库更新（放在版本下面）
-          const DataUpdateTile(),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(TablerIcons.file_description),
@@ -1185,237 +1117,6 @@ class _AboutVersionTileState extends State<_AboutVersionTile> {
       title: const Text('版本'),
       subtitle: Text(subtitle),
     );
-  }
-}
-
-/// 数据更新检测 Tile
-/// 状态：可检查（箭头）/ 检查中（loading）/ 有更新（"更新"按钮）
-///
-/// 公开（非下划线）以便 widget 测试直接挂载，验证 dbRebuiltStream 刷新
-/// 与单飞（single-flight）行为。
-class DataUpdateTile extends StatefulWidget {
-  const DataUpdateTile({super.key});
-
-  @override
-  State<DataUpdateTile> createState() => _DataUpdateTileState();
-}
-
-/// 数据库更新结果的页面语义分类。
-///
-/// [DbUpdateResult] 的数值契约（success=3 / noUpdate=-2 / error=-1）是 core 层
-/// 约定；页面据此决定提示文案——"无更新"必须提示已是最新，不能误报失败。
-enum DbUpdateOutcome { success, noUpdate, failure }
-
-/// 将 [DbUpdateResult] 数值映射为页面语义分类。
-@visibleForTesting
-DbUpdateOutcome classifyDbUpdateResult(int result) {
-  if (result == DbUpdateResult.success) return DbUpdateOutcome.success;
-  if (result == DbUpdateResult.noUpdate) return DbUpdateOutcome.noUpdate;
-  return DbUpdateOutcome.failure;
-}
-
-class _DataUpdateTileState extends State<DataUpdateTile> {
-  /// 是否正在检查
-  bool _checking = false;
-
-  /// 是否有更新
-  bool _hasUpdate = false;
-
-  /// 是否正在下载更新
-  bool _downloading = false;
-
-  /// 更新单飞守卫：`_performUpdate` 同步置位、finally 复位，
-  /// 防止两次重叠调用触发并发更新（并发会让 showLoading 叠加、
-  /// dismissLoading 只 pop 最顶层，导致一条流程的完成误关另一条的遮罩）。
-  bool _updateInFlight = false;
-
-  /// 当前数据库版本
-  String _currentVersion = '0.0.0.0';
-
-  /// 可更新版本
-  String? _latestVersion;
-
-  /// 数据库更新红点（数据库更新完成后由 DbManager 清除）
-  bool _hasDbBadge = false;
-
-  /// 红点变更订阅（dispose 取消）
-  StreamSubscription<Map<String, int>>? _badgeSub;
-
-  /// 数据库重建订阅（dispose 取消）。DbManager 重建并 notifyDbRebuilt 后，
-  /// 即使本次更新的 awaiting 续体已丢失，tile 也能刷新版本/leading 状态。
-  StreamSubscription<void>? _dbRebuiltSub;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCurrentVersion();
-    // 红点流是 broadcast（仅推送变更、不重放当前值），先读现值再订阅，
-    // 保证进入页面时红点状态正确且后续变更能刷新 leading。
-    _hasDbBadge = BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
-    _badgeSub = BadgeService.instance.badgesStream.listen((badges) {
-      if (!mounted) return;
-      setState(() => _hasDbBadge = badges[BadgeKey.dbUpdate.code] != null);
-    });
-    // 数据库重建事件是 broadcast：订阅后重建完成即刷新当前版本，
-    // 与 _performUpdate 的续体解耦（续体丢失时状态仍收敛）。
-    // DbManager 未初始化（部分测试直接挂载 SettingsPage）时安全降级。
-    try {
-      _dbRebuiltSub = DbManager.instance.dbRebuiltStream.listen((_) {
-        if (!mounted) return;
-        setState(() {
-          _hasUpdate = false;
-          _latestVersion = null;
-        });
-        _loadCurrentVersion();
-      });
-    } catch (e) {
-      appLog.error('DataUpdateTile: 订阅数据库重建事件失败（降级不刷新）- $e');
-    }
-  }
-
-  @override
-  void dispose() {
-    _badgeSub?.cancel();
-    _dbRebuiltSub?.cancel();
-    super.dispose();
-  }
-
-  /// 读取当前数据库版本
-  Future<void> _loadCurrentVersion() async {
-    try {
-      final version = await DbManager.instance.getDBVersion('gstore');
-      if (mounted) {
-        setState(() => _currentVersion = version);
-      }
-    } catch (e) {
-      appLog.error('_DataUpdateTile: 读取当前版本失败 - $e');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final Widget trailing;
-    if (_checking || _downloading) {
-      // 与刷新按钮同尺寸容器居中，避免交替时跳动
-      trailing = const SizedBox(
-        width: 40,
-        height: 40,
-        child: Center(
-          child: AppLoading(size: AppLoadingSize.small),
-        ),
-      );
-    } else if (_hasUpdate) {
-      // 有更新：显示"更新"按钮
-      trailing = FilledButton.tonal(
-        onPressed: _performUpdate,
-        style: FilledButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-        ),
-        child: const Text('更新'),
-      );
-    } else {
-      // 默认：双箭头刷新按钮（检查更新），固定在 40x40 容器内与 loading 对齐
-      trailing = SizedBox(
-        width: 40,
-        height: 40,
-        child: IconButton(
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-          icon: const Icon(TablerIcons.refresh, size: AppTypography.iconMD),
-          tooltip: '检查更新',
-          onPressed: _checkForUpdate,
-        ),
-      );
-    }
-
-    return ListTile(
-      leading: AppBadge(
-        count: _hasDbBadge ? 1 : 0,
-        showCount: false,
-        child: const Icon(TablerIcons.database, size: AppTypography.iconMD),
-      ),
-      title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
-      subtitle: Text(
-        _hasUpdate && _latestVersion != null
-            ? '当前 $_currentVersion → 可更新 $_latestVersion'
-            : '当前版本: $_currentVersion',
-      ),
-      trailing: trailing,
-      onTap: _checking || _downloading ? null : _checkForUpdate,
-    );
-  }
-
-  /// 检查是否有更新（不自动下载）
-  Future<void> _checkForUpdate() async {
-    if (_checking) return;
-    setState(() {
-      _checking = true;
-      _hasUpdate = false;
-    });
-
-    try {
-      final info = await DbManager.instance.checkUpdateInfo('gstore');
-      if (!mounted) return;
-      setState(() {
-        _checking = false;
-        _hasUpdate = info != null;
-        _latestVersion = info?['latest'];
-        if (info != null) _currentVersion = info['current']!;
-      });
-      if (info == null) {
-        AppDialogs.showInfo('本地数据库已是最新版本', title: '已是最新');
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _checking = false);
-        AppDialogs.showError('检查更新出错: $e', title: '检查失败');
-      }
-    }
-  }
-
-  /// 执行更新下载
-  Future<void> _performUpdate() async {
-    // 单飞守卫：同步置位，重叠调用直接返回，绝不启动第二次更新。
-    if (_updateInFlight) return;
-    _updateInFlight = true;
-    if (mounted) {
-      setState(() => _downloading = true);
-    }
-
-    try {
-      final result = await "gstore".checkUpdate();
-      if (!mounted) return;
-      switch (classifyDbUpdateResult(result)) {
-        case DbUpdateOutcome.success:
-          await _loadCurrentVersion();
-          if (!mounted) return;
-          setState(() {
-            _hasUpdate = false;
-            _latestVersion = null;
-          });
-          AppDialogs.showSuccess('本地数据库已更新', title: '更新成功');
-        case DbUpdateOutcome.noUpdate:
-          // 无更新不是失败：给"已是最新"信息提示（与 _checkForUpdate 同款）
-          setState(() {
-            _hasUpdate = false;
-            _latestVersion = null;
-          });
-          AppDialogs.showInfo('本地数据库已是最新版本', title: '已是最新');
-        case DbUpdateOutcome.failure:
-          setState(() => _hasUpdate = false);
-          AppDialogs.showError('数据库更新失败，请检查网络或代理设置',
-              title: '更新失败');
-      }
-    } catch (e) {
-      if (!mounted) return;
-      AppDialogs.showError('更新出错: $e', title: '更新失败');
-    } finally {
-      _updateInFlight = false;
-      if (mounted) {
-        setState(() => _downloading = false);
-      }
-    }
   }
 }
 

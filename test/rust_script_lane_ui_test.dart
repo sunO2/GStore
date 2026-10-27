@@ -25,7 +25,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -340,26 +339,6 @@ void main() {
           reason: 'reloading must not duplicate a Rust-lane code');
     });
 
-    test('flag off: Dart JsChannel is registered and drives the codes list',
-        () async {
-      await _setFlag(jsChannel: false);
-      final dir = await Directory.systemTemp.createTemp('gstore_lane_off');
-      addTearDown(() => dir.delete(recursive: true));
-      await File('${dir.path}/gate.zip')
-          .writeAsBytes(_zipOf('function main(){ return null; }'));
-
-      final loaded = await ChannelLoader(directory: dir).loadAndRegister();
-      expect(loaded.map((c) => c.channelKey), <String>['js_gate']);
-      expect(loaded.single, isA<JsChannel>());
-
-      final (container, notifier) = makeContainer();
-      addTearDown(container.dispose);
-      await notifier.loadData();
-
-      expect(notifier.sortedChannelCodes, contains('js_gate'));
-      expect(notifier.getChannelName('js_gate'), isNotEmpty);
-    });
-
     test('import -> delete -> re-import leaves no ghost entry (stale_state)',
         () async {
       await _setFlag(jsChannel: true);
@@ -560,31 +539,6 @@ void main() {
       expect(state.detailInfo, isNull);
       expect(state.errorMessage, isNotEmpty,
           reason: 'a missing js_* channel must surface a typed error message');
-    });
-
-    test('flag off: the legacy JsChannel route still drives the detail page',
-        () async {
-      await _setFlag(jsChannel: false);
-      final dir = await Directory.systemTemp.createTemp('gstore_detail_off');
-      addTearDown(() => dir.delete(recursive: true));
-      await File('${dir.path}/gate.zip')
-          .writeAsBytes(_zipOf('function main(){ return null; }'));
-      final loaded = await ChannelLoader(directory: dir).loadAndRegister();
-      expect(loaded.single.channelKey, 'js_gate');
-
-      final state = DetailState();
-      final logic = DetailLogic(state: state);
-      logic.setRouteExtra(const AppDetailRequest(
-        appId: 'com.gate',
-        name: 'Gate',
-        channel: ChannelType.custom,
-        channelCode: 'js_gate',
-      ));
-      await logic.start();
-
-      // The legacy route resolves a real JsChannel and installs a detail
-      // channel; it must not take the Rust-lane branch.
-      expect(logic.detailChannel, isNotNull);
     });
   });
 

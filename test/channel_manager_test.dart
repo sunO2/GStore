@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
@@ -104,6 +103,22 @@ class _FakeEnumChannel extends IChannel {
   Future<void> dispose() async {}
 }
 
+/// 最小动态渠道（替代已删除的 Dart `JsChannel`）：`channelKey` + custom 槽位，
+/// 验证 `ChannelManager` 的动态字符串索引。
+class _FakeDynamicChannel extends _FakeEnumChannel implements DynamicChannel {
+  _FakeDynamicChannel(this.channelKey);
+
+  @override
+  final String channelKey;
+
+  @override
+  ChannelInfo get info => ChannelInfo(
+        type: ChannelType.custom,
+        name: channelKey,
+        description: 'fake script channel',
+      );
+}
+
 void main() {
   setUp(() async {
     // 单例重置（既有测试约定）：disposeAll 清空渠道并置空 _instance
@@ -113,11 +128,7 @@ void main() {
   group('ChannelManager 动态字符串索引', () {
     test('registerChannel(JSChannel) → getChannelByKey 返回、dynamicChannels 含它', () async {
       final manager = ChannelManager.instance;
-      final js = JsChannel(
-        channelKey: 'js.vivo',
-        script: 'const CHANNEL_META = { name: "vivo 脚本" };\n'
-            'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js.vivo');
 
       manager.registerChannel(js);
 
@@ -134,10 +145,7 @@ void main() {
 
     test('unregisterChannelByKey 清理动态索引', () async {
       final manager = ChannelManager.instance;
-      final js = JsChannel(
-        channelKey: 'js.x',
-        script: 'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js.x');
       manager.registerChannel(js);
 
       manager.unregisterChannelByKey('js.x');
@@ -150,10 +158,7 @@ void main() {
 
     test('unregisterChannel(custom) 同步清理 _channelsByKey', () async {
       final manager = ChannelManager.instance;
-      final js = JsChannel(
-        channelKey: 'js.y',
-        script: 'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js.y');
       manager.registerChannel(js);
 
       manager.unregisterChannel(ChannelType.custom);
@@ -165,10 +170,7 @@ void main() {
     test('既有枚举渠道逻辑不受影响', () async {
       final manager = ChannelManager.instance;
       final fake = _FakeEnumChannel();
-      final js = JsChannel(
-        channelKey: 'js.z',
-        script: 'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js.z');
 
       manager.registerChannel(fake);
       manager.registerChannel(js);
@@ -201,10 +203,7 @@ void main() {
 
     test('脚本渠道 channelKey 命中 _channelsByKey', () async {
       final manager = ChannelManager.instance;
-      final js = JsChannel(
-        channelKey: 'js_pingan',
-        script: 'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js_pingan');
       manager.registerChannel(js);
 
       expect(manager.getChannelByCode('js_pingan'), same(js),
@@ -214,10 +213,7 @@ void main() {
     test('枚举 code 与脚本 key 并存时互不干扰', () async {
       final manager = ChannelManager.instance;
       final fake = _FakeEnumChannel();
-      final js = JsChannel(
-        channelKey: 'js_vivo',
-        script: 'function main(method, params) { return null; }',
-      );
+      final js = _FakeDynamicChannel('js_vivo');
       manager.registerChannel(fake);
       manager.registerChannel(js);
 

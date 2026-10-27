@@ -6,18 +6,140 @@ import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
+import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/settle.dart';
+
+/// In-memory `ScriptApiBackend` (FRB seam): the env UI reaches the Rust script
+/// lane (ScriptApi.getEnv/setEnv), never a Dart `JsChannel` (deleted).
+class _FakeScriptBackend implements ScriptApiBackend {
+  final Map<String, rust_pack.ScriptPackInfo> packs = {};
+  final List<String> removed = [];
+  final List<String> envSets = [];
+  final Map<String, Map<String, String>> lastEnv = {};
+
+  @override
+  Future<void> init({
+    required String dataDir,
+    required String filesDir,
+    required String cacheDir,
+  }) async {}
+
+  @override
+  Future<rust_pack.ScriptPackInfo> import_({
+    required List<int> packZipBytes,
+    String? expectedKey,
+  }) async {
+    final key = expectedKey ?? 'js_unknown';
+    final info = rust_pack.ScriptPackInfo(
+      key: key,
+      name: 'A 渠道',
+      description: 'A 描述',
+      icon: '',
+      hasDetail: false,
+    );
+    packs[key] = info;
+    return info;
+  }
+
+  @override
+  Future<void> remove({required String key}) async {
+    removed.add(key);
+    packs.remove(key);
+    lastEnv.remove(key);
+  }
+
+  @override
+  Future<rust_pack.ScriptPackInfo> refresh({required String key}) async =>
+      packs[key] ??
+      rust_pack.ScriptPackInfo(
+        key: key,
+        name: '',
+        description: '',
+        icon: '',
+        hasDetail: false,
+      );
+
+  @override
+  Future<void> setEnv({
+    required String key,
+    required Map<String, String> env,
+  }) async {
+    envSets.add(key);
+    lastEnv[key] = Map.of(env);
+  }
+
+  @override
+  Future<Map<String, String>> getEnv({required String key}) async =>
+      Map.of(lastEnv[key] ?? const {});
+
+  @override
+  Future<void> setConfig({
+    required String key,
+    required Map<String, String> config,
+  }) async {}
+
+  @override
+  Future<String> run({
+    required String key,
+    required String method,
+    required String paramsJson,
+  }) async =>
+      'null';
+
+  @override
+  Future<List<rust_pack.ScriptPackInfo>> list() async => packs.values.toList();
+
+  @override
+  Future<String> storedApps({required String key}) async => '[]';
+
+  @override
+  Future<void> addApp({
+    required String key,
+    required rust.ChannelAppInfo app,
+  }) async {}
+
+  @override
+  Future<void> releaseDetail({
+    required String key,
+    required String appId,
+  }) async {}
+}
+
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  _FakeFlagsBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    snapshot = CoreFlagsSnapshot(
+      channels: patch.channel ?? snapshot.channels,
+      catalog: patch.catalog ?? snapshot.catalog,
+      update: patch.update ?? snapshot.update,
+      download: patch.download ?? snapshot.download,
+      install: patch.install ?? snapshot.install,
+      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
+      coreWrites: snapshot.coreWrites,
+    );
+  }
+}
 
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
 class _FakePathProvider extends PathProviderPlatform {
@@ -72,8 +194,7 @@ Future<({String name, Uint8List bytes})?> pickZip(String fileName) async =>
 /// 注入「选择 zip 渠道包」：meta.json 声明 requiredEnvVars，
 /// 触发导入 BottomSheet 的必需环境变量引导（键预填只读，仅填值）
 Future<({String name, Uint8List bytes})?> pickZipWithRequired(
-        String fileName,
-        List<String> requiredVars) async =>
+        String fileName, List<String> requiredVars) async =>
     (
       name: fileName,
       bytes: makeZip(
@@ -87,10 +208,10 @@ void main() {
 
   late Directory tempDir;
   late PathProviderPlatform originalPathProvider;
+  late _FakeScriptBackend backend;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    // env 持久化走内存存储（敏感键自动路由，js_channel_env_test 同款）
     ConfigStore.instance.resetForTest();
     await ConfigStore.instance
         .initialize(storages: [MemoryConfigStorage(), MemoryConfigStorage()]);
@@ -99,15 +220,29 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('channel_env_ui');
     originalPathProvider = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
+
+    CoreFlags.installBackend(
+        _FakeFlagsBackend(const CoreFlagsSnapshot(jsChannel: true)));
+    await CoreFlags.refresh();
+    backend = _FakeScriptBackend();
+    ScriptApi.installBackend(backend);
+    ScriptChannelService.installForTest(ScriptChannelService(
+      coreDirs: () async => (
+        '${tempDir.path}/core/data',
+        '${tempDir.path}/core/files',
+        '${tempDir.path}/core/cache',
+      ),
+      ensureRust: () async {},
+    ));
+    RustScriptChannelLane.resetForTest();
   });
 
   tearDown(() async {
     PathProviderPlatform.instance = originalPathProvider;
-    for (final channel in ChannelManager.instance.dynamicChannels) {
-      if (channel is JsChannel) {
-        ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
-      }
-    }
+    CoreFlags.resetBackend();
+    ScriptApi.resetBackend();
+    ScriptChannelService.resetForTest();
+    RustScriptChannelLane.resetForTest();
     await tempDir.delete(recursive: true);
   });
 
@@ -125,19 +260,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 打开导入 BottomSheet（db8fa14 起：环境变量区改由 requiredEnvVars 引导，
-  /// 选文件后按需出现，不再有可展开 section）
   Future<void> openImportDialog(WidgetTester tester) async {
-    // 入口位于「数据源管理」分组，小视口下需先滚动到可见再点
     await tester.ensureVisible(find.text('脚本渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('脚本渠道'));
     await tester.pumpAndSettle();
   }
 
-  /// 通过导入 BottomSheet 导入 zip 渠道包（可选 env：
-  /// 注入的 zip 需以 [pickZipWithRequired] 声明同名 requiredEnvVars，
-  /// 行序 = 声明序，键只读仅填值），返回 channelKey（js_ 前缀）
+  /// 通过导入 BottomSheet 导入 zip 渠道包，返回 channelKey（js_ 前缀）
   Future<String> importChannel(
     WidgetTester tester, {
     String fileName = 'vivo.zip',
@@ -149,7 +279,6 @@ void main() {
     await tester.tap(find.byKey(const Key('script_channel_file_button')));
     await tester.pumpAndSettle();
     if (env != null) {
-      // requiredEnvVars 预填行：键只读，仅填值（行序 = meta.json 声明序）
       var row = 0;
       for (final entry in env.entries) {
         await tester.enterText(
@@ -166,7 +295,7 @@ void main() {
         : fileName;
     final key = 'js_$base';
     await settleUntil(
-        tester, () => ChannelManager.instance.getChannelByKey(key) != null);
+        tester, () => RustScriptChannelLane.instance.packFor(key) != null);
     return key;
   }
 
@@ -180,11 +309,9 @@ void main() {
 
     await openImportDialog(tester);
 
-    // 按钮存在
     expect(find.byKey(const Key('script_channel_file_button')), findsOneWidget);
     expect(find.textContaining('从文件选择'), findsOneWidget);
 
-    // 点击 → 注入实现被调用 → 预览显示渠道标识（文件名去 .zip）
     await tester
         .ensureVisible(find.byKey(const Key('script_channel_file_button')));
     await tester.tap(find.byKey(const Key('script_channel_file_button')));
@@ -193,29 +320,21 @@ void main() {
     expect(find.byKey(const Key('script_channel_preview')), findsOneWidget);
     expect(find.textContaining('js_file1'), findsOneWidget);
 
-    // 确认导入
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 注册 + QuickJS 初始化 + 文件落盘 + 成功提示都是真实异步，固定 900ms
-    // 在并发负载下不够；改为有界轮询，断言不变。
     await settleUntil(
       tester,
-      () {
-        final c = ChannelManager.instance.getChannelByKey('js_file1');
-        return c is JsChannel &&
-            c.isInitialized &&
-            File('${tempDir.path}/channels/file1.zip').existsSync() &&
-            find.textContaining('渠道包已导入').evaluate().isNotEmpty;
-      },
-      reason: '导入后必须注册 js_file1、落盘并显示成功提示',
+      () =>
+          backend.packs.containsKey('js_file1') &&
+          find.textContaining('渠道包已导入').evaluate().isNotEmpty,
+      reason: '导入后必须把 js_file1 装进 Rust 脚本通道并显示成功提示',
     );
 
-    expect(ChannelManager.instance.getChannelByKey('js_file1'), isNotNull);
-    expect(File('${tempDir.path}/channels/file1.zip').existsSync(), isTrue);
+    expect(backend.packs.containsKey('js_file1'), isTrue);
     expect(find.textContaining('渠道包已导入'), findsOneWidget);
   });
 
-  testWidgets('② 导入对话框填写必需环境变量 → 导入后 channel.getAllEnv 含该项（存储落盘）',
+  testWidgets('② 导入对话框填写必需环境变量 → 导入后 ScriptApi env 含该项',
       (tester) async {
     await pumpSettings(
         tester,
@@ -224,14 +343,8 @@ void main() {
     await importChannel(tester,
         fileName: 'envch.zip', env: {'PINGAN_USER': 'alice'});
 
-    final channel = ChannelManager.instance.getChannelByKey('js_envch');
-    expect(channel, isNotNull);
-    // widget 侧断言：渠道 env 含导入时配置的项
-    expect(await (channel as JsChannel).getAllEnv(),
-        {'PINGAN_USER': 'alice'});
-    // store 侧断言：channel_env_<key> 落盘
-    final raw = await ConfigStore.instance.readString('channel_env_js_envch');
-    expect(raw, contains('PINGAN_USER'));
+    expect(backend.envSets, contains('js_envch'));
+    expect(backend.lastEnv['js_envch'], {'PINGAN_USER': 'alice'});
     // 提示包含 host.env.get 说明
     expect(find.textContaining('host.env.get'), findsOneWidget);
   });
@@ -242,13 +355,11 @@ void main() {
         filePicker: () => pickZipWithRequired('envdel.zip', ['KEEP']));
     await openImportDialog(tester);
 
-    // 选择 zip 包 → 必需环境变量 KEEP 行预填（键只读、不可删除）
     await tester
         .ensureVisible(find.byKey(const Key('script_channel_file_button')));
     await tester.tap(find.byKey(const Key('script_channel_file_button')));
     await tester.pumpAndSettle();
 
-    // 填必需值 + 新增一行 DROP
     await tester.enterText(
         find.byKey(const Key('script_channel_env_value_0')), '1');
     await tester
@@ -260,40 +371,30 @@ void main() {
     await tester.enterText(
         find.byKey(const Key('script_channel_env_value_1')), '2');
 
-    // 删除第二行（DROP）
     await tester.ensureVisible(
         find.byKey(const Key('script_channel_env_remove_1')));
     await tester.tap(find.byKey(const Key('script_channel_env_remove_1')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('script_channel_env_remove_1')), findsNothing);
 
-    // 导入：仅保留 KEEP
     await tester.ensureVisible(find.text('导入'));
     await tester.tap(find.text('导入'));
     await tester.pump();
-    // 固定等待换成有界轮询：注册与环境变量落盘都是真实异步，并发下可能
-    // 远超固定 900ms。断言不变，仅等待机制变化。
     await settleUntil(
       tester,
-      () async {
-        final c = ChannelManager.instance.getChannelByKey('js_envdel');
-        if (c is! JsChannel) return false;
-        final env = await c.getAllEnv();
-        return env.length == 1 && env['KEEP'] == '1';
-      },
+      () =>
+          backend.lastEnv['js_envdel']?.length == 1 &&
+          backend.lastEnv['js_envdel']?['KEEP'] == '1',
       reason: '导入后必须能取到 js_envdel 且环境变量仅保留 KEEP',
     );
 
-    final channel =
-        ChannelManager.instance.getChannelByKey('js_envdel') as JsChannel;
-    expect(await channel.getAllEnv(), {'KEEP': '1'});
+    expect(backend.lastEnv['js_envdel'], {'KEEP': '1'});
   });
 
   testWidgets('④ 已导入渠道列表显示渠道（管理入口）', (tester) async {
     await pumpSettings(tester, filePicker: () => pickZip('vivo.zip'));
     await importChannel(tester, fileName: 'vivo.zip');
 
-    // 管理入口 subtitle 显示数量
     expect(find.text('1 个渠道包'), findsOneWidget);
 
     await tester.ensureVisible(find.text('已导入渠道'));
@@ -305,10 +406,9 @@ void main() {
     expect(
         find.byKey(const Key('script_channel_manage_js_vivo')), findsOneWidget);
     expect(find.text('js_vivo'), findsOneWidget);
-    expect(find.text('A 渠道'), findsOneWidget);
   });
 
-  testWidgets('⑤ 管理入口编辑环境变量 → setEnv 生效（持久化更新）', (tester) async {
+  testWidgets('⑤ 管理入口编辑环境变量 → setEnv 生效', (tester) async {
     await pumpSettings(
         tester,
         filePicker: () =>
@@ -316,7 +416,6 @@ void main() {
     await importChannel(tester,
         fileName: 'envedit.zip', env: {'PINGAN_USER': 'alice'});
 
-    // 打开管理 → 环境变量编辑
     await tester.ensureVisible(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
@@ -325,11 +424,10 @@ void main() {
         .tap(find.byKey(const Key('script_channel_env_edit_js_envedit')));
     await tester.pumpAndSettle();
 
-    // 既有键值已加载
+    // 既有键值已加载（ScriptApi.getEnv）
     expect(find.text('PINGAN_USER'), findsOneWidget);
     expect(find.text('alice'), findsOneWidget);
 
-    // 修改值 + 新增一行
     await tester.enterText(
         find.byKey(const Key('script_channel_env_value_0')), 'alice2');
     await tester
@@ -343,40 +441,28 @@ void main() {
 
     await tester.tap(find.text('保存'));
     await tester.pump();
-    // 环境变量逐项 setEnv 落盘 + 提示都是真实异步；有界轮询，断言不变。
     await settleUntil(
       tester,
-      () async {
-        final c = ChannelManager.instance.getChannelByKey('js_envedit');
-        if (c is! JsChannel) return false;
-        final env = await c.getAllEnv();
-        return env.length == 2 &&
-            env['PINGAN_USER'] == 'alice2' &&
-            env['TOKEN'] == 't1' &&
-            find.textContaining('环境变量已保存').evaluate().isNotEmpty;
-      },
-      reason: '保存后必须持久化两项环境变量并显示成功提示',
+      () =>
+          backend.lastEnv['js_envedit']?['PINGAN_USER'] == 'alice2' &&
+          backend.lastEnv['js_envedit']?['TOKEN'] == 't1' &&
+          find.textContaining('环境变量已保存').evaluate().isNotEmpty,
+      reason: '保存后必须经 ScriptApi.setEnv 持久化两项并显示成功提示',
     );
 
-    final channel =
-        ChannelManager.instance.getChannelByKey('js_envedit') as JsChannel;
-    expect(await channel.getAllEnv(),
+    expect(backend.lastEnv['js_envedit'],
         {'PINGAN_USER': 'alice2', 'TOKEN': 't1'});
     expect(find.textContaining('环境变量已保存'), findsOneWidget);
   });
 
-  testWidgets('⑥ 删除渠道 → 注销 + 文件删除 + env 清空', (tester) async {
+  testWidgets('⑥ 删除渠道 → ScriptApi.remove + 从 lane 移除', (tester) async {
     await pumpSettings(
         tester,
         filePicker: () => pickZipWithRequired('del.zip', ['SECRET']));
     await importChannel(tester, fileName: 'del.zip', env: {'SECRET': 'x'});
 
-    // 前置：注册 + 文件 + env 均存在
-    expect(ChannelManager.instance.getChannelByKey('js_del'), isNotNull);
-    expect(File('${tempDir.path}/channels/del.zip').existsSync(), isTrue);
-    expect(await ConfigJsChannelEnvStore('js_del').load(), {'SECRET': 'x'});
+    expect(backend.packs.containsKey('js_del'), isTrue);
 
-    // 管理 → 删除 → 危险确认
     await tester.ensureVisible(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
@@ -387,27 +473,16 @@ void main() {
 
     await tester.tap(find.text('删除'));
     await tester.pump();
-    // 注销 + 文件删除 + env 清空 + 提示均为真实异步；有界轮询，断言不变。
     await settleUntil(
       tester,
-      () async {
-        final c = ChannelManager.instance.getChannelByKey('js_del');
-        final env = await ConfigJsChannelEnvStore('js_del').load();
-        return c == null &&
-            !File('${tempDir.path}/channels/del.zip').existsSync() &&
-            env.isEmpty &&
-            find.textContaining('渠道包已删除').evaluate().isNotEmpty;
-      },
-      reason: '删除后必须注销渠道、删除文件、清空 env 并显示提示',
+      () =>
+          backend.removed.contains('js_del') &&
+          find.textContaining('渠道包已删除').evaluate().isNotEmpty,
+      reason: '删除后必须调 ScriptApi.remove 并显示提示',
     );
 
-    // 注销 + 文件删除 + env 清空
-    expect(ChannelManager.instance.getChannelByKey('js_del'), isNull);
-    expect(File('${tempDir.path}/channels/del.zip').existsSync(), isFalse);
-    expect(await ConfigJsChannelEnvStore('js_del').load(), isEmpty);
+    expect(backend.removed, contains('js_del'));
     expect(find.textContaining('渠道包已删除'), findsOneWidget);
-
-    // 管理列表已刷新（渠道行消失）
     expect(
         find.byKey(const Key('script_channel_manage_js_del')), findsNothing);
   });

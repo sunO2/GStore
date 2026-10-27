@@ -5,8 +5,9 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -152,6 +153,28 @@ Future<Directory> _channelDir() async {
   return dir;
 }
 
+/// 最小动态渠道：仅用于验证 `ChannelManager` 在 `CoreFlags.jsChannel == true`
+/// 时的结构性门禁（生产已无 `DynamicChannel` 实现；`JsChannel` 已删除）。
+class _FakeDynamicChannel implements IChannel, DynamicChannel {
+  _FakeDynamicChannel(this.channelKey);
+
+  @override
+  final String channelKey;
+
+  @override
+  ChannelInfo get info => ChannelInfo(
+        type: ChannelType.custom,
+        name: channelKey,
+        description: 'test dynamic channel',
+      );
+
+  @override
+  bool isInitialized = false;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 Future<void> _setFlag({required bool jsChannel}) async {
   CoreFlags.installBackend(
     _FakeFlagsBackend(CoreFlagsSnapshot(jsChannel: jsChannel)),
@@ -184,7 +207,7 @@ void main() {
     await ChannelManager.instance.disposeAll();
   });
 
-  test('flag=false：loader 扫描并注册 Dart JsChannel（旧路径不变）', () async {
+  test('flag=false：Dart 脚本车道已删除，loader 不注册任何渠道', () async {
     await _setFlag(jsChannel: false);
     final manager = ChannelManager.instance;
     expect(manager.dartScriptChannelsEnabled, isTrue);
@@ -194,10 +217,9 @@ void main() {
 
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
 
-    expect(loaded.map((channel) => channel.channelKey), <String>['js_gate']);
-    expect(manager.getChannelByKey('js_gate'), isA<JsChannel>());
-    expect(manager.dynamicChannels, isNotEmpty);
-    expect(manager.getChannel(ChannelType.custom), isA<JsChannel>());
+    expect(loaded, isEmpty, reason: 'Dart 脚本车道已删除');
+    expect(manager.getChannelByKey('js_gate'), isNull);
+    expect(manager.dynamicChannels, isEmpty);
   });
 
   test('flag=true：loader 不注册 Dart JsChannel，但把渠道包导入 Rust 通道',
@@ -212,15 +234,15 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
 
     final loaded = await ChannelLoader(directory: dir).loadAndRegister();
-    expect(loaded, isEmpty, reason: 'Rust ScriptApi 接管时不构建 Dart JsChannel');
+    expect(loaded.map((p) => p.key), <String>['js_gate'],
+        reason: 'Rust ScriptApi 接管时导入的包由 loader 返回');
     expect(backend.importedKeys, <String>['js_gate'],
         reason: '启动加载必须把渠道目录里的 zip 真正导入 Rust 脚本通道');
     expect(manager.getChannelByKey('js_gate'), isNull);
     expect(manager.dynamicChannels, isEmpty);
 
-    // 结构性门禁：即使有人绕过 loader 直接注册，也不会进入动态索引。
-    final js = JsChannel(channelKey: 'js_rejected', script: _script);
-    manager.registerChannel(js);
+    // 结构性门禁：即使有人绕过 loader 直接注册动态渠道，也不会进入动态索引。
+    manager.registerChannel(_FakeDynamicChannel('js_rejected'));
     expect(manager.getChannelByKey('js_rejected'), isNull);
     expect(manager.getChannel(ChannelType.custom), isNull);
     expect(manager.dynamicChannels, isEmpty);
