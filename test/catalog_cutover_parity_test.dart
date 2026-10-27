@@ -25,6 +25,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 // ignore: depend_on_referenced_packages
 import 'package:sqlite3/open.dart';
 
+import 'support/added_apps_read_seams.dart';
+
 /// Flags backend that only toggles `catalog` (the B4 gate).
 class _FakeFlagsBackend implements CoreFlagsBackend {
   _FakeFlagsBackend(this.snapshot);
@@ -241,6 +243,10 @@ const Set<String> _aggregatorAllowlist = <String>{
   'lib/core/aggregate/added_apps_facade.dart',
   'lib/core/channel/impl/GitHubChannel.dart',
   'lib/core/channel/impl/VivoChannel.dart',
+  // Test-seam only: `setTestDatabases` binds the injected test DB to the legacy
+  // manager's flag-off lane so flag-routed backup restores stay testable. It is
+  // not a production caller of the legacy manager.
+  'lib/core/service/backup_service.dart',
 };
 
 void main() {
@@ -379,20 +385,62 @@ void main() {
         reason: 'unexpected AppAggregatorManager references: $offenders');
   });
 
-  test('blocked_restore_fails_in_agent_file_and_bytes_paths', () async {
-    // The restore is refused by the core write marker before any data or
-    // channel-pack write happens.
-    LegacyWriteGuard.probeOverride = (String domain) async => true;
+  test('catalog_restores_through_core_and_a_channel_block_is_a_warning',
+      () async {
+    // The catalog domain is restored through the flag-routed facade (core lane);
+    // a channel-domain block is a typed WARNING on the result — never a thrown
+    // exception and never a whole-restore failure. The core lane is made
+    // deterministic by injecting a recording core backend; the legacy lane is
+    // replaced by a backend whose every member throws, so reaching it fails.
+    CoreFlags.installBackend(
+      _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true)),
+    );
+    await CoreFlags.refresh();
+
+    final core = _RecordingAddedApps('core');
+    final legacy = ThrowingAddedApps();
+    AddedAppsFacade.backendOverride = core;
+    AddedAppsFacade.legacyBackendOverride = legacy;
+
+    // Only the channel marker is armed: the catalog write proceeds, the channel
+    // write is refused (fail-closed) and surfaced as a warning.
+    LegacyWriteGuard.probeOverride =
+        (String domain) async => domain == 'channel';
+
     BackupService.instance.setTestDatabases(addedDb);
     ModuleManager.instance.bindByType(IBackupService, BackupService.instance);
 
-    final channelsDir = Directory.systemTemp.createTempSync('blocked_restore');
+    final channelsDir = Directory.systemTemp.createTempSync('restore_core_lane');
     addTearDown(() => channelsDir.deleteSync(recursive: true));
     BackupService.instance.debugChannelsDirectory = channelsDir;
 
     const evilName = 'evil.zip';
     final zipBytes = _buildZip();
-    final backupBytes = _buildBackupArchive(zipBytes);
+    final backupBytes = _buildBackupArchive(
+      zipBytes,
+      apps: const <BackupAppItem>[
+        BackupAppItem(
+          channelId: 'github',
+          appId: 'owner/beta',
+          appName: 'owner/beta',
+          addTime: 1000,
+        ),
+      ],
+      channelApps: const <String, List<ChannelAppBackupItem>>{
+        'github': <ChannelAppBackupItem>[
+          ChannelAppBackupItem(
+            appId: 'owner/alpha',
+            name: 'alpha',
+            user: 'owner',
+            repositories: 'alpha',
+            icon: '',
+            description: '',
+            addTime: 1000,
+            channelCode: 'github',
+          ),
+        ],
+      },
+    );
 
     final backupFile = File(p.join(channelsDir.path, 'backup.tar.gz'));
     await backupFile.writeAsBytes(backupBytes);
@@ -404,28 +452,19 @@ void main() {
       onLog: (String message, {bool isError = false}) =>
           fileLogs.add((text: message, isError: isError)),
     );
-    expect(fileResult.success, isFalse);
-    expect(fileResult.error, contains('CORE_E_WRITE_BLOCKED'));
-    expect(
-      fileLogs
-          .any((log) => log.isError && log.text.contains('CORE_E_WRITE_BLOCKED')),
-      isTrue,
-      reason: 'blocked restore must surface the typed warning with isError',
-    );
+    expect(fileResult.success, isTrue,
+        reason: 'a channel block must be a warning, not a whole-restore failure');
+    expect(fileResult.writeWarnings, hasLength(1));
+    expect(fileResult.writeWarnings.single.domain, 'channel');
+    expect(fileResult.writeWarnings.single.code, 'CORE_E_WRITE_BLOCKED');
+    expect(fileLogs.any((log) => log.text.contains('恢复完成')), isTrue,
+        reason: 'the file-path restore must complete, not abort');
+    expect(core.calls, contains('core.add'),
+        reason: 'the catalog portion must restore through the core backend');
+    expect(legacy.calls, isEmpty,
+        reason: 'catalog on must never reach the legacy manager lane');
     expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse,
-        reason: '_restoreChannelPackages must be unreachable when blocked');
-
-    // ---- Agent path (AgentService.runTool('backup')) ---------------------
-    final agentResult = await AgentService().runTool(
-      AgentService.backupToolName,
-      <String, dynamic>{'action': 'import', 'filePath': backupFile.path},
-    );
-    expect(agentResult, contains('CORE_E_WRITE_BLOCKED'),
-        reason: 'a blocked restore must reach the agent as a failure');
-    expect(agentResult, contains('恢复失败'));
-    expect(agentResult, isNot(contains('已从')),
-        reason: 'the old false success line must be gone');
-    expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse);
+        reason: '_restoreChannelPackages must fail closed on a channel block');
 
     // ---- Bytes path (BackupService.importBackupBytes) --------------------
     final byteLogs = <({String text, bool isError})>[];
@@ -434,13 +473,24 @@ void main() {
       onLog: (String message, {bool isError = false}) =>
           byteLogs.add((text: message, isError: isError)),
     );
-    expect(byteResult.success, isFalse);
-    expect(byteResult.error, contains('CORE_E_WRITE_BLOCKED'));
+    expect(byteResult.success, isTrue);
+    expect(byteResult.writeWarnings, hasLength(1));
+    expect(byteResult.writeWarnings.single.domain, 'channel');
     expect(
-      byteLogs
-          .any((log) => log.isError && log.text.contains('CORE_E_WRITE_BLOCKED')),
+      byteLogs.any((log) => log.text.contains('CORE_E_WRITE_BLOCKED')),
       isTrue,
     );
+    expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse);
+
+    // ---- Agent path (AgentService.runTool('backup')) ---------------------
+    final agentResult = await AgentService().runTool(
+      AgentService.backupToolName,
+      <String, dynamic>{'action': 'import', 'filePath': backupFile.path},
+    );
+    expect(agentResult, contains('已从'),
+        reason: 'a catalog restore that only warns on the channel domain is a '
+            'success for the agent');
+    expect(agentResult, isNot(contains('恢复失败')));
     expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse);
   });
 }
@@ -454,17 +504,23 @@ Uint8List _buildZip() {
   return Uint8List.fromList(ZipEncoder().encode(archive)!);
 }
 
-List<int> _buildBackupArchive(Uint8List zipBytes) {
+List<int> _buildBackupArchive(
+  Uint8List zipBytes, {
+  List<BackupAppItem> apps = const <BackupAppItem>[],
+  Map<String, List<ChannelAppBackupItem>> channelApps =
+      const <String, List<ChannelAppBackupItem>>{},
+}) {
   final data = BackupData(
     metadata: BackupMetadata(
       version: BackupVersion.v2_1,
       exportDate: DateTime.fromMillisecondsSinceEpoch(1000),
       appVersion: '1.0.0',
-      totalApps: 0,
+      totalApps: apps.length,
       channelCounts: const <String, int>{},
       options: const BackupOptions(),
     ),
-    apps: const <BackupAppItem>[],
+    apps: apps,
+    channelApps: channelApps,
   );
   final appsJson = utf8.encode(jsonEncode(data.toJson()));
   final archive = Archive()

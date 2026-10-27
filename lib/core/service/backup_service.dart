@@ -8,6 +8,8 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -36,7 +38,6 @@ class BackupService implements IBackupService {
 
   BackupService._internal();
 
-  late AppAddedDatabase _aggregatorDb;
   ChannelDatabase? _channelDb;
 
   /// 是否已初始化
@@ -46,11 +47,8 @@ class BackupService implements IBackupService {
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    // 初始化聚合数据库
-    final aggregatorDb = await AppAddedDatabase.create();
-    _aggregatorDb = aggregatorDb;
-
-    // 初始化渠道数据库
+    // 聚合应用读写在迁移后一律走 flag 路由的 AddedAppsFacade（核心或旧
+    // backend），不再直接持有聚合库句柄；仅保留渠道库。
     final channelDb = await ChannelDatabaseManager.instance;
     _channelDb = channelDb;
 
@@ -78,7 +76,7 @@ class BackupService implements IBackupService {
     // 脚本渠道应用存于 channel_added_app.channelCode = channelKey（如 'js_pingan'），
     // 不在 ChannelType.values 内——必须显式并入，否则通过 JS 渠道添加的应用不会被备份。
     // 从聚合库反推保证：即使脚本渠道已卸载（未注册），历史添加的应用仍能被备份。
-    final allAddedApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
+    final allAddedApps = await AddedAppsFacade.instance.list();
     final targetCodes = <String>{
       for (final c in (channels ?? ChannelType.values)) c.code,
       for (final ch in ChannelManager.instance.dynamicChannels) channelCode(ch),
@@ -273,13 +271,23 @@ class BackupService implements IBackupService {
     // 导出用户分类标签（v2.1 新增）
     List<BackupTagItem>? backupTags;
     try {
-      final tags = await _aggregatorDb.appTagDao.getAllTags();
-      if (tags.isNotEmpty) {
-        backupTags = tags
-            .map((t) =>
-                BackupTagItem(channelId: t.channelId, appId: t.appId, tag: t.tag))
-            .toList();
-        appLog.info('BackupService: 导出用户标签 ${tags.length} 个');
+      // 标签索引键为 'channelId:appId'（facade/核心的稳定投影）。appId 内的
+      // ':' 不是分隔符——只按第一个 ':' 切分，与写入侧的键构造严格对称。
+      final tagsIndex = await AddedAppsFacade.instance.tagsIndex();
+      final flatTags = <BackupTagItem>[];
+      tagsIndex.forEach((key, tags) {
+        final sep = key.indexOf(':');
+        if (sep < 0) return;
+        final channelId = key.substring(0, sep);
+        final appId = key.substring(sep + 1);
+        for (final tag in tags) {
+          flatTags.add(
+              BackupTagItem(channelId: channelId, appId: appId, tag: tag));
+        }
+      });
+      if (flatTags.isNotEmpty) {
+        backupTags = flatTags;
+        appLog.info('BackupService: 导出用户标签 ${flatTags.length} 个');
       }
     } catch (e) {
       appLog.error('BackupService: 导出用户标签失败 - $e');
@@ -725,11 +733,6 @@ class BackupService implements IBackupService {
   }) async {
     final result = BackupImportResult();
 
-    try {
-      await LegacyWriteGuard.assertAllowed('catalog');
-    } on LegacyWriteBlocked catch (blocked) {
-      return _reportBlockedRestore(result, blocked, onLog);
-    }
     if (!_isInitialized) await initialize();
 
     appLog.info('BackupService: ========== 开始导入数据 ==========');
@@ -755,7 +758,7 @@ class BackupService implements IBackupService {
         case BackupImportMode.replace:
           appLog.info('BackupService: 模式: REPLACE - 清空并重新添加');
           // 替换模式：先清空，再添加
-          await _aggregatorDb.addedAppDao.clearAll();
+          await AddedAppsFacade.instance.clearAll();
           appLog.info('BackupService: 已清空聚合数据库');
           await _addAllAppsToAggregator(backupData.apps);
           break;
@@ -763,7 +766,7 @@ class BackupService implements IBackupService {
         case BackupImportMode.merge:
           appLog.info('BackupService: 模式: MERGE - 合并已存在的应用');
           // 合并模式：添加不存在的应用
-          final existingApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
+          final existingApps = await AddedAppsFacade.instance.list();
           final existingKeys = existingApps
               .map((app) => '${app.channelId}_${app.appId}')
               .toSet();
@@ -820,8 +823,22 @@ class BackupService implements IBackupService {
           backupData.channelApps.isNotEmpty) {
         appLog.info('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
         onLog?.call('导入渠道库数据（${backupData.channelApps.length} 个渠道）...');
-        await _importChannelApps(backupData.channelApps, mode);
-        onLog?.call('渠道库导入完成');
+        try {
+          await _importChannelApps(backupData.channelApps, mode);
+          onLog?.call('渠道库导入完成');
+        } on LegacyWriteBlocked catch (blocked) {
+          // 渠道域的写标记已武装（核心拥有渠道库）：RESTORE 语义从"整体失败"
+          // 降级为"typed 部分警告"——catalog 已走核心，渠道元数据留待核心导入。
+          // 绝不写渠道库（_importChannelApps 的 guard 保持 fail-closed）。
+          final warning = CoreWriteBlockedWarning(
+            domain: blocked.domain,
+            operation: 'importData',
+            detail: 'channel restore skipped; the Rust core owns this domain',
+          );
+          result.writeWarnings.add(warning);
+          appLog.warning('BackupService: $warning');
+          onLog?.call(warning.toString(), isError: true);
+        }
       } else {
         debugPrint('BackupService: 无渠道数据需要导入（版本: ${backupData.metadata.version}, 渠道数: ${backupData.channelApps.length}）');
       }
@@ -908,11 +925,19 @@ class BackupService implements IBackupService {
       if (backupData.tags != null && backupData.tags!.isNotEmpty) {
         onLog?.call('恢复用户分类标签（${backupData.tags!.length} 个）...');
         try {
-          final tagItems = backupData.tags!
-              .map((t) => t.toAddedAppTag())
-              .toList();
-          await _aggregatorDb.appTagDao.insertTags(tagItems);
-          appLog.info('BackupService: ✅ 用户标签恢复完成（${tagItems.length} 个）');
+          // setTags 整体替换（等价旧 insertTags 的复合主键 replace 语义）：
+          // 先按 (channelId, appId) 分组，每个应用只调用一次。
+          final tagGroups = <(String, String), List<String>>{};
+          for (final t in backupData.tags!) {
+            tagGroups
+                .putIfAbsent((t.channelId, t.appId), () => <String>[])
+                .add(t.tag);
+          }
+          for (final group in tagGroups.entries) {
+            await AddedAppsFacade.instance
+                .setTags(group.key.$1, group.key.$2, group.value);
+          }
+          appLog.info('BackupService: ✅ 用户标签恢复完成（${backupData.tags!.length} 个）');
           onLog?.call('用户标签恢复完成');
         } catch (e) {
           appLog.error('BackupService: 恢复用户标签失败 - $e');
@@ -1033,11 +1058,11 @@ class BackupService implements IBackupService {
       ));
 
       // 验证导入结果
-      final finalCount = await _aggregatorDb.addedAppDao.getTotalCount();
+      final finalCount = await AddedAppsFacade.instance.totalCount();
       debugPrint('BackupService: 验证 - 聚合数据库当前总数: $finalCount');
 
       // 打印导入的应用列表
-      final importedApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
+      final importedApps = await AddedAppsFacade.instance.list();
       debugPrint('BackupService: 导入的应用列表:');
       for (final app in importedApps.take(10)) {
         debugPrint('BackupService:   - ${app.channelId}/${app.appId}');
@@ -1080,28 +1105,25 @@ class BackupService implements IBackupService {
     return result;
   }
 
-  /// 批量添加应用到聚合数据库
+  /// 批量添加应用到聚合数据库（经 flag 路由的 [AddedAppsFacade]）
   Future<void> _addAllAppsToAggregator(List<BackupAppItem> apps) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
     debugPrint('BackupService: 开始添加 ${apps.length} 个应用到聚合数据库');
 
-    final addedApps = apps.map((backupApp) {
-      // 聚合库只存引用（v3），应用信息字段忽略，恢复后由渠道实时获取
-      return AddedAppInfo(
-        channelId: backupApp.channelId,
-        appId: backupApp.appId,
-        addTime: backupApp.addTime,
-        sortOrder: backupApp.sortOrder,
-        isEnabled: backupApp.isEnabled,
-      );
-    }).toList();
-
     try {
-      await _aggregatorDb.addedAppDao.insertApps(addedApps);
-      appLog.info('BackupService: 成功插入 ${addedApps.length} 个应用到聚合数据库');
+      // 逆序添加：核心 `add` 落 `add_time=now`，后加的排前；逆序是恢复备份
+      // 顺序的 best-effort。精确 add_time 顺序由后续 Rust `add_all` 提供。
+      for (final a in apps.reversed) {
+        await AddedAppsFacade.instance
+            .add(a.channelId, a.appId, sortOrder: a.sortOrder);
+        if (!a.isEnabled) {
+          // 核心 `add` 恒落 is_enabled=1；禁用项必须补一次 toggle 才能还原。
+          await AddedAppsFacade.instance.toggle(a.channelId, a.appId);
+        }
+      }
+      appLog.info('BackupService: 成功插入 ${apps.length} 个应用到聚合数据库');
 
       // 打印插入的应用列表
-      for (final app in addedApps) {
+      for (final app in apps) {
         debugPrint('BackupService: 已插入 - ${app.channelId}/${app.appId}');
       }
     } catch (e) {
@@ -1221,10 +1243,18 @@ class BackupService implements IBackupService {
   }
 
   /// 测试用：注入聚合数据库（跳过 initialize 的 path_provider 依赖）
+  ///
+  /// 运行时聚合读写走 flag 路由的 [AddedAppsFacade]；catalog 关时它委派给旧
+  /// `AppAggregatorManager`（facade 的 legacy backend 内部持有该 manager 单例），
+  /// 故注入的测试库必须同时绑到该 manager 的旧车道，否则 flag-off 的恢复会
+  /// 落到未初始化的 manager 库上。
   @visibleForTesting
   void setTestDatabases(AppAddedDatabase aggregatorDb) {
-    _aggregatorDb = aggregatorDb;
     _isInitialized = true;
+    // ignore: invalid_use_of_visible_for_testing_member
+    AppAggregatorManager.instance.debugDatabase = aggregatorDb;
+    // ignore: invalid_use_of_visible_for_testing_member
+    AppAggregatorManager.instance.debugChannelManager = ChannelManager.instance;
   }
 
   /// 测试用：注入渠道数据库（跳过 initialize 的 path_provider 依赖）
@@ -1284,6 +1314,18 @@ class BackupService implements IBackupService {
   /// （数据导入已完成，渠道包恢复失败不影响应用数据恢复的成败语义）。
   Future<int> _restoreChannelPackages(Map<String, List<int>> channelZipEntries) async {
     if (channelZipEntries.isEmpty) return 0;
+    // 渠道包写回 + 重新注册属于渠道域：核心已拥有时 fail-closed，绝不落盘/注册。
+    try {
+      await LegacyWriteGuard.assertAllowed('channel');
+    } on LegacyWriteBlocked catch (blocked) {
+      final warning = CoreWriteBlockedWarning(
+        domain: blocked.domain,
+        operation: '_restoreChannelPackages',
+        detail: 'channel pack restore refused; the Rust core owns this domain',
+      );
+      appLog.warning('BackupService: $warning');
+      return 0;
+    }
     try {
       final dir = await _resolveChannelsDirectory();
       if (dir == null) {
@@ -1409,7 +1451,7 @@ class BackupService implements IBackupService {
   Future<BackupStatistics> getStatistics() async {
     if (!_isInitialized) await initialize();
 
-    final allApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
+    final allApps = await AddedAppsFacade.instance.list();
 
     final channelCounts = <String, int>{};
     var enabledCount = 0;

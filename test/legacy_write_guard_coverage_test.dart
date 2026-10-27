@@ -84,6 +84,8 @@ const List<_Writer> _writers = <_Writer>[
       '_updateNameAndIconAfterInstall', 'channel'),
   _Writer(
       'lib/core/service/backup_service.dart', '_importChannelApps', 'channel'),
+  _Writer('lib/core/service/backup_service.dart', '_restoreChannelPackages',
+      'channel'),
   _Writer('lib/core/service/db_manager.dart', 'addDBRepositroy', 'channel'),
   // ---------------------------------------------------------------- catalog
   _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'addApp', 'catalog'),
@@ -102,9 +104,6 @@ const List<_Writer> _writers = <_Writer>[
       'lib/core/aggregate/AppAggregatorManager.dart', 'clearAll', 'catalog'),
   _Writer('lib/core/aggregate/added_apps_facade.dart', 'setOrder', 'catalog'),
   _Writer('lib/core/service/db_manager.dart', '_checkUpdateDBOfRepositroy',
-      'catalog'),
-  _Writer('lib/core/service/backup_service.dart', 'importData', 'catalog'),
-  _Writer('lib/core/service/backup_service.dart', '_addAllAppsToAggregator',
       'catalog'),
   // ----------------------------------------------------------------- update
   _Writer('lib/core/update/update_cache.dart', 'saveCheckedAt', 'update'),
