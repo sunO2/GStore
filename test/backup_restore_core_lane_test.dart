@@ -1,34 +1,24 @@
 /// Post-wave06 fix (write leg): backup RESTORE must route the catalog domain
-/// through the flag-routed `AddedAppsFacade` (the runtime path), not the legacy
+/// through the core `AddedAppsFacade` (the runtime path), not the legacy
 /// `_aggregatorDb`. Before the fix `importData` asserted
 /// `LegacyWriteGuard.assertAllowed('catalog')` and threw `LegacyWriteBlocked`
 /// the moment the core owned the catalog domain — the user report.
 ///
-/// This test pins the core lane deterministically: `CoreFlags.catalog == true`
-/// plus a recording core backend injected via `AddedAppsFacade.backendOverride`,
-/// with the legacy lane replaced by a backend whose every member throws. It uses
-/// a v1.0 backup (no channel apps) so no channel/`_channelDb` work happens.
+/// This test pins the core lane deterministically with a recording core backend
+/// injected via `AddedAppsFacade.backendOverride`. It uses a v1.0 backup (no
+/// channel apps) so no channel/`_channelDb` work happens.
 ///
-/// The legacy lane's real `FrbAddedAppsBackend`/`AppAggregatorManager` is never
-/// reached: a touched legacy member would throw (see `ThrowingAddedApps`).
+/// The legacy Dart added-apps lane was deleted (Increment 4), so there is no
+/// legacy backend to guard against here.
 library;
 
-import 'dart:ffi';
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
-import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart' as sqflite;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-// ignore: depend_on_referenced_packages
-import 'package:sqlite3/open.dart';
-
-import 'support/added_apps_read_seams.dart';
 
 /// Flags backend that only toggles `catalog` (the B4 gate).
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -107,22 +97,7 @@ class _RecordingCoreBackend implements AddedAppsBackend {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  late AppAddedDatabase addedDb;
-
-  setUpAll(() {
-    final factory = createDatabaseFactoryFfi(
-      ffiInit: () => open.overrideFor(OperatingSystem.linux,
-          () => DynamicLibrary.open('libsqlite3.so.0')),
-    );
-    sqflite.databaseFactory = factory;
-  });
-
   setUp(() async {
-    final dbFile = p.join(await sqflite.databaseFactory.getDatabasesPath(),
-        'backup_restore_core_lane_test.db');
-    await sqflite.databaseFactory.deleteDatabase(dbFile);
-    addedDb = await AppAddedDatabase.create(dbPath: dbFile);
-
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true)),
     );
@@ -132,21 +107,14 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
-    await addedDb.close();
-    final dbFile = p.join(await sqflite.databaseFactory.getDatabasesPath(),
-        'backup_restore_core_lane_test.db');
-    await sqflite.databaseFactory.deleteDatabase(dbFile);
   });
 
   test('replace_restore_routes_the_catalog_domain_through_the_core_backend',
       () async {
     final core = _RecordingCoreBackend();
-    final legacy = ThrowingAddedApps();
     AddedAppsFacade.backendOverride = core;
-    AddedAppsFacade.legacyBackendOverride = legacy;
 
-    BackupService.instance.setTestDatabases(addedDb);
+    BackupService.instance.setTestInitialized();
 
     const apps = <BackupAppItem>[
       BackupAppItem(
@@ -204,8 +172,5 @@ void main() {
     final sorted =
         core.added.firstWhere((a) => a.appId == 'com.c');
     expect(sorted.sortOrder, 5);
-    // The legacy lane (whose every member throws) was never touched.
-    expect(legacy.calls, isEmpty,
-        reason: 'catalog on must never reach the legacy manager lane');
   });
 }

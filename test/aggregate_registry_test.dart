@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
@@ -36,8 +35,9 @@ void main() {
         unbindService: (type) => manager.unbindByType(type),
       ));
 
-      expect(manager.get<IAggregateService>(),
-          same(AppAggregatorManager.instance));
+      // AppAggregatorManager is DB-free now; AggregateModule binds a thin
+      // IAggregateService adapter over AddedAppsFacade instead.
+      expect(manager.get<IAggregateService>(), isA<IAggregateService>());
 
       await module.onUnregister(ModuleContext(
         config: null,

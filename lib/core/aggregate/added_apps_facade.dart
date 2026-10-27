@@ -1,19 +1,18 @@
-/// Flag-gated facade over added apps and user tags.
+/// Core-only facade over added apps and user tags.
 ///
-/// `CoreFlags.catalog == false` routes to the legacy Dart
-/// `AppAggregatorManager`; `true` routes to the FRB `AddedAppsApi`.
+/// The legacy Dart store (`AppAddedDatabase`) was deleted, so this facade now
+/// routes exclusively to the FRB `AddedAppsApi` ([FrbAddedAppsBackend]). Reads
+/// are joined by the DB-free [AppAggregatorManager.aggregateWithMeta].
 library;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
-import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// Injectable added-apps transport seam.
 abstract class AddedAppsBackend {
@@ -222,139 +221,9 @@ AddedAppInfo addedAppFromRust(rust.AddedAppEntry entry) => AddedAppInfo(
       isEnabled: entry.isEnabled,
     );
 
-/// Legacy backend over `AppAggregatorManager`.
-class LegacyAddedAppsBackend implements AddedAppsBackend {
-  LegacyAddedAppsBackend({
-    AppAggregatorManager? manager,
-    AppAddedDatabase? database,
-  })  : _manager = manager ?? AppAggregatorManager.instance,
-        _database = database;
-
-  final AppAggregatorManager _manager;
-  AppAddedDatabase? _database;
-  Future<AppAddedDatabase>? _pendingDatabase;
-
-  Future<AppAddedDatabase> _db() async {
-    final database = _database;
-    if (database != null) return database;
-    return _pendingDatabase ??= AppAddedDatabase.create().then((created) {
-      _database = created;
-      return created;
-    });
-  }
-
-  static AppSummary _placeholder(String appId) => AppSummary(
-        appId: appId,
-        name: appId,
-        user: '',
-        repositories: '',
-        icon: '',
-        des: '',
-      );
-
-  @override
-  Future<void> add(
-    String channel,
-    String appId, {
-    int? sortOrder,
-    AppSummary? appInfo,
-  }) =>
-      _manager.addApp(
-        channelCode: channel,
-        appInfo: appInfo ?? _placeholder(appId),
-        sortOrder: sortOrder,
-      );
-
-  @override
-  Future<bool> remove(String channel, String appId) async {
-    final existed = await isAdded(channel, appId);
-    await _manager.removeApp(channelCode: channel, appId: appId);
-    return existed;
-  }
-
-  @override
-  Future<void> rename(String channel, String oldAppId, String newAppId) =>
-      _manager.renameApp(
-        channelCode: channel,
-        oldAppId: oldAppId,
-        newAppId: newAppId,
-      );
-
-  @override
-  Future<void> setOrder(String channel, String appId, int sortOrder) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    final database = await _db();
-    final existing = await database.addedAppDao.getApp(channel, appId);
-    final id = existing?.id;
-    if (id == null) return;
-    await database.addedAppDao.updateSortOrder(id, sortOrder);
-  }
-
-  @override
-  Future<bool> toggle(String channel, String appId) =>
-      _manager.toggleApp(channelCode: channel, appInfo: _placeholder(appId));
-
-  @override
-  Future<void> clearChannel(String channel) => _manager.clearChannel(channel);
-
-  @override
-  Future<void> clearAll() => _manager.clearAll();
-
-  @override
-  Future<List<AddedAppInfo>> list() => _manager.getAllAddedApps();
-
-  @override
-  Future<List<AddedAppInfo>> listChannel(String channel) =>
-      _manager.getAppsByChannel(channel);
-
-  @override
-  Future<AddedAppInfo?> get(String channel, String appId) async {
-    final apps = await _manager.getAllAddedApps();
-    for (final app in apps) {
-      if (app.channelId == channel && app.appId == appId) return app;
-    }
-    return null;
-  }
-
-  @override
-  Future<bool> isAdded(String channel, String appId) =>
-      _manager.isAppAdded(channelCode: channel, appId: appId);
-
-  @override
-  Future<int> totalCount() => _manager.getTotalCount();
-
-  @override
-  Future<int> countChannel(String channel) =>
-      _manager.getCountByChannel(channel);
-
-  @override
-  Future<void> setTags(String channel, String appId, List<String> tags) =>
-      _manager.setTags(channelCode: channel, appId: appId, tags: tags);
-
-  @override
-  Future<void> addTag(String channel, String appId, String tag) =>
-      _manager.addTag(channelCode: channel, appId: appId, tag: tag);
-
-  @override
-  Future<void> removeTag(String channel, String appId, String tag) =>
-      _manager.removeTag(channelCode: channel, appId: appId, tag: tag);
-
-  @override
-  Future<List<String>> tags(String channel, String appId) =>
-      _manager.getTags(channelCode: channel, appId: appId);
-
-  @override
-  Future<Map<String, List<String>>> tagsIndex() => _manager.getAllTagsIndex();
-
-  @override
-  Future<void> notifyChanged() async => _manager.notifyAppsChanged();
-}
-
-/// Flag-gated added-apps facade.
+/// Core-only added-apps facade.
 class AddedAppsFacade {
-  AddedAppsFacade({AddedAppsBackend? legacy, AddedAppsBackend? frb})
-      : _legacy = legacy ?? LegacyAddedAppsBackend(),
-        _frb = frb ?? FrbAddedAppsBackend();
+  AddedAppsFacade({AddedAppsBackend? frb}) : _frb = frb ?? FrbAddedAppsBackend();
 
   static AddedAppsFacade instance = AddedAppsFacade();
 
@@ -362,25 +231,11 @@ class AddedAppsFacade {
   @visibleForTesting
   static AddedAppsBackend? backendOverride;
 
-  /// Test seam: replaces the legacy backend.
-  @visibleForTesting
-  static AddedAppsBackend? legacyBackendOverride;
-
-  final AddedAppsBackend _legacy;
   final AddedAppsBackend _frb;
 
-  Future<bool> _enabled() async {
-    try {
-      await CoreFlags.refresh();
-    } catch (_) {
-      // Keep the last mirror; an unavailable flag backend must not arm a flag.
-    }
-    return CoreFlags.catalog;
-  }
-
-  Future<AddedAppsBackend> _backend() async => await _enabled()
-      ? (backendOverride ?? _frb)
-      : (legacyBackendOverride ?? _legacy);
+  /// Core-only routing: the legacy Dart store was deleted, so the facade always
+  /// uses the FRB backend (or the injected test override).
+  Future<AddedAppsBackend> _backend() async => backendOverride ?? _frb;
 
   Future<void> add(
     String channel,
@@ -424,10 +279,10 @@ class AddedAppsFacade {
   Future<int> countChannel(String channel) async =>
       (await _backend()).countChannel(channel);
 
-  /// Flag-routed aggregated read: rows and tags come from the backend selected
-  /// by `CoreFlags.catalog`; the metadata join is delegated to the (now pure)
-  /// [AppAggregatorManager.aggregateWithMeta], which reads no catalog DB and
-  /// never calls back into this facade — so it cannot recurse at any flag value.
+  /// Aggregated read: rows and tags come from the core backend; the metadata
+  /// join is delegated to the (pure) [AppAggregatorManager.aggregateWithMeta],
+  /// which reads no catalog DB and never calls back into this facade — so it
+  /// cannot recurse.
   Future<(List<AggregatedAppInfo>, int)> getAggregatedAppsPage({
     required int offset,
     required int limit,
@@ -449,8 +304,7 @@ class AddedAppsFacade {
 
   /// Flag-routed full aggregated read (no slicing); see
   /// [getAggregatedAppsPage] for the recursion argument.
-  Future<List<AggregatedAppInfo>> getAggregatedApps() async {
-    final backend = await _backend();
+  Future<List<AggregatedAppInfo>> getAggregatedApps() async {    final backend = await _backend();
     final rows = await backend.list();
     final tags = await backend.tagsIndex();
     return AppAggregatorManager.instance
@@ -474,16 +328,11 @@ class AddedAppsFacade {
 
   /// Notifies listeners that added-app data changed.
   ///
-  /// Flag off delegates to the legacy `AppAggregatorManager` broadcast stream;
-  /// flag on refreshes the core-owned projection. Callers (post-install,
-  /// backup restore) must not reach for the legacy singleton directly.
-  ///
-  /// Refresh bridge: core writes (via FRB) emit nothing Dart-side, but the home
-  /// list still listens on `AppAggregatorManager.appsChangedStream` (fed only by
-  /// legacy DB events / legacy manager writes). After the backend notify we also
-  /// poke that Dart stream so the home page reloads — via this facade, not the
-  /// poked payload. The poked payload is read from the legacy DB and may be
-  /// stale; consumers must not rely on it.
+  /// Refreshes the core-owned projection, then pokes the DB-free
+  /// `AppAggregatorManager.appsChangedStream` so the home list reloads. Callers
+  /// (post-install, backup restore) must not reach for the manager singleton
+  /// directly. The poked payload is an empty signal; consumers must reload via
+  /// this facade rather than trust it.
   Future<void> notifyAppsChanged() async {
     await (await _backend()).notifyChanged();
     AppAggregatorManager.instance.notifyAppsChanged();

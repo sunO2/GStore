@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/aggregate_service_adapter.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -97,7 +97,7 @@ void main() {
     // DetailLogic 经 ModuleManager 注册表取用（channel/aggregate 服务）
     ModuleManager.instance.bind<ChannelManager>(ChannelManager.instance);
     ModuleManager.instance
-        .bind<IAggregateService>(AppAggregatorManager.instance);
+        .bind<IAggregateService>(AggregateServiceAdapter());
     // README 图片走 AppImageLoader，注入 MockClient 返回 1×1 PNG 避免真实网络
     AppImageLoader.instance.debugClient = MockClient((request) async {
       return http.Response.bytes(

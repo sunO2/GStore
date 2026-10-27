@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -15,9 +15,10 @@ import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/view.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
+
+import 'support/added_apps_read_seams.dart';
 
 /// 测试用 webdav 模块（绑定假服务，避免触碰真实 WebDavService 单例）
 class FakeWebDavModule extends AppModule {
@@ -100,19 +101,19 @@ void main() {
     DatabaseEventBus.instance;
   });
 
-  late AppAddedDatabase aggregatorDb;
-
   setUp(() async {
     // 重置模块注册中心（webdav 默认下线）+ 隔离 BackupLogic
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
 
-    // 注入测试数据库（BackupLogic 初始化/统计走测试 DB，不触碰 path_provider）
-    final dbFile = p.join(
-        await databaseFactory.getDatabasesPath(), 'backup_webdav_card_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
-    aggregatorDb = await AppAddedDatabase.create(dbPath: dbFile);
-    BackupService.instance.setTestDatabases(aggregatorDb);
+    // 注入内存 backend（BackupLogic 初始化/统计走 core facade，不触碰
+    // path_provider / FRB / sqflite）
+    AddedAppsFacade.backendOverride = InMemoryAddedAppsBackend();
+    BackupService.instance.setTestInitialized();
+  });
+
+  tearDown(() {
+    AddedAppsFacade.backendOverride = null;
   });
 
   /// 铺满卡片的大视口（避免 ListView 懒构建导致 offscreen 找不到）

@@ -3,23 +3,19 @@
 /// write) through the core `AddedAppsFacade`, mirroring the discovery page
 /// (`a9db3965`, `c3fbd9e3`).
 ///
-/// Design (Oracle Option C): the facade routes rows+tags by `CoreFlags.catalog`
-/// and delegates the metadata join to a now-PURE
+/// The facade is now core-only (the legacy Dart store was deleted) and delegates
+/// the metadata join to a PURE
 /// `AppAggregatorManager.aggregateWithMeta(rows, tagsIndex: …)` that reads no
 /// catalog DB and never calls back into the facade — so there is no
-/// manager→facade edge and no recursion at any flag value.
+/// manager→facade edge and no recursion.
 ///
-/// This file covers the non-render cases: (1) flag on sources the aggregated
-/// read from the core backend with the legacy lane never reached (no recursion /
-/// no hang); (2) flag off still routes to the legacy backend and the join runs;
-/// (3) the legacy `LegacyWriteGuard` still fails closed while the facade core
-/// write does not; (4) a core-path `notifyAppsChanged()` pokes
+/// This file covers the non-render cases: (1) the aggregated read is sourced
+/// from the core backend (no recursion / no hang); (2) the legacy
+/// `LegacyWriteGuard` still fails closed while the facade core write does not;
+/// (3) a core-path `notifyAppsChanged()` pokes
 /// `AppAggregatorManager.appsChangedStream`. The HOME render case lives in
 /// `applist_reads_via_facade_test.dart` and the DETAIL tag case in
-/// `detail_tags_via_facade_test.dart` — each in its own isolate, because a
-/// rendered `ApplistPage` leaves a live binding and because a real-zone
-/// `test(...)` before a FakeAsync `testWidgets` would deadlock the shared
-/// `CoreFlags` queue.
+/// `detail_tags_via_facade_test.dart` — each in its own isolate.
 ///
 /// NOTE (zone): these are all plain `test(...)` cases on the real loop; they
 /// share one `CoreFlags` zone and always settle the queue.
@@ -50,7 +46,6 @@ void main() {
     CoreFlags.resetBackend();
     LegacyWriteGuard.resetForTest();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -59,15 +54,12 @@ void main() {
     ModuleManager.instance.unbind<ChannelManager>();
   });
 
-  group('catalog ON: aggregated read goes through the core facade (no recursion)',
-      () {
+  group('aggregated read goes through the core facade (no recursion)', () {
     test(
         '(recursion) getAggregatedAppsPage sources rows+tags from the core '
-        'backend and NEVER reaches the legacy lane (returns, no hang)', () async {
+        'backend and returns (no hang)', () async {
       final core = FakeAddedApps('core')..added['fdroid'] = {'com.added'};
-      final legacy = ThrowingAddedApps();
       AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
 
       ChannelManager.instance.registerChannel(
           FakeEnumChannel(ChannelType.fdroid, const [sampleApp]));
@@ -88,17 +80,13 @@ void main() {
           reason: 'rows must come from the core backend');
       expect(core.tagsIndexCalls, greaterThan(0),
           reason: 'tags must come from the core backend');
-      expect(legacy.calls, isEmpty,
-          reason: 'flag on must never reach the legacy backend (no recursion, '
-              'no legacy DB read) — a touched legacy member would throw');
     });
 
-    test('(guard) legacy manager write still fails closed, facade core write does not',
+    test('(guard) legacy writer guard still fails closed, facade core write does not',
         () async {
       LegacyWriteGuard.probeOverride = (domain) async => domain == 'catalog';
       await expectLater(
-        AppAggregatorManager.instance
-            .setTags(channelCode: 'fdroid', appId: 'x', tags: const ['t']),
+        LegacyWriteGuard.assertAllowed('catalog'),
         throwsA(isA<LegacyWriteBlocked>()),
         reason: 'the legacy writer guard must remain armed/fail-closed',
       );
@@ -119,45 +107,10 @@ void main() {
     });
   });
 
-  group('catalog OFF: aggregated read still uses the legacy backend', () {
-    test(
-        '(parity) getAggregatedAppsPage sources rows+tags from the legacy '
-        'backend, runs the join, and never touches core', () async {
-      final core = ThrowingAddedApps();
-      final legacy = FakeAddedApps('legacy')..added['fdroid'] = {'com.legacy'};
-      legacy.tagsByApp['fdroid:com.legacy'] = ['工具'];
-      AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
-
-      ChannelManager.instance.registerChannel(
-          FakeEnumChannel(ChannelType.fdroid, const [sampleApp]));
-      AppAggregatorManager.instance.debugChannelManager = ChannelManager.instance;
-
-      await setCatalogFlag(catalog: false);
-
-      final (apps, total) = await AddedAppsFacade.instance
-          .getAggregatedAppsPage(offset: 0, limit: 20);
-
-      expect(total, 1);
-      expect(apps.single.addedAppInfo.appId, 'com.legacy');
-      expect(apps.single.appInfo.category, contains('工具'),
-          reason: 'the join must have run (tagsIndex merged into category)');
-      expect(legacy.listCalls, greaterThan(0));
-      expect(legacy.tagsIndexCalls, greaterThan(0));
-      expect(core.calls, isEmpty,
-          reason: 'flag off must never reach the core backend');
-    });
-  });
-
   group('refresh bridge', () {
     test(
         '(bridge) a core-path notifyAppsChanged() pokes the manager '
         'appsChangedStream', () async {
-      // No real DB: the manager only needs `addedAppDao.getAllApps()` to poke its
-      // stream, and a fake keeps the test off the sqflite FFI isolate path.
-      AppAggregatorManager.instance.debugDatabase =
-          FakeManagerDatabase(const <AddedAppInfo>[]);
-
       final core = FakeAddedApps('core');
       AddedAppsFacade.backendOverride = core;
       await setCatalogFlag(catalog: true);
@@ -168,7 +121,7 @@ void main() {
       addTearDown(sub.cancel);
 
       await AddedAppsFacade.instance.notifyAppsChanged();
-      // The poked stream reads the manager DB asynchronously before emitting.
+      // The manager stream is a broadcast controller: delivery is a microtask.
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(core.notifyCalls, greaterThan(0),

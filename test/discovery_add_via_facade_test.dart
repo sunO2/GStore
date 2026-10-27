@@ -6,10 +6,9 @@
 /// User report (verbatim): "点击添加入库 提示 LegacyWriteBlocked(catalog)
 /// CODE_E_WRITE_BLOCKED".
 ///
-/// The facade is the routing seam: `CoreFlags.catalog == true` → the core
-/// backend, `false` → the legacy backend. These tests inject both seams
-/// (`AddedAppsFacade.backendOverride` / `legacyBackendOverride`) and arm the
-/// real `LegacyWriteGuard` to prove the add-to-home tap no longer touches the
+/// The facade is core-only (the legacy Dart store was deleted); these tests
+/// inject the core seam (`AddedAppsFacade.backendOverride`) and arm the real
+/// `LegacyWriteGuard` to prove the add-to-home tap no longer touches the
 /// guarded legacy writer.
 ///
 /// NOTE: `CoreFlags` keeps a process-wide serialized future (`_queue`). Its
@@ -58,7 +57,6 @@ void main() {
     CoreFlags.resetBackend();
     LegacyWriteGuard.resetForTest();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -109,9 +107,7 @@ void main() {
         'throw LegacyWriteBlocked even with the legacy guard armed',
         (tester) async {
       final core = RecordingAddedApps('core');
-      final legacy = RecordingAddedApps('legacy');
       AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
 
       // Arm the legacy catalog guard: the OLD path (`_aggregator.toggleApp`)
       // would now throw. The facade core path must not consult it.
@@ -136,8 +132,6 @@ void main() {
 
       expect(core.toggleCalls, contains(('fdroid', sampleApp.appId)),
           reason: 'the add must run through the facade core backend');
-      expect(legacy.toggleCalls, isEmpty,
-          reason: 'flag on must not touch the legacy backend');
       expect(agg.writeCalls, isEmpty,
           reason: 'the write must not go through the legacy aggregate writer');
       expect(core.notifyCalls, greaterThan(0),
@@ -236,33 +230,6 @@ void main() {
           reason: 'a clear must call notifyAppsChanged()');
       expect(agg.writeCalls, isEmpty,
           reason: 'clearChannel must not go through the legacy aggregate writer');
-    });
-  });
-
-  group('catalog OFF: no regression, the legacy backend still runs', () {
-    testWidgets('(b) add-to-home works via the legacy backend',
-        (tester) async {
-      final core = RecordingAddedApps('core');
-      final legacy = RecordingAddedApps('legacy');
-      AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
-
-      ChannelManager.instance
-          .registerChannel(FakeEnumChannel(ChannelType.fdroid, const []));
-      final agg = RecordingAggregate();
-      ModuleManager.instance.bindByType(IAggregateService, agg);
-      addTearDown(() => ModuleManager.instance.unbindByType(IAggregateService));
-
-      final (_, notifier) = await boot(tester, catalog: false);
-      final ctx = await unmountedContext(tester);
-      await tester.runAsync(() => notifier.toggleApp(ctx, 'fdroid', sampleApp));
-
-      expect(legacy.toggleCalls, contains(('fdroid', sampleApp.appId)),
-          reason: 'flag off must route the add through the legacy backend');
-      expect(core.toggleCalls, isEmpty,
-          reason: 'flag off must not touch the core backend');
-      expect(legacy.notifyCalls, greaterThan(0),
-          reason: 'flag off must still announce the change');
     });
   });
 }

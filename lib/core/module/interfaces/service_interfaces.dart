@@ -9,7 +9,7 @@ library;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/download/core/download_request.dart';

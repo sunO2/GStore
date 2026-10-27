@@ -43,7 +43,6 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);

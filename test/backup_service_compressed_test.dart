@@ -1,21 +1,19 @@
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqlite3/open.dart';
+
+import 'support/added_apps_read_seams.dart';
 
 /// BackupService exportCompressedBackup / importBackupBytes 测试
 ///
@@ -27,10 +25,6 @@ import 'package:sqlite3/open.dart';
 /// - 非 tar.gz 字节导入抛异常
 void main() {
   setUpAll(() {
-    open.overrideFor(OperatingSystem.linux,
-        () => DynamicLibrary.open('libsqlite3.so.0'));
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     PackageInfo.setMockInitialValues(
       appName: 'GStore',
       packageName: 'com.gstore',
@@ -42,7 +36,7 @@ void main() {
     DatabaseEventBus.instance;
   });
 
-  late AppAddedDatabase aggregatorDb;
+  late InMemoryAddedAppsBackend backend;
   late BackupService service;
 
   setUp(() async {
@@ -50,20 +44,16 @@ void main() {
     await ConfigStore.instance.initialize();
     ConfigService.instance.registerModule(AppCoreConfigModule());
 
-    final dbFile = p.join(await databaseFactory.getDatabasesPath(),
-        'backup_service_compressed_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
-    aggregatorDb = await AppAddedDatabase.create(dbPath: dbFile);
-
+    // The added-apps store is core-only now: inject an in-memory backend
+    // instead of the deleted Floor DB.
+    backend = InMemoryAddedAppsBackend();
+    AddedAppsFacade.backendOverride = backend;
     service = BackupService.instance;
-    service.setTestDatabases(aggregatorDb);
+    service.setTestInitialized();
   });
 
   tearDown(() async {
-    await aggregatorDb.close();
-    final dbFile = p.join(await databaseFactory.getDatabasesPath(),
-        'backup_service_compressed_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
+    AddedAppsFacade.backendOverride = null;
   });
 
   /// 从 tar.gz 字节中提取指定归档文件内容
@@ -78,9 +68,7 @@ void main() {
 
   group('exportCompressedBackup', () {
     test('返回 tar.gz 字节（gzip magic），包含 apps.json', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'termux/termux-app', addTime: 1000),
-      );
+      backend.seed('github', 'termux/termux-app', addTime: 1000);
 
       final bytes = await service.exportCompressedBackup();
 
@@ -105,9 +93,7 @@ void main() {
     });
 
     test('onLog 旁路输出各阶段', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'a/b', addTime: 1000),
-      );
+      backend.seed('github', 'a/b', addTime: 1000);
       final logs = <String>[];
       await service.exportCompressedBackup(
         onLog: (msg, {isError = false}) => logs.add(msg),
@@ -120,25 +106,21 @@ void main() {
 
   group('importBackupBytes', () {
     test('导出 → 导入字节往返恢复应用数据', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'termux/termux-app', addTime: 1000),
-      );
+      backend.seed('github', 'termux/termux-app', addTime: 1000);
       final bytes = await service.exportCompressedBackup();
 
       // 清空后从字节导入（merge 模式）
-      await aggregatorDb.addedAppDao.clearAll();
+      await backend.clearAll();
       final result = await service.importBackupBytes(bytes);
 
       expect(result.success, isTrue);
       expect(result.totalCount, 1);
-      expect(await aggregatorDb.addedAppDao.getTotalCount(), 1);
+      expect(await backend.totalCount(), 1);
     });
 
     test('includeAppConfig 往返：导入恢复代理配置', () async {
       await ConfigService.instance.set(ConfigKeys.proxyUrl, 'https://gh-proxy.org/');
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'a/b', addTime: 1000),
-      );
+      backend.seed('github', 'a/b', addTime: 1000);
       final bytes = await service.exportCompressedBackup(includeAppConfig: true);
 
       final result = await service.importBackupBytes(bytes);

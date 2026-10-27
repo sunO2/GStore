@@ -1,21 +1,26 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/event/database_event.dart';
-import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/model/AppIdentity.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
-import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用聚合管理器
-/// 负责管理所有渠道已添加的应用
-class AppAggregatorManager implements IAggregateService {
+///
+/// DB-free：持久化在 Rust core（经 `AddedAppsFacade`），本类只负责把
+/// "已添加应用引用行 + 用户标签索引"与渠道实时元数据做**纯 join**
+/// （[aggregateWithMeta]）。不再持有任何 Dart 数据库句柄，也不提供 CRUD。
+///
+/// 变化通知：[appsChangedStream] 退化为纯信号（payload 恒为空列表），消费方
+/// 收到信号后经 `AddedAppsFacade` 重新读取核心投影。
+class AppAggregatorManager {
   static AppAggregatorManager? _instance;
   static AppAggregatorManager get instance {
     _instance ??= AppAggregatorManager._internal();
@@ -24,22 +29,16 @@ class AppAggregatorManager implements IAggregateService {
 
   AppAggregatorManager._internal();
 
-  late AppAddedDatabase _database;
   late ChannelManager _channelManager;
-
-  /// 测试注入：跳过 initialize 的数据库创建
-  @visibleForTesting
-  set debugDatabase(AppAddedDatabase db) => _database = db;
 
   /// 测试注入：指定渠道管理器（未注册渠道时 getChannel 返回 null，跳过渠道库同步）
   @visibleForTesting
   set debugChannelManager(ChannelManager manager) => _channelManager = manager;
 
-  /// 流控制器 - 已添加应用变化通知
+  /// 流控制器 - 已添加应用变化通知（DB-free 后为纯信号，payload 恒为空）
   final _appsChangedController = StreamController<List<AddedAppInfo>>.broadcast();
 
   /// 已添加应用变化流
-  @override
   Stream<List<AddedAppInfo>> get appsChangedStream => _appsChangedController.stream;
 
   /// 是否已初始化
@@ -54,11 +53,6 @@ class AppAggregatorManager implements IAggregateService {
 
     try {
       _channelManager = ChannelManager.instance;
-
-      // 初始化数据库
-      final database = await AppAddedDatabase.create();
-
-      _database = database;
       _isInitialized = true;
 
       // 监听数据库变化事件
@@ -82,319 +76,24 @@ class AppAggregatorManager implements IAggregateService {
     }
   }
 
-  // ==================== 添加/移除应用 ====================
-
-  /// 添加应用
-  ///
-  /// 聚合库只存引用（渠道 + 应用 ID + 聚合元数据），应用信息由渠道实时查询。
-  /// - appId 形态由渠道自报（IChannel.canonicalAppId，外部无感）：
-  ///   GitHub metadata 已收录 → 真实包名；未收录 → owner/repo 占位
-  /// - 统一调用渠道 addApp 落渠道库（渠道自行决定是否支持/如何保存），失败不阻断首页添加
-  Future<void> addApp({
-    required String channelCode,
-    required AppSummary appInfo,
-    int? sortOrder,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    // 渠道自报规范化 appId（无感调用）
-    final channelInstance = _channelManager.getChannelByCode(channelCode);
-    final appId = channelInstance != null
-        ? await channelInstance.canonicalAppId(appInfo)
-        : appInfo.appId;
-
-    final now = DateTime.now().millisecondsSinceEpoch;
-    // 幂等：已存在（channelId + appId）时更新而非新增（自增 id 主键无唯一约束）
-    final existing = await _database.addedAppDao.getApp(channelCode, appId);
-    if (existing != null) {
-      await _database.addedAppDao.updateApp(AddedAppInfo(
-        id: existing.id,
-        channelId: channelCode,
-        appId: appId,
-        addTime: now,
-        sortOrder: sortOrder ?? existing.sortOrder,
-        isEnabled: existing.isEnabled,
-      ));
-    } else {
-      await _database.addedAppDao.insertApp(AddedAppInfo(
-        channelId: channelCode,
-        appId: appId,
-        addTime: now,
-        sortOrder: sortOrder ?? 0,
-      ));
-    }
-
-    // 统一添加入口：渠道自己落渠道库（GitHub 收录/未收录、Vivo、Fdroid 等由渠道决定）
-    // 失败不阻断首页添加（LocalDb/Http 等不支持 addApp 的渠道忽略）
-    if (channelInstance != null) {
-      try {
-        final enhanced = appId != appInfo.appId
-            ? AppSummary(
-                appId: appId,
-                packageName: null,
-                name: appInfo.name,
-                user: appInfo.user,
-                repositories: appInfo.repositories,
-                icon: appInfo.icon,
-                des: appInfo.des,
-                category: appInfo.category,
-              )
-            : appInfo;
-        await channelInstance.addApp(enhanced);
-      } catch (e) {
-        appLog.error('AppAggregatorManager: 渠道保存失败（不影响首页添加）- $e');
-      }
-    }
-
-    // 通知变化
-    _notifyAppsChanged();
-
-    appLog.info('AppAggregatorManager: 添加应用 - $appId ($channelCode)');
-  }
-
-  /// 批量添加应用
-  @override
-  Future<void> addApps({
-    required String channelCode,
-    required List<AppSummary> appInfos,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final channelInstance = _channelManager.getChannelByCode(channelCode);
-    final addedApps = <AddedAppInfo>[];
-
-    for (final app in appInfos) {
-      final appId = channelInstance != null
-          ? await channelInstance.canonicalAppId(app)
-          : app.appId;
-
-      // 幂等：已存在则更新，否则新增
-      final existing = await _database.addedAppDao.getApp(channelCode, appId);
-      if (existing != null) {
-        await _database.addedAppDao.updateApp(AddedAppInfo(
-          id: existing.id,
-          channelId: channelCode,
-          appId: appId,
-          addTime: now,
-          sortOrder: existing.sortOrder,
-          isEnabled: existing.isEnabled,
-        ));
-      } else {
-        addedApps.add(AddedAppInfo(
-          channelId: channelCode,
-          appId: appId,
-          addTime: now,
-        ));
-      }
-
-      // 统一添加入口：渠道自己落渠道库（失败不阻断）
-      if (channelInstance != null) {
-        try {
-          final enhanced = appId != app.appId
-              ? AppSummary(
-                  appId: appId,
-                  packageName: null,
-                  name: app.name,
-                  user: app.user,
-                  repositories: app.repositories,
-                  icon: app.icon,
-                  des: app.des,
-                  category: app.category,
-                )
-              : app;
-          await channelInstance.addApp(enhanced);
-        } catch (e) {
-          appLog.error('AppAggregatorManager: 渠道保存失败（不影响首页添加）- $e');
-        }
-      }
-    }
-
-    if (addedApps.isNotEmpty) {
-      await _database.addedAppDao.insertApps(addedApps);
-    }
-
-    _notifyAppsChanged();
-
-    appLog.info('AppAggregatorManager: 批量添加 ${appInfos.length} 个应用 ($channelCode)');
-  }
-
-  /// 移除应用
-  Future<void> removeApp({
-    required String channelCode,
-    required String appId,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    await _database.addedAppDao.removeApp(channelCode, appId);
-    // 联动清理该应用的用户标签（避免残留孤儿标签）
-    try {
-      await _database.appTagDao.removeTagsOfApp(channelCode, appId);
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 清理标签失败 - $e');
-    }
-
-    _notifyAppsChanged();
-
-    appLog.info('AppAggregatorManager: 移除应用 - $appId ($channelCode)');
-  }
-
-  /// 聚合库应用 ID 改名（渠道记录 appId 迁移后调用，保持聚合库 appId 与渠道一致）
-  ///
-  /// 只操作聚合库（added_apps + 用户标签），不触碰渠道库——渠道库由渠道/服务自行迁移。
-  /// - 保留 id/addTime/sortOrder/isEnabled（updateApp 按 id 更新，避免 remove+insert 重置元数据）
-  /// - 目标 appId 已存在（异常残留）时合并：删源行、标签并入目标行
-  /// - 幂等：源记录不存在时 no-op
-  Future<void> renameApp({
-    required String channelCode,
-    required String oldAppId,
-    required String newAppId,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    if (oldAppId == newAppId) return;
-    final db = _database;
-
-    final existing = await db.addedAppDao.getApp(channelCode, oldAppId);
-    if (existing == null) return; // 幂等：源不存在直接返回
-
-    // 目标 appId 已存在（异常残留）→ 删源行，保留目标行元数据
-    final target = await db.addedAppDao.getApp(channelCode, newAppId);
-    if (target != null) {
-      await db.addedAppDao.removeApp(channelCode, oldAppId);
-    } else {
-      // 常规改名：updateApp 保留原 id（addTime/sortOrder/isEnabled 不变）
-      await db.addedAppDao.updateApp(AddedAppInfo(
-        id: existing.id,
-        channelId: channelCode,
-        appId: newAppId,
-        addTime: existing.addTime,
-        sortOrder: existing.sortOrder,
-        isEnabled: existing.isEnabled,
-      ));
-    }
-
-    // 标签迁移（旧 appId → 新 appId，避免孤儿标签/丢失）
-    final tags = await db.appTagDao.getTags(channelCode, oldAppId);
-    if (tags.isNotEmpty) {
-      await db.appTagDao.removeTagsOfApp(channelCode, oldAppId);
-      await db.appTagDao.insertTags([
-        for (final t in tags)
-          AddedAppTag(channelId: channelCode, appId: newAppId, tag: t.tag),
-      ]);
-    }
-
-    _notifyAppsChanged();
-    appLog.info('AppAggregatorManager: 应用 ID 改名 $oldAppId -> $newAppId ($channelCode)');
-  }
-
   /// 通知聚合层应用数据变化（渠道记录被外部更新后调用，触发首页刷新）
   void notifyAppsChanged() => _notifyAppsChanged();
-
-  // ==================== 用户标签 ====================
-
-  /// 获取应用的用户标签（无标签返回空列表）
-  @override
-  Future<List<String>> getTags({
-    required String channelCode,
-    required String appId,
-  }) async {
-    try {
-      final rows =
-          await _database.appTagDao.getTags(channelCode, appId);
-      return rows.map((e) => e.tag).toList();
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 获取标签失败 - $e');
-      return [];
-    }
-  }
-
-  /// 设置应用的用户标签（整体替换：先清空再写入）
-  @override
-  Future<void> setTags({
-    required String channelCode,
-    required String appId,
-    required List<String> tags,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    try {
-      await _database.appTagDao.removeTagsOfApp(channelCode, appId);
-      final deduped = tags.toSet().where((t) => t.trim().isNotEmpty).toList();
-      if (deduped.isNotEmpty) {
-        await _database.appTagDao.insertTags([
-          for (final t in deduped)
-            AddedAppTag(channelId: channelCode, appId: appId, tag: t.trim()),
-        ]);
-      }
-      // 标签变化 → 通知首页刷新（getAggregatedApps 会合并新标签到分类）
-      _notifyAppsChanged();
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 设置标签失败 - $e');
-      rethrow;
-    }
-  }
-
-  /// 为应用添加单个标签（幂等，已有则跳过）
-  Future<void> addTag({
-    required String channelCode,
-    required String appId,
-    required String tag,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    final t = tag.trim();
-    if (t.isEmpty) return;
-    try {
-      await _database.appTagDao.insertTag(
-        AddedAppTag(channelId: channelCode, appId: appId, tag: t),
-      );
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 添加标签失败 - $e');
-    }
-  }
-
-  /// 移除应用单个标签
-  Future<void> removeTag({
-    required String channelCode,
-    required String appId,
-    required String tag,
-  }) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    try {
-      await _database.appTagDao.removeTag(channelCode, appId, tag);
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 移除标签失败 - $e');
-    }
-  }
-
-  /// 获取全部标签索引：Map<"channelId:appId", List<String>>
-  /// 供 getAggregatedApps 一次性合并，避免逐应用查询
-  Future<Map<String, List<String>>> getAllTagsIndex() async {
-    try {
-      final all = await _database.appTagDao.getAllTags();
-      final index = <String, List<String>>{};
-      for (final row in all) {
-        final key = '${row.channelId}:${row.appId}';
-        index.putIfAbsent(key, () => []).add(row.tag);
-      }
-      return index;
-    } catch (e) {
-      appLog.error('AppAggregatorManager: 获取标签索引失败 - $e');
-      return {};
-    }
-  }
 
   /// 加载 localdb 渠道分类 ID → 中文 description 映射
   ///
   /// localdb 数据仓库的 AppInfo.category 存英文 ID（如 'PROXY'），而发现页
   /// 用户标签存中文 description（如 '代理'）。聚合时用此映射把英文 ID 归一化
   /// 为中文，避免首页出现 'PROXY' / '代理' 并存。
-  /// 渠道缺失/查询失败/异常一律返回空映射（降级为原样合并），绝不影响聚合流程。
+  /// 查询失败/异常一律返回空映射（降级为原样合并），绝不影响聚合流程。
+  ///
+  /// 分类由 Rust core 拥有（`CatalogFacade.categories()`）；旧 `LocalDbChannel`
+  /// 已删除，不能再经渠道管理器读取（否则恒返回空映射，静默关闭归一化）。
   Future<Map<String, String>> _loadCategoryIdToDescription() async {
     try {
-      final channel = _channelManager.getChannelByCode(ChannelType.localDb.code);
-      if (channel == null) return {};
-
-      final result = await channel.getAllCategories();
-      if (!result.success || result.data == null) return {};
+      final categories = await CatalogFacade.instance.categories();
 
       final map = <String, String>{};
-      for (final category in result.data!) {
+      for (final category in categories) {
         final id = category.id.trim();
         final description = category.description.trim();
         if (id.isEmpty || description.isEmpty) continue;
@@ -407,136 +106,12 @@ class AppAggregatorManager implements IAggregateService {
     }
   }
 
-  /// 切换应用添加状态
-  @override
-  Future<bool> toggleApp({
-    required String channelCode,
-    required AppSummary appInfo,
-  }) async {
-    final isAdded = await isAppAdded(channelCode: channelCode, appId: appInfo.appId);
-
-    if (isAdded) {
-      await removeApp(channelCode: channelCode, appId: appInfo.appId);
-      return false;
-    } else {
-      await addApp(channelCode: channelCode, appInfo: appInfo);
-      return true;
-    }
-  }
-
-  /// 清空指定渠道的所有应用
-  @override
-  Future<void> clearChannel(String channelCode) async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    await _database.addedAppDao.clearChannel(channelCode);
-
-    _notifyAppsChanged();
-
-    appLog.info('AppAggregatorManager: 清空渠道 - $channelCode');
-  }
-
-  /// 清空所有应用
-  Future<void> clearAll() async {
-    await LegacyWriteGuard.assertAllowed('catalog');
-    await _database.addedAppDao.clearAll();
-
-    _notifyAppsChanged();
-
-    appLog.info('AppAggregatorManager: 清空所有应用');
-  }
-
-  // ==================== 查询方法 ====================
-
-  /// 获取所有已添加的应用（按添加时间倒序）
-  Future<List<AddedAppInfo>> getAllAddedApps() async {
-    return await _database.addedAppDao.getAllAddedApps();
-  }
-
-  /// 获取指定渠道的已添加应用
-  Future<List<AddedAppInfo>> getAppsByChannel(String channelCode) async {
-    return await _database.addedAppDao.getAppsByChannel(channelCode);
-  }
-
-  /// 检查应用是否已添加
-  Future<bool> isAppAdded({
-    required String channelCode,
-    required String appId,
-  }) async {
-    final app = await _database.addedAppDao.getApp(channelCode, appId);
-    return app != null;
-  }
-
-  /// 获取应用总数
-  Future<int> getTotalCount() async {
-    return await _database.addedAppDao.getTotalCount() ?? 0;
-  }
-
-  /// 获取指定渠道的应用数量
-  Future<int> getCountByChannel(String channelCode) async {
-    return await _database.addedAppDao.getCountByChannel(channelCode) ?? 0;
-  }
-
-  /// 获取已添加应用的索引
-  /// 返回 Map<ChannelCode, Set<AppId>>
-  @override
-  Future<Map<String, Set<String>>> getAddedAppsIndex() async {
-    final allApps = await getAllAddedApps();
-
-    final index = <String, Set<String>>{};
-
-    for (var app in allApps) {
-      index.putIfAbsent(app.channelId, () => {});
-      index[app.channelId]!.add(app.appId);
-    }
-
-    return index;
-  }
-
-  /// 从渠道获取已添加应用的详细信息
-  /// 聚合所有渠道的已添加应用
-  /// 分片并行：每片 8 个 addedApp 用 Future.wait 并发查询；
-  /// 结果按输入索引回填、跳过 null（未知渠道/渠道实例为空，等价原串行 continue）并压缩顺序，
-  /// 最终列表顺序与 addedApps（addTime 倒序）一致
-  ///
-  /// 全量聚合：一次性取所有已添加应用的渠道详情（分页场景请用 [getAggregatedAppsPage]，
-  /// 避免应用数量大时首屏阻塞）。内部与分页版共享分片逻辑。
-  @override
-  Future<List<AggregatedAppInfo>> getAggregatedApps() async {
-    final addedApps = await getAllAddedApps();
-    return aggregateWithMeta(addedApps, tagsIndex: await getAllTagsIndex());
-  }
-
-  /// 分页获取聚合应用详情
-  ///
-  /// 仅对 addedApps 中 [offset, offset+limit) 的应用发起渠道详情查询（保持 8 并发的
-  /// 分片逻辑），返回 (本页聚合应用, 已添加应用总数)。首屏只取第一页 → 快速渲染；
-  /// 滚动到底部再取下一页 → 避免一次性加载太多应用导致网络读取耗时。
-  @override
-  Future<(List<AggregatedAppInfo> apps, int total)> getAggregatedAppsPage({
-    required int offset,
-    required int limit,
-  }) async {
-    final addedApps = await getAllAddedApps();
-    final total = addedApps.length;
-    if (offset >= total || limit <= 0) {
-      return (<AggregatedAppInfo>[], total);
-    }
-
-    final end = (offset + limit > total) ? total : offset + limit;
-    final apps = await aggregateWithMeta(
-      addedApps.sublist(offset, end),
-      tagsIndex: await getAllTagsIndex(),
-    );
-    return (apps, total);
-  }
-
   /// 读取分类映射，并对给定切片执行分片并行渠道详情聚合。
   ///
   /// **纯合并**：行与标签索引由调用方提供（`addedApps` + `tagsIndex`），本方法
-  /// 不再读聚合库（无 `getAllAddedApps()` / `getAllTagsIndex()`），只做渠道详情
-  /// 分片查询与分类归一化。因此 `AddedAppsFacade` 可以按 flag 从核心/旧 backend
-  /// 取行与标签后委托此方法——本方法既不读 catalog 库也不回调 facade，任意 flag
-  /// 取值都不会递归。
+  /// 不读聚合库、也不回调 `AddedAppsFacade`，只做渠道详情分片查询与分类归一化。
+  /// 因此 `AddedAppsFacade` 可以按 flag 从核心/旧 backend 取行与标签后委托此
+  /// 方法——任意 flag 取值都不会递归。
   Future<List<AggregatedAppInfo>> aggregateWithMeta(
     List<AddedAppInfo> addedApps, {
     required Map<String, List<String>> tagsIndex,
@@ -714,22 +289,20 @@ class AppAggregatorManager implements IAggregateService {
     );
   }
 
-  /// 通知应用列表变化
+  /// 通知应用列表变化。
+  ///
+  /// DB-free 后没有本地行可广播：本流退化为纯信号（payload 恒为空列表），
+  /// 消费方（首页/发现页）收到信号后经 `AddedAppsFacade` 重新读取核心投影。
   void _notifyAppsChanged() {
     debugPrint('AppAggregatorManager: _notifyAppsChanged() 被调用');
-    getAllAddedApps().then((apps) {
-      debugPrint('AppAggregatorManager: 获取到 ${apps.length} 个已添加应用，准备发送通知');
-      _appsChangedController.add(apps);
-      debugPrint('AppAggregatorManager: 已发送 appsChangedStream 事件');
-    }).catchError((error) {
-      appLog.error('AppAggregatorManager: 获取应用列表失败 - $error');
-    });
+    _appsChangedController.add(const <AddedAppInfo>[]);
+    debugPrint('AppAggregatorManager: 已发送 appsChangedStream 信号');
   }
 
   /// 释放资源
   Future<void> dispose() async {
+    await _eventSub?.cancel();
     await _appsChangedController.close();
-    // 注意：不关闭数据库，可能被其他地方使用
   }
 }
 

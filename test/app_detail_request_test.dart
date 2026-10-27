@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';

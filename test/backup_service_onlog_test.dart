@@ -1,7 +1,7 @@
 import 'dart:ffi';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -12,10 +12,11 @@ import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
+
+import 'support/added_apps_read_seams.dart';
 
 /// WebDavService 上传 onLog 回调测试
 ///
@@ -42,7 +43,7 @@ void main() {
     DatabaseEventBus.instance;
   });
 
-  late AppAddedDatabase aggregatorDb;
+  late InMemoryAddedAppsBackend backend;
   late WebDavService service;
 
   setUp(() async {
@@ -50,20 +51,16 @@ void main() {
     await ConfigStore.instance.initialize();
     ConfigService.instance.registerModule(AppCoreConfigModule());
 
-    final dbFile = p.join(
-        await databaseFactory.getDatabasesPath(), 'backup_service_onlog_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
-    aggregatorDb = await AppAddedDatabase.create(dbPath: dbFile);
-
-    BackupService.instance.setTestDatabases(aggregatorDb);
+    // The added-apps store is core-only now: inject an in-memory backend
+    // instead of the deleted Floor DB.
+    backend = InMemoryAddedAppsBackend();
+    AddedAppsFacade.backendOverride = backend;
+    BackupService.instance.setTestInitialized();
     service = WebDavService(BackupService.instance);
   });
 
   tearDown(() async {
-    await aggregatorDb.close();
-    final dbFile = p.join(
-        await databaseFactory.getDatabasesPath(), 'backup_service_onlog_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
+    AddedAppsFacade.backendOverride = null;
     // 复位任务管理器（finally 已复位，此处兜底）
     WebDavTaskManager.instance.finish(WebDavTaskManager.instance.isBusy
         ? WebDavTaskType.upload
@@ -72,10 +69,7 @@ void main() {
 
   group('uploadToWebDav onLog', () {
     test('导出阶段日志 + 网络失败 error 日志，异常语义不变', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(
-            channelId: 'github', appId: 'termux/termux-app', addTime: 1000),
-      );
+      backend.seed('github', 'termux/termux-app', addTime: 1000);
 
       final logs = <({String text, bool isError})>[];
 
@@ -112,9 +106,7 @@ void main() {
     });
 
     test('不传 onLog：行为不变（旁路空安全）', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'a/b', addTime: 1000),
-      );
+      backend.seed('github', 'a/b', addTime: 1000);
       final config = WebDavConfig(
         url: 'http://127.0.0.1:1',
         username: 'test',

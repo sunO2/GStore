@@ -39,7 +39,6 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -53,9 +52,7 @@ void main() {
       'backend and never throw', (tester) async {
     final core = FakeAddedApps('core')
       ..tagsByApp['github:owner/repo'] = ['工具'];
-    final legacy = ThrowingAddedApps();
     AddedAppsFacade.backendOverride = core;
-    AddedAppsFacade.legacyBackendOverride = legacy;
 
     ChannelManager.instance.registerChannel(
         FakeEnumChannel(ChannelType.github, const [sampleApp]));
@@ -85,7 +82,6 @@ void main() {
     // READ: current tags came from the facade (core backend).
     expect(core.tagsCalls, contains(('github', 'owner/repo')),
         reason: 'the tag read must go through the facade core backend');
-    expect(legacy.calls, isEmpty);
 
     await tester.tap(find.widgetWithText(FilledButton, '确定'));
     await tester.pumpAndSettle();
@@ -99,7 +95,5 @@ void main() {
     expect(core.setTagsCalls.single.$3, const ['工具']);
     expect(core.notifyCalls, greaterThan(0),
         reason: 'a tag change must announce via notifyAppsChanged()');
-    expect(legacy.calls, isEmpty,
-        reason: 'flag on must never touch the legacy backend');
   });
 }

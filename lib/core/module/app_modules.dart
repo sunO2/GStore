@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/aggregate_service_adapter.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/agent/tools/perf_control_tools.dart';
@@ -306,7 +307,13 @@ class AggregateModule extends AppModule {
 
   @override
   Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(IAggregateService, AppAggregatorManager.instance);
+    // AppAggregatorManager is now DB-free (pure join) and no longer implements
+    // IAggregateService; a thin adapter over the core-only AddedAppsFacade keeps
+    // the public contract (reads/writes + appsChangedStream) for consumers.
+    context.bindService?.call(
+      IAggregateService,
+      AggregateServiceAdapter(),
+    );
   }
 
   @override

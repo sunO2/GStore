@@ -1,8 +1,7 @@
 import 'dart:convert';
-import 'dart:ffi';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -10,10 +9,9 @@ import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqlite3/open.dart';
+
+import 'support/added_apps_read_seams.dart';
 
 /// BackupService v2.1 扩展测试（真实聚合数据库 + ConfigService）
 ///
@@ -26,11 +24,6 @@ import 'package:sqlite3/open.dart';
 /// - v2.0 数据导入（无 tags / proxy_url）不崩
 void main() {
   setUpAll(() {
-    // Linux 仅有 libsqlite3.so.0（无 .so 符号链接），显式指定动态库
-    open.overrideFor(OperatingSystem.linux,
-        () => DynamicLibrary.open('libsqlite3.so.0'));
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
     PackageInfo.setMockInitialValues(
       appName: 'GStore',
       packageName: 'com.gstore',
@@ -43,7 +36,7 @@ void main() {
     DatabaseEventBus.instance;
   });
 
-  late AppAddedDatabase aggregatorDb;
+  late InMemoryAddedAppsBackend backend;
   late BackupService service;
 
   setUp(() async {
@@ -51,21 +44,16 @@ void main() {
     await ConfigStore.instance.initialize();
     ConfigService.instance.registerModule(AppCoreConfigModule());
 
-    // 独享文件路径（避免共享 :memory: 的多 isolate 竞态，见 added_app_tags_test 说明）
-    final dbFile = p.join(
-        await databaseFactory.getDatabasesPath(), 'backup_service_v21_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
-    aggregatorDb = await AppAddedDatabase.create(dbPath: dbFile);
-
+    // The added-apps store is core-only now: inject an in-memory backend
+    // instead of the deleted Floor DB.
+    backend = InMemoryAddedAppsBackend();
+    AddedAppsFacade.backendOverride = backend;
     service = BackupService.instance;
-    service.setTestDatabases(aggregatorDb);
+    service.setTestInitialized();
   });
 
   tearDown(() async {
-    await aggregatorDb.close();
-    final dbFile = p.join(
-        await databaseFactory.getDatabasesPath(), 'backup_service_v21_test.db');
-    await databaseFactory.deleteDatabase(dbFile);
+    AddedAppsFacade.backendOverride = null;
   });
 
   BackupAppItem makeAppItem(String channelId, String appId) {
@@ -92,15 +80,9 @@ void main() {
 
   group('exportData v2.1', () {
     test('导出标签 + 代理配置，metadata.version = v2_1', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'termux/termux-app', addTime: 1000),
-      );
-      await aggregatorDb.appTagDao.insertTags([
-        AddedAppTag(
-            channelId: 'github', appId: 'termux/termux-app', tag: '效率工具', addTime: 1),
-        AddedAppTag(
-            channelId: 'github', appId: 'termux/termux-app', tag: '我的标签', addTime: 2),
-      ]);
+      backend.seed('github', 'termux/termux-app', addTime: 1000);
+      backend.seedTag('github', 'termux/termux-app', '效率工具');
+      backend.seedTag('github', 'termux/termux-app', '我的标签');
       await ConfigService.instance.set(ConfigKeys.proxyUrl, 'https://gh-proxy.org/');
 
       final data = await service.exportData();
@@ -133,9 +115,7 @@ void main() {
 
   group('importData v2.1', () {
     test('恢复标签（幂等追加）与代理配置', () async {
-      await aggregatorDb.addedAppDao.insertApp(
-        AddedAppInfo(channelId: 'github', appId: 'termux/termux-app', addTime: 1000),
-      );
+      backend.seed('github', 'termux/termux-app', addTime: 1000);
 
       final data = BackupData(
         metadata: makeMetadata(BackupVersion.v2_1),
@@ -150,9 +130,9 @@ void main() {
       final result = await service.importData(data, mode: BackupImportMode.merge);
       expect(result.success, isTrue);
 
-      final tags = await aggregatorDb.appTagDao.getAllTags();
+      final tags = await backend.tags('github', 'termux/termux-app');
       expect(tags, hasLength(2));
-      expect(tags.map((t) => t.tag).toSet(), {'效率工具', '游戏'});
+      expect(tags.toSet(), {'效率工具', '游戏'});
 
       final proxy = await ConfigService.instance.getRaw(ConfigKeys.proxyUrl);
       expect(proxy, 'https://gh-proxy.org/');
@@ -166,8 +146,8 @@ void main() {
 
       final result = await service.importData(data, mode: BackupImportMode.merge);
       expect(result.success, isTrue);
-      expect(await aggregatorDb.addedAppDao.getTotalCount(), 1);
-      expect(await aggregatorDb.appTagDao.getAllTags(), isEmpty);
+      expect(await backend.totalCount(), 1);
+      expect(backend.allTags, isEmpty);
     });
   });
 }

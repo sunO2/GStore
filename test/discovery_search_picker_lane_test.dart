@@ -414,7 +414,6 @@ void main() {
     RustScriptChannelLane.resetForTest();
     RustChannelFacade.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -633,11 +632,11 @@ void main() {
           reason: 'precondition: no saved rows before the save');
 
       // Bind the read seams only after the initial load settles, so ONLY the
-      // save's _updateAddedAppsIndex observes them. `catalog` is off here, so the
-      // facade routes the read to the legacy backend, NOT the aggregate service.
+      // save's _updateAddedAppsIndex observes them. The facade is core-only now,
+      // so the read is routed via the injected backend override.
       final legacyBackend = RecordingAddedApps('legacy')
         ..added[code] = {'com.new'};
-      AddedAppsFacade.legacyBackendOverride = legacyBackend;
+      AddedAppsFacade.backendOverride = legacyBackend;
       final agg = _FakeAggregateService()..index = {code: {'com.new'}};
       ModuleManager.instance.bindByType(IAggregateService, agg);
       addTearDown(() => ModuleManager.instance.unbindByType(IAggregateService));

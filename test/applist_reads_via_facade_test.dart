@@ -38,7 +38,6 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -51,9 +50,7 @@ void main() {
       '(home) flag on: the list renders rows sourced from the facade core '
       'backend, not the legacy manager', (tester) async {
     final core = FakeAddedApps('core')..added['fdroid'] = {'com.added'};
-    final legacy = ThrowingAddedApps();
     AddedAppsFacade.backendOverride = core;
-    AddedAppsFacade.legacyBackendOverride = legacy;
 
     ChannelManager.instance.registerChannel(
         FakeEnumChannel(ChannelType.fdroid, const [sampleApp]));
@@ -94,7 +91,5 @@ void main() {
     expect(agg.writeCalls, isEmpty,
         reason: 'the home read must not go through the legacy aggregate '
             'service (getAggregatedAppsPage)');
-    expect(legacy.calls, isEmpty,
-        reason: 'flag on must never touch the legacy backend');
   });
 }

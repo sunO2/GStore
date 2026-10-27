@@ -300,7 +300,6 @@ void main() {
     ScriptChannelService.resetForTest();
     RustScriptChannelLane.resetForTest();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -372,11 +371,11 @@ void main() {
       code = await importLanePack(backend);
       backend.stored[code] = [_row('com.probe', 'Probe App')];
       // The added index is now read through the facade; seed its read side.
-      // `catalog` is off here, so the facade must route the write to the legacy
-      // seam — not the legacy AppAggregatorManager write (which is guarded).
+      // The facade is core-only, so the injected backend override serves the
+      // write — not the legacy AppAggregatorManager write (which is guarded).
       facadeBackend = _RecordingAddedAppsBackend()
         ..added[code] = {'com.probe'};
-      AddedAppsFacade.legacyBackendOverride = facadeBackend;
+      AddedAppsFacade.backendOverride = facadeBackend;
       // The aggregate must stay untouched: bind it so a stray write is recorded.
       agg = _RecordingAggregate();
       ModuleManager.instance.bindByType(IAggregateService, agg);
