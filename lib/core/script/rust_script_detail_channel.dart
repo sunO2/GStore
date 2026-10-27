@@ -145,8 +145,9 @@ class RustScriptDetailChannel implements IDetailChannel {
 
   /// 脚本 detailMenu → [DetailAction] 列表缓存（[getActions] 消费）。
   ///
-  /// onTap 语义与 [JsDetailChannel._refreshActions] 一致：调脚本方法
-  /// （交互由 host.ui 驱动；脚本 jscall 会驱动 Flutter 选择框并刷新详情页）。
+  /// onTap 经 [_runAction] 分派：`jsswitchVersion`/`jsBuildHistory` 走顶层
+  /// [versionOptions]/[buildHistory] + [DetailCallbacks]（避开 parked eval 死锁，
+  /// 见 [_runAction]），其余动作（如 `jsswitchUA`）仍由脚本 jscall 驱动。
   /// 本方法自身绝不抛出：detailMenu 失败只清空 [getActions] 并记日志，
   /// 绝不让菜单失败污染 `errorMessage` / 白屏（详情页内容仍照常渲染）。
   Future<void> _refreshActions() async {
@@ -167,14 +168,7 @@ class RustScriptDetailChannel implements IDetailChannel {
         final jscall = entry['jscall']?.toString() ?? '';
         return DetailAction(
           label: label.isEmpty ? (jscall.isEmpty ? '未知动作' : jscall) : label,
-          onTap: () async {
-            if (jscall.isEmpty) return;
-            await _api.run(
-              key: channelKey,
-              method: jscall,
-              paramsJson: jsonEncode({'appId': appId}),
-            );
-          },
+          onTap: () => _runAction(jscall),
         );
       }).toList();
     } catch (e) {
@@ -183,6 +177,73 @@ class RustScriptDetailChannel implements IDetailChannel {
       );
       _actions = const [];
     }
+  }
+
+  /// Dispatches a detailMenu action WITHOUT parking the Rust eval.
+  ///
+  /// Running the pack's own `jsswitchVersion`/`jsBuildHistory` jscall would hold
+  /// `ScriptEntry::run`'s `op` mutex for the whole eval
+  /// (`rust/gstore_host/src/script_runtime_entry.rs`) while the pack's
+  /// synchronous `host.ui.call('showVersionPicker'/'showBuildHistory')`
+  /// (`rust/gstore_host/src/ui_api.rs::request` → `rx.recv_timeout`) parks that
+  /// eval. The Flutter handler (`detail_ui_mixins.dart`
+  /// `showVersionPicker`/`showBuildHistory`) then calls back into the script via
+  /// `versionOptions`/`switchVersion` → `ScriptApi.run` → `ScriptEntry::run` →
+  /// `op.lock()` → DEADLOCK on the mutex held by the parked outer eval.
+  ///
+  /// So the two parking actions are re-dispatched to the TOP-LEVEL script
+  /// methods ([versionOptions]/[buildHistory]) + the bound [DetailCallbacks]
+  /// (whose `dc.*` calls are then top-level — no parked eval, no nested `run`).
+  ///
+  /// Every other action (e.g. `jsswitchUA`) keeps the pack-driven path: its
+  /// handlers (`showUAPicker`/`refreshDetail`) only touch Flutter state, so
+  /// running the pack eval never parks the script in a re-entrant call.
+  Future<void> _runAction(String jscall) async {
+    switch (jscall) {
+      case 'jsswitchVersion':
+        await _openVersionPicker();
+        break;
+      case 'jsBuildHistory':
+        await _openBuildHistory();
+        break;
+      default:
+        await _api.run(
+          key: channelKey,
+          method: jscall,
+          paramsJson: jsonEncode({'appId': appId}),
+        );
+    }
+  }
+
+  /// 切换版本入口：顶层拉 `versionOptions` → 经 [DetailCallbacks.showVersionPicker]
+  /// 弹选择器。选择后的 `switchVersion`/`refreshDetail` 与 `onEnvChanged`/
+  /// `onBuildHistory` 回调均由 mixin 顶层发起（无 parked eval → 无嵌套 `run`）。
+  Future<void> _openVersionPicker() async {
+    final options = await versionOptions(appId);
+    if (options == null) return;
+    await _boundCallbacks?.showVersionPicker(options: options, appId: appId);
+  }
+
+  /// 历史构建入口：顶层拉 `versionOptions` → 取当前 `currentVersion`/`currentEnv`
+  /// → 顶层拉 `buildHistory` → 经 [DetailCallbacks.showBuildHistory] 弹构建历史。
+  /// builds 形状与 registry（`script_ui_handler_registry.dart`
+  /// `showBuildHistory`）一致：`List<Map<String, dynamic>>`。
+  Future<void> _openBuildHistory() async {
+    final options = await versionOptions(appId);
+    if (options == null) return;
+    final version = options['currentVersion']?.toString() ?? '';
+    final env = options['currentEnv']?.toString() ?? '';
+    final history = await buildHistory(appId: appId, version: version, env: env);
+    if (history == null) return;
+    final builds = ((history['builds'] as List?) ?? <Object?>[])
+        .map((entry) => Map<String, dynamic>.from(entry as Map))
+        .toList();
+    await _boundCallbacks?.showBuildHistory(
+      builds: builds,
+      appId: appId,
+      version: version,
+      env: env,
+    );
   }
 
   /// Download is host-orchestrated for the Rust lane (the detail's `downloads`

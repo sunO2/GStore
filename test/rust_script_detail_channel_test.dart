@@ -32,6 +32,7 @@ import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/rust_script_detail_channel.dart';
 import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/page/detail/state.dart';
 
 /// In-memory `ScriptApiBackend` (the FRB seam): the raw JSON string the Rust
@@ -152,6 +153,19 @@ class _CapturingCallbacks implements DetailCallbacks {
   final List<String> errors = [];
   DetailState? state;
 
+  /// The channel under test, so the simulated picker/sheet callbacks can drive
+  /// the same top-level `dc.*` calls `DetailVersionPickerMixin` would.
+  RustScriptDetailChannel? channel;
+
+  /// Recorded `showVersionPicker`/`showBuildHistory` invocations (the payloads
+  /// the mixin would render).
+  final List<Map<String, dynamic>> versionPickerCalls = [];
+  final List<Map<String, dynamic>> buildHistoryCalls = [];
+
+  /// The "user selection" the simulated pickers resolve to; null = cancel.
+  ({String env, String version})? versionSelection;
+  Map<String, dynamic>? buildSelection;
+
   @override
   Future<void> refreshDetail({
     required Map<String, dynamic> detailData,
@@ -163,6 +177,53 @@ class _CapturingCallbacks implements DetailCallbacks {
   @override
   void showError(String message, {String? title}) => errors.add(message);
 
+  /// Simulates `DetailVersionPickerMixin.showVersionPicker`'s downstream: the
+  /// mixin resolves the user's {env, version} pick, then calls
+  /// `detailChannel.switchVersion` (top-level) and `refreshDetail`. For the
+  /// Rust lane those calls must be top-level (no parked eval) or they deadlock.
+  @override
+  Future<void> showVersionPicker({
+    required Map<String, dynamic> options,
+    required String appId,
+  }) async {
+    versionPickerCalls.add(Map<String, dynamic>.from(options));
+    final sel = versionSelection;
+    if (sel == null) return;
+    final detail = await channel?.switchVersion(
+      appId: appId,
+      env: sel.env,
+      version: sel.version,
+    );
+    if (detail != null) await refreshDetail(detailData: detail);
+  }
+
+  /// Simulates `DetailVersionPickerMixin.showBuildHistory`'s downstream: the
+  /// mixin resolves the selected build, then calls
+  /// `detailChannel.switchVersion(..., build:)` (top-level) and `refreshDetail`.
+  @override
+  Future<void> showBuildHistory({
+    required List<Map<String, dynamic>> builds,
+    required String appId,
+    required String version,
+    required String env,
+  }) async {
+    buildHistoryCalls.add({
+      'builds': builds,
+      'appId': appId,
+      'version': version,
+      'env': env,
+    });
+    final sel = buildSelection;
+    if (sel == null) return;
+    final detail = await channel?.switchVersion(
+      appId: appId,
+      env: env,
+      version: version,
+      build: sel,
+    );
+    if (detail != null) await refreshDetail(detailData: detail);
+  }
+
   // The following are not reached by `load()`; no-op stubs.
   @override
   Future<void> updateDetail({required Map<String, dynamic> partial}) async {}
@@ -172,20 +233,6 @@ class _CapturingCallbacks implements DetailCallbacks {
 
   @override
   void showSuccess(String message, {String? title}) {}
-
-  @override
-  Future<void> showVersionPicker({
-    required Map<String, dynamic> options,
-    required String appId,
-  }) async {}
-
-  @override
-  Future<void> showBuildHistory({
-    required List<Map<String, dynamic>> builds,
-    required String appId,
-    required String version,
-    required String env,
-  }) async {}
 
   @override
   Future<String?> showUAPicker({
@@ -253,6 +300,7 @@ void main() {
 
   tearDown(() {
     CoreFlags.resetBackend();
+    ScriptUiHandlerRegistry.instance.resetForTest();
   });
 
   const request = AppDetailRequest(
@@ -383,7 +431,8 @@ void main() {
   });
 
   group('RustScriptDetailChannel "更多" actions — detailMenu', () {
-    test('load refreshes actions; onTap re-runs the pack jscall', () async {
+    test('load refreshes actions; jsswitchUA onTap keeps the pack-driven jscall',
+        () async {
       final backend = _FakeScriptBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': jsonEncode([
@@ -391,6 +440,7 @@ void main() {
           {'action': '历史构建', 'jscall': 'jsBuildHistory'},
           {'action': '切换UA', 'jscall': 'jsswitchUA'},
         ]),
+        'jsswitchUA': 'null',
       });
       final (channel, state, cb) = build(backend);
 
@@ -401,11 +451,13 @@ void main() {
       expect(state.errorMessage, isEmpty);
       expect(cb.errors, isEmpty);
 
+      // `jsswitchUA` is NOT special-cased → the default branch keeps the
+      // pack-driven jscall (its handlers only touch Flutter state → no deadlock).
       backend.runCalls.clear();
-      await channel.getActions().first.onTap();
+      await channel.getActions().last.onTap();
       expect(backend.runCalls, hasLength(1));
       expect(backend.runCalls.single['key'], 'js_probe');
-      expect(backend.runCalls.single['method'], 'jsswitchVersion');
+      expect(backend.runCalls.single['method'], 'jsswitchUA');
       expect(
         jsonDecode(backend.runCalls.single['params']! as String),
         {'appId': 'com.example.one'},
@@ -543,6 +595,177 @@ void main() {
         ),
         isNull,
       );
+    });
+  });
+
+  group('RustScriptDetailChannel actions — no parked-eval deadlock', () {
+    // DEADLOCK invariant: the pack's own `jsswitchVersion`/`jsBuildHistory`
+    // jscalls run a whole Rust eval that holds `op`
+    // (`rust/gstore_host/src/script_runtime_entry.rs` `ScriptEntry::run`) while
+    // the pack's synchronous `host.ui.call('showVersionPicker'/'showBuildHistory')`
+    // parks that eval (`rust/gstore_host/src/ui_api.rs::request` →
+    // `rx.recv_timeout`). The Flutter handler then calls back into the script via
+    // `versionOptions`/`switchVersion` → `ScriptApi.run` → `op.lock()` →
+    // deadlock. The fix re-dispatches those two actions to TOP-LEVEL
+    // versionOptions/buildHistory + the bound callbacks (no parked eval → no
+    // nested `run`).
+
+    _FakeScriptBackend deadlockBackend() => _FakeScriptBackend(replies: {
+          'getAppDetail': 'null',
+          'detailMenu': jsonEncode([
+            {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+            {'action': '历史构建', 'jscall': 'jsBuildHistory'},
+            {'action': '切换UA', 'jscall': 'jsswitchUA'},
+          ]),
+          'versionOptions': jsonEncode({
+            'envs': ['sit', 'prod'],
+            'versions': [
+              {'version': '2.0', 'envs': ['sit'], 'buildCount': 3},
+            ],
+            'currentEnv': 'sit',
+            'currentVersion': '2.0',
+          }),
+          'switchVersion': jsonEncode({
+            'appId': 'com.example.one',
+            'name': 'Switched',
+            'version': '2.0',
+            'downloads': <Object?>[],
+          }),
+          'buildHistory': jsonEncode({
+            'builds': [
+              {'num': 7, 'ipaName': 'a.apk'},
+              {'num': 6, 'ipaName': 'b.apk'},
+            ],
+          }),
+          'jsswitchUA': 'null',
+        });
+
+    test('(i) 切换版本 onTap: top-level versionOptions+switchVersion, refresh applied',
+        () async {
+      final backend = deadlockBackend();
+      final (channel, state, cb) = build(backend);
+      cb.channel = channel;
+      cb.versionSelection = (env: 'sit', version: '2.0');
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      // Completing (no hang) is asserted by the timeout.
+      await channel
+          .getActions()
+          .first
+          .onTap()
+          .timeout(const Duration(seconds: 5));
+
+      expect(
+        backend.runCalls.map((c) => c['method']).toList(),
+        ['versionOptions', 'switchVersion'],
+        reason: 'the parking jsswitchVersion eval must NOT run',
+      );
+      expect(cb.versionPickerCalls, hasLength(1));
+      expect(cb.versionPickerCalls.single['currentVersion'], '2.0');
+      expect(cb.refreshCalls.last['name'], 'Switched');
+      expect(state.detailInfo?.name, 'Switched');
+      expect(cb.errors, isEmpty);
+    });
+
+    test('(i) 历史构建 onTap: top-level versionOptions+buildHistory, showBuildHistory fired',
+        () async {
+      final backend = deadlockBackend();
+      final (channel, state, cb) = build(backend);
+      cb.channel = channel;
+      cb.buildSelection = {'num': 7, 'ipaName': 'a.apk'};
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      await channel
+          .getActions()[1]
+          .onTap()
+          .timeout(const Duration(seconds: 5));
+
+      expect(
+        backend.runCalls.map((c) => c['method']).toList(),
+        ['versionOptions', 'buildHistory', 'switchVersion'],
+        reason: 'the parking jsBuildHistory eval must NOT run',
+      );
+      expect(cb.buildHistoryCalls, hasLength(1));
+      final bh = cb.buildHistoryCalls.single;
+      expect(bh['version'], '2.0');
+      expect(bh['env'], 'sit');
+      expect((bh['builds'] as List), hasLength(2));
+      expect((bh['builds'] as List).first, {'num': 7, 'ipaName': 'a.apk'});
+      expect(cb.refreshCalls.last['name'], 'Switched');
+      expect(state.detailInfo?.name, 'Switched');
+      expect(cb.errors, isEmpty);
+    });
+
+    test('(ii) second tap: both complete, callbacks fire twice', () async {
+      final backend = deadlockBackend();
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+      cb.versionSelection = (env: 'sit', version: '2.0');
+
+      await channel.load();
+      final action = channel.getActions().first;
+
+      await action.onTap().timeout(const Duration(seconds: 5));
+      await action.onTap().timeout(const Duration(seconds: 5));
+
+      expect(cb.versionPickerCalls, hasLength(2));
+      expect(
+        backend.runCalls.where((c) => c['method'] == 'switchVersion').length,
+        2,
+      );
+      expect(
+        cb.refreshCalls.where((r) => r['name'] == 'Switched').length,
+        2,
+      );
+    });
+
+    test('(iv) parked actions never run jsswitchVersion/jsBuildHistory; UA/refresh handlers run nothing',
+        () async {
+      final backend = deadlockBackend();
+      final (channel, _, cb) = build(backend);
+      cb.channel = channel;
+      cb.versionSelection = (env: 'sit', version: '2.0');
+      cb.buildSelection = {'num': 7, 'ipaName': 'a.apk'};
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      await channel.getActions().first.onTap(); // 切换版本
+      await channel.getActions()[1].onTap(); // 历史构建
+
+      final methods = backend.runCalls.map((c) => c['method']).toSet();
+      expect(methods, {'versionOptions', 'buildHistory', 'switchVersion'});
+      expect(methods, isNot(contains('jsswitchVersion')),
+          reason: 'the parking pack eval must never be run from onTap');
+      expect(methods, isNot(contains('jsBuildHistory')),
+          reason: 'the parking pack eval must never be run from onTap');
+
+      // The `showUAPicker`/`refreshDetail` ui.* handlers only touch Flutter
+      // state — dispatched while a pack eval may be parked, they must issue
+      // ZERO ScriptApi.run calls (else they would re-enter and deadlock).
+      backend.runCalls.clear();
+      ScriptUiHandlerRegistry.instance.resetForTest();
+      ScriptUiHandlerRegistry.instance.bind(
+        callbacks: cb,
+        appId: () => 'com.example.one',
+        channelKey: () => 'js_probe',
+      );
+      final handlers = ScriptUiHandlerRegistry.instance.buildHandlers();
+      await handlers['showUAPicker']!({
+        'options': [
+          {'ua': 'Firefox'},
+        ],
+        'current': 'Firefox',
+      });
+      await handlers['refreshDetail']!({'name': 'X'});
+      expect(backend.runCalls, isEmpty,
+          reason: 'showUAPicker/refreshDetail handlers must not re-enter the script');
+      expect(cb.refreshCalls.last['name'], 'X');
+      ScriptUiHandlerRegistry.instance.resetForTest();
     });
   });
 }
