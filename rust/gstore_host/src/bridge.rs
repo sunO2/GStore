@@ -4483,7 +4483,8 @@ impl ScriptApi {
     /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
     /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
     /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
-    /// `detailMenu` (detail script). The string is the same JSON the Dart
+    /// `detailMenu`, `jsswitchVersion`, `jsBuildHistory`, `jsswitchUA` (detail
+    /// script). The string is the same JSON the Dart
     /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
     /// the script's `{version, proxy}` payload; parity is defined on the mapped
     /// [`gstore_core::channel::ChannelConfig`] shape (`version` string,

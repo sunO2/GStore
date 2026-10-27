@@ -268,9 +268,8 @@ pub(crate) fn classify(method: &str) -> Option<RuntimeKind> {
     match method {
         "getAllApps" | "searchApps" | "getAppInfo" | "checkAppUpdate" | "checkUpdate"
         | "doUpdate" | "getConfig" => Some(RuntimeKind::Entry),
-        "getAppDetail" | "versionOptions" | "switchVersion" | "buildHistory" | "detailMenu" => {
-            Some(RuntimeKind::Detail)
-        }
+        "getAppDetail" | "versionOptions" | "switchVersion" | "buildHistory" | "detailMenu"
+        | "jsswitchVersion" | "jsBuildHistory" | "jsswitchUA" => Some(RuntimeKind::Detail),
         _ => None,
     }
 }

@@ -56,6 +56,9 @@ class RustScriptDetailChannel implements IDetailChannel {
   DetailState? _boundState;
   DetailCallbacks? _boundCallbacks;
 
+  /// [getActions] 返回的操作项缓存（[load] 时从脚本 detailMenu 刷新）。
+  List<DetailAction> _actions = const [];
+
   @override
   void bind(DetailState state, DetailCallbacks callbacks) {
     _boundState = state;
@@ -97,6 +100,9 @@ class RustScriptDetailChannel implements IDetailChannel {
           '(script returned $raw); keeping the prefill',
         );
       }
+      // The "更多" menu is independent of `getAppDetail`: refresh it on both the
+      // Map and the null reply so the page keeps its custom actions.
+      await _refreshActions();
     } catch (e) {
       state.errorMessage = '详情加载失败: $e';
     } finally {
@@ -132,38 +138,121 @@ class RustScriptDetailChannel implements IDetailChannel {
     return prefill;
   }
 
-  /// Rust-lane packs expose no `detailMenu` here; the "更多" panel keeps the
-  /// generic actions (host-orchestrated).
+  /// 返回脚本 detailMenu 声明的操作项（"更多"面板展示）。
+  /// 未 [load]/未 bind/脚本未实现 → 空列表（调用方兜底）。
   @override
-  List<DetailAction> getActions() => const [];
+  List<DetailAction> getActions() => _actions;
+
+  /// 脚本 detailMenu → [DetailAction] 列表缓存（[getActions] 消费）。
+  ///
+  /// onTap 语义与 [JsDetailChannel._refreshActions] 一致：调脚本方法
+  /// （交互由 host.ui 驱动；脚本 jscall 会驱动 Flutter 选择框并刷新详情页）。
+  /// 本方法自身绝不抛出：detailMenu 失败只清空 [getActions] 并记日志，
+  /// 绝不让菜单失败污染 `errorMessage` / 白屏（详情页内容仍照常渲染）。
+  Future<void> _refreshActions() async {
+    try {
+      final raw = await _api.run(
+        key: channelKey,
+        method: 'detailMenu',
+        paramsJson: jsonEncode({'appId': appId}),
+      );
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        _actions = const [];
+        return;
+      }
+      _actions = decoded.map((e) {
+        final entry = e is Map ? e : const <Object?, Object?>{};
+        final label = entry['action']?.toString() ?? '';
+        final jscall = entry['jscall']?.toString() ?? '';
+        return DetailAction(
+          label: label.isEmpty ? (jscall.isEmpty ? '未知动作' : jscall) : label,
+          onTap: () async {
+            if (jscall.isEmpty) return;
+            await _api.run(
+              key: channelKey,
+              method: jscall,
+              paramsJson: jsonEncode({'appId': appId}),
+            );
+          },
+        );
+      }).toList();
+    } catch (e) {
+      debugPrint(
+        '[RustScriptDetailChannel] detailMenu failed for $channelKey/$appId: $e',
+      );
+      _actions = const [];
+    }
+  }
 
   /// Download is host-orchestrated for the Rust lane (the detail's `downloads`
   /// are rendered by the page and the host drives the download service).
   @override
   Future<void> startDownload(DownloadInfo info) async {}
 
-  /// Version/env switching is not exposed through the Rust lane facade.
+  /// 版本/环境切换选项（脚本 detail.js 的 `versionOptions`）→ 解码后的 Map；
+  /// `env` 为空时省略该键（pingan 侧会误判）。脚本未实现/失败 → null。
   @override
   Future<Map<String, dynamic>?> versionOptions(String appId,
-          {String? env}) async =>
-      null;
+      {String? env}) async {
+    final raw = await _api.run(
+      key: channelKey,
+      method: 'versionOptions',
+      paramsJson: jsonEncode({
+        'appId': appId,
+        if (env != null) 'env': env,
+      }),
+    );
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
 
+  /// 切换版本/环境（脚本 detail.js 的 `switchVersion`）→ 解码后的详情 Map；
+  /// [build] 为空时省略该键。脚本未实现/失败 → null。
   @override
   Future<Map<String, dynamic>?> switchVersion({
     required String appId,
     required String env,
     required String version,
     Map<String, dynamic>? build,
-  }) async =>
-      null;
+  }) async {
+    final raw = await _api.run(
+      key: channelKey,
+      method: 'switchVersion',
+      paramsJson: jsonEncode({
+        'appId': appId,
+        'env': env,
+        'version': version,
+        if (build != null) 'build': build,
+      }),
+    );
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
 
+  /// 指定版本历史构建（脚本 detail.js 的 `buildHistory`）→ 解码后的 Map；
+  /// 脚本未实现/失败 → null。
   @override
   Future<Map<String, dynamic>?> buildHistory({
     required String appId,
     required String version,
     required String env,
-  }) async =>
-      null;
+  }) async {
+    final raw = await _api.run(
+      key: channelKey,
+      method: 'buildHistory',
+      paramsJson: jsonEncode({
+        'appId': appId,
+        'version': version,
+        'env': env,
+      }),
+    );
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
 
   /// The host replaces the detail's downloads directly; no channel-side cache.
   @override

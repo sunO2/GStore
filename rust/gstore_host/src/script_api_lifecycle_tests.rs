@@ -417,6 +417,65 @@ fn script_api_detail_release_and_lru_cap() {
     println!("PASS | detail LRU       | cap=2 evicted the oldest, newest stayed; release resets state");
 }
 
+/// A minimal detail pack that implements the "更多" menu and the three custom
+/// jscalls the Rust-lane detail channel forwards (`jsswitchVersion`,
+/// `jsBuildHistory`, `jsswitchUA`). Before the `classify` extension those three
+/// names were unclassified and `ScriptApi::run` rejected them as `unsupported`.
+const DETAIL_DISPATCH_JS: &str = r#"
+async function main(method, params) {
+  switch (method) {
+    case 'detailMenu': return { ok: true, data: [
+      { action: '切换版本', jscall: 'jsswitchVersion' },
+      { action: '历史构建', jscall: 'jsBuildHistory' },
+      { action: '切换UA', jscall: 'jsswitchUA' },
+    ] };
+    case 'jsswitchVersion': return { ok: true, data: { switched: 'version', appId: params.appId } };
+    case 'jsBuildHistory': return { ok: true, data: { history: true, appId: params.appId } };
+    case 'jsswitchUA': return { ok: true, data: { ua: true, appId: params.appId } };
+    default: return null;
+  }
+}
+"#;
+
+#[test]
+fn script_api_run_routes_pack_detail_actions_to_the_detail_runtime() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("detail-actions");
+    harness
+        .api
+        .import(
+            zip_with(
+                "function main() { return null; }",
+                Some(DETAIL_DISPATCH_JS),
+                None,
+            ),
+            Some("js_actions".to_string()),
+        )
+        .expect("import");
+
+    // detailMenu routes to Detail and returns the pack's declared actions.
+    let menu_raw = harness
+        .api
+        .run("js_actions", "detailMenu", r#"{"appId":"a"}"#)
+        .expect("detailMenu");
+    let menu: Value = serde_json::from_str(&menu_raw).expect("menu json");
+    assert_eq!(menu.as_array().map(Vec::len), Some(3), "{menu}");
+    assert_eq!(menu[0]["jscall"], "jsswitchVersion");
+
+    // The pack's custom jscalls must route to Detail, never `unsupported`.
+    for method in ["jsswitchVersion", "jsBuildHistory", "jsswitchUA"] {
+        let raw = harness
+            .api
+            .run("js_actions", method, r#"{"appId":"a"}"#)
+            .unwrap_or_else(|error| {
+                panic!("`{method}` must route to Detail, got error: {error}")
+            });
+        let value: Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(value["appId"], "a", "{method} => {value}");
+    }
+    println!("PASS | detail actions | detailMenu + jsswitchVersion/jsBuildHistory/jsswitchUA routed to Detail");
+}
+
 #[test]
 fn script_api_stored_apps_reads_the_shared_channel_apps_table() {
     let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());

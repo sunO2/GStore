@@ -37,13 +37,16 @@ import 'package:gstore/page/detail/state.dart';
 /// In-memory `ScriptApiBackend` (the FRB seam): the raw JSON string the Rust
 /// `run` would return, or a thrown exception. No FRB dylib is loaded.
 class _FakeScriptBackend implements ScriptApiBackend {
-  _FakeScriptBackend({this.reply = 'null', this.throwError});
+  _FakeScriptBackend({this.reply = 'null', this.throwError, this.replies});
 
   /// Raw JSON string the script reply decodes to (`'null'` = no detail).
   String reply;
 
   /// When non-null, [run] throws it (a typed FRB failure / pack-not-found).
   Object? throwError;
+
+  /// Per-method raw JSON overrides; a method absent here falls back to [reply].
+  Map<String, String>? replies;
 
   final List<Map<String, Object?>> runCalls = [];
 
@@ -56,6 +59,10 @@ class _FakeScriptBackend implements ScriptApiBackend {
     runCalls.add({'key': key, 'method': method, 'params': paramsJson});
     final err = throwError;
     if (err != null) throw err;
+    final byMethod = replies;
+    if (byMethod != null && byMethod.containsKey(method)) {
+      return byMethod[method]!;
+    }
     return reply;
   }
 
@@ -283,9 +290,11 @@ void main() {
 
       await channel.load();
 
-      // The seam was reached with the documented shape.
-      expect(backend.runCalls, hasLength(1));
+      // The seam was reached with the documented shape (getAppDetail first,
+      // then the independent detailMenu refresh).
+      expect(backend.runCalls, hasLength(2));
       expect(backend.runCalls.first['method'], 'getAppDetail');
+      expect(backend.runCalls.last['method'], 'detailMenu');
       expect(
         (jsonDecode(backend.runCalls.first['params']! as String)
             as Map)['appId'],
@@ -370,6 +379,170 @@ void main() {
       expect(state.downloadsLoading, isFalse);
       expect(state.readmeLoading, isFalse);
       expect(state.statisticsLoading, isFalse);
+    });
+  });
+
+  group('RustScriptDetailChannel "更多" actions — detailMenu', () {
+    test('load refreshes actions; onTap re-runs the pack jscall', () async {
+      final backend = _FakeScriptBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': jsonEncode([
+          {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+          {'action': '历史构建', 'jscall': 'jsBuildHistory'},
+          {'action': '切换UA', 'jscall': 'jsswitchUA'},
+        ]),
+      });
+      final (channel, state, cb) = build(backend);
+
+      await channel.load();
+
+      expect(channel.getActions().map((a) => a.label).toList(),
+          ['切换版本', '历史构建', '切换UA']);
+      expect(state.errorMessage, isEmpty);
+      expect(cb.errors, isEmpty);
+
+      backend.runCalls.clear();
+      await channel.getActions().first.onTap();
+      expect(backend.runCalls, hasLength(1));
+      expect(backend.runCalls.single['key'], 'js_probe');
+      expect(backend.runCalls.single['method'], 'jsswitchVersion');
+      expect(
+        jsonDecode(backend.runCalls.single['params']! as String),
+        {'appId': 'com.example.one'},
+      );
+    });
+
+    test('null detailMenu: empty actions, no error, page not blank', () async {
+      final backend = _FakeScriptBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': 'null',
+      });
+      final (channel, state, cb) = build(backend);
+
+      await channel.load();
+
+      expect(channel.getActions(), isEmpty);
+      expect(state.errorMessage, isEmpty);
+      expect(cb.errors, isEmpty);
+      expect(state.detailInfo, isNotNull, reason: 'page must not be blank');
+    });
+
+    test('absent detailMenu (default null): empty actions, no error', () async {
+      final backend = _FakeScriptBackend(reply: 'null');
+      final (channel, state, cb) = build(backend);
+
+      await channel.load();
+
+      expect(channel.getActions(), isEmpty);
+      expect(state.errorMessage, isEmpty);
+      expect(cb.errors, isEmpty);
+    });
+  });
+
+  group('RustScriptDetailChannel versions — pack methods', () {
+    test('versionOptions/switchVersion/buildHistory decode and forward params',
+        () async {
+      final backend = _FakeScriptBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': 'null',
+        'versionOptions': jsonEncode({
+          'envs': ['sit', 'prod'],
+          'versions': [
+            {'version': '2.0', 'envs': ['sit'], 'buildCount': 3},
+          ],
+          'currentEnv': 'sit',
+          'currentVersion': '2.0',
+        }),
+        'switchVersion': jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'Switched',
+          'version': '2.0',
+        }),
+        'buildHistory': jsonEncode({
+          'builds': [
+            {'num': 7, 'ipaName': 'a.apk'},
+          ],
+        }),
+      });
+      final (channel, _, _) = build(backend);
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      final opts = await channel.versionOptions('com.example.one', env: 'sit');
+      expect(opts!['currentVersion'], '2.0');
+      expect(backend.runCalls.single['method'], 'versionOptions');
+      expect(
+        jsonDecode(backend.runCalls.single['params']! as String),
+        {'appId': 'com.example.one', 'env': 'sit'},
+      );
+
+      backend.runCalls.clear();
+      final switched = await channel.switchVersion(
+        appId: 'com.example.one',
+        env: 'sit',
+        version: '2.0',
+        build: {'num': 7},
+      );
+      expect(switched!['name'], 'Switched');
+      expect(backend.runCalls.single['method'], 'switchVersion');
+      expect(
+        jsonDecode(backend.runCalls.single['params']! as String),
+        {
+          'appId': 'com.example.one',
+          'env': 'sit',
+          'version': '2.0',
+          'build': {'num': 7},
+        },
+      );
+
+      backend.runCalls.clear();
+      final history = await channel.buildHistory(
+        appId: 'com.example.one',
+        version: '2.0',
+        env: 'sit',
+      );
+      expect((history!['builds'] as List).single['num'], 7);
+      expect(backend.runCalls.single['method'], 'buildHistory');
+      expect(
+        jsonDecode(backend.runCalls.single['params']! as String),
+        {'appId': 'com.example.one', 'version': '2.0', 'env': 'sit'},
+      );
+    });
+
+    test('versionOptions omits env when null; non-map reply → null', () async {
+      final backend = _FakeScriptBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': 'null',
+        'versionOptions': jsonEncode({'envs': ['sit']}),
+      });
+      final (channel, _, _) = build(backend);
+
+      await channel.load();
+      backend.runCalls.clear();
+
+      await channel.versionOptions('com.example.one');
+      expect(
+        jsonDecode(backend.runCalls.single['params']! as String),
+        {'appId': 'com.example.one'},
+      );
+
+      // A null reply is "the script has nothing" → null, never a throw.
+      final backendNull = _FakeScriptBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': 'null',
+        'switchVersion': 'null',
+      });
+      final (channelNull, _, _) = build(backendNull);
+      await channelNull.load();
+      expect(
+        await channelNull.switchVersion(
+          appId: 'a',
+          env: 'sit',
+          version: '1',
+        ),
+        isNull,
+      );
     });
   });
 }
