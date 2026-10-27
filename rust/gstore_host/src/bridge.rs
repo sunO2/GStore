@@ -2097,13 +2097,15 @@ mod core_api_tests {
 // ChannelApi (Todo 13)
 // ===========================================================================
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use gstore_core::channel::{
-    validate_channel_key, ChannelCategory, ChannelDriver, ChannelRegistry,
-    FdroidDriver, GitHubDriver, InstalledPack, LocalDbDriver, PackError, PackStore,
-    SqliteChannelStore, VivoDriver,
+    validate_channel_key, ChannelCategory, ChannelDriver, ChannelRegistry, FdroidDriver,
+    GitHubDriver, InstalledPack, LocalDbDriver, PackError, PackStore, ScriptChannel,
+    ScriptChannelConfig, ScriptChannelStore, SqliteChannelStore, VivoDriver,
 };
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
@@ -2115,6 +2117,10 @@ use gstore_core::ports::{
 };
 use gstore_core::Error as CoreError;
 use gstore_core::channel_migration::is_sensitive_key;
+
+use crate::http_port::ScriptHttp;
+use crate::script_api::DEFAULT_UI_BUDGET;
+use crate::script_host_impl::{ConfigMap, EnvMap, ScriptHostImpl};
 
 fn core_err(error: CoreError) -> String {
     format!("{}: {}", error.code(), error.message())
@@ -2560,8 +2566,88 @@ struct ChannelApiInner {
     secrets: FileSecretStore,
     config: CoreConfig,
     http: Arc<dyn HttpPort>,
+    script_http: Arc<dyn ScriptHttp>,
     metadata: Arc<dyn MetadataPort>,
     repo: Arc<dyn RepoPort>,
+    /// Active F-Droid source URLs. Loaded from the persisted `update_prefs`
+    /// row at init and refreshed by [`ChannelApi::set_fdroid_sources`].
+    fdroid_sources: RwLock<Vec<String>>,
+    /// Lazily-built script-lane drivers, keyed by pack channel key.
+    script_drivers: Mutex<HashMap<ChannelKey, Arc<dyn ChannelDriver>>>,
+}
+
+impl ChannelApiInner {
+    /// Builds (and caches) the script-lane driver for an installed pack.
+    ///
+    /// Returns `Ok(None)` when `key` names no installed pack, so the resolver
+    /// can fall through without treating an unknown key as an error.
+    fn script_driver(&self, key: &ChannelKey) -> Result<Option<Arc<dyn ChannelDriver>>, String> {
+        if let Ok(cache) = self.script_drivers.lock() {
+            if let Some(driver) = cache.get(key) {
+                return Ok(Some(driver.clone()));
+            }
+        }
+        let loaded = match crate::script_pack::load(&self.pack, key) {
+            Ok(loaded) => loaded,
+            Err(_) => return Ok(None),
+        };
+        let env = crate::script_env::load(&self.db, &self.secrets, key)
+            .map(|snapshot| Arc::new(Mutex::new(snapshot)))
+            .unwrap_or_else(|_| Arc::new(Mutex::new(EnvMap::new())));
+        let host = Arc::new(ScriptHostImpl::new(
+            self.db.clone(),
+            Arc::clone(&self.script_http),
+            env,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(ConfigMap::new())),
+            DEFAULT_UI_BUDGET,
+        ));
+        let store: Arc<dyn ScriptChannelStore> =
+            Arc::new(crate::script_db::SqliteScriptChannelStore::new(self.db.clone()));
+        let config = ScriptChannelConfig::new(key.clone(), loaded.entry_js, host)
+            .with_store(store)
+            .with_pack_key(key.clone());
+        let driver: Arc<dyn ChannelDriver> = Arc::new(
+            ScriptChannel::new(config).map_err(|error| core_err(CoreError::Internal(error.to_string())))?,
+        );
+        if let Ok(mut cache) = self.script_drivers.lock() {
+            cache.insert(key.clone(), driver.clone());
+        }
+        Ok(Some(driver))
+    }
+
+    /// The base config with the current F-Droid source set applied.
+    fn fdroid_config(&self) -> Result<CoreConfig, String> {
+        let sources = self
+            .fdroid_sources
+            .read()
+            .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?
+            .clone();
+        self.config
+            .clone()
+            .with_fdroid_sources(sources)
+            .map_err(core_err)
+    }
+}
+
+/// Reads the persisted `fdroid_sources` document from the core `update_prefs`
+/// table (written by [`gstore_core::channel_migration`]) into source URLs.
+fn persisted_fdroid_sources(db: &DbHandle) -> Vec<String> {    let raw = db
+        .reader()
+        .ok()
+        .and_then(|conn| gstore_core::migration::update_pref(&conn, "fdroid_sources").ok().flatten());
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.get("repoUrl").and_then(serde_json::Value::as_str))
+        .filter(|source| gstore_core::ports::repo::validate_repo_source(source).is_ok())
+        .map(str::to_string)
+        .collect()
 }
 
 /// FRB-facing channel facade. The old Dart `ChannelManager` remains
@@ -2614,10 +2700,11 @@ impl ChannelApi {
         cache_dir: String,
     ) -> Result<ChannelApi, String> {
         let http: Arc<dyn HttpPort> = Arc::new(crate::http_port::ReqwestHttpPort::new());
+        let script_http: Arc<dyn ScriptHttp> = Arc::new(crate::http_port::ReqwestHttpPort::new());
         let metadata: Arc<dyn MetadataPort> =
             Arc::new(CachedMetadataPort::new(HttpMetadataPort::new(http.clone())));
         let repo: Arc<dyn RepoPort> = Arc::new(HostRepoPort::new(&data_dir));
-        Self::init_inner(data_dir, files_dir, cache_dir, http, metadata, repo)
+        Self::init_inner(data_dir, files_dir, cache_dir, http, script_http, metadata, repo)
     }
 
     #[cfg(test)]
@@ -2629,7 +2716,9 @@ impl ChannelApi {
         metadata: Arc<dyn MetadataPort>,
         repo: Arc<dyn RepoPort>,
     ) -> Result<ChannelApi, String> {
-        Self::init_inner(data_dir, files_dir, cache_dir, http, metadata, repo)
+        let script_http: Arc<dyn ScriptHttp> =
+            Arc::new(crate::http_port::BufferedScriptHttp::new(http.clone()));
+        Self::init_inner(data_dir, files_dir, cache_dir, http, script_http, metadata, repo)
     }
 
     fn init_inner(
@@ -2637,6 +2726,7 @@ impl ChannelApi {
         files_dir: String,
         cache_dir: String,
         http: Arc<dyn HttpPort>,
+        script_http: Arc<dyn ScriptHttp>,
         metadata: Arc<dyn MetadataPort>,
         repo: Arc<dyn RepoPort>,
     ) -> Result<ChannelApi, String> {
@@ -2651,7 +2741,10 @@ impl ChannelApi {
         let token = secrets
             .get("core_config.github_token")
             .map_err(core_err)?;
-        let config = CoreConfig::new(None, token).map_err(core_err)?;
+        let fdroid_sources = persisted_fdroid_sources(&db);
+        let config = CoreConfig::new(None, token)
+            .and_then(|config| config.with_fdroid_sources(fdroid_sources.clone()))
+            .map_err(core_err)?;
         let registry = Arc::new(ChannelRegistry::new(SqliteChannelStore::new(db.clone())));
         let pack = PackStore::new(files_path.join("channel_packs"), db.clone());
         let api = ChannelApi {
@@ -2662,8 +2755,11 @@ impl ChannelApi {
                 secrets,
                 config,
                 http,
+                script_http,
                 metadata,
                 repo,
+                fdroid_sources: RwLock::new(fdroid_sources),
+                script_drivers: Mutex::new(HashMap::new()),
             }),
         };
         {
@@ -2725,10 +2821,11 @@ impl ChannelApi {
                 key,
                 meta,
                 self.inner.db.clone(),
-                self.inner.config.clone(),
+                self.inner.fdroid_config()?,
                 self.inner.repo.clone(),
             ))),
-            ChannelKind::Http | ChannelKind::Custom | ChannelKind::JsLocal => None,
+            ChannelKind::JsLocal => self.inner.script_driver(&key)?,
+            ChannelKind::Http | ChannelKind::Custom => None,
         };
         Ok(driver)
     }
@@ -2757,7 +2854,10 @@ impl ChannelApi {
         let inner = Arc::clone(&self.inner);
         Arc::new(move |code: &str| {
             let key = ChannelKey::new(code).ok()?;
-            inner.registry.driver(&key).ok()
+            if let Ok(driver) = inner.registry.driver(&key) {
+                return Some(driver);
+            }
+            inner.script_driver(&key).ok().flatten()
         })
     }
 
@@ -2840,7 +2940,18 @@ impl ChannelApi {
                     .register_driver(driver)
                     .map_err(core_err)?;
             }
-            ChannelKind::Http | ChannelKind::Custom | ChannelKind::JsLocal => {
+            // A script-lane channel may be registered before its pack is
+            // imported; bind the driver only when the pack already exists and
+            // otherwise let the resolver build it on first use.
+            ChannelKind::JsLocal => match self.driver_for(&record)? {
+                Some(driver) => self
+                    .inner
+                    .registry
+                    .register_driver(driver)
+                    .map_err(core_err)?,
+                None => self.inner.registry.register(record).map_err(core_err)?,
+            },
+            ChannelKind::Http | ChannelKind::Custom => {
                 self.inner.registry.register(record).map_err(core_err)?;
             }
         }
@@ -3027,6 +3138,39 @@ impl ChannelApi {
         self.driver(&key)?
             .do_update(None)
             .map_err(core_err)
+    }
+
+    /// Replaces the active F-Droid source set and rebinds the F-Droid driver.
+    ///
+    /// The Dart `FdroidRepoManager` pushes the enabled source URLs here on every
+    /// source change (the core cannot read the Dart config store). URLs are
+    /// validated before anything is stored; an invalid URL is a typed error.
+    pub fn set_fdroid_sources(&self, sources: Vec<String>) -> Result<(), String> {
+        let config = self
+            .inner
+            .config
+            .clone()
+            .with_fdroid_sources(sources)
+            .map_err(core_err)?;
+        let normalized = config.fdroid_sources().to_vec();
+        {
+            let mut guard = self
+                .inner
+                .fdroid_sources
+                .write()
+                .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?;
+            *guard = normalized;
+        }
+        let key = ChannelKey::new("fdroid").map_err(core_err)?;
+        if let Some(record) = self.inner.registry.get(&key).map_err(core_err)? {
+            if let Some(driver) = self.driver_for(&record)? {
+                self.inner
+                    .registry
+                    .register_driver(driver)
+                    .map_err(core_err)?;
+            }
+        }
+        Ok(())
     }
 
     /// Lists every app owned by a registered channel.
@@ -5017,6 +5161,80 @@ mod channel_api_tests {
         println!(
             "channel_api_contract: PASS duration_ms={}",
             started.elapsed().as_millis()
+        );
+        drop(harness);
+    }
+
+    const SCRIPT_UPDATE_ENTRY: &str = r#"
+async function main(method, params) {
+  if (method === 'checkAppUpdate') {
+    return { ok: true, data: {
+      appId: 'com.example.alpha',
+      packageName: 'com.example.alpha',
+      name: 'Alpha',
+      version: '3.0.0',
+      downloads: [{
+        url: 'https://js.test/alpha-3.0.0.apk',
+        name: 'alpha-3.0.0.apk',
+        version: '3.0.0',
+      }],
+    } };
+  }
+  return null;
+}
+"#;
+
+    fn write_script_pack(path: &Path, entry: &str) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("entry.js", options).unwrap();
+        writer.write_all(entry.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn channel_api_script_lane_binds_the_update_driver() {
+        let harness = harness("script_lane");
+        let api = &harness.api;
+        let pack = harness.root.join("demo.zip");
+        write_script_pack(&pack, SCRIPT_UPDATE_ENTRY);
+        let info = api
+            .import_pack(pack.to_string_lossy().into_owned())
+            .expect("import script pack");
+        assert_eq!(info.key, "js_demo");
+
+        let resolver = api.resolver();
+        let driver = resolver("js_demo")
+            .expect("an unregistered script pack is reachable through the resolver fallback");
+        let update = driver
+            .check_app_update("com.example.alpha")
+            .expect("the script returns an update");
+        assert_eq!(update.latest_version.as_deref(), Some("3.0.0"));
+        assert_eq!(
+            update
+                .detail
+                .downloads
+                .first()
+                .map(|download| download.name.as_str()),
+            Some("alpha-3.0.0.apk")
+        );
+
+        let registration = ChannelRegistration {
+            key: "js_demo".to_string(),
+            kind: "js_local".to_string(),
+            name: "Demo".to_string(),
+            description: "script channel".to_string(),
+            enabled: true,
+            priority: 9,
+            support_offline: false,
+            version: Some("1".to_string()),
+        };
+        api.register(registration).expect("register js_local");
+        assert!(
+            api.list_apps("js_demo".to_string(), false).is_ok(),
+            "registering a js_local channel binds its script driver"
         );
         drop(harness);
     }

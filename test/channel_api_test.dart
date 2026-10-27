@@ -266,6 +266,11 @@ class _RecordingBackend implements ChannelApiBackend {
     calls.add('getConfig:$key:$forceRefresh');
     return config;
   }
+
+  @override
+  Future<void> setFdroidSources({required List<String> sources}) async {
+    calls.add('setFdroidSources:${sources.join(',')}');
+  }
 }
 
 void main() {

@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'script_pack.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `fdroid_config`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`
@@ -242,6 +242,13 @@ abstract class ChannelApi implements RustOpaqueInterface {
       {required String key,
       required String categoryId,
       required bool forceRefresh});
+
+  /// Replaces the active F-Droid source set and rebinds the F-Droid driver.
+  ///
+  /// The Dart `FdroidRepoManager` pushes the enabled source URLs here on every
+  /// source change (the core cannot read the Dart config store). URLs are
+  /// validated before anything is stored; an invalid URL is a typed error.
+  Future<void> setFdroidSources({required List<String> sources});
 
   /// Removes a channel registration and its driver binding.
   Future<void> unregister({required String key});
@@ -605,7 +612,8 @@ abstract class ScriptApi implements RustOpaqueInterface {
   /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
   /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
   /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
-  /// `detailMenu` (detail script). The string is the same JSON the Dart
+  /// `detailMenu`, `jsswitchVersion`, `jsBuildHistory`, `jsswitchUA` (detail
+  /// script). The string is the same JSON the Dart
   /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
   /// the script's `{version, proxy}` payload; parity is defined on the mapped
   /// [`gstore_core::channel::ChannelConfig`] shape (`version` string,

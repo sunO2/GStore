@@ -186,6 +186,21 @@ impl FdroidDriver {
             .collect()
     }
 
+    /// Ensures every active source has a local repository index.
+    ///
+    /// Dart's `FdroidChannel.checkAppUpdate` reads a locally-synced index and
+    /// never hits the network; the core mirrors that by downloading a source's
+    /// index through [`RepoPort::download_repo`] **only** when
+    /// [`RepoPort::get_repo_meta`] reports no local copy.
+    fn ensure_active_index(&self) -> Result<(), Error> {
+        for source in self.active_sources() {
+            if self.repo.get_repo_meta(&source)?.is_none() {
+                self.repo.download_repo(&source)?;
+            }
+        }
+        Ok(())
+    }
+
     fn summary_from_repo(&self, app: &RepoApp, source: &str) -> AppSummary {
         let icon = absolute_icon_url(app.icon.as_deref().unwrap_or(""), &app.package_name, source);
         AppSummary {
@@ -393,6 +408,7 @@ impl ChannelDriver for FdroidDriver {
     }
 
     fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
+        self.ensure_active_index()?;
         let detail = self.get_app_detail(app_id, false)?;
         Ok(AppUpdate {
             app_id: detail.app_id.clone(),

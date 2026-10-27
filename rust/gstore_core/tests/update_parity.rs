@@ -6,10 +6,13 @@
 
 use std::cmp::Ordering as CmpOrdering;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use gstore_core::channel::{ChannelDriver, InMemoryChannelDriver, LocalDbDriver};
+use gstore_core::channel::{
+    ChannelDriver, FdroidDriver, InMemoryChannelDriver, LocalDbDriver, ScriptChannel,
+    ScriptChannelConfig,
+};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
     AppDetail, AppDownload, AppUpdate, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
@@ -18,13 +21,15 @@ use gstore_core::error::Error;
 use gstore_core::facts::{CorePaths, DeviceFacts, InstalledApp, PlatformFacts};
 use gstore_core::migration::update_pref;
 use gstore_core::ports::{
-    CoreConfig, FakeHttpPort, FakeMetadataPort, HttpResponse, MetadataPort, PackageMetadata,
+    validate_repo_source, CoreConfig, FakeHttpPort, FakeMetadataPort, FakeRepoPort, HttpResponse,
+    MetadataPort, PackageMetadata, RepoApp, RepoMeta, RepoPort,
 };
 use gstore_core::update::service::{
     asset_matches_abi, compare_versions, normalize_abi, pick_closest_apk, select_best_download,
     select_download_with_preference, AppUpdateInfo, ChannelResolver, CheckLogLevel, UpdateService,
     UPDATE_CACHE_TTL_MS,
 };
+use gstore_script::UnsupportedHost;
 use rusqlite::params;
 use serde_json::{json, Value};
 
@@ -1429,4 +1434,305 @@ fn update_parity_localdb_metadata_version_name_wins_over_release() {
         info.latest_version, "9.9.9",
         "Dart prefers metadataVersionName over the GitHub release version"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Real-driver F-Droid update detection (Dart `FdroidChannel.checkAppUpdate`)
+// ---------------------------------------------------------------------------
+
+const FDROID_SOURCE: &str = "https://f-droid.test/repo";
+
+fn fdroid_meta() -> ChannelMeta {
+    ChannelMeta {
+        kind: ChannelKind::Fdroid,
+        name: "F-Droid".to_string(),
+        description: "f-droid".to_string(),
+        enabled: true,
+        priority: 5,
+        support_offline: false,
+        last_update_time: None,
+        version: Some("1".to_string()),
+    }
+}
+
+fn fdroid_repo_app() -> RepoApp {
+    RepoApp {
+        package_name: "com.example.alpha".to_string(),
+        name: "Alpha".to_string(),
+        summary: "Fast alpha".to_string(),
+        version: Some("2.0.0".to_string()),
+        version_code: Some(20),
+        icon: Some("icons/com.example.alpha.png".to_string()),
+        apk_url: Some("/repo/com.example.alpha_2.0.0.apk".to_string()),
+        size: Some(4096),
+        categories: vec!["Tools".to_string()],
+    }
+}
+
+fn fdroid_repo(dir: &TempDir) -> FakeRepoPort {
+    let repo = FakeRepoPort::new(dir.path().join("repo.db"));
+    repo.add_repo(RepoMeta {
+        source: FDROID_SOURCE.to_string(),
+        name: "F-Droid".to_string(),
+        description: None,
+        version: None,
+        timestamp: None,
+        app_count: 1,
+    });
+    repo.add_app(FDROID_SOURCE, fdroid_repo_app());
+    repo
+}
+
+struct LazyRepoPort {
+    db_path: PathBuf,
+    source: String,
+    app: RepoApp,
+    downloads: AtomicU64,
+    indexed: AtomicBool,
+}
+
+impl LazyRepoPort {
+    fn new(db_path: PathBuf, source: &str, app: RepoApp) -> Self {
+        Self {
+            db_path,
+            source: source.to_string(),
+            app,
+            downloads: AtomicU64::new(0),
+            indexed: AtomicBool::new(false),
+        }
+    }
+
+    fn download_count(&self) -> u64 {
+        self.downloads.load(Ordering::SeqCst)
+    }
+
+    fn meta(&self) -> RepoMeta {
+        RepoMeta {
+            source: self.source.clone(),
+            name: "F-Droid".to_string(),
+            description: None,
+            version: None,
+            timestamp: None,
+            app_count: 1,
+        }
+    }
+}
+
+impl RepoPort for LazyRepoPort {
+    fn download_repo(&self, source: &str) -> Result<RepoMeta, Error> {
+        validate_repo_source(source)?;
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        self.indexed.store(true, Ordering::SeqCst);
+        Ok(self.meta())
+    }
+
+    fn get_app_count(&self, _source: &str) -> Result<u64, Error> {
+        Ok(1)
+    }
+
+    fn search_apps(
+        &self,
+        _source: &str,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<RepoApp>, Error> {
+        Ok(vec![self.app.clone()])
+    }
+
+    fn get_repo_meta(&self, source: &str) -> Result<Option<RepoMeta>, Error> {
+        Ok((source == self.source && self.indexed.load(Ordering::SeqCst)).then(|| self.meta()))
+    }
+
+    fn clear_apps(&self, _source: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_one_app(&self, source: &str, package_name: &str) -> Result<Option<RepoApp>, Error> {
+        let ready = source == self.source && self.indexed.load(Ordering::SeqCst);
+        Ok((ready && package_name == self.app.package_name).then(|| self.app.clone()))
+    }
+
+    fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+}
+
+fn seed_fdroid_update_env(db: &DbHandle) {
+    seed_facts(db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        db,
+        SOURCE,
+        1_000_000,
+        &[installed("com.example.alpha", "1.0.0")],
+    );
+    add_added(db, "fdroid", "com.example.alpha", 10);
+}
+
+#[test]
+fn update_parity_fdroid_real_driver_detects_index_update() {
+    let dir = TempDir::new("fdroid_real");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_fdroid_update_env(&db);
+
+    let repo = fdroid_repo(&dir);
+    let config = CoreConfig::new(None, None)
+        .unwrap()
+        .with_fdroid_sources(vec![FDROID_SOURCE.to_string()])
+        .unwrap();
+    let driver = FdroidDriver::new(
+        ChannelKey::new("fdroid").unwrap(),
+        fdroid_meta(),
+        db.clone(),
+        config,
+        Arc::new(repo.clone()),
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    assert_eq!(
+        report.updates.len(),
+        1,
+        "the real fdroid driver must resolve the local index version"
+    );
+    let info = find(&report.updates, "com.example.alpha");
+    assert_eq!(info.channel_id, "fdroid");
+    assert_eq!(info.installed_version, "1.0.0");
+    assert_eq!(info.latest_version, "2.0.0");
+    assert_eq!(info.download.name, "com.example.alpha_2.0.0.apk");
+    assert_eq!(
+        info.download.url,
+        "https://f-droid.test/repo/com.example.alpha_2.0.0.apk"
+    );
+    assert_eq!(db_status(&db, "com.example.alpha"), "update_available");
+    assert_eq!(
+        repo.download_count(),
+        0,
+        "an already-synced index must not be re-downloaded"
+    );
+}
+
+#[test]
+fn update_parity_fdroid_driver_downloads_missing_index_then_resolves() {
+    let dir = TempDir::new("fdroid_download");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_fdroid_update_env(&db);
+
+    let repo = Arc::new(LazyRepoPort::new(
+        dir.path().join("repo.db"),
+        FDROID_SOURCE,
+        fdroid_repo_app(),
+    ));
+    let config = CoreConfig::new(None, None)
+        .unwrap()
+        .with_fdroid_sources(vec![FDROID_SOURCE.to_string()])
+        .unwrap();
+    let driver = FdroidDriver::new(
+        ChannelKey::new("fdroid").unwrap(),
+        fdroid_meta(),
+        db.clone(),
+        config,
+        repo.clone(),
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    let info = find(&report.updates, "com.example.alpha");
+    assert_eq!(info.latest_version, "2.0.0");
+    assert_eq!(
+        repo.download_count(),
+        1,
+        "an absent index is downloaded exactly once before resolving"
+    );
+}
+
+#[test]
+fn update_parity_fdroid_without_sources_reports_channel_error() {
+    let dir = TempDir::new("fdroid_no_sources");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_fdroid_update_env(&db);
+
+    let repo = fdroid_repo(&dir);
+    let config = CoreConfig::new(None, None).unwrap();
+    let driver = FdroidDriver::new(
+        ChannelKey::new("fdroid").unwrap(),
+        fdroid_meta(),
+        db.clone(),
+        config,
+        Arc::new(repo),
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    assert!(report.updates.is_empty());
+    assert_eq!(
+        skip_reason(&report.skipped, "com.example.alpha"),
+        "channel_error",
+        "a fdroid driver with no active source cannot resolve a version"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Real-driver script-lane update detection (Dart `JsChannel.checkAppUpdate`)
+// ---------------------------------------------------------------------------
+
+const JS_UPDATE_SCRIPT: &str = r#"
+async function main(method, params) {
+  if (method === 'checkAppUpdate') {
+    return { ok: true, data: {
+      appId: 'com.example.alpha',
+      packageName: 'com.example.alpha',
+      name: 'Alpha',
+      version: '3.0.0',
+      downloads: [{
+        url: 'https://js.test/alpha-3.0.0.apk',
+        name: 'alpha-3.0.0.apk',
+        size: 2048,
+        version: '3.0.0',
+        platform: 'arm64-v8a',
+      }],
+    } };
+  }
+  return null;
+}
+"#;
+
+fn js_script_driver(code: &str) -> Arc<dyn ChannelDriver> {
+    let key = ChannelKey::new(code).unwrap();
+    let config = ScriptChannelConfig::new(key, JS_UPDATE_SCRIPT, Arc::new(UnsupportedHost));
+    Arc::new(ScriptChannel::new(config).expect("script channel spawns"))
+}
+
+#[test]
+fn update_parity_js_real_driver_detects_script_update() {
+    let dir = TempDir::new("js_real");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &[installed("com.example.alpha", "1.0.0")],
+    );
+    add_added(&db, "js_demo", "com.example.alpha", 10);
+
+    let driver = js_script_driver("js_demo");
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![driver], clock);
+    let report = service.check_all(true).unwrap();
+
+    assert_eq!(
+        report.updates.len(),
+        1,
+        "the real script driver must resolve the script's checkAppUpdate version"
+    );
+    let info = find(&report.updates, "com.example.alpha");
+    assert_eq!(info.channel_id, "js_demo");
+    assert_eq!(info.installed_version, "1.0.0");
+    assert_eq!(info.latest_version, "3.0.0");
+    assert_eq!(info.download.name, "alpha-3.0.0.apk");
+    assert_eq!(info.download.url, "https://js.test/alpha-3.0.0.apk");
+    assert_eq!(db_status(&db, "com.example.alpha"), "update_available");
 }

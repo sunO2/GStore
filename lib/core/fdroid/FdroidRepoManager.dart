@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
@@ -258,6 +259,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       // 此处只切身份，**不触发任何下载**（启动路径禁止下载）。
       rust.FdroidRustRepoManager.setActiveSource(_currentSource);
 
+      // 把启用源推送给 Rust core 的 F-Droid 驱动（core 读不到 Dart 配置存储）。
+      await _pushSourcesToCore();
+
       appLog.info('FdroidRepoManager: 初始化完成，当前源: $currentSource');
     } catch (e) {
       appLog.error('FdroidRepoManager: 初始化失败 - $e');
@@ -470,8 +474,27 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         source: ConfigChangeSource.internal,
       );
       appLog.info('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
+      await _pushSourcesToCore();
     } catch (e) {
       appLog.error('FdroidRepoManager: 保存源配置失败 - $e');
+    }
+  }
+
+  /// 把启用的源地址推送给 Rust core 的 F-Droid 驱动。
+  ///
+  /// core 无法读取 Dart 配置存储（SharedPreferences），因此每次源变化后由本类
+  /// 主动推送；best-effort，失败只记日志，绝不影响本地源配置。
+  Future<void> _pushSourcesToCore() async {
+    try {
+      final urls = _sources
+          .where((source) => source.enabled)
+          .map((source) => source.repoUrl)
+          .where((url) => url.trim().isNotEmpty)
+          .toList();
+      await RustChannelFacade.instance.setFdroidSources(sources: urls);
+      appLog.info('FdroidRepoManager: 已推送 ${urls.length} 个启用源到 Rust core');
+    } catch (e) {
+      appLog.warning('FdroidRepoManager: 推送源到 Rust core 失败（不影响本地源） - $e');
     }
   }
 

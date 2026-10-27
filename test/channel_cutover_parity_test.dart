@@ -256,6 +256,11 @@ class _RecordingFacadeBackend implements ChannelApiBackend {
     calls.add('getConfig:$key:$forceRefresh');
     return const rust.ChannelConfigInfo(version: '1.0', proxy: null);
   }
+
+  @override
+  Future<void> setFdroidSources({required List<String> sources}) async {
+    calls.add('setFdroidSources:${sources.join(',')}');
+  }
 }
 
 /// Legacy lane fixture: same observable data as [_RecordingFacadeBackend].

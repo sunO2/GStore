@@ -127,6 +127,8 @@ abstract class ChannelApiBackend {
     required String key,
     required bool forceRefresh,
   });
+
+  Future<void> setFdroidSources({required List<String> sources});
 }
 
 /// Production backend: lazily initialises the generated `ChannelApi`.
@@ -333,6 +335,10 @@ class FrbChannelApiBackend implements ChannelApiBackend {
     required bool forceRefresh,
   }) =>
       _call((api) => api.getConfig(key: key, forceRefresh: forceRefresh));
+
+  @override
+  Future<void> setFdroidSources({required List<String> sources}) =>
+      _call((api) => api.setFdroidSources(sources: sources));
 }
 
 /// Singleton facade with a replaceable backend.
@@ -479,4 +485,9 @@ class RustChannelFacade {
     required bool forceRefresh,
   }) =>
       _backend.getConfig(key: key, forceRefresh: forceRefresh);
+
+  /// Pushes the active F-Droid source URLs into the Rust core so its F-Droid
+  /// driver can resolve versions from the repository index.
+  Future<void> setFdroidSources({required List<String> sources}) =>
+      _backend.setFdroidSources(sources: sources);
 }
