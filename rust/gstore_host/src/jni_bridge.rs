@@ -20,19 +20,20 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use std::os::raw::c_int;
+#[cfg(target_os = "android")]
+use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use jni::objects::{GlobalRef, JObject, JObjectArray, JString, JValue};
-use jni::{JNIEnv, JavaVM};
+use jni::JNIEnv;
+#[cfg(target_os = "android")]
+use jni::JavaVM;
 
 /// protect 回调返回值：0 = 已保护 / 无需保护（无 VPN 时放行），非 0 = 失败。
 /// 与 Todo 3 的 `socket_protect_stub`（返回 0）约定一致，模块据此把非 0 当错误。
 const PROTECT_OK: c_int = 0;
 const PROTECT_ERR: c_int = -1;
-
-/// 进程内唯一的 `JavaVM`（首次 `nativeSetService` 时缓存；重启服务不复用旧 VM）。
-static JVM: OnceLock<JavaVM> = OnceLock::new();
 
 /// 当前 `VpnService` 实例的全局引用（`nativeClear` 置空）。`GlobalRef` 保证对象
 /// 不被 GC，跨线程安全。
@@ -56,7 +57,7 @@ extern "C" fn vpn_protect_fd(fd: c_int) -> c_int {
     if fd < 0 {
         return PROTECT_ERR;
     }
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return PROTECT_OK;
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -95,18 +96,12 @@ extern "C" fn vpn_protect_fd(fd: c_int) -> c_int {
 
 /// 缓存 service 引用并安装真实 protect 实现（`nativeSetService` 的实体）。
 pub(crate) fn install_service(env: &JNIEnv, service: &JObject) -> Result<(), String> {
-    if service.is_null() {
-        return Err("service 引用为 null".to_string());
-    }
-    let jvm = env
-        .get_java_vm()
-        .map_err(|e| format!("get_java_vm 失败: {e}"))?;
+    crate::jvm::init_vm(env, service)?;
     let global = env
         .new_global_ref(service)
         .map_err(|e| format!("new_global_ref 失败: {e}"))?;
 
     // VM 进程内恒定：已缓存则忽略（重启服务只替换 GlobalRef，不换 VM）。
-    let _ = JVM.set(jvm);
     {
         let mut slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(global);
@@ -340,7 +335,7 @@ fn set_uid_status_for_tests(f: UidStatusFn) {
 /// 探测真实 JNI 通道状态：无 VM → `NoVm`；无服务 → `NoService`；服务类上无
 /// `queryOwnerUid` → `MethodMissing`；否则 `Available`。绝不 panic。
 fn platform_uid_status() -> UidChannelStatus {
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return UidChannelStatus::NoVm;
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -497,7 +492,7 @@ fn set_owner_uid_fn_for_tests(f: OwnerUidFn) {
 /// 返回值一律 `None`（不 panic、不重试）。
 fn query_owner_uid_jni(q: &UidQueryHost) -> Option<u32> {
     let protocol = protocol_number(&q.protocol)?;
-    let jvm = JVM.get()?;
+    let jvm = crate::jvm::platform_jvm()?;
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
     let service = slot.as_ref()?;
     let mut env = jvm.attach_current_thread().ok()?;
@@ -595,7 +590,7 @@ pub(crate) fn invalidate_package_cache() {
 /// 调用 Kotlin `packagesForUid`。任何失败（无 VM / 无服务 / 方法缺失 / 异常）
 /// → 空列表，绝不 panic。
 fn jni_packages_for_uid(uid: u32) -> Vec<String> {
-    let Some(jvm) = JVM.get() else {
+    let Some(jvm) = crate::jvm::platform_jvm() else {
         return Vec::new();
     };
     let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
@@ -656,6 +651,16 @@ fn guard_jni<F: FnOnce()>(export: &str, body: F) {
         );
     }
 }
+
+/// Android `JNI_OnLoad`: capture the process VM once for the allowlisted
+/// packet-plane seams. No native table registration remains.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jni::sys::jint {
+    crate::jvm::set_vm(vm);
+    jni::sys::JNI_VERSION_1_6
+}
+
 
 /// Kotlin: `nativeSetService(service: VpnService)`（静态方法）。
 #[no_mangle]

@@ -1,30 +1,58 @@
+// FRB codegen emits `UiApi::default()` for the Wave-5 opaque unit struct, which
+// trips clippy::default_constructed_unit_structs at the generated call site.
+#[allow(clippy::default_constructed_unit_structs)]
 mod frb_generated; /* AUTO INJECTED BY flutter_rust_bridge. This line may not be accurate, and you can change it according to your needs. */
+// Retained for the FRB-generated Dart types; the reduced host does not call it.
+#[allow(dead_code)]
 mod models;
-mod bridge;
+pub mod bridge;
 mod manager;
+mod repo_port;
+pub mod download_host;
 mod dl_adapter;
 mod jni_bridge;
-// 统一特权 shell 门面：Rust → JNI → Kotlin `ShizukuExecBridge` → Shizuku。
-mod shizuku_bridge;
-// 免权限电池 JNI 门面：Rust → JNI → Kotlin `BatteryChannel`（applicationContext 由
-// Kotlin 在 app 线程交给 Rust 缓存）。
-mod battery_bridge;
-// 批量设备状态 JNI 门面：Rust → JNI → Kotlin `DeviceStateChannel`（复用
-// battery_bridge 缓存的 VM / applicationContext）。
-mod device_state_bridge;
-// 本应用帧指标 JNI 门面：Rust → JNI → Kotlin `FrameMetricsCollector`（复用
-// battery_bridge 缓存的 JavaVM；类引用在 app 线程解析缓存）。
-mod frame_metrics_bridge;
-// T12 宿主 UID/包名解析 API。`resolve_uids` 的宿主侧消费者是 T13（内部事件消费），
-// 在接线前以库 API 暴露可避免暂存期 dead_code 告警。
+// The only VM owner: the allowlisted packet-plane seams (`protect_fd` and
+// proxy `uid -> package`) keep the VM here, nothing else.
+mod jvm;
+pub mod http_port;
+pub use http_port::ReqwestHttpPort;
+pub use repo_port::{ModuleManagerBridge, ModuleRepoPort, RepoBridge};
+// T12 host UID/package resolution. `resolve_uids` is consumed by the proxy
+// module's `proxy.uid.query` path.
 pub use jni_bridge::{resolve_uids, UidAnswer, UidQueryHost};
 mod tun_bridge;
 mod trust;
 pub mod log_bridge;
 mod event_bridge;
 mod task_bridge;
+mod script_api;
+mod script_env;
+mod script_host_impl;
+mod script_http;
+mod script_db;
+pub use script_db::SqliteScriptChannelStore;
+mod script_pack;
+mod script_runtime_entry;
+mod ui_api;
+#[cfg(test)]
+mod script_api_test_support;
+#[cfg(test)]
+mod script_api_lifecycle_tests;
+#[cfg(test)]
+mod script_api_roundtrip_tests;
+#[cfg(test)]
+mod script_api_config_tests;
+#[cfg(test)]
+mod script_api_park_tests;
+#[cfg(test)]
+mod script_api_budget_tests;
+#[cfg(test)]
+mod script_api_parity_tests;
+#[cfg(test)]
+mod script_api_app_insert_tests;
+#[cfg(test)]
+mod script_api_real_pack_tests;
 
 /// 单进程测试共享 `jni_bridge::TUN_FD` 等全局态，相关用例须串行执行。
 #[cfg(test)]
 pub(crate) static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-

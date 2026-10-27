@@ -4,6 +4,7 @@ library;
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
 
@@ -33,6 +34,7 @@ class UpdateCache {
 
   /// 记录检测时间
   static Future<void> saveCheckedAt(DateTime time) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_keyLastCheckedAt, time.millisecondsSinceEpoch);
@@ -43,6 +45,7 @@ class UpdateCache {
 
   /// 持久化检测结果列表（可更新应用）
   static Future<void> saveResults(List<AppUpdateInfo> results) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final prefs = await SharedPreferences.getInstance();
       final json = jsonEncode(results.map((e) => e.toCacheJson()).toList());
@@ -70,6 +73,7 @@ class UpdateCache {
 
   /// 持久化上次检测日志（前台/后台检测同源产出，格式一致）
   static Future<void> saveLogs(List<CheckLogEntry> logs) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final prefs = await SharedPreferences.getInstance();
       final json = jsonEncode(logs.map((e) => e.toJson()).toList());
@@ -118,6 +122,7 @@ class UpdateCache {
     String appId,
     String fileName,
   ) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_keyPreferredApk);

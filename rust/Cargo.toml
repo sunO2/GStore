@@ -1,0 +1,33 @@
+# Cargo workspace for the Wave 5 script runtime.
+#
+# WHY THIS WORKSPACE IS TINY AND EXCLUDES EVERY EXISTING CRATE:
+#
+#   `rust/build_all.sh` documents the panic policy split: `gstore_host` must be
+#   built with `panic=abort` (unwinding must never cross the FRB/FFI boundary)
+#   while every `gstore_mod_*` must be `panic=unwind` (a module panic is caught
+#   with `catch_unwind` at the C ABI edge). Cargo does NOT allow `panic` to be
+#   set per package inside a workspace ("panic may not be specified in a package
+#   profile"), so a single workspace cannot express the mixed policy without
+#   changing behaviour for those crates.
+#
+#   Therefore the existing crates stay standalone (their own `Cargo.lock` and
+#   `[profile.release]` sections, untouched), and are listed under `exclude` so
+#   Cargo does not try to absorb them into this workspace. `gstore_script` is a
+#   pure leaf (no `gstore_core` dependency) with no panic override, so it is the
+#   only member.
+
+[workspace]
+resolver = "2"
+members = ["gstore_script"]
+exclude = [
+    "gstore_contract",
+    "gstore_core",
+    "gstore_host",
+    "gstore_mod_analyzer",
+    "gstore_mod_download",
+    "gstore_mod_llm",
+    "gstore_mod_perf",
+    "gstore_mod_proxy",
+    "gstore_mod_qr",
+    "gstore_mod_repo",
+]

@@ -13,7 +13,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
@@ -206,27 +207,25 @@ class UpdateManagerService {
       _notifyCheckLog();
       log(CheckLogLevel.info, '开始检测应用更新...');
 
-      final aggregator = AppAggregatorManager.instance;
       final manager = ChannelManager.instance;
-      final addedApps = await aggregator.getAllAddedApps();
+      // 已添加应用走 facade（flag off → legacy manager，flag on → core）。
+      final addedApps = await AddedAppsFacade.instance.list();
       final total = addedApps.length;
 
-      // 构建待检测应用名列表（优先聚合真实名，兜底 appId）供滚轮预填
+      // 构建待检测应用名列表（优先 catalog 真实名，兜底 appId）供滚轮预填
       List<String> appNames;
       try {
-        final aggregated = await aggregator.getAggregatedApps();
         final nameById = <String, String>{};
-        for (final a in aggregated) {
-          final name = a.appInfo.name.trim().isNotEmpty
-              ? a.appInfo.name.trim()
-              : a.appInfo.appId;
-          nameById[a.addedAppInfo.appId] = name;
+        for (final added in addedApps) {
+          final summary = await CatalogFacade.instance.getApp(added.appId);
+          final name = (summary?.name ?? '').trim();
+          nameById[added.appId] = name.isEmpty ? added.appId : name;
         }
         appNames = [
           for (final added in addedApps) nameById[added.appId] ?? added.appId,
         ];
       } catch (_) {
-        // 聚合获取失败时用 appId 兜底
+        // catalog 获取失败时用 appId 兜底
         appNames = [for (final added in addedApps) added.appId];
       }
       onCheckList?.call(appNames);
@@ -481,6 +480,83 @@ class UpdateManagerService {
     final last = _lastCheckedAt ?? await UpdateCache.lastCheckedAt();
     if (last == null) return false;
     return DateTime.now().difference(last).inHours < cacheValidHours;
+  }
+
+  // ===== Facade/core 通道的共享状态镜像 =====
+  //
+  // `UpdateFacade` 在 `CoreFlags.update == true` 时由 FRB 执行检测，并通过
+  // 以下方法把结果回放到本服务的响应式状态（结果/日志/时间/进度）。页面、
+  // 红点、列表与 Agent 因此保持同一套订阅面。这些方法只改内存状态：不访问
+  // 渠道、不写缓存（持久化由 Rust core 拥有），所以不是 legacy writer。
+
+  /// 开始一轮由 facade（core 通道）驱动的检测：加锁并清空上一轮日志/进度。
+  void beginFacadeCheck() {
+    _isChecking = true;
+    _notifyIsChecking();
+    _checkLog.clear();
+    _notifyCheckLog();
+    _checkList.clear();
+    _notifyCheckList();
+    _currentProgress = null;
+    _notifyCurrentProgress();
+    _checkedCount = 0;
+    _notifyCheckedCount();
+    _totalCount = 0;
+    _notifyTotalCount();
+    _checkingAppName = '';
+    _notifyCheckingAppName();
+    _checkingIconUrl = null;
+    _notifyCheckingIconUrl();
+  }
+
+  /// 回放 facade/core 检测结果到共享状态并释放检测锁。
+  void adoptFacadeCheck({
+    required List<AppUpdateInfo> updates,
+    required List<CheckLogEntry> logs,
+    required DateTime checkedAt,
+    int? total,
+    List<String>? checkList,
+  }) {
+    _updateList
+      ..clear()
+      ..addAll(updates);
+    _notifyUpdateList();
+    _checkLog
+      ..clear()
+      ..addAll(logs);
+    _notifyCheckLog();
+    _lastCheckedAt = checkedAt;
+    _notifyLastCheckedAt();
+    if (total != null) {
+      _totalCount = total;
+      _notifyTotalCount();
+      _checkedCount = total;
+      _notifyCheckedCount();
+    }
+    if (checkList != null) {
+      _checkList
+        ..clear()
+        ..addAll(checkList);
+      _notifyCheckList();
+    }
+    _isChecking = false;
+    _notifyIsChecking();
+  }
+
+  /// 回放 facade/core 检测失败：写一条 typed 错误日志并释放检测锁。
+  void failFacadeCheck(String message) {
+    final entry = CheckLogEntry(level: CheckLogLevel.error, text: message);
+    _checkLog.add(entry);
+    _notifyCheckLog();
+    _isChecking = false;
+    _notifyIsChecking();
+  }
+
+  /// core 通道 markUpdated 成功后同步共享状态（红点/列表立即更新）。
+  void removeFacadeUpdated(String appId) {
+    final before = _updateList.length;
+    _updateList.removeWhere((e) => e.appId == appId);
+    if (_updateList.length != before) _notifyUpdateList();
   }
 
   /// 重置状态（测试用）

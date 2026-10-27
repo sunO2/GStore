@@ -1,17 +1,16 @@
-/// 批量设备状态（Rust JNI → Kotlin `DeviceStateChannel.readJson`）的 Dart 模型
-/// 与容错解析层。
+/// 批量设备状态（`gstore/platform.readDeviceState`）的 Dart 模型与容错解析层。
 ///
-/// Kotlin 一次 JNI 静态调用返回电池扩展 / 电源 / 显示模式 / 内存 / 流量 /
-/// 热状态；本文件把它解析为强类型快照，并提供可注入的
-/// [RustJniDeviceStateBridge]，单测无需 FFI / 真机。
+/// Kotlin `DeviceStateChannel.readJson` 一次返回电池扩展 / 电源 / 显示模式 /
+/// 内存 / 流量 / 热状态；本文件把它解析为强类型快照，并提供可注入的
+/// [RustJniDeviceStateBridge]，单测无需平台通道 / 真机。
 ///
 /// 所有解析入口**绝不抛出**：非法 / 非对象 JSON → `null`，缺失字段 → `null`。
 library;
 
-import 'dart:convert' show jsonDecode;
+import 'dart:convert' show jsonDecode, jsonEncode;
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
+import 'package:gstore/core/platform/platform_channel.dart';
 
 /// 一个显示模式（`Display.Mode`）。
 class DisplayModeHz {
@@ -332,21 +331,26 @@ String? _asString(Object? value) {
   return trimmed.isEmpty ? null : trimmed;
 }
 
-/// Rust JNI 设备状态读取 seam（生产：FRB `device_state_read_json`）。
+/// 设备状态读取 seam（生产：`gstore/platform.readDeviceState`）。
 typedef RustDeviceStateJsonReader = Future<String?> Function();
 
-/// Rust JNI → Kotlin `DeviceStateChannel` 的 Dart 门面。
+/// `gstore/platform.readDeviceState` 的 Dart 门面。
 ///
-/// 生产默认走生成的 FRB 函数；[readJson] 可注入，单测无需 FFI。
-/// 所有入口**绝不抛出**（异常 / 未初始化 / 非法 JSON → `null`）。
+/// 类名与构造参数保持历史形状；生产默认走
+/// [PlatformChannelClient.readDeviceState]。[readJson] 可注入，单测无需平台通道。
+/// 所有入口**绝不抛出**（异常 / 未实现 / 非法 JSON → `null`）。
 class RustJniDeviceStateBridge {
-  RustJniDeviceStateBridge({RustDeviceStateJsonReader? readJson})
-      : _readJson = readJson ?? _defaultReadJson;
+  RustJniDeviceStateBridge({
+    RustDeviceStateJsonReader? readJson,
+    PlatformChannelClient? client,
+  }) : _readJson = readJson ?? (() => _readJsonFrom(client));
 
   final RustDeviceStateJsonReader _readJson;
 
-  static Future<String?> _defaultReadJson() =>
-      RustLib.instance.api.crateBridgeDeviceStateReadJson();
+  static final PlatformChannelClient _defaultClient = PlatformChannelClient();
+
+  static Future<String?> _readJsonFrom(PlatformChannelClient? client) async =>
+      jsonEncode(await (client ?? _defaultClient).readDeviceState());
 
   /// 读取一次并解析为 [DeviceStateReading]；不可用 / 失败 → `null`。
   Future<DeviceStateReading?> read() async {

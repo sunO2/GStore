@@ -7,8 +7,56 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
+import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:path_provider/path_provider.dart';
+
+/// Outcome of a channel-pack import.
+///
+/// `CoreFlags.jsChannel` decides the lane: while it is off the legacy Dart
+/// writer returns a live [JsChannel]; while it is on the pack is installed by
+/// the Rust `ScriptApi` and no Dart channel exists. A sealed result keeps the
+/// two lanes distinguishable without a nullable "maybe a channel".
+sealed class ChannelImport {
+  const ChannelImport();
+}
+
+/// Legacy Dart lane (`CoreFlags.jsChannel == false`): a registered, initialised
+/// [JsChannel] written under the legacy channel directory.
+final class LegacyChannelImport extends ChannelImport {
+  const LegacyChannelImport(this.channel);
+
+  final JsChannel channel;
+}
+
+/// Rust script lane (`CoreFlags.jsChannel == true`): the installed pack info.
+/// Nothing was written to the legacy channel directory.
+final class ScriptLaneChannelImport extends ChannelImport {
+  const ScriptLaneChannelImport(this.pack);
+
+  final rust_pack.ScriptPackInfo pack;
+}
+
+/// `CoreFlags.channels == true` 时旧 Dart 渠道包写入路径停用的类型化错误。
+///
+/// Rust core 接管 `channel` 域后，Dart 不得再写 zip 再让 `registerChannel`
+/// 静默拒绝；调用方按 [code] 呈现明确提示。
+class ChannelImportDisabledException implements Exception {
+  const ChannelImportDisabledException(this.message);
+
+  /// 稳定机器代码。
+  static const String code = 'CORE_E_CHANNEL_LEGACY_DISABLED';
+
+  /// 人类可读细节。
+  final String message;
+
+  @override
+  String toString() => '$code: $message';
+}
 
 /// 渠道包加载器：扫描渠道包目录 → 解析 zip 包 → 创建 [JsChannel] → 注册到 [ChannelManager]。
 ///
@@ -51,6 +99,9 @@ class ChannelLoader {
   /// 渠道包目录（默认 `文档目录/channels`）；注入可跳过 path_provider
   final Directory? _directoryOverride;
 
+  /// 门禁日志只打一次（每次 skip 都打会刷屏）。
+  static bool _disabledLogged = false;
+
   ChannelLoader({
     Dio? dio,
     ChannelAddedAppDao? appDao,
@@ -70,6 +121,29 @@ class ChannelLoader {
   /// 目录不存在或为空 → 返回空列表（不报错）；
   /// 单个渠道包无效/加载失败 → 跳过并日志，不阻塞其他。
   Future<List<JsChannel>> loadAndRegister() async {
+    // Rust ScriptApi 接管时（CoreFlags.jsChannel=true）不构建、不注册 Dart
+    // JsChannel；但启动加载必须把渠道目录里的 zip 渠道包真正导入 Rust 脚本
+    // 通道（ScriptApi.init/import），否则脚本渠道在切轨后无人加载。
+    // 旧路径（默认 false）逐字节不变。
+    if (!ChannelManager.instance.dartScriptChannelsEnabled) {
+      if (!_disabledLogged) {
+        _disabledLogged = true;
+        appLog.info(
+            'ChannelLoader: CoreFlags.jsChannel=true，Dart 脚本渠道由 Rust ScriptApi 接管');
+      }
+      final directory = await _resolveDirectory();
+      if (directory == null) return const [];
+      final imported =
+          await ScriptChannelService.instance.syncInstalledPacks(directory);
+      // Refresh the UI-facing Rust-lane cache so discovery/settings see the packs.
+      await RustScriptChannelLane.instance.refresh();
+      if (imported.isNotEmpty) {
+        appLog.info(
+            'ChannelLoader: 已向 Rust 脚本通道导入 ${imported.length} 个渠道包');
+      }
+      return const [];
+    }
+
     final directory = await _resolveDirectory();
     if (directory == null) return const [];
 
@@ -181,20 +255,35 @@ class ChannelLoader {
   ///
   /// [channelKey] 为最终渠道标识（如 `js_vivo`，与 [loadAndRegister] 的
   /// 文件名校验一致：`^[a-zA-Z_][a-zA-Z0-9_]*$`，非法抛 [ArgumentError]）。
-  /// zip 包写入渠道目录（`<key 去 js_ 前缀>.zip`，目录不存在自动创建），
-  /// 保证后续 [loadAndRegister] 扫描可 round-trip 还原同一 key（不产生
-  /// `js_js_` 双前缀重复渠道）。
   ///
-  /// 包校验（[ChannelPackage.decode]）：非 zip / 缺 entry.js / 路径穿越条目
-  /// → 抛 [ArgumentError]（调用方提示）；校验通过才落盘。
+  /// **Lane**：`CoreFlags.jsChannel == true` 时 zip 只暂存到临时文件后交给
+  /// Rust `ScriptApi.import`（返回 [ScriptLaneChannelImport]），临时文件在
+  /// `finally` 删除，失败抛 [ScriptChannelImportException] 且不写旧渠道目录；
+  /// 旧路径（默认 false）逐字节不变：写 `<key 去 js_ 前缀>.zip`（目录不存在
+  /// 自动创建），保证后续 [loadAndRegister] 扫描可 round-trip 还原同一 key。
   ///
-  /// 幂等：同名 key 已注册且包内容未变 → 直接返回现有渠道；
-  /// 内容变化 → 注销旧渠道后注册新渠道（覆盖）。
-  /// 校验失败（JS 语法错误/初始化失败）→ 回滚文件 + 抛异常（调用方提示）。
-  Future<JsChannel> importZip({
+  /// 旧路径包校验（[ChannelPackage.decode]）：非 zip / 缺 entry.js / 路径穿越
+  /// 条目 → 抛 [ArgumentError]（调用方提示）；校验通过才落盘。
+  Future<ChannelImport> importZip({
     required String channelKey,
     required Uint8List zipBytes,
   }) async {
+    if (CoreFlags.jsChannel) {
+      // Rust 脚本通道：不触碰 LegacyWriteGuard / 旧渠道目录，失败也不落盘。
+      final pack = await ScriptChannelService.instance.importPack(
+        channelKey: channelKey,
+        zipBytes: zipBytes,
+      );
+      // Keep the UI-facing Rust-lane cache in sync (discovery/settings read it).
+      await RustScriptChannelLane.instance.refresh();
+      return ScriptLaneChannelImport(pack);
+    }
+    await LegacyWriteGuard.assertAllowed('channel');
+    if (CoreFlags.channels ||
+        !ChannelManager.instance.dartScriptChannelsEnabled) {
+      throw const ChannelImportDisabledException(
+          'channels/jsChannel 已由 Rust core 接管，Dart 渠道包写入路径已停用');
+    }
     if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
       throw ArgumentError.value(
           channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
@@ -232,7 +321,7 @@ class ChannelLoader {
     final existing = manager.getChannelByKey(channelKey);
     if (existing is JsChannel && _samePackage(existing, pkg)) {
       appLog.info('ChannelLoader: 导入渠道 $channelKey 已存在且包内容未变更，跳过');
-      return existing;
+      return LegacyChannelImport(existing);
     }
 
     final channel = _buildChannel(channelKey, pkg);
@@ -256,7 +345,7 @@ class ChannelLoader {
     }
     manager.registerChannel(channel);
     appLog.info('ChannelLoader: 渠道包渠道 $channelKey 导入成功');
-    return channel;
+    return LegacyChannelImport(channel);
   }
 
   /// 删除渠道包渠道：注销注册 + 删除 .zip 文件 + 清空环境变量持久化。
@@ -266,12 +355,32 @@ class ChannelLoader {
   /// 幂等：渠道未注册（仅残留文件/env）也清理文件与 env。
   /// env 清空失败不阻塞文件删除与注销（ConfigStore 未初始化等场景容错）。
   Future<void> removeChannel(String channelKey) async {
+    if (CoreFlags.jsChannel) {
+      // Rust 脚本通道拥有渠道包：先删 Rust 侧（幂等），再清理切轨前可能
+      // 残留的旧 zip 文件；不触碰旧 env 存储（Rust 侧已随包清理）。
+      if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
+        throw ArgumentError.value(
+            channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
+      }
+      await ScriptChannelService.instance.removePack(channelKey);
+      // Keep the UI-facing Rust-lane cache in sync after a delete.
+      await RustScriptChannelLane.instance.refresh();
+      final directory = await _resolveDirectory();
+      if (directory != null) {
+        final fileName = channelKey.startsWith('js_')
+            ? channelKey.substring(3)
+            : channelKey;
+        final file = File('${directory.path}/$fileName.zip');
+        if (file.existsSync()) file.deleteSync();
+      }
+      appLog.info('ChannelLoader: 渠道包渠道 $channelKey 已从 Rust 脚本通道删除');
+      return;
+    }
+    await LegacyWriteGuard.assertAllowed('channel');
     if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
       throw ArgumentError.value(
           channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
     }
-
-    // 注销（内部 dispose）；未注册则跳过
     ChannelManager.instance.unregisterChannelByKey(channelKey);
 
     // 清空 env 持久化（channel_env_<key> 敏感路由；未注册渠道也清理残留）

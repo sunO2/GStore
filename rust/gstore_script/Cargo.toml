@@ -1,0 +1,26 @@
+[package]
+name = "gstore_script"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "gstore_script"
+# rlib only: consumed in-process by gstore_core / gstore_host in later todos.
+crate-type = ["rlib"]
+
+[dependencies]
+# QuickJS bindings. `futures` drives the job queue, `loader` allows later module
+# loading, `macro` enables the function/class derive macros used by the host bridge.
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "loader", "macro"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# rquickjs ships no pre-generated bindings for Android, so the `bindgen` feature
+# is enabled only for Android builds (generates bindings with the NDK's libclang).
+# Scoping it to the target keeps host builds free of the libclang requirement.
+[target.'cfg(target_os = "android")'.dependencies]
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "loader", "macro", "bindgen"] }

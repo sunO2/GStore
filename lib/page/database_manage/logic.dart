@@ -8,6 +8,8 @@ import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'package:gstore/core/core.dart';
 
+import 'package:gstore/core/service/legacy_write_guard.dart';
+
 import 'state.dart';
 
 /// 删除判定结果。
@@ -174,8 +176,7 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
 
   /// 只读打开独立连接（singleInstance: false），close 不影响 Floor/其它持有者。
   Future<sqflite.Database> _openReadOnly(String path) {
-    return sqflite.openDatabase(path,
-        readOnly: true, singleInstance: false);
+    return sqflite.openDatabase(path, readOnly: true, singleInstance: false);
   }
 
   /// 可写打开独立连接（用于删除行），close 不影响 Floor 常驻连接。
@@ -322,7 +323,8 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
   // ---------- 行级删除 ----------
 
   /// 删除前守卫：返回是否允许 + 提示。
-  Future<_DeleteGuard> _guardDelete(String table, Map<String, Object?> row) async {
+  Future<_DeleteGuard> _guardDelete(
+      String table, Map<String, Object?> row) async {
     // 受管只读主表
     final readonlyReason = _readonlyTables[table];
     if (readonlyReason != null) {
@@ -359,6 +361,23 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     if (state.busy) return false;
     state = state.copyWith(busy: true);
     try {
+      // 跨域原始删除：按表名映射到拥有该域的 Rust 标记（未知表不设防）
+      switch (table) {
+        case 'channel_added_app':
+          await LegacyWriteGuard.assertAllowed('channel');
+          break;
+        case 'added_apps':
+        case 'added_app_tags':
+        case 'config':
+        case 'category':
+        case 'apps_fts':
+          await LegacyWriteGuard.assertAllowed('catalog');
+          break;
+        case 'DownloadTaskEntity':
+        case 'download_task':
+          await LegacyWriteGuard.assertAllowed('download');
+          break;
+      }
       final conn = await _openWritable(dbPath);
       try {
         final guard = await _guardDelete(table, row);
@@ -411,8 +430,8 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
         table == 'added_app_tags';
     if (isUserAppTable) {
       try {
-        DatabaseEventBus.instance
-            .send(const DatabaseChangeEvent(type: DatabaseChangeType.appDeleted));
+        DatabaseEventBus.instance.send(
+            const DatabaseChangeEvent(type: DatabaseChangeType.appDeleted));
       } catch (e) {
         appLog.warning('DatabaseManage: 事件总线发送失败 - $e');
       }

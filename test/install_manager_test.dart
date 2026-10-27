@@ -1,7 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/download/download_facade.dart';
+import 'package:gstore/core/install/install_facade.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
 /// 可配置结果的 ShizukuApi 假实现（shizuku_api 1.2.2 的 ShizukuApi 为非 final class，
@@ -27,6 +32,132 @@ class _FakeShizukuApi extends ShizukuApi {
 
   @override
   Future<bool?> requestPermission() async => true;
+}
+
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  _FakeFlagsBackend(this.snapshot);
+
+  CoreFlagsSnapshot snapshot;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {
+    snapshot = CoreFlagsSnapshot(
+      channels: patch.channel ?? snapshot.channels,
+      catalog: patch.catalog ?? snapshot.catalog,
+      update: patch.update ?? snapshot.update,
+      download: patch.download ?? snapshot.download,
+      install: patch.install ?? snapshot.install,
+      jsChannel: patch.jsChannel ?? snapshot.jsChannel,
+      coreWrites: snapshot.coreWrites,
+    );
+  }
+}
+
+Future<void> _setInstallFlags() async {
+  CoreFlags.installBackend(
+    _FakeFlagsBackend(const CoreFlagsSnapshot(download: true, install: true)),
+  );
+  await CoreFlags.refresh();
+}
+
+class _EmptyDownloadBackend implements DownloadBackend {
+  final List<String> calls = <String>[];
+
+  @override
+  Future<int> start(rust.DownloadStartRequest request) async => 0;
+
+  @override
+  Future<List<rust.DownloadTaskDto>> list() async {
+    calls.add('list');
+    return const <rust.DownloadTaskDto>[];
+  }
+
+  @override
+  Future<rust.DownloadTaskDto?> get(String moduleTaskId) async => null;
+
+  @override
+  Future<void> pause(String moduleTaskId) async {}
+
+  @override
+  Future<void> resume(String moduleTaskId) async {}
+
+  @override
+  Future<void> cancel(String moduleTaskId) async {}
+
+  @override
+  Future<void> retry(String moduleTaskId) async {}
+
+  @override
+  Future<void> restart(String moduleTaskId) async {}
+
+  @override
+  Future<void> remove(String moduleTaskId) async {}
+
+  @override
+  Stream<rust.DownloadTaskDto> watchAll() => const Stream.empty();
+}
+
+class _FakeInstallBackend implements InstallBackend {
+  _FakeInstallBackend({this.installError});
+
+  final Object? installError;
+  final List<String> calls = <String>[];
+  int getCalls = 0;
+
+  @override
+  Future<InstallStart> install(String moduleTaskId) async {
+    calls.add('install:$moduleTaskId');
+    final error = installError;
+    if (error != null) throw error;
+    return const InstallStart(
+      record: InstallRecord(
+        moduleTaskId: 'task-1',
+        appId: 'com.example.app',
+        status: 'installed',
+        method: 'shizuku',
+      ),
+    );
+  }
+
+  @override
+  Future<List<InstallStart>> pendingRequests() async {
+    calls.add('pendingRequests');
+    return const <InstallStart>[];
+  }
+
+  @override
+  Future<InstallResultAck> reportResult(InstallReport report) async {
+    calls.add('reportResult:${report.status}');
+    return InstallResultAck(
+      sessionId: report.sessionId,
+      status: report.status,
+      changed: true,
+    );
+  }
+
+  @override
+  Future<List<String>> takeEvents() async {
+    calls.add('takeEvents');
+    return const <String>[];
+  }
+
+  @override
+  Future<InstallRecord?> get(String moduleTaskId) async {
+    getCalls++;
+    calls.add('get:$moduleTaskId');
+    return null;
+  }
+
+  @override
+  Future<void> uninstall(String packageName) async =>
+      calls.add('uninstall:$packageName');
+
+  @override
+  Future<void> launch(String packageName) async =>
+      calls.add('launch:$packageName');
 }
 
 void main() {
@@ -67,6 +198,9 @@ void main() {
 
     setUp(() {
       InstallManager.resetForTest();
+      InstallFacade.resetForTest();
+      DownloadFacade.backendOverride = _EmptyDownloadBackend();
+      LegacyWriteGuard.resetForTest();
       fakeApi = _FakeShizukuApi();
       final manager = InstallManager.instance;
       manager.shizukuApiForTest = fakeApi;
@@ -85,6 +219,10 @@ void main() {
     tearDown(() {
       if (tempApk.existsSync()) tempApk.deleteSync();
       InstallManager.resetForTest();
+      InstallFacade.resetForTest();
+      DownloadFacade.backendOverride = null;
+      LegacyWriteGuard.resetForTest();
+      CoreFlags.resetBackend();
     });
 
     group('installApk', () {
@@ -93,47 +231,113 @@ void main() {
         final result = await InstallManager.instance.installApk(tempApk.path);
 
         // 回归点：此前 result != null 判定会把 Failure 误判为 (true, shizuku)
-        expect(result, isNot((true, InstallMethod.shizuku)));
+        expect(result, isNot((InstallOutcome.installed, InstallMethod.shizuku)));
         // 已落入回退系统安装路径（测试宿主非 Android，AppInstaller no-op 返回成功）
         expect(result.$2, InstallMethod.system);
+        // 启动系统安装器 Intent 绝不等于"已安装"：只允许 launched。
+        expect(result.$1, InstallOutcome.launched);
       });
 
-      test('runCommand 返回 Success → (true, shizuku)', () async {
+      test('runCommand 返回 Success → (installed, shizuku)', () async {
         fakeApi.runResult = 'Success';
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, (true, InstallMethod.shizuku));
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
       });
 
       test('runCommand 返回 null → 落入回退系统安装，不误判成功', () async {
         fakeApi.runResult = null;
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, isNot((true, InstallMethod.shizuku)));
+        expect(result, isNot((InstallOutcome.installed, InstallMethod.shizuku)));
         expect(result.$2, InstallMethod.system);
       });
 
-      test('非 Android 平台 → 提前返回 (false, preferredMethod)', () async {
+      test('非 Android 平台 → 提前返回 (failed, preferredMethod)', () async {
         InstallManager.instance.setIsAndroidForTest(false);
         final result = await InstallManager.instance.installApk(tempApk.path);
 
-        expect(result, (false, InstallMethod.system));
+        expect(result, (InstallOutcome.failed, InstallMethod.system));
         expect(fakeApi.commands, isEmpty);
+      });
+
+      test('install_core_task_missing_row_is_typed', () async {
+        await _setInstallFlags();
+        final install = _FakeInstallBackend(
+          installError: const InstallCoreException(
+            'CORE_E_INSTALL_NOT_FOUND',
+            'no mirrored row',
+          ),
+        );
+        InstallManager.installFacadeForTest = InstallFacade(backend: install);
+        final manager = InstallManager.instance
+          ..setShizukuStateForTest(binder: true, permission: true)
+          ..setIsAndroidForTest(true);
+
+        await expectLater(
+          manager.installTask('task-404', tempApk.path),
+          throwsA(
+            isA<InstallCoreException>().having(
+              (InstallCoreException e) => e.code,
+              'code',
+              'CORE_E_INSTALL_NOT_FOUND',
+            ),
+          ),
+        );
+        expect(install.calls, <String>['pendingRequests', 'install:task-404']);
+        expect(install.getCalls, 0,
+            reason: 'a typed NOT_FOUND must not start an install poller');
+        expect(fakeApi.commands, isEmpty);
+      });
+
+      test('install_direct_apk_creates_no_core_state', () async {
+        await _setInstallFlags();
+        final install = _FakeInstallBackend();
+        InstallManager.installFacadeForTest = InstallFacade(backend: install);
+        fakeApi.runResult = 'Success';
+        final manager = InstallManager.instance
+          ..setShizukuStateForTest(binder: true, permission: true)
+          ..setIsAndroidForTest(true);
+
+        final result = await manager.installApk(tempApk.path);
+
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
+        expect(install.calls, isEmpty,
+            reason: 'a direct APK install must create no core state');
+        expect(fakeApi.commands, hasLength(1));
+      });
+
+      test('manual install still works while the install marker is armed',
+          () async {
+        await _setInstallFlags();
+        final install = _FakeInstallBackend();
+        InstallManager.installFacadeForTest = InstallFacade(backend: install);
+        LegacyWriteGuard.probeOverride = (domain) async => domain == 'install';
+        fakeApi.runResult = 'Success';
+        final manager = InstallManager.instance
+          ..setShizukuStateForTest(binder: true, permission: true)
+          ..setIsAndroidForTest(true);
+
+        final result = await manager.installApk(tempApk.path);
+
+        expect(result, (InstallOutcome.installed, InstallMethod.shizuku));
+        expect(install.calls, isEmpty);
+        expect(fakeApi.commands, hasLength(1));
       });
     });
 
     group('_runShizukuCommand 链路', () {
-      test('managePackage(uninstall) 返回 Failure [DELETE_FAILED] → false',
-          () async {
-        fakeApi.runResult = 'Failure [DELETE_FAILED_DEVICE_OWNER]';
+      test('managePackage(uninstall) always uses the core facade', () async {
+        final install = _FakeInstallBackend();
+        InstallManager.installFacadeForTest = InstallFacade(backend: install);
         final ok = await InstallManager.instance.managePackage(
           'com.example.app',
           'uninstall',
         );
 
-        expect(ok, isFalse);
-        expect(fakeApi.commands.single,
-            'pm uninstall --user 0 "com.example.app"');
+        expect(ok, isTrue);
+        expect(install.calls, <String>['uninstall:com.example.app']);
+        expect(fakeApi.commands, isEmpty);
       });
 
       test('clearAppData 返回 Success → true', () async {

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -147,7 +148,14 @@ class DbManager {
     return;
   }
 
+  /// 旧本地库注册写入（Wave 6 closeout 后由 `CatalogFacade` 的 core catalog 接管）。
+  @Deprecated(
+    'Legacy local apps.db repository write; superseded by CatalogFacade / '
+    'CatalogApi.refresh (catalog). Kept only as the CoreFlags.catalog == false '
+    'backend.',
+  )
   Future<void> addDBRepositroy(DBRepository dbRepositroy) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     return;
   }
 
@@ -220,8 +228,18 @@ class DbManager {
     return null;
   }
 
-  /// 检查数据库更新
+  /// 检查数据库更新（旧 apps.db 重建写入）。
+  ///
+  /// Wave 6 closeout 后 catalog 归 core：生产路径是 `CatalogFacade.refresh` /
+  /// `DbHandle::replace_from_snapshot`，这里只保留为 `CoreFlags.catalog == false`
+  /// 的旧后端，并由 `LegacyWriteGuard` 的 `catalog` 标记兜底。
+  @Deprecated(
+    'Legacy apps.db download+rebuild write; superseded by '
+    'CatalogFacade.refresh / DbHandle::replace_from_snapshot (catalog). '
+    'Guarded by LegacyWriteGuard.assertAllowed(catalog).',
+  )
   Future<int> _checkUpdateDBOfRepositroy(String target) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     DBRepository dbRepositroy = dbRepositroies[target]!;
     appLog.info('DbManager: ===== 开始下载数据库更新 ($target) =====');
     final info = await _getLatestReleaseInfo(target);

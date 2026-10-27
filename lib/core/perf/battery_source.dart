@@ -5,8 +5,8 @@
 /// `perf.battery`（开销最小的主源）电流 / 电压恒为 null。本文件在其上叠加三个
 /// **免权限**兜底源并逐字段合并：
 /// 1. [PerfModule.battery]（sysfs；`source='sysfs'`）；
-/// 2. Rust JNI → Kotlin `BatteryChannel.readJson`（`source='rust_jni'`；宿主
-///    缓存 `applicationContext` 后直接 JNI 静态调用，无平台通道往返）；
+/// 2. `gstore/platform.readBattery`（`source='rust_jni'`；键名与 Kotlin
+///    `BatteryChannel.readJson` 完全一致，历史来源标签保留以维持合并语义）；
 /// 3. Android `BatteryManager` 原生通道（`gstore/battery`；
 ///    `source='battery_manager'`，见 Kotlin `BatteryChannel`）；
 /// 4. `dumpsys battery`（经既有 [PrivilegedShell] / Shizuku；
@@ -21,14 +21,14 @@
 /// Shizuku / FFI。
 library;
 
-import 'dart:convert' show jsonDecode;
+import 'dart:convert' show jsonDecode, jsonEncode;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart'
     show MethodChannel, MissingPluginException, PlatformException;
 
 import 'package:gstore/core/perf/privileged_shell.dart';
-import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
+import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/rust/perf/PerfContract.dart' show BatteryReport;
 import 'package:gstore/core/rust/perf/PerfModule.dart' show PerfModule;
 
@@ -209,9 +209,9 @@ BatteryReading batteryReadingFromBatteryManagerMap(
 ) =>
     _batteryReadingFromMap(map, source: 'battery_manager');
 
-/// 把 Rust JNI `battery_read_json` 的 JSON 归一为 [BatteryReading]
-/// （`source='rust_jni'`）。字段键与 Kotlin Map 一致；JSON 非法 / 非对象 →
-/// `null`（**绝不抛出**）。
+/// 把 `gstore/platform.readBattery` 的 JSON 归一为 [BatteryReading]
+/// （`source='rust_jni'`，历史标签）。字段键与 Kotlin Map 一致；JSON 非法 /
+/// 非对象 → `null`（**绝不抛出**）。
 BatteryReading? batteryReadingFromRustJniJson(String json) {
   try {
     final decoded = jsonDecode(json);
@@ -259,31 +259,46 @@ BatteryReading _batteryReadingFromMap(
   );
 }
 
-/// Rust JNI 电池读取 seam（生产：FRB `battery_read_json` /
-/// `battery_power_interactive`）。
+/// 电池读取 seam（生产：`gstore/platform.readBattery`）。
 typedef RustBatteryJsonReader = Future<String?> Function();
 typedef RustBatteryInteractiveReader = Future<bool?> Function();
 
-/// Rust JNI → Kotlin `BatteryChannel` 的 Dart 门面。
+/// `gstore/platform.readBattery` 的 Dart 门面。
 ///
-/// 生产默认走生成的 FRB 函数（宿主侧再经 JNI 静态调用，无 `gstore/battery`
-/// 平台通道往返）；[readJson] / [readInteractive] 可注入，单测无需 FFI。
-/// 所有入口**绝不抛出**（异常 / 未初始化 → `null`）。
+/// 类名与构造参数保持历史形状（调用方 / 合并层无需改动）；生产默认走
+/// [PlatformChannelClient.readBattery]。[readJson] / [readInteractive] 可注入，
+/// 单测无需平台通道。所有入口**绝不抛出**（异常 / 未实现 → `null`）。
 class RustJniBatteryBridge {
   RustJniBatteryBridge({
     RustBatteryJsonReader? readJson,
     RustBatteryInteractiveReader? readInteractive,
-  })  : _readJson = readJson ?? _defaultReadJson,
-        _readInteractive = readInteractive ?? _defaultReadInteractive;
+    PlatformChannelClient? client,
+  })  : _readJson = readJson ?? (() => _readBatteryJson(client)),
+        _readInteractive =
+            readInteractive ?? (() async => _readInteractiveFrom(client));
 
   final RustBatteryJsonReader _readJson;
   final RustBatteryInteractiveReader _readInteractive;
 
-  static Future<String?> _defaultReadJson() =>
-      RustLib.instance.api.crateBridgeBatteryReadJson();
+  static final PlatformChannelClient _defaultClient = PlatformChannelClient();
 
-  static Future<bool?> _defaultReadInteractive() =>
-      RustLib.instance.api.crateBridgeBatteryPowerInteractive();
+  static Future<String?> _readBatteryJson(PlatformChannelClient? client) async =>
+      jsonEncode(await (client ?? _defaultClient).readBattery());
+
+  static Future<bool?> _readInteractiveFrom(
+    PlatformChannelClient? client,
+  ) async {
+    final payload = await (client ?? _defaultClient).readBattery();
+    final value = payload['interactive'];
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final text = value.trim().toLowerCase();
+      if (text == 'true' || text == '1') return true;
+      if (text == 'false' || text == '0') return false;
+    }
+    return null;
+  }
 
   /// 读取一次并解析为 [BatteryReading]（`source='rust_jni'`）。
   Future<BatteryReading?> read() async {

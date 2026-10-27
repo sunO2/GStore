@@ -5,6 +5,11 @@
 
 set -e
 
+# Rust 交叉编译环境助手（bindgen 需要 NDK sysroot + clang 内建头）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=rust/android_env.sh
+source "$SCRIPT_DIR/rust/android_env.sh"
+
 # 颜色
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -96,6 +101,9 @@ for arch in "${!TARGETS[@]}"; do
             sed -i "s|/opt/android-sdk/ndk/[0-9.]*|/opt/android-sdk/ndk/$NDK_VERSION|g" .cargo/config.toml
             sed -i "s|$NDK_PATH|/opt/android-sdk/ndk/$NDK_VERSION|g" .cargo/config.toml
         fi
+
+        # bindgen（rquickjs-sys）需要 NDK sysroot + clang 内建头，API 33 与本仓一致
+        android_env "$NDK_PATH" "$target" 33
     fi
 
     # 构建

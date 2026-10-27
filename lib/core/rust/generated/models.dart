@@ -83,10 +83,7 @@ class DownloadResult {
   final int totalApps;
   final int downloadTimeMs;
 
-  const DownloadResult({
-    required this.totalApps,
-    required this.downloadTimeMs,
-  });
+  const DownloadResult({required this.totalApps, required this.downloadTimeMs});
 
   @override
   int get hashCode => totalApps.hashCode ^ downloadTimeMs.hashCode;

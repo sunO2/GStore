@@ -58,6 +58,9 @@ class ConfigKeys {
   /// 按应用性能模式总开关（false = 不自动应用任何档案；默认关闭 fail-closed）
   static const String perfProfilesEnabled = 'perf.profiles.enabled';
 
+  /// 电池/功耗历史采样器开关（默认关闭；仅用户显式开启性能监控后启动）
+  static const String perfHistoryEnabled = 'perf.history.enabled';
+
   // ---- 模块开关（module.<name>.enabled，见 ModuleToggleConfig.keyOf）----
 
   /// 渠道模块开关
@@ -231,6 +234,17 @@ class AppCoreConfigModule extends ConfigModule {
           description: '按应用性能模式总开关（默认关闭；开启后前台应用切换时自动应用其档案）',
           descriptionEn:
               'Per-app performance mode master switch (default off; auto-applies profiles on foreground switch)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.perfHistoryEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: false,
+          agentAccessible: false,
+          category: 'perf',
+          description:
+              '电池/功耗历史采样器开关（默认关闭；仅用户显式开启性能监控后启动，App 启动时读取）',
+          descriptionEn:
+              'Battery/power history sampler switch (default off; starts only after the user explicitly enables perf monitoring; read at app startup)',
         ),
         // ---- 模块开关（持久化，未设置默认启用）----
         const ConfigEntry(

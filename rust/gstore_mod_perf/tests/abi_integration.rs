@@ -5,9 +5,11 @@ use std::ffi::{c_void, CStr, CString};
 
 use gstore_contract::abi::{
     GStoreModuleApi, GStoreModuleEntry, ABI_ERR_DETAIL, ABI_OK, GSTORE_MODULE_ABI_VERSION,
+    MIN_HOST_ABI,
 };
 use gstore_mod_perf::{
-    call_export, create_export, destroy_export, free_export, gstore_mod_perf_register,
+    call_export, create_export, destroy_export, free_export, gstore_mod_perf_abi,
+    gstore_mod_perf_register,
 };
 
 fn call(instance: u64, method: &str, payload: &[u8]) -> (i32, Vec<u8>) {
@@ -36,20 +38,27 @@ fn call(instance: u64, method: &str, payload: &[u8]) -> (i32, Vec<u8>) {
 #[test]
 fn register_reports_perf_and_abi_v3() {
     let entry = GStoreModuleEntry {
-        abi_version: GSTORE_MODULE_ABI_VERSION,
-        entry_size: std::mem::size_of::<GStoreModuleEntry>() as u32,
+        abi_version: 3,
+        entry_size: GStoreModuleEntry::PLATFORM_OFFSET as u32,
         log: None,
         alloc: None,
         free: None,
         emit_event: None,
         context: std::ptr::null_mut(),
         protect_fd: None,
+        platform: std::ptr::null(),
     };
     let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
     assert_eq!(gstore_mod_perf_register(&entry, api.as_mut_ptr()), ABI_OK);
     let api = unsafe { api.assume_init() };
     assert_eq!(unsafe { CStr::from_ptr(api.name) }.to_str().unwrap(), "perf");
-    assert_eq!(api.min_host_abi, GSTORE_MODULE_ABI_VERSION);
+    assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+}
+
+#[test]
+fn abi_probe_reports_build_version() {
+    assert_eq!(gstore_mod_perf_abi(), GSTORE_MODULE_ABI_VERSION);
+    assert_eq!(gstore_mod_perf_abi(), 4);
 }
 
 #[test]

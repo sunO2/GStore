@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart' show CancelToken, DioException, DioExceptionType;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import '../download_paths.dart';
@@ -201,6 +202,7 @@ class DownloadManager implements IDownloadService {
   }
 
   @override
+
   /// 见 [IDownloadService.restart]。Dart 引擎没有独立的"清分段重下"，沿用 retry 行为。
   @override
   Future<void> restart(int id) => retry(id);
@@ -252,7 +254,36 @@ class DownloadManager implements IDownloadService {
   Future<void> remove(int id) => repository.deleteById(id);
 
   /// 启动一次下载运行，由 download/downloadWithContext/resume/retry/_processQueue 共用。
+  ///
+  /// 后台任务入口：绝不把拒绝的 Future 漏给调用方（`unawaited` 站点）。
+  ///
+  /// 标记在下载中途被激活时，`repository.save` 会抛
+  /// [LegacyWriteBlocked]，而失败行补写会再抛一次；这里统一记录，避免
+  /// 未处理的异步错误，同时保留其他异常的可观测性。
   Future<void> _startRun({
+    required DownloadTask task,
+    required String url,
+    required Map<String, String>? headers,
+    required int? fileSize,
+    required bool resume,
+    required bool installAfterDownload,
+  }) async {
+    try {
+      await _runTask(
+        task: task,
+        url: url,
+        headers: headers,
+        fileSize: fileSize,
+        resume: resume,
+        installAfterDownload: installAfterDownload,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('DownloadManager: 后台下载任务异常（已记录） - $error');
+      debugPrint('$stackTrace');
+    }
+  }
+
+  Future<void> _runTask({
     required DownloadTask task,
     required String url,
     required Map<String, String>? headers,
@@ -268,19 +299,25 @@ class DownloadManager implements IDownloadService {
       for (final p in <String>[task.filePath, '${task.filePath}.temp']) {
         final f = File(p);
         if (await f.exists()) {
-          try { await f.delete(); } catch (_) {}
+          try {
+            await f.delete();
+          } catch (_) {}
         }
       }
       for (var i = 0; i < 100; i++) {
         final part = File('${task.filePath}.part$i');
         if (!await part.exists()) break;
-        try { await part.delete(); } catch (_) {}
+        try {
+          await part.delete();
+        } catch (_) {}
       }
     } else {
       // 断点续传：清理历史遗留的无索引 .part，保留 .temp 与 .part{i} 以便续传
       final legacy = File('${task.filePath}.part');
       if (await legacy.exists()) {
-        try { await legacy.delete(); } catch (_) {}
+        try {
+          await legacy.delete();
+        } catch (_) {}
       }
     }
 
@@ -311,8 +348,7 @@ class DownloadManager implements IDownloadService {
       await repository.save(current);
       // 通知栏进度 + 前台服务保活（任务真正开始下载时才启动，排队任务不触发）。
       final notifId = id;
-      final notifTitle =
-          task.appName.isNotEmpty ? task.appName : task.appId;
+      final notifTitle = task.appName.isNotEmpty ? task.appName : task.appId;
       DownloadNotificationService.instance.onDownloadStart(
         notifId,
         notifTitle,
@@ -407,8 +443,7 @@ class DownloadManager implements IDownloadService {
         // （存在/非空/APK 魔数），不再拿渠道元数据 total（如 vivo KB 换算误差）
         // 与磁盘长度比对——否则会误删已完整下载的 APK。
         final finalFile = File(task.filePath);
-        final diskLength =
-            finalFile.existsSync() ? finalFile.lengthSync() : 0;
+        final diskLength = finalFile.existsSync() ? finalFile.lengthSync() : 0;
         if (!_isValidFile(task.filePath, diskLength)) {
           await repository.save(current.copyWith(
             status: DownloadStatusEnum.failed,
@@ -418,8 +453,8 @@ class DownloadManager implements IDownloadService {
           try {
             await finalFile.delete();
           } catch (_) {}
-          DownloadNotificationService.instance.onDownloadError(
-              notifId, notifTitle);
+          DownloadNotificationService.instance
+              .onDownloadError(notifId, notifTitle);
           throw StateError('下载文件校验失败');
         }
         // 大小对账：以磁盘实际字节数为准收口（收到的即真实的）。
@@ -438,7 +473,14 @@ class DownloadManager implements IDownloadService {
         _cancelTokens.remove(id);
         DownloadNotificationService.instance.onDownloadComplete(notifId);
         if (onApkReady != null && installAfterDownload) {
-          unawaited(Future<void>(() => onApkReady!(task.filePath)));
+          unawaited(
+            Future<void>(() => onApkReady!(task.filePath)).catchError(
+              (Object error, StackTrace stackTrace) {
+                debugPrint('DownloadManager: onApkReady 回调失败（已记录） - $error');
+                debugPrint('$stackTrace');
+              },
+            ),
+          );
         }
       } catch (e) {
         final isCancel = cancelToken.isCancelled ||
@@ -446,8 +488,7 @@ class DownloadManager implements IDownloadService {
         if (isCancel) {
           if (_pausedIds.remove(id)) {
             final disk = _diskBytes(task.filePath);
-            final effective =
-                current.received < disk ? disk : current.received;
+            final effective = current.received < disk ? disk : current.received;
             await repository.save(current.copyWith(
               status: DownloadStatusEnum.paused,
               received: effective,
@@ -471,8 +512,8 @@ class DownloadManager implements IDownloadService {
             error: message,
             updatedAt: DateTime.now(),
           ));
-          DownloadNotificationService.instance.onDownloadError(
-              notifId, notifTitle);
+          DownloadNotificationService.instance
+              .onDownloadError(notifId, notifTitle);
         }
       }
     } finally {
@@ -538,7 +579,8 @@ class DownloadManager implements IDownloadService {
 
   /// 委托 [DownloadPaths]：路径规则必须与 Rust 内核共用同一份，避免两边漂移
   Future<String> _savePathFor(String? saveFileName, String fileName) =>
-      DownloadPaths.resolveSavePath(saveFileName: saveFileName, fileName: fileName);
+      DownloadPaths.resolveSavePath(
+          saveFileName: saveFileName, fileName: fileName);
 
   /// 磁盘上实际已下载字节：优先最终文件，其次 .temp，其次 .part0..N 之和。
   int _diskBytes(String savePath) {

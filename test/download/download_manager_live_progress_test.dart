@@ -39,7 +39,12 @@ class _FakeDownloadService implements IDownloadService {
   Future<void> restart(int id) async {}
 
   @override
-  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
+  Stream<DownloadTask> watchAll() => _watchAllController.stream;
+
+  /// 列表级 watch 流：面板已改为**单订阅** `watchAll()`（不再每任务一条
+  /// `watch(id)`），fake 的 push 必须喂给这条流，否则面板收不到更新。
+  final _watchAllController = StreamController<DownloadTask>.broadcast();
+
   final _controllers = <int, StreamController<DownloadTask>>{};
 
   StreamController<DownloadTask> _controller(int id) =>
@@ -52,7 +57,7 @@ class _FakeDownloadService implements IDownloadService {
   void push(DownloadTask task) {
     final id = task.id;
     if (id != null) _tasks[id] = task;
-    _controllers[task.id]?.add(task);
+    _watchAllController.add(task);
   }
 
   @override
@@ -129,7 +134,7 @@ DownloadTask _task({int? id}) {
 /// 修复：改为复制内层/外层列表，保证赋值的是“新引用”→ Rx 必然通知。
 ///
 /// 无法直接调用私有 `_onTaskUpdate`，改走公开路径：
-/// `loadTasks()` → `_resubscribeWatches` → `service.watch(id).listen(_onTaskUpdate)`，
+/// `loadTasks()` → `_ensureWatchSubscription` → `service.watchAll().listen(_onTaskUpdate)`，
 /// 用假 `IDownloadService` 手动 push 一个 `received` 更大的任务，
 /// 断言 `downloadGroups` 的 Rx 发生了通知（emit 计数 +1）且值已更新。
 void main() {

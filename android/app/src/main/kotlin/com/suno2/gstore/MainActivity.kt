@@ -2,9 +2,7 @@ package com.suno2.gstore
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.content.pm.Signature
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -13,19 +11,19 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
-import java.security.cert.CertificateFactory
-import java.security.cert.X509Certificate
+import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -43,6 +41,9 @@ class MainActivity : FlutterActivity() {
         /// 性能悬浮窗触发通道：负责 SYSTEM_ALERT_WINDOW 授权引导与
         /// PerfOverlayService 的启停（悬浮窗逻辑在 Service 内）。
         private const val PERF_OVERLAY_CHANNEL = "gstore/perf_overlay"
+
+        /// 安装终端事件通道（EventChannel）：InstallerBridge 的唯一结果出口。
+        private const val INSTALL_EVENTS_CHANNEL = "gstore/install_events"
 
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
@@ -95,10 +96,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 应用启动即初始化 Shizuku 特权执行薄壳：加载 libgstore_host + 回调 Rust
-        // 侧 nativeInit（缓存 JavaVM 与本类 GlobalRef），供 Rust 经 JNI 执行 shell。
-        // best-effort：失败静默绝不崩溃，不依赖 VPN/Flutter 引擎启动时序。
-        ShizukuExecBridge.ensureInit(applicationContext)
+        // 平台能力通道（清单/设备/性能读数/Shizuku 执行）：只缓存 applicationContext，
+        // 方法处理器在 configureFlutterEngine 中注册。
+        PlatformChannel.init(applicationContext)
+        // 安装执行层：缓存 applicationContext（终端结果经 gstore/install_events 回传）。
+        runCatching { InstallerBridge.init(applicationContext) }
+            .onFailure { Log.w(TAG, "InstallerBridge.init 失败（忽略）: ${it.message}") }
+        // 通知 / 前台服务：创建渠道并跟踪前台 Activity，供 Dart 通道发布通知。
+        runCatching { NotificationBridge.init(applicationContext) }
+            .onFailure { Log.w(TAG, "NotificationBridge.init 失败（忽略）: ${it.message}") }
         if (intent?.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
             Log.i(TAG, "onCreate: 收到管理空间入口请求")
@@ -115,9 +121,13 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供 Rust JNI
-        // `frame_metrics_read_json` 读取。幂等；失败静默。
+        // 本应用自身帧指标（FrameMetrics，API 24+）：前台期间采集，供
+        // `gstore/platform.readFrameMetrics` 读取。幂等；失败静默。
         FrameMetricsCollector.attach(this)
+        // 高刷新率（120Hz 等）：Surface 在后台恢复后可能重建，重新应用设备支持的
+        // 最高 fps（幂等、best-effort；不支持 / 异常一律静默，绝不影响前台恢复）。
+        runCatching { DisplayRefreshChannel.applyHighestRefreshRate(this) }
+            .onFailure { Log.w(TAG, "高刷新率应用失败（忽略）: ${it.message}") }
     }
 
     override fun onPause() {
@@ -141,10 +151,31 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// 绑定 `gstore/install_events`：listen 时接上 sink，cancel 时清空（热重启安全）。
+    private fun registerInstallEvents(flutterEngine: FlutterEngine) {
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, INSTALL_EVENTS_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    InstallerBridge.setEventSink(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    InstallerBridge.clearEventSink()
+                }
+            })
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // 免权限电池数据源兜底（SELinux 拒绝 sysfs current_now/voltage_now 时）。
         BatteryChannel.register(flutterEngine, applicationContext)
+        // 平台能力 / 通知 / 安装终端事件：Dart 侧的行为入口（替代已删除的 JNI 桥）。
+        PlatformChannel.register(flutterEngine.dartExecutor.binaryMessenger)
+        // 高刷新率请求通道：Dart 启动时调用，读设备支持模式并应用最高 fps
+        // （120Hz 等）。不新增依赖 / 权限，逻辑全在 DisplayRefreshChannel。
+        DisplayRefreshChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
+        NotificationBridge.register(flutterEngine.dartExecutor.binaryMessenger)
+        registerInstallEvents(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "openUninstall" -> {
@@ -605,70 +636,23 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val pm = packageManager
-                        val packageInfo = pm.getPackageInfo(
-                            packageName,
-                            PackageManager.GET_ACTIVITIES or
-                                PackageManager.GET_SERVICES or
-                                PackageManager.GET_RECEIVERS or
-                                PackageManager.GET_PROVIDERS or
-                                PackageManager.GET_PERMISSIONS
-                        )
-
-                        // 组件状态：完整类名 → map(type × name → exported/enabled/processName)
-                        fun componentStates(
-                            name: String?,
-                            type: String,
-                            exported: Boolean,
-                            enabled: Boolean,
-                            processName: String?
-                        ): Map<String, Any>? {
-                            if (name.isNullOrEmpty()) return null
-                            return mapOf(
-                                "type" to type,
-                                "name" to name,
-                                "exported" to exported,
-                                "enabled" to enabled,
-                                "processName" to (processName ?: "")
+                        val report = InventoryInspector.components(pm, packageName)
+                        val components = report.components.map {
+                            mapOf(
+                                "type" to it.kind,
+                                "name" to it.name,
+                                "exported" to it.exported,
+                                "enabled" to it.enabled,
+                                "processName" to (it.processName ?: "")
                             )
                         }
-
-                        val components = mutableListOf<Map<String, Any>>()
-                        packageInfo.activities?.forEach {
-                            componentStates(it.name, "ACTIVITY", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
+                        val permissionStates = report.permissionStates.map {
+                            mapOf(
+                                "name" to it.name,
+                                "granted" to it.granted,
+                                "neverForLocation" to it.neverForLocation
+                            )
                         }
-                        packageInfo.services?.forEach {
-                            componentStates(it.name, "SERVICE", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-                        packageInfo.receivers?.forEach {
-                            componentStates(it.name, "RECEIVER", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-                        packageInfo.providers?.forEach {
-                            componentStates(it.name, "PROVIDER", it.exported, it.enabled, it.processName)
-                                ?.let(components::add)
-                        }
-
-                        // 权限状态：granted + maxSdkVersion（requestedPermissions/requestedPermissionsFlags）
-                        val permissionStates = mutableListOf<Map<String, Any>>()
-                        val perms = packageInfo.requestedPermissions ?: emptyArray()
-                        val permFlags = packageInfo.requestedPermissionsFlags ?: IntArray(0)
-                        for (i in perms.indices) {
-                            val granted = i < permFlags.size &&
-                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
-                            val level = if (i < permFlags.size) {
-                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_NEVER_FOR_LOCATION) != 0
-                            } else {
-                                false
-                            }
-                            permissionStates.add(mapOf(
-                                "name" to perms[i],
-                                "granted" to granted,
-                                "neverForLocation" to level
-                            ))
-                        }
-
                         result.success(mapOf(
                             "components" to components,
                             "permissionStates" to permissionStates
@@ -685,100 +669,22 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val pm = packageManager
-                        // API 28 起 GET_SIGNATURES 已废弃：改用 GET_SIGNING_CERTIFICATES +
-                        // PackageInfo.signingInfo，才能拿到「多签名者」与「签名轮换历史」。
-                        val signFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            PackageManager.GET_SIGNING_CERTIFICATES
-                        } else {
-                            @Suppress("DEPRECATION")
-                            PackageManager.GET_SIGNATURES
-                        }
                         val packageInfo = pm.getPackageInfo(
                             packageName,
-                            signFlags or PackageManager.GET_META_DATA
+                            PackageManager.GET_META_DATA
                         )
 
-                        // 签名列表：每张证书解析 X509，提取 Subject DN 与 SHA-256/SHA-1 指纹。
-                        // 证书来源按官方语义二选一（两者互斥）：
-                        //   - hasMultipleSigners() → apkContentsSigners：并列的**全部**签名者
-                        //     （此时 getSigningCertificateHistory() 会返回 null）
-                        //   - 否则 → signingCertificateHistory：原始→当前，含**轮换历史**
-                        //     （末位为当前证书，其余为历史证书）
-                        // kind: signer=并列签名者 / current=当前证书 / history=历史证书
-                        val certEntries = mutableListOf<Pair<Signature, String>>()
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            val signingInfo = packageInfo.signingInfo
-                            if (signingInfo != null) {
-                                if (signingInfo.hasMultipleSigners()) {
-                                    signingInfo.apkContentsSigners?.forEach {
-                                        certEntries.add(it to "signer")
-                                    }
-                                } else {
-                                    val history = signingInfo.signingCertificateHistory
-                                    if (history != null) {
-                                        for (index in history.indices) {
-                                            val isCurrent = index == history.lastIndex
-                                            certEntries.add(
-                                                history[index] to
-                                                    if (isCurrent) "current" else "history"
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            @Suppress("DEPRECATION")
-                            packageInfo.signatures?.forEach { certEntries.add(it to "current") }
+                        val signatureReport = InventoryInspector.signatures(pm, packageName)
+                        val signatures = signatureReport.entries.map {
+                            mapOf(
+                                "algorithm" to it.algorithm,
+                                "subject" to it.subject,
+                                "sha256" to it.sha256,
+                                "sha1" to it.sha1,
+                                "kind" to it.kind
+                            )
                         }
-
-                        val signatures = mutableListOf<Map<String, String>>()
-                        // 按 SHA-256 去重：多签名者与轮换历史理论上互斥，防御性兜底
-                        val seenDigests = mutableSetOf<String>()
-                        for ((sig, kind) in certEntries) {
-                            var algorithm = "SHA256withRSA"
-                            var subject = ""
-                            var sha256 = ""
-                            var sha1 = ""
-                            try {
-                                val cert = CertificateFactory.getInstance("X509")
-                                    .generateCertificate(ByteArrayInputStream(sig.toByteArray()))
-                                    as X509Certificate
-                                subject = cert.subjectDN.name
-                                algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" }
-                                    ?: "SHA256withRSA"
-                                sha256 = MessageDigest.getInstance("SHA-256")
-                                    .digest(sig.toByteArray())
-                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                                sha1 = MessageDigest.getInstance("SHA-1")
-                                    .digest(sig.toByteArray())
-                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                            } catch (e: Exception) {
-                                // 单张证书解析失败：降级为空字段，不影响其余证书
-                            }
-                            if (sha256.isNotEmpty() && !seenDigests.add(sha256)) continue
-                            signatures.add(mapOf(
-                                "algorithm" to algorithm,
-                                "subject" to subject,
-                                "sha256" to sha256,
-                                "sha1" to sha1,
-                                "kind" to kind,
-                            ))
-                        }
-
-                        // 签名形态摘要（供 UI 提示：并列多签名 / 含轮换历史）
-                        var signingShape = "single"
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            val signingInfo = packageInfo.signingInfo
-                            if (signingInfo != null) {
-                                signingShape = when {
-                                    signingInfo.hasMultipleSigners() -> "multiple"
-                                    signingInfo.hasPastSigningCertificates() -> "rotation"
-                                    else -> "single"
-                                }
-                            }
-                        } else if (signatures.size > 1) {
-                            signingShape = "multiple"
-                        }
+                        val signingShape = signatureReport.shape
 
                         // meta-data：Bundle → Map<String, String>（跳过 null 值）
                         val metaData = mutableMapOf<String, String>()
@@ -884,10 +790,106 @@ class MainActivity : FlutterActivity() {
                         result.error("DETAIL", "获取应用详情失败: ${e.message}", null)
                     }
                 }
+                // 把 `content://` / 绝对路径归一为「核心可导入的本地绝对路径」。
+                // 只挂在既有 gstore/apk_source 通道上（gstore/platform 保持 13 个方法）。
+                // 成功 → 绝对路径字符串；失败 → `{"ok":false,"code":"CORE_E_APK_URI_*"}`。
+                "materializeUri" -> {
+                    result.success(materializeUri(call.arguments as? String))
+                }
                 else -> result.notImplemented()
             }
         }
     }
+
+    /// `materializeUri` 的实现：流式物化 `content://` 到 cacheDir/imports，绝不整包读入内存。
+    ///
+    /// 返回绝对路径，或与 `PlatformChannel` 同款的 typed 信封字符串。文件名 =
+    /// `<sha256(uri)>.<扩展名>`：同一 URI 幂等覆盖，不泄漏原始文件名 / 路径。
+    private fun materializeUri(raw: String?): String {
+        if (raw.isNullOrBlank()) {
+            return apkUriError("CORE_E_APK_URI_MALFORMED", "empty uri")
+        }
+        if (raw.startsWith("file://")) {
+            return apkUriError(
+                "CORE_E_APK_URI_UNSUPPORTED",
+                "file:// uris are not importable"
+            )
+        }
+        // 绝对路径：原样返回（Dart 侧只走一次通道，保持单一入口）。
+        if (raw.startsWith("/")) return raw
+        if (!raw.startsWith("content://")) {
+            return apkUriError(
+                "CORE_E_APK_URI_UNSUPPORTED",
+                "expected an absolute path or content:// uri"
+            )
+        }
+        val uri = try {
+            Uri.parse(raw)
+        } catch (e: Exception) {
+            return apkUriError("CORE_E_APK_URI_MALFORMED", e.message ?: "malformed uri")
+        }
+        val importsDir = File(cacheDir, "imports")
+        if (!importsDir.isDirectory && !importsDir.mkdirs()) {
+            return apkUriError(
+                "CORE_E_APK_URI_COPY_FAILED",
+                "cannot create ${importsDir.absolutePath}"
+            )
+        }
+        val target = File(importsDir, "${sha256Hex(raw)}.${extensionOf(displayNameOf(uri))}")
+        try {
+            val input = contentResolver.openInputStream(uri)
+                ?: return apkUriError("CORE_E_APK_URI_UNREADABLE", "openInputStream returned null")
+            input.use { source ->
+                target.outputStream().use { sink ->
+                    source.copyTo(sink, 64 * 1024)
+                }
+            }
+        } catch (e: SecurityException) {
+            target.delete()
+            return apkUriError(
+                "CORE_E_APK_URI_UNREADABLE",
+                e.message ?: "content provider permission denied"
+            )
+        } catch (e: java.io.FileNotFoundException) {
+            target.delete()
+            return apkUriError("CORE_E_APK_URI_UNREADABLE", e.message ?: "content uri not found")
+        } catch (e: java.io.IOException) {
+            target.delete()
+            return apkUriError("CORE_E_APK_URI_COPY_FAILED", e.message ?: "copy failed")
+        }
+        return target.absolutePath
+    }
+
+    private fun displayNameOf(uri: Uri): String? = runCatching {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
+
+    /// 扩展名只保留字母数字（防止 provider 提供带路径/分隔符的名字），无则 `bin`。
+    private fun extensionOf(displayName: String?): String {
+        val raw = displayName?.substringAfterLast('.', "") ?: ""
+        val clean = raw.lowercase().filter { it.isLetterOrDigit() }.take(10)
+        return clean.ifEmpty { "bin" }
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private fun apkUriError(code: String, message: String): String =
+        JSONObject().apply {
+            put("ok", false)
+            put("code", code)
+            put("message", message)
+        }.toString()
 
     /// 模块是否可用：APK 内含该 .so，或已解压到私有目录（只读：不解压、不写入）。
     private fun hasModule(module: String, requestedAbi: String?): Boolean {

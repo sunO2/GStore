@@ -11,9 +11,7 @@ class ApkElfScanResult {
   /// 命中的 `lib/<abi>/*.so` 检测结果列表
   final List<ElfSoInfo> soFiles;
 
-  const ApkElfScanResult({
-    required this.soFiles,
-  });
+  const ApkElfScanResult({required this.soFiles});
 
   @override
   int get hashCode => soFiles.hashCode;

@@ -4,6 +4,13 @@
 
 set -e  # 遇到错误立即退出
 
+# Rust 交叉编译环境助手：统一计算 CC/AR/linker/LIBCLANG_PATH/BINDGEN_EXTRA_CLANG_ARGS。
+# rquickjs-sys 的 bindgen 冷构建必须拿到 NDK sysroot + clang 内建头，否则报
+# `stdbool.h file not found`；只设 CC/AR/linker 不够。
+GSTORE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=rust/android_env.sh
+source "$GSTORE_SCRIPT_DIR/rust/android_env.sh"
+
 # 配置（支持环境变量覆盖：CI runner 可传 GSTORE_NDK_PATH/GSTORE_MODULE_DIR 等）
 NDK_PATH="${GSTORE_NDK_PATH:-/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264}"
 PROJECT_DIR="${GSTORE_PROJECT_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/gstore_host}"
@@ -149,9 +156,16 @@ EOF
         clang_name="armv7a-linux-androideabi33-clang"
     fi
     local ndk_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
-    export "CC_${target_underscore}=$ndk_bin/$clang_name"
-    export "CXX_${target_underscore}=$ndk_bin/${clang_name%clang}clang++"
-    export "AR_${target_underscore}=$ndk_bin/llvm-ar"
+
+    # 完整 Rust 交叉编译环境（含 bindgen 的 sysroot/内建头）。API 33 与
+    # .cargo/config.toml 中的宿主编译器保持一致。全局变量在 cargo 构建后还原，
+    # 避免泄漏到后续可下载模块的构建。
+    local saved_libclang="${LIBCLANG_PATH-}"
+    local saved_bindgen="${BINDGEN_EXTRA_CLANG_ARGS-}"
+    if ! android_env "$NDK_PATH" "$target" 33; then
+        echo_error "无法为 $target 生成 Android 交叉编译环境"
+        return 1
+    fi
 
     # zxing-cpp cmake 构建所需的 NDK 环境（cmake crate 不转发 ANDROID_ABI 环境变量，
     # 只能通过 CMAKE_TOOLCHAIN_FILE 包装文件强制 ABI）
@@ -196,6 +210,10 @@ EOF
     cargo build --release --target "$target" \
         --config "target.$target.linker=\"$ndk_bin/$clang_name\"" \
         --config "target.$target.ar=\"$ndk_bin/llvm-ar\""
+
+    # 还原全局 bindgen/libclang 变量，防止泄漏到后续模块构建
+    if [ -n "$saved_libclang" ]; then export LIBCLANG_PATH="$saved_libclang"; else unset LIBCLANG_PATH; fi
+    if [ -n "$saved_bindgen" ]; then export BINDGEN_EXTRA_CLANG_ARGS="$saved_bindgen"; else unset BINDGEN_EXTRA_CLANG_ARGS; fi
 
     # 检查构建结果
     if [ -f "target/$target/release/libgstore_host.so" ]; then

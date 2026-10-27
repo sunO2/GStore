@@ -12,11 +12,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CRATES=(
   "gstore_contract"
+  # Wave 5 leaf crate: member of the rust/ workspace (see rust/Cargo.toml).
+  "gstore_script"
+  "gstore_core"
   "gstore_mod_qr"
   "gstore_mod_analyzer"
   "gstore_mod_repo"
   "gstore_mod_perf"
   "gstore_mod_llm"  # 默认 feature（无 llama.cpp）：验证 ABI/参数解析/降级路径
+  "gstore_mod_download"
   "gstore_host"   # 最后：其集成测试依赖上面各模块的 .so
 )
 

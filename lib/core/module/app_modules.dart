@@ -23,8 +23,7 @@ import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
-import 'package:gstore/core/download/download_core_config.dart';
-import 'package:gstore/core/download/manager/download_manager.dart';
+import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -36,6 +35,7 @@ import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/core/service/install_resume_bridge.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
@@ -116,17 +116,13 @@ class DownloadModule extends AppModule {
   Future<void> onRegister(ModuleContext context) async {
     final config = context.config;
     config?.registerModule(AppCoreConfigModule());
-    final manager = ModuleManager.instance;
-    // 绑定哪个下载内核由 DownloadCoreConfig 决定：resolve 现返回**惰性路由**
-    // （LazyDownloadService），启动期不探测内核，首次变更类调用才解析 Rust；
-    // 显式配置 download.core=dart 时仍直接返回 Dart 实现（硬回退，可对比/排障）。
-    final dartImpl = manager.require<DownloadManager>();
-    final lazyService = await DownloadCoreConfig.resolve(dartImpl);
-    context.bindService?.call(IDownloadService, lazyService);
-    // 只绑定一次：lazyService.watchAll 是"先 Dart、解析后原地切 Rust"的单条长期流，
-    // 解析完成后同一订阅换源；DownloadTaskWatcher.start 对同一实现重入为空操作，
-    // 因此不会二次绑定、不会清空"已发开始通知"标记。通知与自动安装对两种内核都生效。
-    DownloadTaskWatcher.instance.start(lazyService);
+    // 下载内核只有一个：RustDownloadService。没有运行时内核选择器、没有惰性路由、
+    // 没有 Dart 回落——模块不可用时由服务抛出
+    // DownloadModuleUnavailableException（CORE_E_DOWNLOAD_MODULE_UNAVAILABLE）。
+    context.bindService?.call(IDownloadService, RustDownloadService.instance);
+    // 只绑定一次：DownloadTaskWatcher.start 对同一实现重入为空操作，因此不会二次
+    // 订阅、不会清空"已发开始通知"标记。通知与自动安装对内核任务全局生效。
+    DownloadTaskWatcher.instance.start(RustDownloadService.instance);
   }
 
   @override
@@ -259,16 +255,30 @@ class InstallModule extends AppModule {
   @override
   int get priority => 70;
 
+  /// 回前台安装校验桥：用户在系统安装器完成安装后返回前台时，对仍 `pending`
+  /// 的行做一次平台校验（隐式广播在后台被 Android 拦截，见桥内注释）。
+  InstallResumeBridge? _resumeBridge;
+
   @override
   Future<void> onRegister(ModuleContext context) async {
     context.bindService?.call(IInstallService, InstallManager.instance);
     // 按具体类型绑定（消费方 get<InstallManager>() 覆盖接口外方法：
     // isShizukuAvailable/openUninstallInSystem/openAppDetailsInSystem 等）
     context.bindService?.call(InstallManager, InstallManager.instance);
+    // 全仓唯一的 `gstore/install_events` 订阅者：上线即消费终端安装结果。
+    InstallManager.instance.startEventBridge();
+    // 回到前台时兜底校验仍 pending 的安装（安装器前台期间广播被拦截）。
+    (_resumeBridge ??= InstallResumeBridge(
+      onResumed: () => InstallManager.instance.recheckPendingInstalls(),
+    ))
+        .start();
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    _resumeBridge?.dispose();
+    _resumeBridge = null;
+    await InstallManager.instance.stopEventBridge();
     context.unbindService?.call(IInstallService);
     context.unbindService?.call(InstallManager);
   }
@@ -384,10 +394,9 @@ class UpdateModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    final service = UpdateManagerService.instance;
-    ModuleManager.instance.bind<UpdateManagerService>(service);
-    // 启动恢复上次检测缓存（重启后立即展示可更新应用，后台静默）
-    service.restoreCacheInBackground();
+    // 启动恢复上次检测缓存（重启后立即展示可更新应用，后台静默）。
+    // 更新入口统一走 facade；旧服务的实例由 facade 在需要时解析。
+    UpdateFacade.instance.restoreCacheInBackground();
   }
 }
 

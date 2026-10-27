@@ -1,0 +1,343 @@
+# Supply-chain advisory baseline for every Rust crate in this repository.
+#
+# This file is the machine-readable half of rust/deny.toml.  cargo-deny does not
+# support a `review_date` key, so the review dates live here (and only here);
+# deny.toml keeps the human-readable prose.  scripts/qa/supply-chain.sh parses
+# this file with Python's TOML parser and treats it as the ONLY source of
+# accepted findings -- it never scrapes ids out of deny.toml comments.
+#
+# Two sections:
+#
+#   [[finding]]     accepted-but-BLOCKING findings.  They are real, they are in
+#                   the resolved graph, and they are NOT ignored by cargo-deny.
+#                   The gate reports them and exits 3 (BLOCKED) until the
+#                   out-of-scope dependency refresh lands.
+#
+#   [[suppressed]]  findings that are provably not exploitable in this tree
+#                   (lockfile-only / unreachable / unmaintained / yanked).  They
+#                   are also listed in [advisories].ignore in rust/deny.toml;
+#                   the gate asserts the two lists are identical.
+#
+# Every entry carries the crates that are actually on an affected version
+# (`applies_to`, derived from each crate's Cargo.lock -- not guessed) and a
+# `review_date` that the gate enforces: a passed date is a hard FAIL.
+#
+# Changing a dependency version without updating this file is also a FAIL: the
+# gate compares the observed crate@version set against `applies_to`.
+
+[meta]
+plan = ".omo/plans/gstore-rust-core-wave06-closeout.md"
+plan_ref = "Todo 2 / G-A2"
+generated = "2026-10-24"
+advisory_db_commit = "8a5b8090ef20c9c1b425f3373f28b0b23cc5c7a0"
+advisory_db_updated = "2026-10-23T21:33:55-06:00"
+advisory_db_advisories = 1352
+refresh_deadline = "2027-01-31"
+note = "Dependency refresh is out of scope for the QA-only Todo 2. Findings move from [[finding]] to [[suppressed]] only with code evidence, or disappear when the refresh lands."
+
+# ---------------------------------------------------------------------------
+# [[finding]] -- 12 BLOCKED findings (real, in the resolved build graph).
+# ---------------------------------------------------------------------------
+
+[[finding]]
+id = "RUSTSEC-2026-0194"
+crate = "quick-xml"
+kind = "vulnerability"
+affected_versions = "< 0.41.0"
+applies_to = ["gstore_mod_analyzer@0.39.4", "gstore_mod_repo@0.37.5"]
+severity = "high (CVSS 7.5, denial-of-service)"
+fix_version = "0.41.0"
+in_build_graph = true
+reason = "Quadratic run time when checking a start tag for duplicate attribute names. gstore_mod_repo parses remote repo/APK XML with quick-xml; gstore_mod_analyzer pulls it transitively via apk-info-axml (build-dependency). Fix needs a semver bump (0.41.0), out of scope for Todo 2."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0195"
+crate = "quick-xml"
+kind = "vulnerability"
+affected_versions = "< 0.41.0"
+applies_to = ["gstore_mod_analyzer@0.39.4", "gstore_mod_repo@0.37.5"]
+severity = "high (CVSS 7.5, denial-of-service)"
+fix_version = "0.41.0"
+in_build_graph = true
+reason = "Unbounded namespace-declaration allocation in NsReader enables memory-exhaustion DoS. Same crates/usage as RUSTSEC-2026-0194; fix needs quick-xml >= 0.41.0."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0285"
+crate = "rustls"
+kind = "vulnerability"
+affected_versions = ">= 0.23.13, < 0.23.45"
+applies_to = ["gstore_mod_download@0.23.44", "gstore_mod_repo@0.23.44"]
+severity = "medium (CVSS 5.3, crypto-failure)"
+fix_version = "0.23.45"
+in_build_graph = true
+reason = "TLS 1.3 handshake messages accepted across encryption-level boundaries. rustls is in the reqwest/hyper-rustls HTTPS path of gstore_mod_download and gstore_mod_repo. Patch-compatible fix (0.23.45) is out of scope for Todo 2."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0346"
+crate = "rustls"
+kind = "vulnerability"
+affected_versions = ">= 0.21.0, < 0.23.46"
+applies_to = ["gstore_mod_download@0.23.44", "gstore_mod_proxy@0.23.45", "gstore_mod_repo@0.23.44"]
+severity = "medium (CVSS 4.0, crypto-failure)"
+fix_version = "0.23.46"
+in_build_graph = true
+reason = "Debug impls for client session values expose TLS secrets. Reachable TLS stack in download/repo (reqwest) and proxy (mitm). Fix needs rustls >= 0.23.46."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0347"
+crate = "rustls"
+kind = "vulnerability"
+affected_versions = ">= 0.23.44, < 0.23.46"
+applies_to = ["gstore_mod_download@0.23.44", "gstore_mod_proxy@0.23.45", "gstore_mod_repo@0.23.44"]
+severity = "low (CVSS 2.3, crypto-failure)"
+fix_version = "0.23.46"
+in_build_graph = true
+reason = "Buffered application data sent to the outer server after ECH rejection (requires EchMode::Enable). Fix needs rustls >= 0.23.46."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0348"
+crate = "rustls"
+kind = "vulnerability"
+affected_versions = ">= 0.23.9, < 0.23.46"
+applies_to = ["gstore_mod_download@0.23.44", "gstore_mod_proxy@0.23.45", "gstore_mod_repo@0.23.44"]
+severity = "low (CVSS 3.7, denial-of-service)"
+fix_version = "0.23.46"
+in_build_graph = true
+reason = "Brotli certificate decompression can allocate up to 1 GiB before authentication (requires the non-default brotli feature). Fix needs rustls >= 0.23.46."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0349"
+crate = "rustls"
+kind = "vulnerability"
+affected_versions = "< 0.23.46"
+applies_to = ["gstore_mod_download@0.23.44", "gstore_mod_proxy@0.23.45", "gstore_mod_repo@0.23.44"]
+severity = "low (CVSS 3.7, crypto-failure)"
+fix_version = "0.23.46"
+in_build_graph = true
+reason = "Unauthenticated ServerHello can downgrade later connections to classical key exchange. Fix needs rustls >= 0.23.46."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0381"
+crate = "webpki-roots"
+kind = "vulnerability"
+affected_versions = "< 1.0.10 (except = 0.26.11)"
+applies_to = ["gstore_mod_download@1.0.9", "gstore_mod_repo@1.0.9"]
+severity = "unscored (crypto-failure; CVE-2026-111943)"
+fix_version = "1.0.10"
+in_build_graph = true
+reason = "Bundled roots allow trust in distrusted emSign intermediates (private keys public). Reachable trust store for the reqwest HTTPS clients in download/repo. Fix needs webpki-roots >= 1.0.10."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0382"
+crate = "rustls-webpki"
+kind = "vulnerability"
+affected_versions = "< 0.103.16"
+applies_to = ["gstore_mod_download@0.103.15", "gstore_mod_proxy@0.103.15", "gstore_mod_repo@0.103.15"]
+severity = "unscored (crypto-failure; CVE-2026-111943)"
+fix_version = "0.103.16"
+in_build_graph = true
+reason = "Certificate verification may accept distrusted emSign intermediates. Reachable verifier in download/repo/proxy. Fix needs rustls-webpki >= 0.103.16."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0383"
+crate = "webpki-root-certs"
+kind = "vulnerability"
+affected_versions = "< 1.0.10 (except = 0.26.11)"
+applies_to = ["gstore_mod_proxy@1.0.9"]
+severity = "unscored (crypto-failure; CVE-2026-111943)"
+fix_version = "1.0.10"
+in_build_graph = true
+reason = "Bundled root certificates allow trust in distrusted emSign intermediates. Reachable certificate store in gstore_mod_proxy. Fix needs webpki-root-certs >= 1.0.10."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0385"
+crate = "ctutils"
+kind = "vulnerability"
+affected_versions = "< 0.4.4"
+applies_to = ["gstore_mod_analyzer@0.4.3", "gstore_mod_proxy@0.4.2"]
+severity = "unscored (crypto-failure)"
+fix_version = "0.4.4"
+in_build_graph = true
+reason = "Non-constant-time mask generation and u128 comparisons in ctutils::Choice. Transitive via the RustCrypto AES-GCM/cipher stack in analyzer and proxy. Fix needs ctutils >= 0.4.4."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[finding]]
+id = "RUSTSEC-2026-0386"
+crate = "tokio"
+kind = "unsound"
+affected_versions = ">= 0.3.2, < 1.51.6 || >= 1.52.0, < 1.53.3"
+applies_to = ["gstore_host@1.50.0", "gstore_mod_download@1.53.1", "gstore_mod_proxy@1.53.1", "gstore_mod_repo@1.53.1"]
+severity = "informational (unsound, I/O safety)"
+fix_version = "1.53.3"
+in_build_graph = true
+reason = "AsyncFd::new/with_interest/try_new/try_with_interest violate I/O safety (RawFd: AsRawFd). The only call site is gstore_mod_proxy/src/tun.rs, which wraps an OwnedFd (the intended pattern) and does not borrow a raw fd across threads, so the described use-after-free is not reachable here; the API itself is still unsound. Fix needs tokio >= 1.53.3 (or 1.51.6)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+# ---------------------------------------------------------------------------
+# [[suppressed]] -- 11 justified ignores (mirrored by [advisories].ignore).
+# ---------------------------------------------------------------------------
+
+[[suppressed]]
+id = "RUSTSEC-2026-0338"
+crate = "quinn-proto"
+kind = "vulnerability"
+severity = "unscored (denial-of-service, panic)"
+affected_versions = "< 0.11.18"
+applies_to = ["gstore_mod_download@0.11.17", "gstore_mod_repo@0.11.17"]
+fix_version = "0.11.18"
+in_build_graph = false
+reason = "Optional reqwest `http3` dependency present only in the lockfile; not in the resolved build graph (`cargo tree -i quinn-proto` is empty)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0340"
+crate = "quinn-proto"
+kind = "vulnerability"
+severity = "high (CVSS 7.5, denial-of-service)"
+affected_versions = "< 0.11.18"
+applies_to = ["gstore_mod_download@0.11.17", "gstore_mod_repo@0.11.17"]
+fix_version = "0.11.18"
+in_build_graph = false
+reason = "Optional reqwest `http3` dependency present only in the lockfile; not in the resolved build graph (`cargo tree -i quinn-proto` is empty)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0343"
+crate = "quinn-proto"
+kind = "vulnerability"
+severity = "high (CVSS 7.5, denial-of-service)"
+affected_versions = ">= 0.11.17, < 0.11.18"
+applies_to = ["gstore_mod_download@0.11.17", "gstore_mod_repo@0.11.17"]
+fix_version = "0.11.18"
+in_build_graph = false
+reason = "Optional reqwest `http3` dependency present only in the lockfile; not in the resolved build graph (`cargo tree -i quinn-proto` is empty)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0367"
+crate = "zip"
+kind = "vulnerability"
+severity = "high (CVSS 7.3, privilege-escalation)"
+affected_versions = "< 9.0.0"
+applies_to = ["gstore_core@2.6.1", "gstore_host@2.6.1", "gstore_mod_analyzer@2.4.2", "gstore_mod_repo@2.4.2"]
+fix_version = "9.0.0"
+in_build_graph = true
+reason = "Affects ZipArchive::extract() / ZipStreamReader::extract(); no `.extract(` call site exists (readers use ZipArchive::new + by_index). Fix needs zip >= 9.0.0 (major bump)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0368"
+crate = "zip"
+kind = "vulnerability"
+severity = "unscored (privilege-escalation)"
+affected_versions = "< 9.0.0"
+applies_to = ["gstore_core@2.6.1", "gstore_host@2.6.1", "gstore_mod_analyzer@2.4.2", "gstore_mod_repo@2.4.2"]
+fix_version = "9.0.0"
+in_build_graph = true
+reason = "Affects ZipArchive::extract() / ZipStreamReader::extract(); no `.extract(` call site exists (readers use ZipArchive::new + by_index). Fix needs zip >= 9.0.0 (major bump)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0369"
+crate = "zip"
+kind = "vulnerability"
+severity = "critical (CVSS 9.1, privilege-escalation)"
+affected_versions = "< 9.0.0"
+applies_to = ["gstore_core@2.6.1", "gstore_host@2.6.1", "gstore_mod_analyzer@2.4.2", "gstore_mod_repo@2.4.2"]
+fix_version = "9.0.0"
+in_build_graph = true
+reason = "Affects ZipArchive::extract() / ZipStreamReader::extract(); no `.extract(` call site exists (readers use ZipArchive::new + by_index). Fix needs zip >= 9.0.0 (major bump)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2026-0190"
+crate = "anyhow"
+kind = "unsound"
+severity = "informational (unsound)"
+affected_versions = "< 1.0.103"
+applies_to = ["gstore_host@1.0.102"]
+fix_version = "1.0.103"
+in_build_graph = true
+reason = "Error::downcast_mut() unsoundness; this tree has zero downcast_mut call sites (grep -rn downcast_mut rust/ --include='*.rs' = 0)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2024-0436"
+crate = "paste"
+kind = "unmaintained"
+severity = "informational (unmaintained)"
+affected_versions = "*"
+applies_to = ["gstore_mod_qr@1.0.15"]
+fix_version = "none"
+in_build_graph = true
+reason = "Unmaintained; build-time proc-macro only, no vulnerability recorded."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "RUSTSEC-2024-0449"
+crate = "unsafe-libyaml"
+kind = "unmaintained"
+severity = "informational (unmaintained)"
+affected_versions = "*"
+applies_to = ["gstore_mod_proxy@0.2.11"]
+fix_version = "none"
+in_build_graph = true
+reason = "Unmaintained; transitive dependency of serde_yaml in gstore_mod_proxy, no vulnerability recorded."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "yoke-derive@0.8.3"
+crate = "yoke-derive"
+kind = "yanked"
+severity = "informational (yanked)"
+affected_versions = "= 0.8.3"
+applies_to = ["gstore_mod_proxy@0.8.3"]
+fix_version = "0.8.2 or 0.8.4 (already used by the other crates' locks)"
+in_build_graph = true
+reason = "Yanked upstream only; no advisory exists for it. Pinned transitively by the icu_* graph in gstore_mod_proxy; lockfile refresh is out of scope for this todo."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
+id = "inout@0.2.3"
+crate = "inout"
+kind = "yanked"
+severity = "informational (yanked)"
+affected_versions = "= 0.2.3"
+applies_to = ["gstore_mod_analyzer@0.2.3"]
+fix_version = "0.2.4"
+in_build_graph = true
+reason = "Yanked upstream only; no advisory exists for it. Pinned transitively by the aes-gcm/cipher stack in gstore_mod_analyzer; lockfile refresh is out of scope for this todo."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"

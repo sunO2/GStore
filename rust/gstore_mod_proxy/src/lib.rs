@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use gstore_contract::abi::{
     ABI_ERR_ABI_MISMATCH, ABI_ERR_DETAIL, ABI_ERR_INTERNAL, ABI_ERR_NO_INSTANCE, ABI_ERR_NULL,
     ABI_ERR_PANIC, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    MIN_HOST_ABI,
 };
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
@@ -342,8 +343,8 @@ const MODULE_NAME: &str = "proxy";
 /// 模块功能版本（宿主 `module_version` 用于热更新提示）。
 const MODULE_VERSION: u32 = 1;
 
-/// 要求宿主最低 ABI：v3（`protect_fd` 槽）。
-const PROXY_MIN_HOST_ABI: u32 = GSTORE_MODULE_ABI_VERSION;
+/// 要求宿主最低 ABI：`MIN_HOST_ABI`（v3，`protect_fd` 槽；无 `platform` 槽的 v3 宿主可挂载）。
+const PROXY_MIN_HOST_ABI: u32 = MIN_HOST_ABI;
 
 /// 上游 meow-rs 精确 rev（与 Cargo.toml 的 pin 一致，经 `version` 回报诊断）。
 const MEOW_REV: &str = "0e718f587442caaac00b221efc91c84907aeb0e0";
@@ -2437,6 +2438,12 @@ fn on_event_impl(
 
 // ==================== C ABI 导出 ====================
 
+/// 模块构建时的 ABI 版本探测：宿主 dlsym `gstore_mod_proxy_abi` 决定按哪个 ABI 握手。
+#[no_mangle]
+pub extern "C" fn gstore_mod_proxy_abi() -> u32 {
+    GSTORE_MODULE_ABI_VERSION
+}
+
 #[no_mangle]
 // Correct for a C ABI export: the host guarantees these pointers are non-null.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -2450,8 +2457,8 @@ pub extern "C" fn gstore_mod_proxy_register(
             return Err(ABI_ERR_NULL);
         }
         let e = unsafe { &*entry };
-        // 只拒绝更旧的宿主；末尾追加字段对更新宿主前向兼容（不做精确匹配）。
-        if e.abi_version < GSTORE_MODULE_ABI_VERSION {
+        // 接受 ABI 3（v3 宿主，无 platform 槽）与本构建 ABI 4；拒绝更旧/更新的宿主。
+        if e.abi_version < MIN_HOST_ABI || e.abi_version > GSTORE_MODULE_ABI_VERSION {
             return Err(ABI_ERR_ABI_MISMATCH);
         }
         let _ = HOST_ABI.set(e.abi_version);
@@ -2641,17 +2648,26 @@ mod abi_tests {
         std::mem::take(&mut *EMITTED.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    fn register_api() -> GStoreModuleApi {
-        let entry = GStoreModuleEntry {
-            abi_version: GSTORE_MODULE_ABI_VERSION,
-            entry_size: std::mem::size_of::<GStoreModuleEntry>() as u32,
+    fn register_entry_with(abi_version: u32) -> GStoreModuleEntry {
+        GStoreModuleEntry {
+            abi_version,
+            entry_size: if abi_version >= GSTORE_MODULE_ABI_VERSION {
+                std::mem::size_of::<GStoreModuleEntry>() as u32
+            } else {
+                GStoreModuleEntry::PLATFORM_OFFSET as u32
+            },
             log: None,
             alloc: None,
             free: None,
             emit_event: Some(record_event),
             context: std::ptr::null_mut(),
             protect_fd: Some(dummy_protect),
-        };
+            platform: std::ptr::null(),
+        }
+    }
+
+    fn register_api() -> GStoreModuleApi {
+        let entry = register_entry_with(GSTORE_MODULE_ABI_VERSION);
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
         let code = gstore_mod_proxy_register(&entry, api.as_mut_ptr());
         assert_eq!(code, ABI_OK, "register must succeed");
@@ -2728,6 +2744,7 @@ mod abi_tests {
         assert_eq!(name, "proxy");
         assert_eq!(api.version, MODULE_VERSION);
         assert_eq!(api.min_host_abi, 3);
+        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
         assert!(host_abi_satisfies(api.min_host_abi, GSTORE_MODULE_ABI_VERSION));
         assert!(api.init.is_some(), "init slot required");
         assert!(api.create.is_some(), "create slot required");
@@ -2738,6 +2755,33 @@ mod abi_tests {
         assert!(api.alloc.is_some(), "alloc slot required");
         assert!(api.free.is_some(), "free slot required");
         assert!(api.on_event.is_some(), "on_event slot required");
+    }
+
+    #[test]
+    fn register_accepts_v3_host() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = register_entry_with(3);
+        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
+        assert_eq!(gstore_mod_proxy_register(&entry, api.as_mut_ptr()), ABI_OK);
+        let api = unsafe { api.assume_init() };
+        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+    }
+
+    #[test]
+    fn register_rejects_future_host_abi() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = register_entry_with(5);
+        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
+        assert_eq!(
+            gstore_mod_proxy_register(&entry, api.as_mut_ptr()),
+            ABI_ERR_ABI_MISMATCH
+        );
+    }
+
+    #[test]
+    fn abi_probe_reports_build_version() {
+        assert_eq!(gstore_mod_proxy_abi(), GSTORE_MODULE_ABI_VERSION);
+        assert_eq!(gstore_mod_proxy_abi(), 4);
     }
 
     /// Security: the `proxy.subscription.added` event must not leak the

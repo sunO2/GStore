@@ -2,6 +2,7 @@
 name = "gstore_host"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 name = "gstore_host"
@@ -10,20 +11,37 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 # 模块契约层（独立 crate，宿主与模块 .so 共享）
 gstore_contract = { path = "../gstore_contract" }
+# Rust 核心层（spike：CoreApi 宿主门面）
+gstore_core = { path = "../gstore_core" }
+# Rust-hosted QuickJS lane (ScriptApi / ScriptHost implementation).
+gstore_script = { path = "../gstore_script" }
+# CoreApi 持有核心库连接（与 gstore_core 同版本；仅宿主内部使用，不进 FRB 签名）
+rusqlite = { version = "0.32", features = ["bundled"] }
 # 动态加载模块 .so（dlopen/dlsym）
 libloading = "0.8"
 # JNI：Kotlin ProxyVpnService ↔ 宿主（service 引用缓存 + VpnService.protect）。
 # 只用于 Android 运行时；宿主的 Linux 测试构建同样可编译（默认 feature 不含
 # invocation，不链接 libjvm），JNI 函数在非 Android 上不会被调用。
 jni = { version = "0.21", default-features = false }
+# HTTP 客户端（Todo 6 HttpPort 的生产实现；同步 blocking，核心层不引入 async runtime）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # JSON 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# 结构化警告（pack 的 legacy-permissive 回退必须显式记录 key + 原因）。
+log = "0.4"
 # Flutter FFI
 flutter_rust_bridge = "=2.11.1"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"], default-features = false }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[lints.rust]
+# `frb_expand` is emitted by flutter_rust_bridge's `#[frb]` proc-macro into
+# this crate; declare it as an expected cfg so check-cfg does not flag the
+# macro expansion.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }
 
 [profile.release]
 opt-level = "z"

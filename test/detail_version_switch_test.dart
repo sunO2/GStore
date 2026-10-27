@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
@@ -13,6 +14,7 @@ import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -25,6 +27,8 @@ import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
 import 'package:gstore/page/detail/view.dart';
 import 'package:gstore/page/detail/widgets.dart';
+
+import 'support/discovery_facade_seams.dart';
 
 /// 详情页"切换版本"交互（Wave 3）widget/logic 级测试。
 ///
@@ -627,10 +631,22 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
+    // The detail tag panel now reads/writes through `AddedAppsFacade`; install
+    // the flag + backend seams so `showMoreActions` never touches the real FRB
+    // backends (no native lib in unit tests).
+    CoreFlags.installBackend(FakeFlagsBackend(const CoreFlagsSnapshot()));
+    AddedAppsFacade.backendOverride = RecordingAddedApps('core');
+    AddedAppsFacade.legacyBackendOverride = RecordingAddedApps('legacy');
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
     ModuleManager.instance
         .bindByType(IAggregateService, _FakeAggregateService());
     _mockInstalledApps();
+  });
+
+  tearDown(() {
+    CoreFlags.resetBackend();
+    AddedAppsFacade.backendOverride = null;
+    AddedAppsFacade.legacyBackendOverride = null;
   });
 
   DetailLogic buildLogic({ChannelType channel = ChannelType.custom}) {
@@ -646,6 +662,11 @@ void main() {
   }
 
   Future<void> pumpHost(WidgetTester tester, DetailLogic logic) async {
+    // `showMoreActions` now routes tags through `AddedAppsFacade`, which calls
+    // `CoreFlags.refresh()`. That serialized future is bound to the zone that
+    // created it, so in this multi-`testWidgets` file each test must start from
+    // a queue created in its own FakeAsync zone (else the 2nd test deadlocks).
+    CoreFlags.resetQueueForTest();
     await tester.pumpWidget(
       MaterialApp(
         navigatorKey: appNavigatorKey,

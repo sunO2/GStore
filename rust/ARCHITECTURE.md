@@ -13,6 +13,89 @@
 
 ---
 
+## 0. Core boundary（核心边界，Wave 04）
+
+> 新增（2026-10-23）：取代 wave-04 的"平台适配器"方向。权威记录见
+> [`docs/adr/0001-core-boundary.md`](./docs/adr/0001-core-boundary.md)，机器门禁为
+> [`scripts/qa/boundary-check.sh`](../scripts/qa/boundary-check.sh)（CI 与 `scripts/qa/f2-quality.sh` 都必须跑绿）。
+
+`gstore_core` 是**数据服务**，不是平台驱动者：**事实进，决策出**（facts in, decisions out）。
+core 的任何一条边都不得调用平台代码。
+
+- 前端 → core（事实）：`PlatformFacts`、`InventorySnapshot`、`InstallReport`、`InstallRules`、
+  `UpdateRules`、`setOnline`。
+- core → 前端（决策 / 事件）：`UpdateCandidate[]`、`InstallStart`/`InstallRequest`
+  （另经 `install.requested`）、`DownloadTask`、`inventory.changed`、`install.unknown`。
+- core 拥有：catalog、channel、pack、inventory、facts、更新判定、变体选择、下载队列、数据库。
+- 前端拥有：已安装应用查询、install/uninstall/launch 执行、通知、前台服务、权限 UI、
+  文件选择器、`content://` 物化、密钥。前端规则是**数据**（`frontend_rules`，带版本），不是回调。
+- `gstore_core` 内**零平台符号**：无 `PlatformHost`、无 `InstallerPort`、无 `Capability`、
+  无 `jni::`、无平台 vtable。`rust/gstore_host/src/` 下也不再有平台适配器文件：
+  Wave 04 删除的 8 个文件（platform/installer/notification 宿主、四个能力 bridge 与平台上下文）
+  的完整清单就是 `scripts/qa/boundary-check.sh` 的规则 2。
+
+**Wave 6B 下载/安装 cutover（2026-10-23）**：`download` + `install` 已由 core 拥有，Dart 侧
+无回落、无运行时内核选择器（`DownloadCoreConfig` / `LazyDownloadService` 已删除，
+`IDownloadService` 恒为 `RustDownloadService`）。下载是两层模型：Dart `RustDownloadService`
+→ `DownloadFacade`（类型化边界）→ FRB `DownloadApi` → `gstore_core` 下载端口 →
+`gstore_mod_download` 模块。core 拥有镜像库 `gstore_core.db`，模块拥有
+`gstore_mods/download/download.db`；core 只在 parity/reconcile 时**只读**打开模块库
+（`legacy::open_read_only`），从不改写模块行，模块对实时进度保持权威。安装为 core-only
+（`installTask` → core 安装域；缺镜像行为 `CORE_E_INSTALL_NOT_FOUND`），手动选包走
+`_installApkDirect` 且不产生 core 状态。进程默认 flags 来自 `Flags::WAVE06_CLOSEOUT`
+（六域全开：channels/js_channel/catalog/update/download/install；`core_writes` 仍由
+`core_writes` 表投影）。durable 一次性切流由 Dart `CoreCutover`/`CoreBootstrap` 负责：
+首启在 `<files>/migration/backups/pre-closeout-<millis>.db` 取**一个**快照，按
+`channels → jsChannel → catalog → update` 重放并校验 parity，最后原子写
+`<files>/migration/cutover_v6.done`；之后的启动不再快照/重放。`Flags::DISABLED` 仍是
+全关退路；`CoreFlags.set` 仅是测试 seam（Rust 为权威，`core_writes` 永不由操作者设置）。
+
+**Wave 06 closeout（2026-10-24）：六域核心归属与 durable cutover**：
+
+| 域 | Rust 所有者（crate / API） | Dart facade（唯一入口） |
+|---|---|---|
+| `channels` | `gstore_core::channel`（注册表 + `PackStore`）；宿主 FRB `ChannelApi` | `lib/core/channel/rust_channel_facade.dart`（`RustChannelFacade`） |
+| `jsChannel` | `gstore_host::script_api`（FRB `ScriptApi`）+ `gstore_core` 脚本包存储（`script_db`） | `lib/core/script/script_api.dart`（`ScriptApi`）+ `ScriptChannelService` |
+| `catalog` | `gstore_core::catalog`；宿主 FRB `CatalogApi`（`AddedAppsApi` 同域） | `lib/core/catalog/catalog_facade.dart`（`CatalogFacade`） |
+| `update` | `gstore_core::update::UpdateService`；宿主 FRB `UpdateApi` | `lib/core/update/update_facade.dart`（`UpdateFacade`） |
+| `download` | `gstore_core` 下载端口（`download/port.rs`）；宿主 FRB `DownloadApi` → `gstore_mod_download` | `lib/core/download/download_facade.dart`（`DownloadFacade`）+ `RustDownloadService` |
+| `install` | `gstore_core::install::InstallService`；宿主 FRB `InstallApi` | `lib/core/install/install_facade.dart`（`InstallFacade`） |
+
+Durable cutover（一次性、进程默认即终态）：
+
+- **默认即终态**：`Flags::WAVE06_CLOSEOUT` 是 `Flags::default()` 与 `GLOBAL_FLAGS` 初值，六域全
+  true（`core_writes` 仍由 `core_writes` 表投影，不由 flag 默认 arm）。`Flags::DISABLED` 仅测试
+  退路；生产代码无 `CoreFlags.set(...true)`。
+- **一次性 marker**：`<files>/migration/cutover_v6.done` 由 Dart `CoreCutover` 原子写（temp +
+  rename）。marker 存在即跳过，永不二次快照/重放。
+- **唯一快照**：首个未完成启动取**一个** `pre-closeout-<millis>.db`（经 `CoreApi.exportSnapshot` /
+  `VACUUM INTO`）；中断重试复用**校验通过**的既有快照，损坏快照删除后重取，故"一个 pre-closeout
+  快照"在中断下也成立。
+- **重放顺序**：`channels → jsChannel → catalog → update`（`catalog` 必须先于 `update` 权威；
+  `jsChannel` 叠在 channel 注册表上）。
+- **fail-closed**：某域存在 legacy 数据但重放导入 0 行 → 抛 `CORE_E_CUTOVER_EMPTY_IMPORT`，
+  marker 不写（fresh install 允许 0 行）。parity 失败抛 `CORE_E_CUTOVER_PARITY`；快照失败抛
+  `CORE_E_CUTOVER_SNAPSHOT`；marker 写失败抛 `CORE_E_CUTOVER_MARKER`。`CoreBootstrap` 捕获后仅记
+  日志，下次启动重试（进程不崩）。
+- **旧写入者 quiesce 而非删除**：所有 legacy Dart 写入者保留但 `@Deprecated` 并以
+  `LegacyWriteGuard`（`core_writes` 域标记）fail-closed；无一处删除。
+
+**仅有的两个模块级例外**（均在 core 之外，且显式列在允许清单上）：
+
+1. `protect_fd(fd) -> bool` —— `gstore_mod_proxy` 在 Rust 内创建 socket 并交宿主保护，
+   是模块 ABI 的槽位，不属于 core。
+2. 代理的 `uid -> package` 解析 —— 包名反查是数据面包路径的原语，同样只存在于模块/宿主接缝。
+
+两者经 `gstore_contract` 的模块 ABI 注入；宿主侧只允许出现在
+`gstore_host/src/{jvm.rs,jni_bridge.rs,tun_bridge.rs,dl_adapter.rs}`，`JavaVM` 也**只**允许出现在
+这四个文件（`jvm.rs` 是唯一的 VM owner）。`gstore_core` 永远看不到它们。
+
+**`gstore_core` 必须能在桌面宿主上构建**（`cargo check --manifest-path rust/gstore_core/Cargo.toml`；
+`cargo tree --manifest-path rust/gstore_core/Cargo.toml -e normal` 中不得出现 `jni`）：
+TUI / macOS / Linux 前端是一等公民，Android 只是 `gstore_host` 的一个边缘。
+
+---
+
 ## 1. 背景与目标
 
 ### 1.1 现状

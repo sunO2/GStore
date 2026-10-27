@@ -111,7 +111,8 @@ class RhttpModule extends AppModule {
       await Rhttp.init();
       appLog.info('rhttp initialized successfully');
     } catch (e) {
-      appLog.error('Failed to initialize rhttp, falling back to default adapter',
+      appLog.error(
+          'Failed to initialize rhttp, falling back to default adapter',
           data: {'error': e.toString()});
     }
   }
@@ -132,15 +133,23 @@ class DbModule extends AppModule {
     final manager = ModuleManager.instance;
     // 注册 Dio 实例（供 FdroidRepoManager 使用）
     manager.lazyPut<Dio>(() => DioClient().get());
-    manager.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
+    manager
+        .lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
     // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
-    manager.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
+    manager.lazyPut<GithubAuthApi>(
+        () => GithubAuthApi(DioClient.createOAuthClient()));
     manager.lazyPut<DownloadManager>(() => DownloadManager(
           engine: DioDownloadEngine(dio: DioClient().get()),
           repository: DownloadRepository(),
-          onApkReady: (filePath) {
+          onApkReady: (filePath) async {
             final m = manager.get<InstallManager>();
-            if (m != null) m.installApk(filePath);
+            if (m == null) return;
+            try {
+              await m.installApk(filePath, moduleInstall: true);
+            } catch (error) {
+              // 标记归属拦截/安装异常都不得逃逸成未处理的异步错误。
+              appLog.error('DbModule: onApkReady 安装失败（已记录） - $error');
+            }
           },
         ));
 
@@ -172,7 +181,7 @@ class UserModule extends AppModule {
     ModuleManager.instance.bind<UserManager>(userManager);
     await userManager.initialize();
     // 元数据提交服务（依赖用户登录态，首次使用时创建）
-    ModuleManager.instance.lazyPut<MetadataSubmitService>(
-        () => MetadataSubmitService.instance);
+    ModuleManager.instance
+        .lazyPut<MetadataSubmitService>(() => MetadataSubmitService.instance);
   }
 }

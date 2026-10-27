@@ -10,6 +10,8 @@ import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/model/AppIdentity.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用聚合管理器
 /// 负责管理所有渠道已添加的应用
@@ -93,6 +95,7 @@ class AppAggregatorManager implements IAggregateService {
     required AppSummary appInfo,
     int? sortOrder,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     // 渠道自报规范化 appId（无感调用）
     final channelInstance = _channelManager.getChannelByCode(channelCode);
     final appId = channelInstance != null
@@ -154,6 +157,7 @@ class AppAggregatorManager implements IAggregateService {
     required String channelCode,
     required List<AppSummary> appInfos,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     final now = DateTime.now().millisecondsSinceEpoch;
     final channelInstance = _channelManager.getChannelByCode(channelCode);
     final addedApps = <AddedAppInfo>[];
@@ -218,6 +222,7 @@ class AppAggregatorManager implements IAggregateService {
     required String channelCode,
     required String appId,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.removeApp(channelCode, appId);
     // 联动清理该应用的用户标签（避免残留孤儿标签）
     try {
@@ -242,6 +247,7 @@ class AppAggregatorManager implements IAggregateService {
     required String oldAppId,
     required String newAppId,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     if (oldAppId == newAppId) return;
     final db = _database;
 
@@ -306,6 +312,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required List<String> tags,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     try {
       await _database.appTagDao.removeTagsOfApp(channelCode, appId);
       final deduped = tags.toSet().where((t) => t.trim().isNotEmpty).toList();
@@ -329,6 +336,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required String tag,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     final t = tag.trim();
     if (t.isEmpty) return;
     try {
@@ -346,6 +354,7 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
     required String tag,
   }) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     try {
       await _database.appTagDao.removeTag(channelCode, appId, tag);
     } catch (e) {
@@ -418,6 +427,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 清空指定渠道的所有应用
   @override
   Future<void> clearChannel(String channelCode) async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.clearChannel(channelCode);
 
     _notifyAppsChanged();
@@ -427,6 +437,7 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 清空所有应用
   Future<void> clearAll() async {
+    await LegacyWriteGuard.assertAllowed('catalog');
     await _database.addedAppDao.clearAll();
 
     _notifyAppsChanged();
@@ -492,7 +503,7 @@ class AppAggregatorManager implements IAggregateService {
   @override
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
     final addedApps = await getAllAddedApps();
-    return _aggregateWithMeta(addedApps);
+    return aggregateWithMeta(addedApps, tagsIndex: await getAllTagsIndex());
   }
 
   /// 分页获取聚合应用详情
@@ -512,19 +523,26 @@ class AppAggregatorManager implements IAggregateService {
     }
 
     final end = (offset + limit > total) ? total : offset + limit;
-    final apps = await _aggregateWithMeta(addedApps.sublist(offset, end));
+    final apps = await aggregateWithMeta(
+      addedApps.sublist(offset, end),
+      tagsIndex: await getAllTagsIndex(),
+    );
     return (apps, total);
   }
 
-  /// 读取标签索引 + 分类映射，并对给定切片执行分片并行渠道详情聚合
-  Future<List<AggregatedAppInfo>> _aggregateWithMeta(
-    List<AddedAppInfo> addedApps,
-  ) async {
+  /// 读取分类映射，并对给定切片执行分片并行渠道详情聚合。
+  ///
+  /// **纯合并**：行与标签索引由调用方提供（`addedApps` + `tagsIndex`），本方法
+  /// 不再读聚合库（无 `getAllAddedApps()` / `getAllTagsIndex()`），只做渠道详情
+  /// 分片查询与分类归一化。因此 `AddedAppsFacade` 可以按 flag 从核心/旧 backend
+  /// 取行与标签后委托此方法——本方法既不读 catalog 库也不回调 facade，任意 flag
+  /// 取值都不会递归。
+  Future<List<AggregatedAppInfo>> aggregateWithMeta(
+    List<AddedAppInfo> addedApps, {
+    required Map<String, List<String>> tagsIndex,
+  }) async {
     const sliceSize = 8;
     debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
-
-    // 一次性读取全部用户标签索引（channelId:appId → tags），供合并展示
-    final tagsIndex = await getAllTagsIndex();
 
     // 一次性读取 localdb 渠道分类映射（英文 ID → 中文 description）；
     // 失败/缺失时为空映射，mergeCategories 降级为原样合并
@@ -578,6 +596,14 @@ class AppAggregatorManager implements IAggregateService {
       try {
         final channel = _channelManager.getChannelByCode(channelCode);
         if (channel == null) {
+          // Rust 脚本通道（`js_<stem>`）刻意不注册为 Dart channel，
+          // getChannelByCode 恒返回 null；若直接丢弃，入库成功的 JS 应用永远
+          // 不出现在首页（"js渠道入库成功，但是首页不显示"）。flag on 且命中
+          // 通道包时走 lane 分支取真实元数据，其余未知渠道保持原有丢弃语义。
+          final lane = RustScriptChannelLane.instance;
+          if (lane.enabled && lane.packFor(channelCode) != null) {
+            return _aggregateRustLaneApp(addedApp, mergeCategories);
+          }
           debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
           return null;
         }
@@ -638,6 +664,40 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   // ==================== 私有方法 ====================
+
+  /// 聚合一个 Rust 脚本通道（`js_<stem>`）行。
+  ///
+  /// 通道包刻意不注册为 Dart channel，`getChannelByCode` 恒返回 null；此分支
+  /// （flag on 且 [RustScriptChannelLane.packFor] 命中）从通道已保存行
+  /// （[RustScriptChannelLane.storedApps]）按 appId 取真实元数据（name/icon/...），
+  /// 匹配不到则回落到 appId 占位；分类合并与其他分支一致。
+  ///
+  /// `channel` 用 [ChannelType.custom]（枚举无脚本类型；badge 渲染为 'APP' +
+  /// primary 品牌色，不改动枚举本身）。`isFromCache: false`：这是通道的真实数据，
+  /// 不是缓存兜底。读取失败由调用方的 catch 兜底（应用仍会出现）。
+  Future<AggregatedAppInfo> _aggregateRustLaneApp(
+    AddedAppInfo addedApp,
+    List<String> Function(AppSummary summary, String key) mergeCategories,
+  ) async {
+    final channelCode = addedApp.channelId;
+    final key = '${addedApp.channelId}:${addedApp.appId}';
+    final laneApps = await RustScriptChannelLane.instance.storedApps(channelCode);
+    var summary = _createAppSummaryFromAdded(addedApp);
+    for (final app in laneApps) {
+      if (app.appId == addedApp.appId) {
+        summary = app;
+        break;
+      }
+    }
+    final merged = mergeCategories(summary, key);
+    return AggregatedAppInfo(
+      addedAppInfo: addedApp,
+      appInfo: merged.isEmpty ? summary : summary.copyWith(category: merged),
+      channel: ChannelType.custom,
+      channelCode: channelCode,
+      isFromCache: false,
+    );
+  }
 
   /// 从 AddedAppInfo 创建占位 AppSummary（渠道查询失败时兜底）
   /// 聚合库只存引用，无应用信息副本；兜底显示 appId 与空图标（UI 占位）

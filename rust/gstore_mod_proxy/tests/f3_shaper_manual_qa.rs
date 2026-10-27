@@ -339,6 +339,7 @@ fn f3_shaper_manual_qa() {
         emit_event: Some::<EmitFn>(capture_event),
         context: std::ptr::null_mut(),
         protect_fd: Some(dummy_protect),
+        platform: std::ptr::null(),
     };
     let mut api_uninit = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
     let code = register(&entry, api_uninit.as_mut_ptr());

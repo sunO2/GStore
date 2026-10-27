@@ -26,6 +26,7 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 脚本渠道 meta（脚本可选 `const CHANNEL_META = { name, description, icon }`）
 class _ChannelMeta {
@@ -528,6 +529,7 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   @override
   Future<ChannelResult<void>> removeApp(String appId) async {
+    await LegacyWriteGuard.assertAllowed('js_channel');
     try {
       await (await _getAppDao()).removeApp(appId, channelKey);
       return ChannelResult.success(data: null, from: ChannelType.custom);
@@ -779,10 +781,20 @@ class JsChannel extends IChannel implements DynamicChannel {
   }
 
   /// 落库到本渠道（强制 channelCode = channelKey）
+  ///
+  /// Wave 6 closeout 后脚本渠道数据归 Rust（`ScriptApi` + `channel_apps`），本
+  /// 方法只作为 `CoreFlags.jsChannel == false` 的旧后端，并由 `js_channel`
+  /// 写入标记兜底。
+  @Deprecated(
+    'Legacy Dart JS channel write; superseded by the Rust ScriptApi lane and '
+    'the core channel_apps store (js_channel). Kept only as the '
+    'CoreFlags.jsChannel == false backend.',
+  )
   Future<void> _persistApps(
     List<AppSummary> apps, {
     Function(int current, int total)? onProgress,
   }) async {
+    await LegacyWriteGuard.assertAllowed('js_channel');
     final dao = await _getAppDao();
     final entities = <ChannelAddedApp>[];
     for (var i = 0; i < apps.length; i++) {

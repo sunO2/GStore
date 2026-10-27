@@ -21,13 +21,14 @@ import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
-import 'package:gstore/core/perf/battery_history_recorder.dart';
+import 'package:gstore/core/perf/battery_history_gate.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/service/proxy_connect_controller.dart';
 import 'package:gstore/core/service/proxy_connect_intent_bridge.dart';
 import 'package:gstore/core/service/proxy_status_notification.dart';
 import 'package:gstore/core/service/proxy_vpn_service.dart';
+import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
@@ -35,6 +36,7 @@ import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/core/rust/DioModuleFetcher.dart';
+import 'package:gstore/debug/core_smoke.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleDownloader.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
@@ -162,22 +164,47 @@ Future<void> _openProxyPageFromTileRequest() async {
   });
 }
 
-/// 启动电池/功耗历史采样器（Scene `power8.records` 等价，todo 19）。
+/// 门控启动电池/功耗历史采样器（Scene `power8.records` 等价，todo 19）。
 ///
-/// 单例 [batteryHistoryRecorder] 在 App 生命周期内按 Scene 节拍（1s 初始延迟 +
-/// 3s 周期）采样；门控（亮屏、非充电/满电、数值完整）与静默语义见
+/// **默认 OFF**：仅当持久化配置 `perf.history.enabled`
+/// （[ConfigKeys.perfHistoryEnabled]）为 `true` 时才启动；未开启 / 未设置时
+/// **不启动、也不实例化 Rust `PerfModule`**（单例惰性构造，`start()` 前不采样）。
+/// 用户经性能页「后台采样」开关显式开启/关闭（见 `lib/page/perf/logic.dart`
+/// `toggleSampling`），该开关写回本键，故下次启动由本门控恢复。
+///
+/// 单例 [batteryHistoryRecorder] 按 Scene 节拍（1s 初始延迟 + 3s 周期）采样；
+/// 门控（亮屏、非充电/满电、数值完整）与静默语义见
 /// `battery_history_recorder.dart`。**manifest 决策**：本记录器在 Flutter 进程内
 /// 运行、不新增任何前台服务 / 权限 / 组件，故 **无需 AndroidManifest 变更**
-/// （电池经既有 Rust `PerfModule`；屏幕 / 前台经既有 Shizuku 通道）。启动失败仅
-/// 记录日志，绝不崩溃 App。
-void _startBatteryHistoryRecorder() {
+/// （电池经既有 Rust `PerfModule`；屏幕 / 前台经既有 Shizuku 通道）。best-effort：
+/// 读取配置失败按关闭处理，启动失败仅记录日志，绝不阻塞或崩溃 App。
+Future<void> _startBatteryHistoryRecorderIfEnabled() async {
+  final started = await startBatteryHistoryRecorderIfEnabled(
+    log: (message) => appLog.info(message),
+  );
+  if (!started) {
+    appLog.debug('电池历史采样器未启用（perf.history.enabled 未开启），跳过启动');
+  }
+}
+
+/// 请求设备显示支持的最高刷新率（120Hz / 90Hz / 144Hz 等）。
+///
+/// 经 Android 平台通道 `gstore/display_refresh` 调用原生
+/// [DisplayRefreshChannel]：读 `Display.getSupportedModes()` 选最高 fps 模式，
+/// 经 `preferredDisplayModeId` + `Surface.setFrameRate` 应用。非 Android /
+/// 通道缺失 / 设备不支持一律静默降级（返回 `null` 或抛错都忽略），
+/// 绝不阻塞或崩溃启动。幂等：可重复调用。
+Future<void> _applyHighestRefreshRate() async {
+  if (!Platform.isAndroid) return;
   try {
-    batteryHistoryRecorder.start();
-    appLog.info('电池历史采样器已启动（session=${batteryHistoryRecorder.sessionId}）');
-  } catch (e, st) {
-    appLog.error('电池历史采样器启动失败（已忽略，不影响启动）', data: {
+    const channel = MethodChannel('gstore/display_refresh');
+    final result = await channel.invokeMethod<dynamic>('applyHighestRefreshRate');
+    appLog.info('高刷新率：已请求设备最高刷新率', data: {
+      'result': result?.toString() ?? 'null',
+    });
+  } catch (e) {
+    appLog.warning('高刷新率：请求失败（已忽略，不影响启动）', data: {
       'error': e.toString(),
-      'stack': st.toString(),
     });
   }
 }
@@ -266,6 +293,26 @@ Future<void> _initModuleManager(Stopwatch sw) async {
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 高刷新率（120Hz 等）：请求设备显示支持的最高 fps（见 _applyHighestRefreshRate）。
+  // 放在启动最前：越早生效，首帧即可跑在高刷；失败静默，绝不影响启动。
+  await _applyHighestRefreshRate();
+
+  // 调试专用核心冒烟（F3 真机 QA）：仅当构建带
+  // `--dart-define=GSTORE_CORE_SMOKE=true` 且 kDebugMode 时执行，正常启动
+  // 完全惰性（enabled 为编译期 false）。失败时记录日志后重新抛出，避免
+  // "看起来成功" 的静默降级。
+  if (CoreSmoke.enabled) {
+    try {
+      await CoreSmoke.run();
+    } on Object catch (error, stackTrace) {
+      appLog.error('CoreSmoke: 启动失败', data: {
+        'error': error.toString(),
+        'stack': stackTrace.toString(),
+      });
+      rethrow;
+    }
+  }
+
   // 初始化前台任务通信端口（后台 isolate 保活）
   FlutterForegroundTask.initCommunicationPort();
 
@@ -284,17 +331,24 @@ main() async {
     appLog.debug(message);
   };
 
+  // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
+  // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
+  // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
+  // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
+  // false，旧路径（flags 全 false）继续权威，启动不崩溃。
+  await CoreBootstrap.start();
+
   // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
   // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
   //（_initModuleManager 预置禁用）需要按持久化开关读配置。
   await ConfigInitializer.initialize();
   await registerService();
 
-  // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：App 启动即起表，
-  // 1s 初始延迟 + 3s 周期，仅亮屏且非充电/满电时落库（详见 recorder 文档）。
-  // best-effort：权限 / Shizuku 不可用 / 平台通道缺失一律降级为静默 no-op，
-  // 绝不阻塞或崩溃启动。
-  _startBatteryHistoryRecorder();
+  // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：**默认 OFF**，仅当用户
+  // 显式开启性能监控（持久化 `perf.history.enabled`）时启动；未开启时**不启动、
+  // 也不实例化 Rust perf 模块**（详见 _startBatteryHistoryRecorderIfEnabled）。
+  // best-effort：读取配置失败按关闭处理，绝不阻塞或崩溃启动。
+  await _startBatteryHistoryRecorderIfEnabled();
 
   // 系统"管理空间"入口（ManageSpaceActivity）：Android 系统设置 →
   // 应用 → GStore → 存储 → 管理空间。中转 Activity 会复用 MainActivity

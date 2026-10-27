@@ -1,0 +1,50 @@
+[
+  {
+    "name": "absolute save_file_name wins verbatim",
+    "save_file_name": "/tmp/absolute/app.apk",
+    "file_name": "server-name.apk",
+    "downloads_dir": "/downloads",
+    "docs_dir": "/docs",
+    "expected": "/tmp/absolute/app.apk"
+  },
+  {
+    "name": "downloads dir used for plain file name",
+    "save_file_name": null,
+    "file_name": "app.apk",
+    "downloads_dir": "/downloads",
+    "docs_dir": "/docs",
+    "expected": "/downloads/app.apk"
+  },
+  {
+    "name": "fallback to docs dir when downloads dir is absent",
+    "save_file_name": null,
+    "file_name": "app.apk",
+    "downloads_dir": null,
+    "docs_dir": "/docs",
+    "expected": "/docs/app.apk"
+  },
+  {
+    "name": "nested file name is joined under downloads dir",
+    "save_file_name": null,
+    "file_name": "sub/dir/app.apk",
+    "downloads_dir": "/downloads",
+    "docs_dir": "/docs",
+    "expected": "/downloads/sub/dir/app.apk"
+  },
+  {
+    "name": "relative save_file_name is not absolute and falls back to downloads dir",
+    "save_file_name": "relative/name.apk",
+    "file_name": "fallback.apk",
+    "downloads_dir": "/downloads",
+    "docs_dir": "/docs",
+    "expected": "/downloads/fallback.apk"
+  },
+  {
+    "name": "relative save_file_name with no downloads dir falls back to docs dir",
+    "save_file_name": "relative/name.apk",
+    "file_name": "fallback.apk",
+    "downloads_dir": null,
+    "docs_dir": "/docs",
+    "expected": "/docs/fallback.apk"
+  }
+]

@@ -4,16 +4,22 @@ import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatf
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/script/rust_script_detail_channel.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -77,8 +83,12 @@ class DetailLogic
   /// 页面级 detail 通道（JsDetailChannel 或 StandardDetailChannel）。
   IDetailChannel? detailChannel;
 
-  /// 聚合管理器（标签读写）
-  late IAggregateService? _aggregator;
+  /// 当前页面在进程级 UI handler 注册表里的绑定句柄（页面退出时解绑）。
+  ///
+  /// `DetailCallbacks` 是页面级对象，而 `ScriptUiRequestRouter` 是进程级
+  /// 单例；详情页把自身绑定到 `ScriptUiHandlerRegistry`，`ui.*` handler 在
+  /// 调用时读取，不把页面 callbacks 固化进 channel 初始化。
+  ScriptUiBinding? _scriptUiBinding;
 
   static const List<String> _fallbackPresetTags = [
     '工具', '游戏', '社交', '影音', '阅读', '效率', '系统',
@@ -90,7 +100,6 @@ class DetailLogic
     if (_started) return;
     _started = true;
     _channelManager = ModuleManager.instance.get<ChannelManager>();
-    _aggregator = ModuleManager.instance.get<IAggregateService>();
     _initializeFromArguments();
     await _initAndLoad();
   }
@@ -101,7 +110,17 @@ class DetailLogic
     if (req == null) return;
     final code = req.channelCode ?? req.channel.code;
     final ch = _channelManager?.getChannelByCode(code);
-    if (ch == null) return;
+    if (ch == null) {
+      // Rust 脚本通道：flag on 时 js_* 渠道包归 ScriptApi，Dart 渠道已注销。
+      if (await _loadRustScriptChannel(req, code)) return;
+      if (CoreFlags.jsChannel) {
+        // 解析失败：给出类型化错误，避免 SizedBox.shrink() 静默白屏。
+        state.errorMessage = '渠道不可用或未注册: $code';
+        state.isLoadingDetail = false;
+        return;
+      }
+      return; // flag off：旧路径逐字节不变（保持原静默返回）
+    }
     var dc = ch.getDetailChannel(req.appId);
     dc ??= StandardDetailChannel(
       appId: req.appId,
@@ -111,7 +130,40 @@ class DetailLogic
     );
     dc.bind(state, this);
     detailChannel = dc;
+    _scriptUiBinding = ScriptUiHandlerRegistry.instance.bind(
+      callbacks: this,
+      appId: () => req.appId,
+      channelKey: () => code,
+    );
     await dc.load();
+  }
+
+  /// Rust 脚本通道解析：flag on 且 [code] 命中 Rust lane 时构造
+  /// [RustScriptDetailChannel] 并加载，返回 true；否则返回 false。
+  ///
+  /// 缓存未命中时先刷新一次（deep-link 冷启动场景），仍无则回落类型化错误。
+  Future<bool> _loadRustScriptChannel(AppDetailRequest req, String code) async {
+    if (!CoreFlags.jsChannel) return false;
+    final lane = RustScriptChannelLane.instance;
+    if (lane.packFor(code) == null) {
+      await lane.refresh();
+    }
+    if (lane.packFor(code) == null) return false;
+
+    final dc = RustScriptDetailChannel(
+      appId: req.appId,
+      channelKey: code,
+      request: req,
+    );
+    dc.bind(state, this);
+    detailChannel = dc;
+    _scriptUiBinding = ScriptUiHandlerRegistry.instance.bind(
+      callbacks: this,
+      appId: () => req.appId,
+      channelKey: () => code,
+    );
+    await dc.load();
+    return true;
   }
 
   /// 加载详情（错误页重试 / 单测直调入口）。
@@ -195,21 +247,30 @@ class DetailLogic
       return;
     }
     unawaited(() async {
-      final task = await service.download(
-        appId, appName, version, downloadUrl, fileName,
-        downloadSize: download.size ?? downloadSize,
-      );
-      state.currentDownload = task;
-      counterController.sink.add(task);
-      final id = task.id;
-      if (id != null) {
-        downloadListenerSubscription?.cancel();
-        downloadListenerSubscription = service.watch(id).listen((da) {
-          state.currentDownload = da;
-          // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
-          state.refresh();
-          counterController.sink.add(da);
-        });
+      try {
+        final task = await service.download(
+          appId, appName, version, downloadUrl, fileName,
+          downloadSize: download.size ?? downloadSize,
+        );
+        state.currentDownload = task;
+        counterController.sink.add(task);
+        final id = task.id;
+        if (id != null) {
+          downloadListenerSubscription?.cancel();
+          // 列表级单订阅（service.watchAll）后按 id 过滤：不再为本任务单独建
+          // 一条 `service.watch(id)` → 不再多出一条 500ms 原生轮询线程
+          // （与 7f610d59 下载页的收口一致）。进度经 state.currentDownload 只
+          // 递增进度修订号，不 notifyListeners → 不重建整页。
+          downloadListenerSubscription = service.watchAll().listen((da) {
+            if (da.id != id) return;
+            state.currentDownload = da;
+            counterController.sink.add(da);
+          });
+        }
+      } on DownloadModuleUnavailableException catch (e) {
+        AppDialogs.showError(e.userMessage, title: '下载失败');
+      } catch (e) {
+        appLog.error('DetailLogic: startDownload 失败 - $e');
       }
     }());
   }
@@ -269,16 +330,15 @@ class DetailLogic
         appLog.error('DetailLogic: 解析 canonical appId 失败 - $e');
       }
     }
-    final aggregator = _aggregator;
     var currentTags = <String>[];
     var presetTags = <String>[];
     try {
-      if (aggregator != null) {
-        currentTags = await aggregator.getTags(
-          channelCode: req.channelCode ?? req.channel.code,
-          appId: canonicalId,
-        );
-      }
+      // 读路径与写路径同源：走 AddedAppsFacade（flag on 读 Rust core / flag off
+      // 回落旧 backend），不再直读旧聚合服务（flag on 时读旧库 → 标签陈旧）。
+      currentTags = await AddedAppsFacade.instance.tags(
+        req.channelCode ?? req.channel.code,
+        canonicalId,
+      );
       try {
         final categories =
             await "gstore".repoDB.db.dao.getAllCategory();
@@ -315,15 +375,15 @@ class DetailLogic
     );
     if (result == null) return;
     try {
-      if (aggregator == null) {
-        AppDialogs.showError('聚合模块未启用，标签未保存');
-        return;
-      }
-      await aggregator.setTags(
-        channelCode: req.channelCode ?? req.channel.code,
-        appId: canonicalId,
-        tags: result,
+      // 写路径走 facade（flag on 写 Rust core / flag off 回落旧 backend）——
+      // 旧 catalog 写守卫在 flag on 时抛 LegacyWriteBlocked(catalog)。
+      await AddedAppsFacade.instance.setTags(
+        req.channelCode ?? req.channel.code,
+        canonicalId,
+        result,
       );
+      // 标签变化 → 通知首页刷新（与旧 setTags 的 _notifyAppsChanged 同义）
+      await AddedAppsFacade.instance.notifyAppsChanged();
       AppDialogs.showSuccess('分类标签已更新', title: '保存成功');
     } catch (e) {
       AppDialogs.showError('保存标签失败: $e', title: '保存失败');
@@ -466,13 +526,15 @@ class DetailLogic
         downloadListenerSubscription?.cancel();
         final id = task.id;
         if (id != null) {
-          downloadListenerSubscription = service.watch(id).listen((da) {
+          // 与 startDownload 同款：列表级单订阅 + 按 id 过滤，杜绝 per-task 轮询。
+          downloadListenerSubscription = service.watchAll().listen((da) {
+            if (da.id != id) return;
             state.currentDownload = da;
-            // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
-            state.refresh();
             counterController.sink.add(da);
           });
         }
+      } on DownloadModuleUnavailableException catch (e) {
+        appLog.error('DetailLogic: syncDownloadToFB 失败 - ${e.userMessage}');
       } catch (e) {
         appLog.error('DetailLogic: syncDownloadToFB 失败 - $e');
       }
@@ -559,12 +621,23 @@ class DetailLogic
     _shutDown = true;
     _actionBusyTimer?.cancel();
     _actionBusyTimer = null;
+    final binding = _scriptUiBinding;
+    _scriptUiBinding = null;
+    if (binding != null) {
+      ScriptUiHandlerRegistry.instance.unbind(binding);
+    }
     final req = request;
     if (req != null) {
       final code = req.channelCode ?? req.channel.code;
       _channelManager
           ?.getChannelByCode(code)
           ?.releaseDetailChannel(req.appId);
+    }
+    final dc = detailChannel;
+    if (dc is RustScriptDetailChannel) {
+      // Rust 通道：释放 (key, app_id) detail runtime（Dart 渠道未注册，上面的
+      // getChannelByCode 为 null，不会重复释放）。
+      unawaited(dc.dispose());
     }
     detailChannel = null;
     counterController.close();

@@ -26,6 +26,7 @@ import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// F-Droid 应用市场渠道实现
 /// 架构：
@@ -340,6 +341,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 添加应用到已添加列表
   Future<ChannelResult<void>> addApp(AppSummary app) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     try {
       debugPrint('FdroidChannel: 添加应用 - ${app.appId}');
 
@@ -402,6 +404,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 从已添加列表移除应用
   Future<ChannelResult<void>> removeApp(String appId) async {
+    await LegacyWriteGuard.assertAllowed('channel');
     try {
       debugPrint('FdroidChannel: 移除应用 - $appId');
 

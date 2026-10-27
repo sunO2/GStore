@@ -49,6 +49,7 @@ class FakeBackupService implements IBackupService {
   Future<BackupImportResult> importFromFile(
     String filePath, {
     BackupImportMode mode = BackupImportMode.merge,
+    BackupLogCallback? onLog,
   }) =>
       throw UnimplementedError();
 

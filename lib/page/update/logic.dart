@@ -18,7 +18,7 @@ import 'state.dart';
 
 /// 应用更新检测控制器（Riverpod AutoDisposeNotifier）。
 ///
-/// 检测统一委托 UpdateManagerService（GetX 服务层，锁+时间窗防重 + 持久化缓存），
+/// 检测统一委托 UpdateFacade（flag off → legacy 服务，flag on → Rust core），
 /// 页面只做状态镜像与更新操作。结果/日志/进度全部走订阅镜像：
 /// 前台/后台检测共享同一服务实例状态。
 class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
@@ -31,7 +31,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   /// 下载任务流订阅
   final List<StreamSubscription<dynamic>> _subs = [];
 
-  UpdateManagerService get _manager => UpdateManagerService.instance;
+  UpdateFacade get _manager => UpdateFacade.instance;
 
   @override
   UpdateState build() {
@@ -79,7 +79,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   }
 
   /// 订阅 UpdateManager 结果同步（避免重复监听）
-  void _subscribeManager(UpdateManagerService manager) {
+  void _subscribeManager(UpdateFacade manager) {
     if (_subscribed) return;
     _subscribed = true;
     _subs.add(manager.updateListStream.listen((list) {
@@ -144,7 +144,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
 
   /// 检测所有已添加应用是否有更新
   ///
-  /// 统一走 UpdateManagerService（锁防重 + 状态共享）：
+  /// 统一走 UpdateFacade（锁防重 + 状态共享）：
   /// - 页面自动进入：build 后缓存优先/检测中订阅（不重新发起）
   /// - 手动刷新：checkUpdates(force: true) 强制重新检测
   Future<void> checkUpdates({bool force = false}) async {
@@ -158,7 +158,19 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
         isLoading: true, updateList: const [], clearErrorMessage: true);
     _resetCheckProgress();
 
-    await manager.checkUpdates(force: force);
+    try {
+      await manager.checkUpdates(force: force);
+    } on CoreUpdateException catch (error) {
+      // typed core rejection (CORE_E_FACTS_MISSING / CORE_E_INVENTORY_STALE /
+      // CORE_E_UPDATE_CUTOVER_ORDER): surface it, never fall back silently.
+      if (_disposed) return;
+      state = state.copyWith(
+        isLoading: false,
+        checkFinished: false,
+        errorMessage: error.toString(),
+      );
+      return;
+    }
 
     if (_disposed) return;
     if (manager.updateList.isEmpty) {
@@ -299,7 +311,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
 
       // 下载完成（DownloadManager 内部已自动安装 APK）：
       // 通知 UpdateManager 刷新状态（复核版本后从可更新列表移除，红点自动更新）
-      await UpdateManagerService.instance.markUpdated(info.appId);
+      await _manager.markUpdated(info.appId);
       // 同步页面列表（UpdateManager 订阅也会同步，这里双保险）
       if (!_disposed) {
         state = state.copyWith(

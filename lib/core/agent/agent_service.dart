@@ -23,9 +23,11 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/think_parser.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/snapshot/snapshot_service.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/core/service/apk_browser_service.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart' as mt;
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
@@ -35,12 +37,15 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/script/script_api.dart';
+import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/model/download_task_database.dart';
@@ -2860,6 +2865,14 @@ class AgentService {
   Future<String> _runJsChannel(String channel, String method, dynamic params) async {
     if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
     if (method.isEmpty) return '执行脚本渠道方法需要 method';
+
+    // jsChannel 切轨后脚本渠道不在 Dart ChannelManager 注册表里（结构门禁拒绝
+    // Dart 脚本渠道），执行入口必须落到 Rust `ScriptApi.run`；flag off 时保持
+    // 旧的 JsChannel.callMethod 路径逐字节不变。
+    if (CoreFlags.jsChannel && channel.startsWith('js_')) {
+      return _runScriptLaneChannel(channel, method, params);
+    }
+
     try {
       final inst = _resolveChannel(channel);
       if (inst is! JsChannel) {
@@ -2875,6 +2888,38 @@ class AgentService {
         return '脚本 $channel 未实现方法 $method 或执行失败（返回 null）';
       }
       return '脚本 $channel.$method 返回：\n${result.toString()}';
+    } catch (e) {
+      return '执行脚本方法失败: $e';
+    }
+  }
+
+  /// Runs one method through the Rust script lane (`ScriptApi.run`).
+  ///
+  /// The pack must be installed (startup load or the settings import action);
+  /// `ScriptApi.run` returns the raw JSON the Dart runtime would have received,
+  /// so the value is surfaced verbatim, matching the legacy string contract.
+  Future<String> _runScriptLaneChannel(
+    String channel,
+    String method,
+    dynamic params,
+  ) async {
+    try {
+      await ScriptChannelService.instance.ensureInitialized();
+      final packs = await ScriptApi.instance.list();
+      if (!packs.any((pack) => pack.key == channel)) {
+        return '渠道 $channel 未安装到脚本通道，请先在设置中导入脚本渠道包';
+      }
+      final args = params is Map
+          ? params.map((k, v) => MapEntry(k.toString(), v))
+          : const <String, dynamic>{};
+      _updateToolStep('执行脚本方法 $method…');
+      final raw = await ScriptApi.instance.run(
+        key: channel,
+        method: method,
+        paramsJson: jsonEncode(args),
+      );
+      _updateToolStep('脚本方法 $method 已返回');
+      return '脚本 $channel.$method 返回：\n$raw';
     } catch (e) {
       return '执行脚本方法失败: $e';
     }
@@ -2928,13 +2973,17 @@ class AgentService {
       }
 
       // 使用 InstallManager 统一安装（Shizuku 静默安装优先，回退系统安装）
-      final (success, method) = await manager.installApk(savePath);
-      if (!success) {
-        return '安装失败，请检查 APK 文件或重试';
+      final (outcome, _) = await manager.installApk(savePath);
+      switch (outcome) {
+        case InstallOutcome.launched:
+          return '安装请求已发送，请在弹出的系统安装界面确认。';
+        case InstallOutcome.installed:
+          return '已静默安装 $savePath';
+        case InstallOutcome.alreadyInstalled:
+          return '应用已安装';
+        case InstallOutcome.failed:
+          return '安装失败，请检查 APK 文件或重试';
       }
-      return method == InstallMethod.shizuku
-          ? '已静默安装 $savePath'
-          : '安装请求已发送，请在弹出的系统安装界面确认。';
     } catch (e) {
       return '安装失败: $e';
     }
@@ -2943,11 +2992,11 @@ class AgentService {
   /// 管理已添加应用（list/add/remove/isAdded）
   Future<String> _manageApp(String action, String appId, String channel, String name) async {
     try {
-      final aggregator = AppAggregatorManager.instance;
+      final addedAppsFacade = AddedAppsFacade.instance;
 
       switch (action) {
         case 'list':
-          final apps = await aggregator.getAllAddedApps();
+          final apps = await addedAppsFacade.list();
           if (apps.isEmpty) return '我的应用中还没有添加任何应用。';
           final lines = apps
               .map((a) => '• ${a.appId} 渠道: ${a.channelId}')
@@ -2965,26 +3014,38 @@ class AgentService {
           if (!result.success || result.data == null) {
             return '获取应用信息失败: ${result.error ?? '未知错误'}';
           }
-          await aggregator.addApp(channelCode: channel, appInfo: result.data!);
+          await addedAppsFacade.add(
+            channel,
+            result.data!.appId,
+            appInfo: result.data,
+          );
           return '已添加 ${result.data!.name ?? appId} 到我的应用';
 
         case 'remove':
           if (appId.isEmpty || channel.isEmpty) {
             return '移除应用需要 appId 和 channel';
           }
-          await aggregator.removeApp(channelCode: channel, appId: appId);
+          await addedAppsFacade.remove(channel, appId);
           return '已移除 $name（$appId）';
 
         case 'isAdded':
           if (appId.isEmpty || channel.isEmpty) {
             return '检查需要 appId 和 channel';
           }
-          final isAdded = await aggregator.isAppAdded(channelCode: channel, appId: appId);
+          final isAdded = await addedAppsFacade.isAdded(channel, appId);
           return isAdded ? '$appId 已在我的应用中' : '$appId 尚未添加';
 
         default:
           return '未知操作: $action（支持 list/add/remove/isAdded）';
       }
+    } on LegacyWriteBlocked catch (blocked) {
+      final warning = CoreWriteBlockedWarning(
+        domain: blocked.domain,
+        operation: 'manageApp',
+        detail: 'agent write refused; the Rust core owns this domain',
+      );
+      appLog.warning('AgentService: $warning');
+      return '管理应用失败: $warning';
     } catch (e) {
       return '管理应用失败: $e';
     }
@@ -3095,7 +3156,7 @@ class AgentService {
   /// 检查应用更新
   Future<String> _checkUpdates(String appId, String channel) async {
     try {
-      final manager = UpdateManagerService.instance;
+      final manager = UpdateFacade.instance;
 
       // 指定应用时只查该应用（渠道直查或读缓存，不污染全量）
       if (appId.isNotEmpty) {
@@ -3157,7 +3218,21 @@ class AgentService {
         case 'import':
           if (filePath.isEmpty) return '导入需要 filePath';
           _updateToolStep('正在从备份恢复…');
-          await service.importFromFile(filePath);
+          final result = await service.importFromFile(filePath);
+          if (!result.success) {
+            // A blocked/failed restore must NEVER be reported as success: the
+            // typed CORE_E_WRITE_BLOCKED warning is the caller-visible failure.
+            for (final warning in result.writeWarnings) {
+              appLog.warning('AgentService: $warning');
+            }
+            final detail = result.writeWarnings.isNotEmpty
+                ? result.writeWarnings.join('; ')
+                : (result.error ?? '恢复未完成');
+            if (result.writeWarnings.isEmpty) {
+              appLog.error('AgentService: 恢复失败: $detail');
+            }
+            return '恢复失败: $detail';
+          }
           _updateToolStep('恢复完成');
           return '已从 $filePath 恢复';
         default:
@@ -3205,6 +3280,7 @@ class AgentService {
           return '已恢复下载 $fileName';
 
         case 'cleanCompleted':
+          await LegacyWriteGuard.assertAllowed('download');
           final db = await downloadTaskDatabase;
           await db.database.delete(
             'DownloadTaskEntity',
@@ -3218,6 +3294,7 @@ class AgentService {
           return '已清理所有已完成下载记录';
 
         case 'clearAll':
+          await LegacyWriteGuard.assertAllowed('download');
           final db = await downloadTaskDatabase;
           await db.database.delete('DownloadTaskEntity');
           return '已清空所有下载记录';

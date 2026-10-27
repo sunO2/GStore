@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use gstore_contract::abi::{
     host_abi_satisfies, ABI_ERR_DETAIL, ABI_OK, GStoreModuleApi, GStoreModuleEntry,
-    GSTORE_MODULE_ABI_VERSION,
+    GSTORE_MODULE_ABI_VERSION, MIN_HOST_ABI,
 };
 use gstore_contract::error::ModuleError;
 
@@ -68,12 +68,24 @@ extern "C" fn host_protect_fd(fd: c_int) -> c_int {
 
 /// 构造宿主注入表（`load` 与测试共用）。
 ///
-/// 只允许在 `GStoreModuleEntry` 末尾追加字段；`entry_size` 由宿主如实填写，
-/// 模块据此判断能安全读取到哪一版（v3 = 含 `protect_fd`）。
-fn host_entry() -> GStoreModuleEntry {
-    GStoreModuleEntry {
-        abi_version: GSTORE_MODULE_ABI_VERSION,
-        entry_size: std::mem::size_of::<GStoreModuleEntry>() as u32,
+/// `abi` 是模块探测到的目标 ABI（`gstore_mod_<name>_abi`，缺失时回退 3）。
+/// v3 宿主（`abi == 3`）填入 v3 布局（`entry_size` = `PLATFORM_OFFSET`，无
+/// `platform` 槽）；v4 宿主（`abi == 4`）填满 v4 布局。越界 ABI 拒绝，绝不静默降级。
+/// `platform` 槽在真实 vtable 接线（后续 todo）前保持 NULL，模块走无平台服务降级路径。
+fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
+    if !(MIN_HOST_ABI..=GSTORE_MODULE_ABI_VERSION).contains(&abi) {
+        return Err(format!(
+            "unsupported module ABI {abi} (host supports {MIN_HOST_ABI}..={GSTORE_MODULE_ABI_VERSION})"
+        ));
+    }
+    let entry_size = if abi == 3 {
+        GStoreModuleEntry::PLATFORM_OFFSET as u32
+    } else {
+        std::mem::size_of::<GStoreModuleEntry>() as u32
+    };
+    Ok(GStoreModuleEntry {
+        abi_version: abi,
+        entry_size,
         log: Some(crate::log_bridge::host_log),
         alloc: None,
         free: None,
@@ -81,7 +93,9 @@ fn host_entry() -> GStoreModuleEntry {
         context: std::ptr::null_mut(),
         // ABI v3：代理域模块经此槽安装一个 SocketProtector 覆盖全部出站 socket。
         protect_fd: Some(host_protect_fd),
-    }
+        // ABI v4：真实 platform vtable 接线不属于本 todo，保持 NULL。
+        platform: std::ptr::null(),
+    })
 }
 
 fn api_name(api: &GStoreModuleApi) -> Result<String, String> {
@@ -94,14 +108,16 @@ fn api_name(api: &GStoreModuleApi) -> Result<String, String> {
 /// 握手校验（构造 Entry → 调用模块 register → 校验返回码/name/ABI/必填函数）。
 /// 抽成独立函数以便测试在不 dlopen 的情况下注入合成 register。
 ///
-/// ABI 协商只允许一个 gate：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 拒绝。
+/// `abi` 是模块探测到的目标 ABI（`gstore_mod_<name>_abi`，缺失时回退 3）；
+/// 只允许一个 gate：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 拒绝。
 /// 这是追加式 ABI 演进的关键——不做任何精确匹配，旧模块（min_host_abi <= 2）
 /// 因此仍能挂载到 v3 宿主。
 fn handshake_with(
     register: RegisterFn,
     module_name: &str,
+    abi: u32,
 ) -> Result<(String, GStoreModuleApi), String> {
-    let entry = host_entry();
+    let entry = host_entry(abi)?;
     let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
     let code = unsafe { register(&entry, api.as_mut_ptr()) };
     let api = unsafe { api.assume_init() };
@@ -270,8 +286,21 @@ fn preload_opencl() {
         }
         .map_err(|e| format!("no register symbol {} in {}: {e}", register_sym.trim_end_matches('\0'), path.display()))?;
 
-        // 3b. 握手：传 Entry（宿主服务）收 Api（模块能力）+ ABI/名字校验
-        let (name, api) = handshake_with(*register, &module_name)?;
+        // 3b. 可选 ABI 探测：gstore_mod_<name>_abi 返回模块构建时的 ABI 版本。
+        //     缺失 = pre-v4 模块（构建于 ABI 3），回退 3（v3 宿主 entry）。
+        let probe_sym = format!("gstore_mod_{module_name}_abi\0");
+        let probe_abi: u32 = match unsafe { lib.get::<extern "C" fn() -> u32>(probe_sym.as_bytes()) }
+        {
+            Ok(probe) => probe(),
+            Err(_) => 3,
+        };
+        crate::log_bridge::push_host_log(
+            1,
+            format!("gstore_host: module={module_name} probe_abi={probe_abi}"),
+        );
+
+        // 3c. 握手：传 Entry（宿主服务）收 Api（模块能力）+ ABI/名字校验
+        let (name, api) = handshake_with(*register, &module_name, probe_abi)?;
 
         // 4. 包装
         let create = api.create.ok_or("module missing create")?;
@@ -545,14 +574,18 @@ mod abi_v3_compat_tests {
     #[test]
     fn v2_module_still_mounts_on_v3_host_and_gets_protect_fd() {
         let _guard = PROTECT_LOCK.lock().unwrap();
-        assert_eq!(GSTORE_MODULE_ABI_VERSION, 3, "宿主 ABI 已升 v3");
+        assert_eq!(GSTORE_MODULE_ABI_VERSION, 4, "宿主 ABI 已升 v4");
 
-        let (name, api) = handshake_with(v2_register, "v2mod").expect("v2 模块必须仍能挂载 v3 宿主");
+        let (name, api) = handshake_with(v2_register, "v2mod", 3).expect("v2 模块必须仍能挂载 v3 宿主");
         assert_eq!(name, "v2mod");
         assert_eq!(api.min_host_abi, 2);
 
         let (_, entry_size, protect) = *CAPTURED.lock().unwrap().last().unwrap();
-        assert_eq!(entry_size as usize, std::mem::size_of::<GStoreModuleEntry>());
+        assert_eq!(
+            entry_size as usize,
+            GStoreModuleEntry::PLATFORM_OFFSET,
+            "v3 宿主 entry_size 为 v3 布局（无 platform 槽）"
+        );
         let protect = protect.expect("v3 宿主必须填充 protect_fd");
         assert_eq!(protect(7), 0, "Todo 4 接线前 stub 返回 0");
     }
@@ -561,7 +594,7 @@ mod abi_v3_compat_tests {
     #[test]
     fn v3_module_receives_non_null_protect_fd() {
         let _guard = PROTECT_LOCK.lock().unwrap();
-        let (_name, api) = handshake_with(v3_register, "v3mod").expect("v3 模块挂载");
+        let (_name, api) = handshake_with(v3_register, "v3mod", 3).expect("v3 模块挂载");
         assert_eq!(api.min_host_abi, 3);
         let (_, _size, protect) = *CAPTURED.lock().unwrap().last().unwrap();
         assert!(protect.is_some(), "v3 模块必须收到非空 protect_fd");
@@ -578,7 +611,7 @@ mod abi_v3_compat_tests {
     /// (d) entry_size 更小的旧 Entry：守卫跳读 protect_fd，不越界、不崩溃。
     #[test]
     fn smaller_entry_does_not_read_protect_fd() {
-        let mut entry = host_entry();
+        let mut entry = host_entry(GSTORE_MODULE_ABI_VERSION).unwrap();
         entry.entry_size = GStoreModuleEntry::PROTECT_FD_OFFSET as u32;
         assert!(!entry.has_protect_fd());
         assert!(
@@ -586,9 +619,39 @@ mod abi_v3_compat_tests {
             "旧 entry 必须跳过 protect_fd，不得越界读取"
         );
 
-        let full = host_entry();
+        let full = host_entry(GSTORE_MODULE_ABI_VERSION).unwrap();
         assert!(full.has_protect_fd());
         assert!(full.protect_fd_if_present().is_some());
+    }
+
+    /// (e) 宿主注入表按模块探测到的 ABI 选择 v3/v4 布局（具体数值断言）。
+    #[test]
+    fn host_entry_selects_v3_and_v4() {
+        let v3 = host_entry(3).expect("v3 entry");
+        assert_eq!(v3.abi_version, 3);
+        assert_eq!(v3.entry_size as usize, GStoreModuleEntry::PLATFORM_OFFSET);
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(v3.entry_size, 56, "x86_64 v3 布局 entry_size 具体数值");
+        assert!(v3.platform.is_null());
+        assert!(!v3.has_platform(), "v3 entry 不得暴露 platform 槽");
+
+        let v4 = host_entry(4).expect("v4 entry");
+        assert_eq!(v4.abi_version, 4);
+        assert_eq!(
+            v4.entry_size as usize,
+            std::mem::size_of::<GStoreModuleEntry>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(v4.entry_size, 64, "x86_64 v4 布局 entry_size 具体数值");
+        assert!(v4.platform.is_null());
+        assert!(v4.has_platform(), "v4 entry 覆盖 platform 槽");
+    }
+
+    /// (f) ABI 越界（过旧/未来版本）拒绝，绝不静默降级。
+    #[test]
+    fn rejects_future_abi() {
+        assert!(host_entry(5).is_err());
+        assert!(host_entry(2).is_err());
     }
 
     /// 可替换全局：宿主 stub 可换成真实实现（Todo 4 JNI）并可复位。
@@ -789,5 +852,226 @@ mod name_tests {
         assert_eq!(parse_module_name("libgstore_mod_repo_1.0.0.so").unwrap(), "repo");
         // 下划线模块名（无点版本）不应被误剥
         assert_eq!(parse_module_name("libgstore_mod_my_mod.so").unwrap(), "my_mod");
+    }
+}
+
+/// 双向 ABI 握手证明（Todo 5）：冻结 v3 fixture ↔ 新构建 v4 模块。
+///
+/// 三个方向，构成追加式 ABI 演进的完整闭环：
+/// - [`abi_handshake::old_module_handshake`]：冻结 v3 fixture（built @ 9ec5132，**无**
+///   `gstore_mod_repo_abi` 探测符，register 只认 `abi_version == 3`）挂载 v3 宿主 entry，
+///   并端到端验证 `DlModuleAdapter::load` 的「探针缺失 → 回退 v3 entry」路径；
+/// - [`abi_handshake::v4_module_accepts_v3_host`]：新构建 v4 模块（探针返回 4）必须仍
+///   接受 v3 宿主 entry（entry_size = 56，无 platform 槽）——追加式演进的核心证据；
+/// - [`abi_handshake::v3_module_rejects_v4_entry`]：冻结 v3 fixture 的 register 收到
+///   v4 宿主 entry（abi=4）必须返回 `ABI_ERR_ABI_MISMATCH` = **-2**（按其自身编译期
+///   `GSTORE_MODULE_ABI_VERSION=3` 判定），而非宿主侧 name/min_host_abi 错误——负向证明
+///   -2 具体码，避免「is_err 即通过」的虚假成功。
+///
+/// 只在 linux x86_64（fixture 布局强绑定本平台，entry_size 具体数值 56/64）。
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod abi_handshake {
+    use super::*;
+    use gstore_contract::abi::ABI_ERR_ABI_MISMATCH;
+    use std::path::{Path, PathBuf};
+    use std::sync::Once;
+
+    /// 冻结 v3 fixture 的解析路径（相对 gstore_host 的 CARGO_MANIFEST_DIR）。
+    const V3_FIXTURE_REL: &str = "../test-fixtures/v3/linux-x86_64/libgstore_mod_repo.so";
+    // v4 模块源码/清单/产物（各在独立的 target/ 下，不与外层 cargo test 的 target 冲突）。
+    const V4_SRC_REL: &str = "../gstore_mod_repo/src/lib.rs";
+    const V4_MANIFEST_REL: &str = "../gstore_mod_repo/Cargo.toml";
+    const V4_RELEASE_REL: &str = "../gstore_mod_repo/target/release/libgstore_mod_repo.so";
+
+    /// worktree 绝对路径 = `rust/gstore_host` 往上两级（`dl_adapter.rs` 所在 crate 的 manifest 目录）。
+    fn worktree_path(rel: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
+    }
+
+    fn v3_fixture_path() -> PathBuf {
+        worktree_path(V3_FIXTURE_REL)
+    }
+
+    fn v4_release_path() -> PathBuf {
+        worktree_path(V4_RELEASE_REL)
+    }
+
+    /// dlopen（与生产 `DlModuleAdapter::load` 相同的 RTLD_NOW | RTLD_LOCAL）。
+    fn dlopen(path: &Path) -> libloading::os::unix::Library {
+        unsafe {
+            libloading::os::unix::Library::open(
+                Some(path),
+                libloading::os::unix::RTLD_NOW | libloading::os::unix::RTLD_LOCAL,
+            )
+        }
+        .unwrap_or_else(|e| panic!("dlopen {}: {e}", path.display()))
+    }
+
+    /// 解析 register 入口（同一符号约定：`gstore_mod_repo_register`）。
+    fn dlsym_register(lib: &libloading::os::unix::Library) -> RegisterFn {
+        let sym = unsafe { lib.get::<RegisterFn>(b"gstore_mod_repo_register\0") }
+            .unwrap_or_else(|e| panic!("dlsym gstore_mod_repo_register: {e}"));
+        *sym
+    }
+
+    /// 是否导出 ABI 探测符 `gstore_mod_repo_abi`（v4 有、冻结 v3 fixture 无）。
+    fn has_abi_probe(lib: &libloading::os::unix::Library) -> bool {
+        unsafe { lib.get::<extern "C" fn() -> u32>(b"gstore_mod_repo_abi\0") }.is_ok()
+    }
+
+    /// 确定性重建 v4 模块（进程级 Once，仅构建一次）：release .so 缺失或早于
+    /// `src/lib.rs` → `cargo build --lib --release`。产物在 `gstore_mod_repo/target/`
+    ///（独立于外层 `gstore_host/target/`），不会与运行中的 `cargo test` 锁冲突。
+    static BUILD_V4: Once = Once::new();
+    fn ensure_v4_module_built() -> PathBuf {
+        BUILD_V4.call_once(|| {
+            let so = v4_release_path();
+            let src = worktree_path(V4_SRC_REL);
+            let stale = match (
+                so.metadata().and_then(|m| m.modified()).ok(),
+                src.metadata().and_then(|m| m.modified()).ok(),
+            ) {
+                (Some(so_mtime), Some(src_mtime)) => src_mtime > so_mtime,
+                _ => true,
+            };
+            if stale {
+                let manifest = worktree_path(V4_MANIFEST_REL);
+                eprintln!(
+                    "abi_handshake: rebuilding v4 gstore_mod_repo (release .so stale/missing: {})",
+                    so.display()
+                );
+                let status = std::process::Command::new("cargo")
+                    .args(["build", "--manifest-path"])
+                    .arg(&manifest)
+                    .args(["--lib", "--release"])
+                    .status()
+                    .unwrap_or_else(|e| panic!("spawn cargo build for {}: {e}", manifest.display()));
+                assert!(
+                    status.success(),
+                    "cargo build --manifest-path {} --lib --release failed (status {status})",
+                    manifest.display()
+                );
+            }
+        });
+        v4_release_path()
+    }
+
+    /// 1. 冻结 v3 fixture 挂载 v3 宿主 entry（abi=3）。
+    ///
+    /// dlsym register → `handshake_with(register, "repo", 3)` 必须成功，`min_host_abi <= 3`；
+    /// 再端到端 `DlModuleAdapter::load`，证明「探针缺失 → 回退 v3 entry」。
+    #[test]
+    fn old_module_handshake() {
+        let fixture = v3_fixture_path();
+        assert!(
+            fixture.exists(),
+            "frozen v3 fixture must exist (run scripts/dev/build_v3_fixture.sh at base commit 9ec5132): {}",
+            fixture.display()
+        );
+
+        let lib = dlopen(&fixture);
+        assert!(
+            !has_abi_probe(&lib),
+            "frozen v3 fixture (9ec5132) must NOT export gstore_mod_repo_abi — probe landed after it"
+        );
+
+        let v3_entry = host_entry(3).expect("host v3 entry");
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(v3_entry.entry_size, 56, "x86_64 v3 host entry_size concrete value");
+        assert_eq!(
+            v3_entry.entry_size as usize,
+            GStoreModuleEntry::PLATFORM_OFFSET,
+            "v3 宿主 entry 无 platform 槽"
+        );
+
+        let register = dlsym_register(&lib);
+        let (name, api) = handshake_with(register, "repo", 3)
+            .unwrap_or_else(|e| panic!("frozen v3 module must handshake with v3 host entry (abi=3): {e}"));
+        assert_eq!(name, "repo");
+        assert!(
+            api.min_host_abi <= 3,
+            "v3 fixture declares min_host_abi={}, host ABI=4 must satisfy it",
+            api.min_host_abi
+        );
+
+        let adapter = DlModuleAdapter::load(&fixture)
+            .unwrap_or_else(|e| panic!("DlModuleAdapter::load(frozen v3 fixture) must fall back to v3 entry: {e}"));
+        assert_eq!(adapter.name(), "repo");
+    }
+
+    /// 2. 新构建 v4 模块必须仍接受 v3 宿主 entry。
+    ///
+    /// 探针值来自真实 .so 的 dlsym（非测试内常量）；`handshake_with(register, "repo", 3)`
+    /// 必须 OK——v4 模块容忍 v3 宿主布局，而不是精确匹配 ABI。
+    #[test]
+    fn v4_module_accepts_v3_host() {
+        let so = ensure_v4_module_built();
+        assert!(
+            so.exists(),
+            "v4 module .so must exist after ensure_v4_module_built: {}",
+            so.display()
+        );
+
+        let lib = dlopen(&so);
+        let probe: extern "C" fn() -> u32 = unsafe {
+            *lib.get(b"gstore_mod_repo_abi\0")
+                .unwrap_or_else(|e| panic!("v4 module must export gstore_mod_repo_abi: {e}"))
+        };
+        assert_eq!(probe(), 4, "v4 模块探针(dlsym 自真实 .so)必须返回 ABI 4");
+        assert_eq!(probe(), GSTORE_MODULE_ABI_VERSION);
+
+        let register = dlsym_register(&lib);
+        let (name, api) = handshake_with(register, "repo", 3)
+            .unwrap_or_else(|e| panic!("v4 module must accept a v3 host entry (abi=3): {e}"));
+        assert_eq!(name, "repo");
+        assert!(api.min_host_abi <= 3, "v4 module declares min_host_abi={}", api.min_host_abi);
+
+        let (_name, _api) = handshake_with(register, "repo", 4)
+            .unwrap_or_else(|e| panic!("v4 module must accept a v4 host entry (abi=4): {e}"));
+    }
+
+    /// 3. 冻结 v3 fixture 收到 v4 宿主 entry（abi=4）必须拒绝，且落回其编译期的
+    /// `ABI_ERR_ABI_MISMATCH` = **-2**——断言返回码具体值，而不是 `is_err()`。
+    #[test]
+    fn v3_module_rejects_v4_entry() {
+        let fixture = v3_fixture_path();
+        assert!(
+            fixture.exists(),
+            "frozen v3 fixture must exist: {}",
+            fixture.display()
+        );
+
+        let v4_entry = host_entry(4).expect("host v4 entry");
+        assert_eq!(v4_entry.abi_version, 4);
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(v4_entry.entry_size, 64, "x86_64 v4 host entry_size concrete value");
+        assert_eq!(
+            v4_entry.entry_size as usize,
+            std::mem::size_of::<GStoreModuleEntry>(),
+            "v4 宿主 entry 铺满 platform 槽"
+        );
+
+        let lib = dlopen(&fixture);
+        let register = dlsym_register(&lib);
+        assert!(
+            !has_abi_probe(&lib),
+            "frozen v3 fixture must not export gstore_mod_repo_abi (its register compiled against ABI 3)"
+        );
+
+        let err = match handshake_with(register, "repo", 4) {
+            Err(e) => e,
+            Ok(_) => panic!("frozen v3 module must reject a v4 host entry (abi=4)"),
+        };
+        assert_eq!(ABI_ERR_ABI_MISMATCH, -2, "ABI_ERR_ABI_MISMATCH 具体值回归");
+        assert!(
+            err.contains(&format!("code={}", ABI_ERR_ABI_MISMATCH)),
+            "expected module rejection code=-2 (ABI_ERR_ABI_MISMATCH) in: {err}"
+        );
+        assert!(
+            !err.contains("unsupported module ABI")
+                && !err.contains("requires host ABI")
+                && !err.contains("name mismatch"),
+            "must be the module's own -2 rejection, not a host-side gate error: {err}"
+        );
     }
 }

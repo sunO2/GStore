@@ -16,6 +16,8 @@ import 'package:gstore/page/settings/settings_page.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/settle.dart';
+
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
 /// （MethodChannel mock 无效：path_provider_linux 注册了自己的平台实例）
 class _FakePathProvider extends PathProviderPlatform {
@@ -107,16 +109,6 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 等待真实异步（QuickJS FFI + 文件 IO 非帧驱动）完成
-  Future<void> settleAsync(WidgetTester tester) async {
-    for (var i = 0; i < 3; i++) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 300)));
-      await tester.pump();
-    }
-    await tester.pumpAndSettle();
-  }
-
   /// 打开导入对话框并点击「从文件选择渠道包 (.zip)」（不点导入）
   Future<void> selectZip(
     WidgetTester tester, {
@@ -156,7 +148,18 @@ void main() {
     // 确认导入
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
+    // 固定等待换成有界轮询：注册 + QuickJS 初始化 + 文件落盘都是真实异步，
+    // 并发下可能远超固定 900ms。断言不变，仅等待机制变化。
+    await settleUntil(
+      tester,
+      () {
+        final c = ChannelManager.instance.getChannelByKey('js_vivo');
+        return c is JsChannel &&
+            c.isInitialized &&
+            File('${tempDir.path}/channels/vivo.zip').existsSync();
+      },
+      reason: '导入后必须注册 js_vivo、完成初始化并落盘渠道包',
+    );
 
     // 渠道已注册（key = js_vivo）
     final channel = ChannelManager.instance.getChannelByKey('js_vivo');
@@ -208,7 +211,15 @@ void main() {
     // 预览后确认导入成功
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
+    // 注册 + QuickJS 初始化都是真实异步；有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () {
+        final c = ChannelManager.instance.getChannelByKey('js_demo');
+        return c is JsChannel && c.isInitialized;
+      },
+      reason: '导入后必须注册 js_demo 并完成初始化',
+    );
     expect(ChannelManager.instance.getChannelByKey('js_demo'), isNotNull);
   });
 
@@ -243,23 +254,25 @@ void main() {
     await tester.tap(find.text('导入'));
     await tester.pump();
     // 导入链（渠道加载 + 逐项 setEnv 持久化）既需要推进测试时钟（内部 await/
-    // 定时器），也需要真实事件循环（真实 IO）：因此**交替** pump 与 runAsync，
-    // 并以「环境变量真正落盘」为退出条件、有界——而不是赌 settleAsync 的固定
-    // ~900ms（并发负载下曾在写入完成前就断言）。断言强度不变：到点仍未持久化
-    // 则下面的 expect 照旧失败。
-    JsChannel? channel;
-    for (var i = 0; i < 200; i++) {
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 25)));
-      await tester.pump(const Duration(milliseconds: 25));
-      final c = ChannelManager.instance.getChannelByKey('js_envch');
-      if (c is JsChannel && (await c.getAllEnv())['PINGAN_USER'] == 'alice') {
-        channel = c;
-        break;
-      }
-    }
-    await settleAsync(tester);
+    // 定时器），也需要真实事件循环（真实 IO）：交替 runAsync 与 pump，并以
+    // 「环境变量真正落盘」为退出条件、有界——而不是赌固定 ~900ms（并发负载
+    // 下曾在写入完成前就断言）。断言强度不变：到点仍未持久化则下面的 expect
+    // 照旧失败。
+    await settleUntil(
+      tester,
+      () async {
+        final c = ChannelManager.instance.getChannelByKey('js_envch');
+        if (c is! JsChannel) return false;
+        final env = await c.getAllEnv();
+        return env['PINGAN_USER'] == 'alice' &&
+            find.textContaining('host.env.get').evaluate().isNotEmpty;
+      },
+      reason: '导入后必须持久化 PINGAN_USER=alice 并显示 host.env.get 提示',
+    );
 
+    JsChannel? channel;
+    final registered = ChannelManager.instance.getChannelByKey('js_envch');
+    channel = registered is JsChannel ? registered : null;
     expect(channel, isNotNull, reason: '导入后必须能取到渠道 js_envch');
     expect(await channel!.getAllEnv(), {'PINGAN_USER': 'alice'});
     // 提示包含 host.env.get 说明
@@ -274,7 +287,17 @@ void main() {
         pick: () async => (name: 'vivo.zip', bytes: zipBytes));
     await tester.tap(find.text('导入'));
     await tester.pump();
-    await settleAsync(tester);
+    // 注册 + QuickJS 初始化 + 文件落盘都是真实异步；有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () {
+        final c = ChannelManager.instance.getChannelByKey('js_vivo');
+        return c is JsChannel &&
+            c.isInitialized &&
+            File('${tempDir.path}/channels/vivo.zip').existsSync();
+      },
+      reason: '导入后必须注册 js_vivo、完成初始化并落盘渠道包',
+    );
 
     // 管理入口 subtitle 显示数量
     expect(find.text('1 个渠道包'), findsOneWidget);
@@ -296,7 +319,17 @@ void main() {
     expect(find.text('删除渠道包'), findsOneWidget);
     await tester.tap(find.text('删除'));
     await tester.pump();
-    await settleAsync(tester);
+    // 注销 + 文件删除 + 提示都是真实异步；有界轮询，断言不变。
+    await settleUntil(
+      tester,
+      () {
+        final c = ChannelManager.instance.getChannelByKey('js_vivo');
+        return c == null &&
+            !File('${tempDir.path}/channels/vivo.zip').existsSync() &&
+            find.textContaining('渠道包已删除').evaluate().isNotEmpty;
+      },
+      reason: '删除后必须注销 js_vivo、删除文件并显示提示',
+    );
 
     expect(ChannelManager.instance.getChannelByKey('js_vivo'), isNull);
     expect(File('${tempDir.path}/channels/vivo.zip').existsSync(), isFalse);

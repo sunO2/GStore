@@ -17,7 +17,11 @@ import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:gstore/core/config/config_registry.dart' show ConfigKeys;
+import 'package:gstore/core/config/config_store.dart' show ConfigStore;
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/perf/battery_history_recorder.dart'
+    show BatteryHistoryRecorder, batteryHistoryRecorder;
 import 'package:gstore/core/perf/battery_source.dart';
 import 'package:gstore/core/perf/cpu_stat_source.dart';
 import 'package:gstore/core/perf/device_state.dart';
@@ -82,6 +86,20 @@ final perfSystemFpsServiceProvider =
 /// FPS 卡「第三方」口径**复用**本服务（`watch`），不新建数据通路。
 final perfThirdPartyServiceProvider =
     Provider<ThirdPartyPerfService>((ref) => ThirdPartyPerfService());
+
+/// 电池/功耗历史采样器（生产为 App 级单例 [batteryHistoryRecorder]；测试注入假记录器）。
+///
+/// 与「后台采样」开关联动：开启采样即 `start()`、关闭即 `stop()`（见
+/// [PerfMonitorNotifier.toggleSampling]）。默认 OFF，**绝不随页面打开而启动**。
+final perfBatteryHistoryRecorderProvider =
+    Provider<BatteryHistoryRecorder>((ref) => batteryHistoryRecorder);
+
+/// 电池历史采样器门控开关的持久化写入（生产写 [ConfigKeys.perfHistoryEnabled]；
+/// 测试注入捕获）。写入失败静默（不影响内存态联动）。
+final perfHistoryEnabledWriterProvider = Provider<Future<bool> Function(bool)>(
+  (ref) => (value) =>
+      ConfigStore.instance.write(ConfigKeys.perfHistoryEnabled, value),
+);
 
 /// 自动导出设置持久化（测试覆盖为内存实现）。
 final perfAutoExportSettingsStoreProvider =
@@ -996,9 +1014,18 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   // ==================== 后台采样控制 ====================
 
   /// 开关后台实时采样（**默认 OFF**；唯一显式入口）。
+  ///
+  /// 同时联动**电池/功耗历史采样器**：开启即 `start()`、关闭即 `stop()`，并把
+  /// 用户选择持久化到 [ConfigKeys.perfHistoryEnabled]（下次启动由 `main.dart`
+  /// 门控恢复）。持久化 / 采样器控制均为 best-effort（失败静默），且**幂等**
+  /// （[BatteryHistoryRecorder.start] / [BatteryHistoryRecorder.stop] 自身幂等，
+  /// 重复调用不会起多个定时器）。
   Future<void> toggleSampling(bool on) async {
     if (_disposed) return;
+    // 先持久化用户显式选择（默认 OFF；失败静默），再联动采样器与原生采样。
+    await _persistBatteryHistoryEnabled(on);
     if (on) {
+      _startBatteryHistoryRecorder();
       try {
         final result = await _module.startSampling();
         if (_disposed) return;
@@ -1013,6 +1040,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         AppDialogs.showError('开启采样失败');
       }
     } else {
+      _stopBatteryHistoryRecorder();
       await _sampleSub?.cancel();
       _sampleSub = null;
       try {
@@ -1024,6 +1052,33 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
       state = state.copyWith(sampling: false);
     }
     _syncTicker();
+  }
+
+  /// 持久化电池历史采样器门控开关（best-effort；失败静默）。
+  Future<void> _persistBatteryHistoryEnabled(bool enabled) async {
+    try {
+      await ref.read(perfHistoryEnabledWriterProvider)(enabled);
+    } catch (error) {
+      debugPrint('[PerfMonitor] 持久化电池历史采样开关失败（忽略）: $error');
+    }
+  }
+
+  /// 启动电池历史采样器（幂等；best-effort，失败静默）。
+  void _startBatteryHistoryRecorder() {
+    try {
+      ref.read(perfBatteryHistoryRecorderProvider).start();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 启动电池历史采样器失败（忽略）: $error');
+    }
+  }
+
+  /// 停止电池历史采样器（幂等；best-effort，失败静默）。
+  void _stopBatteryHistoryRecorder() {
+    try {
+      ref.read(perfBatteryHistoryRecorderProvider).stop();
+    } catch (error) {
+      debugPrint('[PerfMonitor] 停止电池历史采样器失败（忽略）: $error');
+    }
   }
 
   /// 采样事件：累加计数并用最新快照刷新各节。

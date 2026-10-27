@@ -142,3 +142,46 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `PROXY_CAPTURE_RULE_INVALID` | proxy | 422 | `capture.rules.set` 载荷非法：`url` 非绝对 `http(s)` URL、`kind` 非 `replace`/`local`、`id` 不符 `[A-Za-z0-9_-]{1,64}` 或未知字段；校验失败时**不改动**内存/磁盘上的规则表（Todo 14） |
 | `PROXY_CAPTURE_RULE_LIMIT` | proxy | 507 | `capture.rules.set` 新增规则会使规则表超过 `CAPTURE_RULE_CAP`（128），或单条规则序列化超过 `CAPTURE_RULE_ENTRY_MAX_BYTES`（2048）；被拒的 `set` 绝不落盘（Todo 14） |
 | `PROXY_CAPTURE_BREAKPOINT_NOT_IMPLEMENTED` | proxy | 500 | `captures.breakpoint.*` 为**冻结契约草图**（Todo 34）：线缆形状已冻结，但 MITM 暂停/恢复数据面路径本期未实现，故每个断点方法都返回此码。默认关，流量不受影响（Todo 34） |
+
+## 核心域（`gstore_core`，Wave 04）
+
+`gstore_core` 是数据服务：**事实进、决策出**，不经过模块信封（见
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) §0 与 [`docs/adr/0001-core-boundary.md`](./docs/adr/0001-core-boundary.md)）。
+因此下表的错误以 `gstore_core::Error` 变体携带稳定 `code` 字符串的形式跨越 FRB
+（宿主 `core_err` 渲染为 `"<error.code()>: <message>"`），不会塌缩成 500。
+
+| code | 模块 | 通常 Error 变体 | 含义 |
+|---|---|---|---|
+| `CORE_E_FACTS_MISSING` | core | `Unsupported` | 前端从未推送过平台事实（`platform_facts` 表无行）：更新判定无法开始，整批中止（`UpdateService`）。前端应在 `CoreBootstrap.start()` 里 `pushPlatformFacts` 后再调用更新检查 |
+| `CORE_E_INVENTORY_STALE` | core | `Conflict`（push）/ `Unsupported`（判定时） | 两处语义：`InventoryStore::push` 收到同一 `source_id` 的 `seq < stored_seq` → `Conflict`，消息即该常量；更新判定时库存龄期超过 `UpdateRules.max_inventory_age_secs` → `Unsupported`（`force` 可绕过）。批量检查里单个应用的库存缺失/过期**只**把该应用标为 skipped（`inventory_missing` / `inventory_stale`），不整体中止 |
+| `CORE_E_RULES_INVALID` | core | `InvalidArgument` | `setInstallRules` / `setUpdateRules` 载荷的版本、JSON 或枚举值非法（消息以 `CORE_E_RULES_INVALID: ` 开头）；被拒的写入不改变已有规则 |
+| `CORE_E_INSTALL_SESSION` | core | `NotFound` | `InstallService::on_result` 收到未知 `session_id`（宿主 `bridge.rs` 会再补一次 `CORE_E_INSTALL_SESSION:` 前缀）；前端应经 `pendingRequests()` 重新对账后重报 |
+| `CORE_E_DOWNLOAD_RESYNC_CONFLICT` | core | `PortError::ResyncConflict` | 三路下载 resync 发现身份冲突：同一 `(app_id, version, file_name)` 的既有 `dedup_key` 不一致，或核心行带有模块库中不存在的 `module_task_id` 且状态非终态（`completed`/`cancelled`/`removed`/`failed`）。`apply=true` 时也**零写入**（不建快照、不改核心/模块库） |
+| `CORE_E_DOWNLOAD_RESYNC_DB` | core | `PortError::Db` | resync 读取/写入数据库失败：模块库或 Floor 库存在但不可读（非 SQLite、缺 `download_task`、截断）、快照 `VACUUM INTO` 失败，或应用事务失败（事务回滚，已建快照保留） |
+| `CORE_E_DOWNLOAD_RESYNC_INTERNAL` | core | `PortError::Module`/`UnknownTask`/`NeedsRestart` | resync 不会经模块桥；出现这些变体说明内部契约被破坏，按内部错误处理 |
+| `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` | core / host（`bridge.rs::download_err`） | `PortError::Module`（`download-module-unavailable: ` 标记） | 下载模块未挂载或不可用（未打包、ABI 不符、实例创建失败）：宿主 `HostDownloadPort` 取不到 `download` 模块时写入标记，`download_err` 剥离标记后改写成该码；Dart 侧映射为 `DownloadModuleUnavailableException`。这是**类型化失败**，不存在 Dart 回落：调用方应提示重试或重装，而不是切回旧内核 |
+| `CORE_E_INSTALL_NOT_FOUND` | host（`bridge.rs::install_err`） | `CoreError::NotFound` | 安装域找不到任务或镜像行（未知 `module_task_id`，或按 `dest_path` 查不到核心下载行）；非 `CORE_E_INSTALL_SESSION` 的 `NotFound` 都映射到该码。`installTask` 自 Wave 6B 起只走 core，无 legacy 分支；调用方应重新枚举/对账后再重试 |
+| `CORE_E_SNAPSHOT_DISK` | core（`db.rs`） | `DbError`（`SNAPSHOT_DISK` 前缀） | 快照恢复预检失败：目标盘剩余空间不足 `2 ×` 快照大小，或 `stat` 剩余空间失败。在任何写入前拒绝，live DB 保持不变；释放空间后重试即可 |
+| `CORE_E_SNAPSHOT_BACKUP` | core（`db.rs`） | `DbError`（`SNAPSHOT_BACKUP` 前缀） | 恢复前 live DB 备份失败（创建 `migration/backups`、取时钟或 `VACUUM INTO` 失败）。失败时不产生备份也不触碰 live DB；修复目录/磁盘后重试 |
+| `CORE_E_NOT_INITIALIZED` | host（`bridge.rs`，`const CORE_E_NOT_INITIALIZED`） | —（`Result<_, String>` 的 `Err`） | `CoreApi.init()` 尚未调用（路径/DB 锁中毒也复用同一码）：任何依赖 `paths`/`db` 的宿主 API 在 `init` 前调用都返回 `CORE_E_NOT_INITIALIZED: CoreApi.init() has not been called`。**fatal**：调用方必须先 `init()`；宿主经 FRB 原样透出该字符串 |
+| `CORE_E_IMPORT_MIGRATION` | host（`bridge.rs::import_migration_file`） | —（`Result<_, String>` 的 `Err`） | 旧数据迁移导入失败：`pack` / `added_apps_db` / `catalog_db` / `channel_db` / `channel_env` / `fdroid_sources` 各分支的打开、解析或写入错误（消息以 `CORE_E_IMPORT_MIGRATION: ` 开头）。**fatal**：导入失败时旧文档保留、`core_writes` 不被 arm，可修复后重试 |
+| `CORE_E_WRITE_BLOCKED` | core（`migration.rs::ensure_legacy_write_allowed`） | `DbError`（`CORE_E_WRITE_BLOCKED:` 前缀） | 某域已被 core 写入（`core_writes` 表存在该域标记）后，旧 Dart 写入被 **fail-closed** 拒绝；消息为 `CORE_E_WRITE_BLOCKED: <domain>`。Dart `LegacyWriteGuard` 探测该标记后抛 `LegacyWriteBlocked`；后台写入（安装后、备份恢复）改为类型化 `CoreWriteBlockedWarning`（**surfaced-as-typed-warning**，不逃逸为裸异常） |
+
+## Dart 侧守卫（DART-SIDE GUARD，**非** Rust 核心发出）
+
+以下常量**不由 `gstore_core` 发出**，而是由 Dart 前端在调用核心之前产生。它们沿用共享错误码的
+`CORE_E_` 前缀约定（便于 UI 用同一套 `startsWith('CORE_E_')` 逻辑识别并展示），但它们从未出现在
+任何 Rust `Error` 变体或 FRB 错误消息里；在 Rust 源码中 grep 不到。
+
+| code | 产生位置 | 触发条件 | 含义 |
+|---|---|---|---|
+| `CORE_E_UPDATE_CUTOVER_ORDER` | Dart `lib/core/update/update_report.dart`（`CoreUpdateException.cutoverOrder`），由 `lib/core/update/update_facade.dart` 的 `_assertCutoverOrder` 抛出 | 顺序守卫的两个触发条件：(1) `catalog` 尚未权威（`CoreFlags.catalog == false`）→ 抛本码；(2) `CoreBootstrap` 尚未就绪（未推送平台事实 + 库存，`CoreBootstrap.ready == false`）→ 同一守卫函数抛 `CORE_E_FACTS_MISSING`（见上表） | `update` 在 `catalog` 权威之前、或在 bootstrap 完成之前被翻转时拒绝执行。这是 plan 强制的 cutover 顺序守卫（catalog → update），不是核心返回的运行时错误；Dart 侧保证不会静默回落到 legacy 引擎 |
+| `CORE_E_CHANNEL_LEGACY_DISABLED` | Dart `lib/core/channel/impl/channel_loader.dart`（`ChannelImportDisabledException.code`，`importZip` 在 `:280` 抛出） | 走到旧 Dart zip 写入分支（`CoreFlags.jsChannel == false`）时，`CoreFlags.channels == true` 或 `ChannelManager.dartScriptChannelsEnabled == false` | `channels` 域已由 Rust core 接管，旧渠道包写入路径停用；**fatal**：类型化拒绝，调用方按 `code` 提示，绝不静默写盘 |
+| `CORE_E_CHANNEL_SCRIPT_IMPORT_FAILED` | Dart `lib/core/script/script_channel_service.dart`（`ScriptChannelImportException.code`，`importPack`/`removePack` 在 `:189`/`:209` 抛出） | Rust `ScriptApi.import`/`remove` 失败（staging、transport 或 Rust 错误；`pack_not_found` 的 remove 视为幂等 no-op） | Rust 脚本通道导入/移除失败；临时文件在 `finally` 清理，旧渠道目录不被触碰；**fatal** |
+| `CORE_E_CUTOVER_SNAPSHOT` | Dart `lib/core/rust/core_cutover.dart`（`CoreCutoverException.snapshotFailed`，`_ensureSnapshot` 在 `:308` 抛出） | `CoreApi.exportSnapshot`（`VACUUM INTO`）失败、报告成功却无文件、或快照 SQLite 头/页校验失败 | 一次性 cutover 的**唯一** pre-closeout 快照无法建立；marker 不写，**下次启动重试**（`CoreBootstrap` 捕获后仅记日志，进程不崩） |
+| `CORE_E_CUTOVER_PARITY` | Dart `lib/core/rust/core_cutover.dart`（`parityFailed`，`:228` 抛出） | 某域重放后**行级** parity 校验失败（丢一行即失败） | 重放未达 fixpoint；fail-closed，marker 不写、下次重试 |
+| `CORE_E_CUTOVER_EMPTY_IMPORT` | Dart `lib/core/rust/core_cutover.dart`（`emptyImport`，`:221` 抛出） | 某域存在 legacy 数据但重放导入 **0 行**（真正 fresh install 例外） | plan 强制的 **fail-closed** 规则，防止静默 no-op；marker 不写、下次重试 |
+| `CORE_E_CUTOVER_MARKER` | Dart `lib/core/rust/core_cutover.dart`（`markerFailed`，`_writeMarkerAtomic` 在 `:407` 抛出） | `cutover_v6.done` 原子写失败（temp `writeAsString(flush)` 或 `rename` 失败） | marker 未落地；下次启动重试；**fatal**（仅限该次 cutover，进程不崩） |
+| `CORE_E_SCRIPT_JS_CHANNEL_DISABLED` | Dart `lib/core/script/script_api.dart`（`ScriptApiDisabledException.code`，`_ensureEnabled` 在 `:183` 抛出） | `CoreFlags.jsChannel == false` 时调用任一 `ScriptApi` 入口（`init`/`import`/`run`/…） | jsChannel 尚未权威；在任何 FFI 调用前拒绝，**绝不**静默回落到旧 Dart 通道 |
+| `CORE_E_SCRIPT_UI_NO_ACTIVE_DETAIL` | Dart `lib/core/script/script_ui_handler_registry.dart`（`ScriptUiHandlerRegistry.noActiveDetailCode`，`_dispatch` 在 `:108`/`:189` 返回） | 无活动详情页（`_callbacks`/`appId` 为空）或未知 kind 时收到 `ui.*` 请求 | 返回类型化 envelope `{ok:false, error:'CORE_E_SCRIPT_UI_NO_ACTIVE_DETAIL', ...}`（**surfaced-as-typed-envelope**，非抛出），取代 router 的静默 `ui.<kind> 未注册` |
+| `CORE_E_UPDATE` | Dart `lib/core/update/update_report.dart`（`CoreUpdateException.generic`，`fromRaw` 在 `:43` 兜底；`update_facade.dart`/`update_backends.dart` 抛出） | core update 失败无法映射到更具体的码（`CORE_E_FACTS_MISSING`/`CORE_E_INVENTORY_STALE`）时：桥不可用、序列化等 | 通用类型化 update 失败；**fatal**：永不静默回落到 legacy 引擎 |

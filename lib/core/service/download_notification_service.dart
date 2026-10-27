@@ -42,9 +42,31 @@ class DownloadNotificationService {
   @visibleForTesting
   static int debugCallCount = 0;
 
+  /// 测试专用 spy：真实调用插件发布/启动通知的次数。
+  ///
+  /// 下载内核接管后必须保持为 0；只有真正走到
+  /// `flutter_local_notifications` / `flutter_foreground_task` 才递增。
+  @visibleForTesting
+  static int debugPostCount = 0;
+
   /// 测试专用：重置 spy 计数。
   @visibleForTesting
-  static void debugResetCallCount() => debugCallCount = 0;
+  static void debugResetCallCount() {
+    debugCallCount = 0;
+    debugPostCount = 0;
+  }
+
+  /// 测试专用：完整复位实例状态（初始化标记、活跃下载、节流表、spy 计数）。
+  ///
+  /// 生产代码从不调用；测试用它保证用例之间没有状态串扰。
+  @visibleForTesting
+  void debugResetForTest() {
+    debugCallCount = 0;
+    debugPostCount = 0;
+    _initialized = false;
+    _activeDownloads = 0;
+    _lastNotify.clear();
+  }
 
   /// 进度通知节流（避免高频刷新）
   final Map<int, DateTime> _lastNotify = {};
@@ -58,7 +80,8 @@ class DownloadNotificationService {
       // flutter_local_notifications
       await _local.initialize(
         settings: const InitializationSettings(
-          android: AndroidInitializationSettings('@mipmap/ic_launcher_foreground'),
+          android:
+              AndroidInitializationSettings('@mipmap/ic_launcher_foreground'),
         ),
         onDidReceiveNotificationResponse: (response) {
           // 点击进度通知跳转下载中心
@@ -171,6 +194,7 @@ class DownloadNotificationService {
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
@@ -183,6 +207,7 @@ class DownloadNotificationService {
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.show(
           id: id,
           title: '下载失败',
@@ -208,6 +233,7 @@ class DownloadNotificationService {
     }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
+    debugPostCount++;
     _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
@@ -221,6 +247,7 @@ class DownloadNotificationService {
     int total,
   ) {
     final percent = total > 0 ? (count / total * 100).round() : 0;
+    debugPostCount++;
     _safeNotify(() => _local.show(
           id: id,
           title: title,
@@ -249,6 +276,7 @@ class DownloadNotificationService {
   Future<void> startForegroundService() async {
     try {
       if (await FlutterForegroundTask.isRunningService) return;
+      debugPostCount++;
       await FlutterForegroundTask.startService(
         serviceId: _foregroundServiceId,
         notificationTitle: '后台下载中',

@@ -10,7 +10,7 @@ import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_manager.dart';
+import 'package:gstore/core/update/update_facade.dart';
 import 'package:gstore/core/update/update_time_format.dart';
 
 import 'logic.dart';
@@ -34,7 +34,7 @@ class UpdateManager extends ConsumerWidget {
           children: [
             const Text('应用更新'),
             Builder(builder: (context) {
-              final last = UpdateManagerService.instance.lastCheckedAt;
+              final last = UpdateFacade.instance.lastCheckedAt;
               final subtitle = state.isLoading
                   ? '检测中...'
                   : formatLastChecked(last, DateTime.now());

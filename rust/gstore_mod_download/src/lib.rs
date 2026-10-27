@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use gstore_contract::abi::{
     ABI_ERR_ABI_MISMATCH, ABI_ERR_DETAIL, ABI_ERR_INTERNAL, ABI_ERR_NO_INSTANCE, ABI_ERR_NULL,
     ABI_ERR_PANIC, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    MIN_HOST_ABI,
 };
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::ModuleError;
@@ -581,6 +582,12 @@ fn on_event_impl(
 
 // ==================== C ABI 导出 ====================
 
+/// 模块构建时的 ABI 版本探测：宿主 dlsym `gstore_mod_download_abi` 决定按哪个 ABI 握手。
+#[no_mangle]
+pub extern "C" fn gstore_mod_download_abi() -> u32 {
+    GSTORE_MODULE_ABI_VERSION
+}
+
 #[no_mangle]
 pub extern "C" fn gstore_mod_download_register(
     entry: *const GStoreModuleEntry,
@@ -592,7 +599,8 @@ pub extern "C" fn gstore_mod_download_register(
             return Err(ABI_ERR_NULL);
         }
         let e = unsafe { &*entry };
-        if e.abi_version != GSTORE_MODULE_ABI_VERSION {
+        // 接受 ABI 3（v3 宿主，无 platform 槽）与本构建 ABI 4；拒绝更旧/更新的宿主。
+        if e.abi_version < MIN_HOST_ABI || e.abi_version > GSTORE_MODULE_ABI_VERSION {
             return Err(ABI_ERR_ABI_MISMATCH);
         }
         if let Some(f) = e.log {
@@ -614,7 +622,7 @@ pub extern "C" fn gstore_mod_download_register(
         let api = unsafe { &mut *out };
         api.name = c"download".as_ptr();
         api.version = 1;
-        api.min_host_abi = GSTORE_MODULE_ABI_VERSION;
+        api.min_host_abi = MIN_HOST_ABI;
         api.init = Some(init_export);
         api.create = Some(create_export);
         api.call = Some(call_export);
@@ -747,5 +755,46 @@ mod null_tolerance_tests {
         assert!(req.headers.is_empty(), "null headers 应退化为空表");
         assert!(req.connections.is_none());
         assert!(req.dedup_key.is_none());
+    }
+}
+
+#[cfg(test)]
+mod abi_register_tests {
+    use super::*;
+
+    fn register_entry(abi_version: u32) -> GStoreModuleEntry {
+        GStoreModuleEntry {
+            abi_version,
+            entry_size: GStoreModuleEntry::PLATFORM_OFFSET as u32,
+            log: None,
+            alloc: None,
+            free: None,
+            emit_event: None,
+            context: std::ptr::null_mut(),
+            protect_fd: None,
+            platform: std::ptr::null(),
+        }
+    }
+
+    #[test]
+    fn register_accepts_v3_host_and_rejects_future_abi() {
+        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+        let rc = super::gstore_mod_download_register(&register_entry(3), api.as_mut_ptr());
+        assert_eq!(rc, ABI_OK, "v3 宿主必须被接受");
+        let api = unsafe { api.assume_init() };
+        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+
+        let mut api5 = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+        assert_eq!(
+            super::gstore_mod_download_register(&register_entry(5), api5.as_mut_ptr()),
+            ABI_ERR_ABI_MISMATCH,
+            "v5 宿主必须被拒绝"
+        );
+    }
+
+    #[test]
+    fn abi_probe_reports_build_version() {
+        assert_eq!(super::gstore_mod_download_abi(), GSTORE_MODULE_ABI_VERSION);
+        assert_eq!(super::gstore_mod_download_abi(), 4);
     }
 }

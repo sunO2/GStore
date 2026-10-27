@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- 性能悬浮窗前台服务：Android 14 specialUse 类型所需权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- APK 安装：PackageInstaller / 系统安装 Intent 需要显式声明（不再只依赖
+         app_installer 插件合并进来的同名权限）。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="GStore"
@@ -81,6 +84,13 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- Rust 通知宿主的 dataSync 前台服务（id 997，与 Legacy Dart 路径共享渠道）。 -->
+        <service
+            android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <!-- 代理 VPN 前台服务：与上面的 dataSync 服务共存（类型/权限不同）。
              同进程（不声明 android:process）；详见 ProxyVpnService 类文档。 -->
@@ -168,6 +178,20 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- 安装结果接收器：PackageInstaller 通过显式 PendingIntent 直接投递
+             （无需 intent-filter）；系统 Intent 回退路径依赖 PACKAGE_ADDED /
+             PACKAGE_REPLACED 广播匹配持久化的 pending session。
+             exported=false：仅本应用/本应用发出的 PendingIntent 可触达。 -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shizuku API provider (optional: 用于静默安装等系统级操作) -->
         <provider

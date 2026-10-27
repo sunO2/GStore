@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -13,7 +14,9 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/script/rust_script_lane.dart';
 
+import 'search_channel.dart';
 import 'state.dart';
 import 'widgets/tag_picker_dialog.dart';
 
@@ -118,6 +121,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     for (final channel in ChannelManager.instance.enabledChannels) {
       codes.add(channelCode(channel));
     }
+    // Rust 脚本通道（CoreFlags.jsChannel=true 时 Rust ScriptApi 拥有渠道包，
+    // Dart dynamicChannels 为空）→ 把已安装的 js_* 渠道包并入；Set 天然去重。
+    codes.addAll(RustScriptChannelLane.instance.codes);
     final result = codes.toList()..sort();
     debugPrint('DiscoveryNotifier: sortedChannelCodes = $result');
     debugPrint(
@@ -268,13 +274,14 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
       if (appInfo != null) {
         final channelInstance = _channelManager?.getChannelByCode(channelCode);
-        if (channelInstance != null) {
+        // Rust lane code 无 Dart 渠道实例；聚合层用原始 appId 落库，仍可入库。
+        final isLane = channelInstance == null && _isRustLaneCode(channelCode);
+        if (channelInstance != null || isLane) {
           try {
-            // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
-            await _aggregator?.toggleApp(
-              channelCode: channelCode,
-              appInfo: appInfo,
-            );
+            // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标。
+            // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
+            // flag off 回落旧 backend；不再经 _aggregator 的旧 catalog 写守卫。
+            await AddedAppsFacade.instance.toggle(channelCode, appInfo.appId);
             successCount++;
           } catch (e) {
             failCount++;
@@ -289,6 +296,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       selectedApps: const {},
       isMultiSelectMode: false,
     );
+
+    // 通知其余 UI（首页）刷新：flag on 刷新 core 投影，flag off 走旧广播流
+    await AddedAppsFacade.instance.notifyAppsChanged();
 
     // 刷新数据
     await _updateAddedAppsIndex();
@@ -313,17 +323,16 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
     try {
       final currentPage = state.channelPages[code] ?? 1;
-      final channelInstance = _channelManager?.getChannelByCode(code);
-
-      if (channelInstance != null) {
-        // 暂时使用 forceRefresh 加载全部
-        final result = await channelInstance.getAllApps(forceRefresh: true);
-        if (result.success && result.data != null) {
-          state = state.copyWith(
-            channelApps: {...state.channelApps, code: result.data!},
-            channelPages: {...state.channelPages, code: currentPage + 1},
-          );
-        }
+      // flag on 时 ChannelManager 走 Rust facade；flag off 时回落到旧 IChannel。
+      final result = await _channelManager?.getAllAppsByCode(
+        code,
+        forceRefresh: true,
+      );
+      if (result != null && result.success && result.data != null) {
+        state = state.copyWith(
+          channelApps: {...state.channelApps, code: result.data!},
+          channelPages: {...state.channelPages, code: currentPage + 1},
+        );
       }
     } catch (e) {
       appLog.error('DiscoveryNotifier: 加载更多 $code 失败 - $e');
@@ -362,20 +371,40 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   Future<void> _loadAllChannelApps() async {
     final manager = _channelManager;
     if (manager == null) return;
+    // Rust 脚本通道（flag on 时 dynamicChannels 为空）：刷新已安装渠道包缓存。
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled) {
+      await rustLane.refresh();
+    }
     debugPrint(
-        'DiscoveryNotifier: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}');
+        'DiscoveryNotifier: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}, rustPacks=${rustLane.codes.length}');
 
-    final channels = <IChannel>[
-      ...manager.dynamicChannels,
-      ...manager.enabledChannels
-          .where((c) => !manager.dynamicChannels.contains(c)),
-    ];
+    final codes = <String>[];
+    for (final channel in manager.dynamicChannels) {
+      final code = channelCode(channel);
+      if (!codes.contains(code)) codes.add(code);
+    }
+    for (final channel in manager.enabledChannels) {
+      final code = channelCode(channel);
+      if (!codes.contains(code)) codes.add(code);
+    }
+    for (final code in rustLane.codes) {
+      if (!codes.contains(code)) codes.add(code);
+    }
 
     var updated = state.channelApps;
-    for (var channel in channels) {
-      final code = channelCode(channel);
+    for (final code in codes) {
       try {
-        final result = await channel.getAllApps();
+        // Rust 脚本渠道：读 Rust `channel_apps` 已保存行（等价 JsChannel.getAllApps
+        // 只读本地库语义），不再经 ChannelManager（其 facade 走 channel 域）。
+        if (rustLane.enabled && rustLane.packFor(code) != null) {
+          final apps = await rustLane.storedApps(code);
+          updated = {...updated, code: apps};
+          debugPrint(
+              'DiscoveryNotifier: 加载 Rust 脚本渠道 $code - count=${apps.length}');
+          continue;
+        }
+        final result = await manager.getAllAppsByCode(code);
         debugPrint(
             'DiscoveryNotifier: 加载渠道 $code - success=${result.success}, count=${result.data?.length ?? 0}');
 
@@ -395,12 +424,26 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   }
 
   /// 更新已添加应用索引
+  ///
+  /// 读路径与写路径同源：经 [AddedAppsFacade] 读取（flag on 读 Rust core 投影、
+  /// flag off 回落旧 backend）。此前这里直读旧 [IAggregateService]，flag on 时
+  /// 写入落 core、读却读旧 Dart 库 → 角标永远不亮（用户报告「选择后没有已入库
+  /// 角标」，且再次点击报「已从首页移除」，所有渠道均如此）。
   Future<void> _updateAddedAppsIndex() async {
-    // aggregate 模块下线 → 注册表取不到服务，跳过索引更新
-    final aggregator = _aggregator;
-    if (aggregator == null) return;
-    final index = await aggregator.getAddedAppsIndex();
+    final List<AddedAppInfo> apps;
+    try {
+      apps = await AddedAppsFacade.instance.list();
+    } catch (e) {
+      // 后端不可用（模块下线/DB 未就绪）时保留上一次索引，等价旧「取不到服务跳过」
+      appLog.error('DiscoveryNotifier: 读取已入库索引失败 - $e');
+      return;
+    }
     if (_disposed) return;
+    // 与旧 getAddedAppsIndex() 同形：channelId -> Set<appId>，供角标/筛选消费。
+    final index = <String, Set<String>>{};
+    for (final app in apps) {
+      index.putIfAbsent(app.channelId, () => <String>{}).add(app.appId);
+    }
     state = state.copyWith(addedAppsIndex: index);
   }
 
@@ -507,25 +550,28 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   }
 
   /// 添加/移除应用（添加到聚合管理器，用于首页显示）
+  ///
+  /// Rust 脚本通道（`js_*`）在 flag on 时不在 Dart 渠道注册表里，故不能要求
+  /// [ChannelManager.getChannelByCode] 命中——否则点卡片「入库」会静默 no-op
+  /// （用户报告「无法入库」）。聚合层 [IAggregateService] 对无渠道实例的 code
+  /// 用原始 appId 落库，因此 lane code 直接走聚合即可。
   Future<void> toggleApp(BuildContext context, String code, AppSummary appInfo) async {
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
 
     try {
-      // 使用聚合管理器切换应用状态（aggregate 模块下线时降级为未添加）
-      final added = await _aggregator?.toggleApp(
-        channelCode: code,
-        appInfo: appInfo,
-      ) ??
-          false;
+      // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
+      // flag off 回落旧 backend。canonical id 取 appInfo.appId——不再经
+      // _aggregator 的旧 catalog 写守卫（flag on 时旧守卫抛
+      // LegacyWriteBlocked(catalog)，正是用户报告的报错）。
+      final added = await AddedAppsFacade.instance.toggle(code, appInfo.appId);
 
       // 重新加载该渠道的应用列表
-      final result = await channelInstance.getAllApps(forceRefresh: true);
-      if (result.success && result.data != null) {
-        state = state.copyWith(
-          channelApps: {...state.channelApps, code: result.data!},
-        );
-      }
+      await _refreshChannelApps(code);
+
+      // 通知其余 UI（首页）刷新：flag on 刷新 core 投影，flag off 走旧广播流
+      await AddedAppsFacade.instance.notifyAppsChanged();
 
       // 刷新已添加应用索引（更新入库状态图标）
       await _updateAddedAppsIndex();
@@ -567,13 +613,17 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     // 关键：标签 key 必须与聚合库一致——addApp 落库用的是 canonicalAppId 规范化后的 appId
     // （如 GitHub 收录后为真实包名），原始 appId（如 owner/repo）作 key 会匹配不到聚合库
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
-    final canonicalId = await channelInstance.canonicalAppId(appInfo);
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
+    // lane code 无 Dart 渠道可规范化：聚合层对无渠道实例的 code 用原始 appId，保持一致。
+    final canonicalId = channelInstance != null
+        ? await channelInstance.canonicalAppId(appInfo)
+        : appInfo.appId;
 
-    // 读取当前标签（用规范化 appId）
-    final currentTags = await _aggregator
-            ?.getTags(channelCode: code, appId: canonicalId) ??
-        const [];
+    // 读取当前标签（用规范化 appId）；读路径与写路径同源：走 AddedAppsFacade
+    // （flag on 读 Rust core / flag off 回落旧 backend），不再直读旧聚合服务。
+    final currentTags =
+        await AddedAppsFacade.instance.tags(code, canonicalId);
 
     // 加载预置分类：本地库 AppCategory 的 description 作为标签值
     var presetTags = <String>[];
@@ -600,12 +650,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (result == null) return; // 取消，不保存
 
     try {
-      // 保存标签（用规范化 appId，与聚合库 key 一致）
-      await _aggregator?.setTags(
-        channelCode: code,
-        appId: canonicalId,
-        tags: result,
-      );
+      // 保存标签（用规范化 appId，与聚合库 key 一致）；走 facade 分流
+      await AddedAppsFacade.instance.setTags(code, canonicalId, result);
+      // 标签变化 → 通知其余 UI（首页）刷新（与旧 setTags 的 _notifyAppsChanged 同义）
+      await AddedAppsFacade.instance.notifyAppsChanged();
     } catch (e) {
       appLog.error('DiscoveryNotifier: 保存标签失败 - $e');
       if (!_disposed) {
@@ -614,37 +662,112 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
   }
 
+  /// Whether [code] names an installed Rust-lane pack (`js_*`) this process owns.
+  ///
+  /// The lane pack is deliberately NOT a Dart channels-domain channel, so a lane
+  /// code never resolves through [ChannelManager]; every "入库"/refresh path must
+  /// recognise it here instead of requiring a Dart channel instance.
+  bool _isRustLaneCode(String code) {
+    final lane = RustScriptChannelLane.instance;
+    return lane.enabled && lane.packFor(code) != null;
+  }
+
   /// 保存搜索结果到渠道数据库（不直接入库首页）
   /// 用户需在渠道应用列表中选择"入库"才会加入首页
-  Future<bool> saveSearchToChannel(String code, AppSummary app) async {
+  ///
+  /// 返回类型化结果而非 `bool`：
+  /// - Rust 脚本通道（`js_*`）：经 [RustScriptChannelLane.addApp]（FRB
+  ///   `ScriptApi.addApp`）把 [AppSummary] 映射成 `ChannelAppInfo` 后写入脚本域
+  ///   的 `channel_apps` 行；调用失败（例如未知 key 的 typed `pack_not_found`）
+  ///   → 带真实错误信息的 [SearchSaveFailed]（writeFailed），绝不静默 `false`。
+  /// - Dart 渠道：走 [IChannel.addApp]（逐字节不变）。
+  Future<SearchSaveOutcome> saveSearchToChannel(
+    String code,
+    AppSummary app,
+  ) async {
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) {
+      return _saveSearchToRustLane(code, app);
+    }
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return false;
+    if (channelInstance == null) {
+      return const SearchSaveFailed(
+        SearchSaveFailed.channelUnavailable,
+        '渠道不可用或未注册',
+      );
+    }
     try {
       // 统一调用 IChannel.addApp（各渠道内部处理保存逻辑）
       final result = await channelInstance.addApp(app);
       if (!result.success) {
         appLog.error(
             'DiscoveryNotifier: $code 保存搜索结果失败 - ${result.error}');
-        return false;
+        return SearchSaveFailed(
+          SearchSaveFailed.writeFailed,
+          result.error ?? '保存失败',
+        );
       }
 
       // 刷新该渠道的应用列表（让保存的应用出现在渠道视图中）
       await _refreshChannelApps(code);
       // 刷新已添加应用索引（搜索入库后更新状态）
       await _updateAddedAppsIndex();
-      return true;
+      return const SearchSaved();
     } catch (e) {
       appLog.error('DiscoveryNotifier: 保存搜索结果失败 - $e');
-      return false;
+      return SearchSaveFailed(SearchSaveFailed.writeFailed, e.toString());
     }
   }
 
-  /// 刷新指定渠道的应用列表
-  Future<void> _refreshChannelApps(String code) async {
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+  /// 保存搜索结果到 Rust 脚本通道包（`js_*`）。
+  ///
+  /// 经 [RustScriptChannelLane.addApp]（FRB `ScriptApi.addApp`）写入**脚本域**的
+  /// `channel_apps` 行——与 [RustScriptChannelLane.storedApps] 读取的行同一张表，
+  /// 因此 `js_*` 通道包无需注册为 channel 域的渠道。成功后按 Dart 路径同一语义
+  /// 刷新渠道列表（[_refreshChannelApps]）与已添加索引（[_updateAddedAppsIndex]）
+  /// 并返回成功。写入失败（未知 key 的 typed `pack_not_found`、非法 app 等）→
+  /// 返回带真实错误信息的 [SearchSaveFailed]（writeFailed），绝不静默 `false`、
+  /// 绝不写入旧 Dart 渠道库。
+  Future<SearchSaveOutcome> _saveSearchToRustLane(
+    String code,
+    AppSummary app,
+  ) async {
     try {
-      final result = await channelInstance.getAllApps(forceRefresh: true);
+      await RustScriptChannelLane.instance.addApp(code, app);
+    } catch (e) {
+      appLog.error('DiscoveryNotifier: $code 保存搜索结果失败 - $e');
+      return SearchSaveFailed(SearchSaveFailed.writeFailed, e.toString());
+    }
+
+    // 刷新该渠道的应用列表（与 Dart 路径同一刷新语义：重读通道已保存行）
+    await _refreshChannelApps(code);
+    // 刷新已添加应用索引（搜索入库后更新状态）
+    await _updateAddedAppsIndex();
+    return const SearchSaved();
+  }
+
+  /// 刷新指定渠道的应用列表
+  ///
+  /// Rust 脚本通道（flag on 且 code 是通道包）读 Rust `channel_apps` 已保存行
+  /// （[RustScriptChannelLane.storedApps]，等价 Dart `IChannel.getAllApps` 的只读
+  /// 语义）；其余 code 逐字节沿用 Dart 路径。
+  Future<void> _refreshChannelApps(String code) async {
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) {
+      try {
+        final apps = await rustLane.storedApps(code);
+        state = state.copyWith(
+          channelApps: {...state.channelApps, code: apps},
+        );
+      } catch (e) {
+        appLog.error('DiscoveryNotifier: 刷新 Rust 脚本渠道应用失败 - $e');
+      }
+      return;
+    }
+    if (_channelManager == null) return;
+    try {
+      final result =
+          await _channelManager!.getAllAppsByCode(code, forceRefresh: true);
       if (result.success && result.data != null) {
         state = state.copyWith(
           channelApps: {...state.channelApps, code: result.data!},
@@ -675,11 +798,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         return false;
       }
 
-      // 若已添加到首页，同步移除（aggregate 模块下线时跳过）
-      final aggregator = _aggregator;
-      if (aggregator == null) return false;
-      if (await aggregator.isAppAdded(channelCode: code, appId: appId)) {
-        await aggregator.removeApp(channelCode: code, appId: appId);
+      // 若已添加到首页，同步移除——读/写同源经 facade（flag on core / flag off
+      // 旧 backend）；不再直读旧聚合服务，避免 flag on 时「删了但索引仍在」。
+      if (await AddedAppsFacade.instance.isAdded(code, appId)) {
+        await AddedAppsFacade.instance.remove(code, appId);
       }
 
       // 刷新渠道列表
@@ -800,13 +922,16 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     final apps = state.channelApps[code] ?? [];
     if (apps.isEmpty) return;
     final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return;
+    final isLane = channelInstance == null && _isRustLaneCode(code);
+    if (channelInstance == null && !isLane) return;
 
     try {
-      await _aggregator?.addApps(
-        channelCode: code,
-        appInfos: apps,
-      );
+      // 逐应用走 facade（facade 无批量等价方法）；canonical id = app.appId，
+      // flag on 写 Rust core / flag off 回落旧 backend，不再经旧 catalog 写守卫。
+      for (final app in apps) {
+        await AddedAppsFacade.instance.add(code, app.appId, appInfo: app);
+      }
+      await AddedAppsFacade.instance.notifyAppsChanged();
       if (!_disposed) {
         AppDialogs.showSuccess('已添加 ${apps.length} 个应用', title: '批量添加');
       }
@@ -823,7 +948,9 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (channelInstance == null) return;
 
     try {
-      await _aggregator?.clearChannel(code);
+      // 走 facade 分流：flag on 清 Rust core / flag off 回落旧 backend
+      await AddedAppsFacade.instance.clearChannel(code);
+      await AddedAppsFacade.instance.notifyAppsChanged();
       if (!_disposed) {
         AppDialogs.showInfo('已清空 $code 渠道的所有应用', title: '已清空');
       }
@@ -909,19 +1036,10 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   /// 显示添加应用的 Bottom Sheet
   /// 直接弹出搜索框 + 渠道多选（默认 F-Droid，记忆上次选中）
   void showAddAppSheet(BuildContext context) {
-    final manager = _channelManager;
-    if (manager == null) return;
+    if (_channelManager == null) return;
 
-    // 枚举渠道 + 动态脚本渠道（channelKey 隔离），去重后过滤启用渠道。
-    final allChannels = <IChannel>[
-      ...manager.dynamicChannels,
-      ...manager.enabledChannels
-          .where((c) => !manager.dynamicChannels.contains(c)),
-    ];
-
-    // 过滤出启用的搜索渠道
-    final searchableChannels = allChannels.where((c) => c.info.enabled).toList();
-
+    // 可搜索渠道 = Dart 渠道（枚举/脚本渠道）+ Rust 脚本通道包，按 code 去重。
+    final searchableChannels = searchChannelOptions();
     if (searchableChannels.isEmpty) {
       AppDialogs.showInfo('当前没有可用的搜索渠道', title: '提示');
       return;
@@ -937,11 +1055,54 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         builder: (sheetContext) => _AddAppSearchSheet(
           channels: searchableChannels,
           initialSelectedCodes: saved,
+          onSearch: searchChannelApps,
           onSaveToChannel: saveSearchToChannel,
           onSelectionChanged: _saveSelectedChannelCodes,
         ),
       );
     });
+  }
+
+  /// 搜索选择器可选渠道（Dart 渠道 + Rust 脚本通道包），按 code 去重并排序。
+  ///
+  /// Rust 脚本通道（`CoreFlags.jsChannel == true` 时 `dynamicChannels` 为空）的
+  /// 已安装通道包并入，使导入的 `js_*` 渠道在选择器里可选——与渠道列表
+  /// （[sortedChannelCodes]）用同一个真相源 [RustScriptChannelLane]。
+  /// 展示名取通道包名，缺失回退 code。Dart 渠道与通道包按 code 去重。
+  List<SearchChannelOption> searchChannelOptions() {
+    final manager = _channelManager;
+    if (manager == null) return const [];
+    final options = <String, SearchChannelOption>{};
+    for (final channel in manager.dynamicChannels) {
+      if (!channel.info.enabled) continue;
+      final code = channelCode(channel);
+      options.putIfAbsent(
+        code,
+        () => SearchChannelOption(code: code, name: channel.info.name),
+      );
+    }
+    for (final channel in manager.enabledChannels) {
+      final code = channelCode(channel);
+      options.putIfAbsent(
+        code,
+        () => SearchChannelOption(code: code, name: channel.info.name),
+      );
+    }
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled) {
+      for (final pack in rustLane.packs) {
+        options.putIfAbsent(
+          pack.key,
+          () => SearchChannelOption(
+            code: pack.key,
+            name: pack.name.isNotEmpty ? pack.name : pack.key,
+          ),
+        );
+      }
+    }
+    final result = options.values.toList()
+      ..sort((a, b) => a.code.compareTo(b.code));
+    return result;
   }
 
   /// 读取记忆的选中渠道（默认 F-Droid）
@@ -986,7 +1147,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       case ChannelType.custom:
         return '自定义';
       case null:
-        // 脚本渠道：取渠道名，缺失回退 code
+        // 脚本渠道：Rust 通道包名优先（flag on 时 Dart 渠道已注销），
+        // 其次取 Dart 渠道名，缺失回退 code
+        final rustPack = RustScriptChannelLane.instance.packFor(code);
+        if (rustPack != null && rustPack.name.isNotEmpty) {
+          return rustPack.name;
+        }
         return _channelManager?.getChannelByCode(code)?.info.name ?? code;
     }
   }
@@ -1038,24 +1204,49 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           await _searchInChannel(code, keyword);
         }
       }
+      // Rust 脚本通道（flag on 时 dynamicChannels 为空）同样纳入搜索。
+      for (final code in RustScriptChannelLane.instance.codes) {
+        if (searched.add(code)) {
+          await _searchInChannel(code, keyword);
+        }
+      }
     }
   }
 
-  /// 在指定渠道搜索
+  /// 在指定渠道搜索并把结果写入发现页状态
   Future<void> _searchInChannel(String code, String keyword) async {
-    final channel = _channelManager?.getChannelByCode(code);
-    if (channel == null) return;
-
+    if (_channelManager == null) return;
     try {
-      final result = await channel.searchApps(keyword, forceRefresh: true);
-      if (result.success && result.data != null) {
-        state = state.copyWith(
-          channelApps: {...state.channelApps, code: result.data!},
-        );
-      }
+      final apps = await searchChannelApps(code, keyword);
+      state = state.copyWith(
+        channelApps: {...state.channelApps, code: apps},
+      );
     } catch (e) {
       appLog.error('DiscoveryNotifier: 搜索 $code 失败 - $e');
     }
+  }
+
+  /// 在单个渠道搜索：Rust 脚本通道包执行脚本入口，其余走 [ChannelManager]。
+  ///
+  /// 发现页搜索栏（[_searchInChannel]）与搜索选择器（`_AddAppSearchSheet`）共用
+  /// 此路由，避免两条搜索路径的 lane 判定分叉。
+  ///
+  /// Rust 脚本渠道执行脚本自身的搜索入口（等价 JsChannel.searchApps：先跑
+  /// searchApps，未实现则跑 getAllApps 本地过滤），**不按已保存行过滤**——新导入
+  /// 的包还没有 channel_apps 行，过滤会得到空结果（搜索渠道不显示）。
+  Future<List<AppSummary>> searchChannelApps(
+    String code,
+    String keyword,
+  ) async {
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) {
+      return rustLane.searchApps(code, keyword);
+    }
+    if (_channelManager == null) return const [];
+    final result = await _channelManager!
+        .searchAppsByCode(code, keyword, forceRefresh: true);
+    if (result.success && result.data != null) return result.data!;
+    return const [];
   }
 
   /// 防抖搜索
@@ -1169,14 +1360,17 @@ final discoveryProvider = NotifierProvider.autoDispose<DiscoveryNotifier, Discov
 /// 添加应用搜索 Bottom Sheet
 /// 直接搜索，下方渠道多选（默认 F-Droid，记忆选中）
 class _AddAppSearchSheet extends StatefulWidget {
-  /// 可选搜索渠道
-  final List<IChannel> channels;
+  /// 可选搜索渠道（Dart 渠道 + Rust 脚本通道包的轻量描述）
+  final List<SearchChannelOption> channels;
 
   /// 初始选中的渠道 codes
   final List<String> initialSelectedCodes;
 
-  /// 保存到渠道回调（返回是否成功）
-  final Future<bool> Function(String code, AppSummary appInfo)
+  /// 单渠道搜索回调（发现页控制器按 code 路由到 lane / ChannelManager）
+  final Future<List<AppSummary>> Function(String code, String keyword) onSearch;
+
+  /// 保存到渠道回调（返回类型化结果）
+  final Future<SearchSaveOutcome> Function(String code, AppSummary appInfo)
       onSaveToChannel;
 
   /// 选中渠道变化回调（持久化）
@@ -1185,6 +1379,7 @@ class _AddAppSearchSheet extends StatefulWidget {
   const _AddAppSearchSheet({
     required this.channels,
     required this.initialSelectedCodes,
+    required this.onSearch,
     required this.onSaveToChannel,
     required this.onSelectionChanged,
   });
@@ -1211,11 +1406,16 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   /// 正在保存的 key
   String? _savingKey;
 
+  /// 渠道 code → 展示名（来自选择器选项；lane 通道包名为准）
+  late final Map<String, String> _channelNames = {
+    for (final option in widget.channels) option.code: option.name,
+  };
+
   @override
   void initState() {
     super.initState();
     // 初始选中 = 记忆的选中（过滤无效渠道），空则默认 fdroid
-    final validCodes = widget.channels.map(channelCode).toSet();
+    final validCodes = widget.channels.map((c) => c.code).toSet();
     final initial = widget.initialSelectedCodes.where(validCodes.contains).toSet();
     _selectedCodes = initial.isNotEmpty ? initial : {'fdroid'};
     _focusNode.requestFocus();
@@ -1263,7 +1463,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   /// 搜索所有选中渠道，聚合结果
   Future<void> _doSearch(String keyword) async {
     final channels = widget.channels
-        .where((c) => _selectedCodes.contains(channelCode(c)))
+        .where((c) => _selectedCodes.contains(c.code))
         .toList();
     if (channels.isEmpty) {
       setState(() {
@@ -1280,13 +1480,11 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
 
     final newResults = <(AppSummary, String)>[];
     for (final channel in channels) {
-      final code = channelCode(channel);
+      final code = channel.code;
       try {
-        final result = await channel.searchApps(keyword, forceRefresh: true);
-        if (result.success && result.data != null) {
-          for (final app in result.data!) {
-            newResults.add((app, code));
-          }
+        final apps = await widget.onSearch(code, keyword);
+        for (final app in apps) {
+          newResults.add((app, code));
         }
       } catch (e) {
         appLog.error('_AddAppSearchSheet: 搜索 $code 失败 - $e');
@@ -1384,7 +1582,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: widget.channels.map((channel) {
-                    final code = channelCode(channel);
+                    final code = channel.code;
                     final selected = _selectedCodes.contains(code);
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
@@ -1394,7 +1592,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                           size: 16,
                           color: selected ? scheme.onSecondaryContainer : null,
                         ),
-                        label: Text(channel.info.name),
+                        label: Text(channel.name),
                         selected: selected,
                         onSelected: (_) => _toggleChannel(code),
                         visualDensity: VisualDensity.compact,
@@ -1569,21 +1767,22 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   Future<void> _saveToChannel(String code, AppSummary app) async {
     final key = '$code:${app.appId}';
     setState(() => _savingKey = key);
-    final success = await widget.onSaveToChannel(code, app);
+    final outcome = await widget.onSaveToChannel(code, app);
     if (!mounted) return;
     setState(() {
       _savingKey = null;
-      if (success) {
-        _savedKeys.add(key);
-        AppDialogs.showSuccess(
-          '${app.name} 已保存，可到渠道列表中选择入库',
-          title: '已添加到${_channelName(code)}',
-        );
-      } else {
-        AppDialogs.showError(
-          '${app.name} 保存到${_channelName(code)}失败',
-          title: '添加失败',
-        );
+      switch (outcome) {
+        case SearchSaved():
+          _savedKeys.add(key);
+          AppDialogs.showSuccess(
+            '${app.name} 已保存，可到渠道列表中选择入库',
+            title: '已添加到${_channelName(code)}',
+          );
+        case SearchSaveFailed(:final message):
+          AppDialogs.showError(
+            '${app.name} 保存到${_channelName(code)}失败：$message',
+            title: '添加失败',
+          );
       }
     });
   }
@@ -1617,7 +1816,10 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
       case ChannelType.custom:
         return '自定义';
       case null:
-        // 脚本渠道：取渠道名，缺失回退 code
+        // 脚本渠道 / Rust 通道包：优先选择器提供的展示名（lane 包名），
+        // 其次 Dart 渠道名，缺失回退 code
+        final optionName = _channelNames[code];
+        if (optionName != null && optionName.isNotEmpty) return optionName;
         return ChannelManager.instance.getChannelByKey(code)?.info.name ?? code;
     }
   }

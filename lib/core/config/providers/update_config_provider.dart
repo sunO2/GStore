@@ -12,6 +12,7 @@ import 'package:gstore/core/core.dart';
 
 import '../config_provider.dart';
 import '../config_storage.dart';
+import 'package:gstore/core/service/legacy_write_guard.dart';
 
 part 'update_config.g.dart';
 
@@ -210,6 +211,7 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
 
   @override
   Future<bool> save(UpdateConfig config) async {
+    await LegacyWriteGuard.assertAllowed('update');
     try {
       final jsonString = jsonEncode(config.toJson());
       final success = await _storage.setString(configKey, jsonString);
@@ -231,6 +233,7 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
 
   @override
   Future<bool> clear() async {
+    await LegacyWriteGuard.assertAllowed('update');
     final success = await _storage.remove(configKey);
     if (success) {
       _currentConfig = UpdateConfig.default_;

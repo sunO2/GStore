@@ -43,9 +43,9 @@ class DownloadTaskWatcher {
 
   /// 绑定到某个下载实现。
   ///
-  /// [LazyDownloadService.watchAll] 是"先 Dart、解析后原地切 Rust"的**单条长期流**，
-  /// 所以同一个实现重复调用 [start] 是空操作——既不重订阅，也不清空已发过的
-  /// "开始"通知标记；只有换成**另一个**实现时才替换订阅（模块真正重绑内核的场景）。
+  /// 生产只绑定 `RustDownloadService`：`watchAll` 是一条长期流，所以同一个实现
+  /// 重复调用 [start] 是空操作——既不重订阅，也不清空已发过的"开始"通知标记；
+  /// 只有换成**另一个**实现时才替换订阅（模块真正重绑内核的场景）。
   void start(IDownloadService service) {
     if (identical(_service, service) && _sub != null) {
       debugPrint('DownloadTaskWatcher: 同一实现已订阅，跳过重绑');
@@ -57,9 +57,9 @@ class DownloadTaskWatcher {
     unawaited(_sub?.cancel());
     _started.clear();
     _sub = service.watchAll().listen(
-      _onUpdate,
-      onError: (Object e) => debugPrint('DownloadTaskWatcher: 任务流异常 - $e'),
-    );
+          _onUpdate,
+          onError: (Object e) => debugPrint('DownloadTaskWatcher: 任务流异常 - $e'),
+        );
     debugPrint('DownloadTaskWatcher: 已订阅全局任务流');
   }
 
@@ -83,14 +83,18 @@ class DownloadTaskWatcher {
           notif.onDownloadStart(id, title, task.fileName);
         }
         // 服务内部已做 500ms 节流
-        notif.onDownloadProgress(id, title, task.fileName, task.received, task.total);
+        notif.onDownloadProgress(
+            id, title, task.fileName, task.received, task.total);
       case DownloadStatusEnum.paused:
         break;
       case DownloadStatusEnum.completed:
         notif.onDownloadComplete(id);
         _started.remove(id);
-        // 自动安装只认任务自己持久化的标记（跨重启也有效）
-        if (task.installAfterDownload) _install(task.filePath);
+        // 自动安装只认任务自己持久化的标记（跨重启也有效）。
+        // Wave 6B 起 install 域由核心独占：这里永远走核心安装，没有旧路径分支。
+        if (task.installAfterDownload) {
+          unawaited(_installCore(id.toString(), task.filePath));
+        }
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
         _started.remove(id);
@@ -100,23 +104,22 @@ class DownloadTaskWatcher {
     }
   }
 
-  void _install(String filePath) {
+  Future<void> _installCore(String moduleTaskId, String filePath) async {
     final manager = ModuleManager.instance.get<InstallManager>();
     if (manager == null) {
       debugPrint('DownloadTaskWatcher: InstallManager 不可用，跳过自动安装');
       return;
     }
-    debugPrint('DownloadTaskWatcher: 下载完成，触发安装 $filePath');
-    // 安装失败（如安装器抛异常）不得成为未处理的异步错误：在独立任务里捕获并上报。
-    unawaited(_installQuietly(manager, filePath));
-  }
-
-  /// 执行自动安装并吞掉异常（含堆栈上报），避免 `unawaited` 产生未处理异步错误。
-  Future<void> _installQuietly(InstallManager manager, String filePath) async {
+    debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $moduleTaskId');
     try {
-      await manager.installApk(filePath);
+      await manager.installTask(moduleTaskId, filePath);
+      // 自动安装的另一条入口：核心把 `install.requested` 事件排队，前端在
+      // 既有的「下载完成」路径上一次性排空（不新增常驻定时器）。
+      await manager.consumeInstallRequests();
     } catch (e, st) {
-      debugPrint('DownloadTaskWatcher: 自动安装失败 $filePath - $e\n$st');
+      debugPrint(
+        'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',
+      );
     }
   }
 }
