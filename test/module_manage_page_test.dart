@@ -306,8 +306,8 @@ void main() {
     testWidgets('设置页「模块」入口点击可达模块管理页', (tester) async {
       // 设置页整体是 ListView：「模块」分组位于「数据与同步」之后，默认视口
       // 下可能未构建。这里用滚动定位入口（贴近真实用户操作），
-      // 并注册 BadgeService ——「关于」组的 _DataUpdateTile 若被滚入视口，
-      // 其读取 BadgeService 未注册会异常（先例见
+      // 并注册 BadgeService ——「关于」组等挂载的 tile 读取 BadgeService
+      // 未注册会异常（先例见
       // install_theme_module_disable_test.putSettingsPageDeps）。
       if (!ModuleManager.instance.hasService<BadgeService>()) {
         ModuleManager.instance.bind<BadgeService>(BadgeService());

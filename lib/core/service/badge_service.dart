@@ -81,7 +81,6 @@ class BadgeService {
     // 这里仅触发一次懒检测（锁+时间窗防重），随后订阅同步
     await UpdateFacade.instance.ensureChecked();
     _subscribeUpdateFacade();
-    await _checkDbUpdateBadge();
   }
 
   /// 是否已订阅 UpdateManager
@@ -99,17 +98,5 @@ class BadgeService {
     // 而启动时缓存恢复（UpdateFacade 启动恢复）可能已在订阅前完成，
     // 否则有可更新应用时红点不亮（直到下一次检测变化才出现）
     setBadge(BadgeKey.appUpdate, UpdateFacade.instance.updateList.length);
-  }
-
-  /// 检测数据库版本更新红点
-  Future<void> _checkDbUpdateBadge() async {
-    try {
-      final info = await DbManager.instance.checkUpdateInfo('gstore');
-      final hasUpdate = info != null;
-      setBadge(BadgeKey.dbUpdate, hasUpdate ? 1 : 0);
-      appLog.info('BadgeService: 数据库更新红点 = $hasUpdate');
-    } catch (e) {
-      appLog.error('BadgeService: 检测数据库更新红点失败 - $e');
-    }
   }
 }

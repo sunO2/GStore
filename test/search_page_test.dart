@@ -77,12 +77,12 @@ class _FakeCatalog implements CatalogBackend {
 
 /// 注入 fake 目录后端后创建 ProviderContainer。
 ///
-/// flags 保持 all-false → [CatalogFacade] 选 legacy backend（即 fake）。
+/// [CatalogFacade] 只走 core 后端；此处注入 fake 作为 core 后端。
 ProviderContainer _container(_FakeCatalog backend) {
   final container = ProviderContainer(
     overrides: [
       catalogFacadeProvider.overrideWithValue(
-        CatalogFacade(legacy: backend, frb: backend),
+        CatalogFacade(frb: backend),
       ),
     ],
   );
@@ -189,7 +189,7 @@ void main() {
         ProviderScope(
           overrides: [
             catalogFacadeProvider.overrideWithValue(
-              CatalogFacade(legacy: backend, frb: backend),
+              CatalogFacade(frb: backend),
             ),
           ],
           child: const MaterialApp(home: SearchPage()),

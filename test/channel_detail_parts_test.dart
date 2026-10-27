@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -10,7 +9,6 @@ import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
-import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
 import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
@@ -24,7 +22,6 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/detail/state.dart';
@@ -32,14 +29,10 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:retrofit/retrofit.dart' show HttpResponse;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqlite3/open.dart';
 
 /// 详情页分块加载（W1）：渠道层 fetchDownloads / fetchReadme / fetchStatistics
 ///
 /// - GitHubChannel：releases JSON 解析 / contents API + ETag 条件缓存 / apiList → Map
-/// - LocalDbChannel：_githubApi.releases（失败→空）/ readme base64 解码 + DB 兜底 /
-///   apiList → Map（失败→null）
 class FakeGithubRestClient implements GithubRestClient {
   FakeGithubRestClient({
     this.releasesBody = '[]',
@@ -662,190 +655,6 @@ void main() {
       expect(result.data!.containsKey('metadata'), isFalse);
       expect(result.data!.containsKey('versionName'), isFalse);
       expect(result.data!['stargazers_count'], 100);
-    });
-  });
-
-  group('LocalDbChannel（分块加载）', () {
-    late AppInfoDatabase db;
-
-    setUpAll(() {
-      // Linux 系统仅有 libsqlite3.so.0（无 .so 符号链接），显式指定动态库
-      open.overrideFor(OperatingSystem.linux,
-          () => DynamicLibrary.open('libsqlite3.so.0'));
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-    });
-
-    setUp(() async {
-      // 真内存库（':memory:' 每次 open 全新实例，无跨用例残留）。
-      // 注意：floor 生成器 onCreate 建表名为 `AppInfo`，而 DAO/生产库查询 `apps`
-      // （历史命名不一致；生产库为预置文件不受影响）——补建与生产库一致的 apps 表。
-      // AppInfoDao 无写接口（生产由整库替换更新），故用原始 sqflite 写入
-      db = await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build();
-      // fetchStatistics 并入 metadata 会走 fetchInfo：默认未收录（404），避免真网络
-      MetadataRepository.instance.debugClient =
-          MockClient((request) async => http.Response('Not Found', 404));
-      await db.database.execute('''
-        CREATE TABLE IF NOT EXISTS apps (
-          appId TEXT NOT NULL,
-          name TEXT NOT NULL,
-          user TEXT NOT NULL,
-          repositories TEXT NOT NULL,
-          icon TEXT NOT NULL,
-          des TEXT NOT NULL,
-          readme TEXT,
-          category TEXT,
-          extra TEXT,
-          PRIMARY KEY (appId)
-        )
-      ''');
-      await db.database.insert('apps', {
-        'appId': 'com.termux',
-        'name': 'Termux',
-        'user': 'termux',
-        'repositories': 'termux-app',
-        'icon': '',
-        'des': 'DB 描述',
-        'category': null,
-        'readme': null,
-      });
-    });
-
-    tearDown(() async {
-      await db.close();
-    });
-
-    test('fetchDownloads：releases 解析为下载列表（失败 → 空列表）', () async {
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(
-          releasesBody: releasesBodyJson(assets: [asset()]),
-        ),
-      );
-
-      final result = await channel.fetchDownloads('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, hasLength(1));
-      expect(result.data!.single.name, 'app-arm64-v8a.apk');
-      expect(result.data!.single.version, 'v1.2.3');
-      expect(result.data!.single.size, 12345);
-      // 渠道层已拼代理前缀（getProxy 默认 https://gh-proxy.org/）
-      expect(
-        result.data!.single.url,
-        'https://gh-proxy.org/https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk',
-      );
-    });
-
-    test('fetchDownloads：releases API 失败 → 空列表（success，不阻塞）', () async {
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(throwOnReleases: true),
-      );
-
-      final result = await channel.fetchDownloads('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, isEmpty);
-    });
-
-    test('fetchDownloads：_githubApi 未注入 → 空列表（success）', () async {
-      final channel = LocalDbChannel(database: db);
-
-      final result = await channel.fetchDownloads('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, isEmpty);
-    });
-
-    test('fetchStatistics：apiList → Map（失败 → null 仍 success）', () async {
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(),
-      );
-
-      final result = await channel.fetchStatistics('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data!['stargazers_count'], 100);
-      expect(result.data!['forks_count'], 20);
-      expect(result.data!['default_branch'], 'master');
-    });
-
-    test('fetchStatistics：apiList 失败 → success(null)', () async {
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(throwOnApiList: true),
-      );
-
-      final result = await channel.fetchStatistics('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, isNull);
-    });
-
-    test('fetchStatistics：info.json 200 → 并入 metadata（versionName/versionCode/metadata）',
-        () async {
-      MetadataRepository.instance.debugClient = MockClient((request) async {
-        if (request.url.path.endsWith('/info.json')) {
-          return http.Response(
-            jsonEncode({'versionName': '3.0.0', 'versionCode': 300}),
-            200,
-          );
-        }
-        return http.Response('Not Found', 404);
-      });
-
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(),
-      );
-
-      final result = await channel.fetchStatistics('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data!['versionName'], '3.0.0');
-      expect(result.data!['versionCode'], 300);
-      expect(result.data!['metadata'], isA<Map<String, dynamic>>());
-      // 原有统计字段保留
-      expect(result.data!['stargazers_count'], 100);
-    });
-
-    test('fetchStatistics：_githubApi 未注入 → success(null)', () async {
-      final channel = LocalDbChannel(database: db);
-
-      final result = await channel.fetchStatistics('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, isNull);
-    });
-
-    test('fetchReadme：GitHub API base64 解码（优先于 DB）', () async {
-      final readmeBody = jsonEncode({
-        'name': 'README.md',
-        'content': base64Encode(utf8.encode('# API README')),
-        'encoding': 'base64',
-      });
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(readmeBody: readmeBody),
-      );
-
-      final result = await channel.fetchReadme('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, '# API README');
-    });
-
-    test('fetchReadme：GitHub API 失败 → DB 兜底（des）', () async {
-      final channel = LocalDbChannel(
-        database: db,
-        githubApi: FakeGithubRestClient(throwOnReadme: true),
-      );
-
-      final result = await channel.fetchReadme('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, 'DB 描述');
-    });
-
-    test('fetchReadme：_githubApi 未注入 → DB 兜底（des）', () async {
-      final channel = LocalDbChannel(database: db);
-
-      final result = await channel.fetchReadme('com.termux');
-      expect(result.success, isTrue);
-      expect(result.data, 'DB 描述');
     });
   });
 

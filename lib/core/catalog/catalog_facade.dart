@@ -1,8 +1,8 @@
-/// Flag-gated facade over the core catalog.
+/// Facade over the core catalog.
 ///
-/// `CoreFlags.catalog == false` routes every call to the legacy Dart
-/// `LocalDbChannel`; `true` routes to the FRB `CatalogApi`. Tests install fake
-/// backends through the constructor or the [backendOverride] seams, so no
+/// The legacy Dart `LocalDbChannel` catalog store was removed; every call
+/// routes to the FRB `CatalogApi` through [FrbCatalogBackend]. Tests install a
+/// fake backend through the constructor or the [backendOverride] seam, so no
 /// native library is required.
 library;
 
@@ -11,14 +11,9 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
-import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
-import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -161,79 +156,6 @@ class FrbCatalogBackend implements CatalogBackend {
       apps.map(appSummaryFromRust).toList(growable: false);
 }
 
-/// Legacy backend over the Dart `LocalDbChannel`.
-class LegacyCatalogBackend implements CatalogBackend {
-  LegacyCatalogBackend({LocalDbChannel? channel}) : _injected = channel;
-
-  final LocalDbChannel? _injected;
-  LocalDbChannel? _resolved;
-
-  LocalDbChannel get _channel {
-    final injected = _injected;
-    if (injected != null) return injected;
-    final resolved = _resolved;
-    if (resolved != null) return resolved;
-    final fromManager = ChannelManager.instance.getChannel(ChannelType.localDb);
-    if (fromManager is LocalDbChannel) {
-      _resolved = fromManager;
-      return fromManager;
-    }
-    throw StateError('LocalDbChannel 尚未初始化');
-  }
-
-  static Never _failed(ChannelResult<Object?> result) =>
-      throw StateError(result.error ?? 'local db channel failed');
-
-  static T _unwrap<T>(ChannelResult<T> result) {
-    if (!result.success) _failed(result);
-    return result.data as T;
-  }
-
-  @override
-  Future<List<AppSummary>> list() async => _unwrap(await _channel.getAllApps());
-
-  @override
-  Future<CatalogPageData> listPage(
-      {required int offset, required int limit}) async {
-    final all = await list();
-    final total = all.length;
-    final start = offset < 0 ? 0 : offset;
-    if (start >= total || limit <= 0) {
-      return CatalogPageData(apps: const <AppSummary>[], total: total);
-    }
-    final end = (start + limit).clamp(0, total);
-    return CatalogPageData(apps: all.sublist(start, end), total: total);
-  }
-
-  @override
-  Future<List<AppSummary>> search(String keyword) async =>
-      _unwrap(await _channel.searchApps(keyword));
-
-  @override
-  Future<AppSummary?> getApp(String appId) async =>
-      _unwrap(await _channel.getAppInfo(appId));
-
-  @override
-  Future<List<db.AppCategory>> categories() async =>
-      _unwrap(await _channel.getAllCategories());
-
-  @override
-  Future<List<AppSummary>> byCategory(String categoryId) async =>
-      _unwrap(await _channel.searchByCategory(categoryId));
-
-  @override
-  Future<AppDetailInfo?> getAppDetail(String appId) async {
-    final detail = _unwrap(await _channel.getAppDetail(appId));
-    return appDetailFromLegacy(detail);
-  }
-
-  @override
-  Future<CatalogRefreshOutcome> refresh(String url) async {
-    final changed = _unwrap(await _channel.doUpdate());
-    return CatalogRefreshOutcome(changed: changed, eventsJson: 'null');
-  }
-}
-
 /// Maps one FRB app summary to the Dart model (same shape as
 /// `ChannelManager._toAppSummary`).
 AppSummary appSummaryFromRust(rust.ChannelAppInfo info) {
@@ -256,22 +178,6 @@ AppSummary appSummaryFromRust(rust.ChannelAppInfo info) {
     extra: extra,
   );
 }
-
-/// Maps one legacy detail payload to the Dart model.
-AppDetailInfo appDetailFromLegacy(IDetailInfo detail) => AppDetailInfo(
-      appId: detail.appId,
-      name: detail.appName,
-      icon: detail.icon,
-      description: detail.description,
-      version: detail.version,
-      developer: detail.developer,
-      packageName: detail.packageName,
-      projectUrl: detail.projectUrl,
-      channel: detail.channelType,
-      sections: detail.sections,
-      downloads: detail.downloads,
-      extra: detail.extra,
-    );
 
 /// Maps one FRB detail payload to the Dart model.
 AppDetailInfo appDetailFromRust(rust.ChannelAppDetailInfo info) {
@@ -326,37 +232,19 @@ AppDetailInfo appDetailFromRust(rust.ChannelAppDetailInfo info) {
   );
 }
 
-/// Flag-gated catalog facade.
+/// Catalog facade over the core (FRB) backend.
 class CatalogFacade {
-  CatalogFacade({CatalogBackend? legacy, CatalogBackend? frb})
-      : _legacy = legacy ?? LegacyCatalogBackend(),
-        _frb = frb ?? FrbCatalogBackend();
+  CatalogFacade({CatalogBackend? frb}) : _frb = frb ?? FrbCatalogBackend();
 
   static CatalogFacade instance = CatalogFacade();
 
-  /// Test seam: replaces the FRB backend without touching the legacy one.
+  /// Test seam: replaces the core backend.
   @visibleForTesting
   static CatalogBackend? backendOverride;
 
-  /// Test seam: replaces the legacy backend without touching the FRB one.
-  @visibleForTesting
-  static CatalogBackend? legacyBackendOverride;
-
-  final CatalogBackend _legacy;
   final CatalogBackend _frb;
 
-  Future<bool> _enabled() async {
-    try {
-      await CoreFlags.refresh();
-    } catch (_) {
-      // Keep the last mirror; an unavailable flag backend must not arm a flag.
-    }
-    return CoreFlags.catalog;
-  }
-
-  Future<CatalogBackend> _backend() async => await _enabled()
-      ? (backendOverride ?? _frb)
-      : (legacyBackendOverride ?? _legacy);
+  Future<CatalogBackend> _backend() async => backendOverride ?? _frb;
 
   Future<List<AppSummary>> list() async => (await _backend()).list();
 
@@ -380,7 +268,7 @@ class CatalogFacade {
       (await _backend()).getAppDetail(appId);
 
   /// Refreshes the catalog and returns the `catalog.changed` event JSON
-  /// (`"null"` when nothing changed / on the legacy path).
+  /// (`"null"` when nothing changed).
   Future<CatalogRefreshOutcome> refresh(String url) async =>
       (await _backend()).refresh(url);
 }

@@ -56,7 +56,6 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     for (final type in ChannelType.values) {
       if (ChannelManager.instance.getChannel(type) != null) {
         ChannelManager.instance.unregisterChannel(type);
@@ -107,9 +106,7 @@ void main() {
         'the page (the index is rebuilt from the facade, not the legacy manager)',
         (tester) async {
       final core = RecordingAddedApps('core');
-      final legacy = RecordingAddedApps('legacy');
       AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
 
       ChannelManager.instance
           .registerChannel(FakeEnumChannel(ChannelType.fdroid, const [sampleApp]));
@@ -126,12 +123,9 @@ void main() {
       await tester.runAsync(() => notifier.toggleApp(ctx, 'fdroid', sampleApp));
 
       expect(notifier.state.addedAppsIndex['fdroid'], contains(sampleApp.appId),
-          reason: 'the badge index must reflect the core write (empty before '
-              'the fix, because the read still went to the legacy manager)');
+          reason: 'the badge index must reflect the core write');
       expect(core.listCalls, greaterThan(0),
           reason: 'the index must be rebuilt from AddedAppsFacade.list()');
-      expect(legacy.listCalls, 0,
-          reason: 'flag on must not read the legacy backend');
       expect(agg.indexCalls, 0,
           reason: 'the read must not go through the legacy aggregate service');
     });
@@ -182,51 +176,6 @@ void main() {
           reason: 'the remove path must remove through the facade');
       expect(agg.writeCalls, isEmpty,
           reason: 'the remove path must not touch the legacy aggregate writer');
-    });
-  });
-
-  group('catalog OFF: reads still use the legacy backend (no regression)', () {
-    testWidgets(
-        '(c) index/tags/isAdded/remove all route to the legacy backend when the '
-        'flag is off', (tester) async {
-      final core = RecordingAddedApps('core');
-      final legacy = RecordingAddedApps('legacy')
-        ..added['fdroid'] = {'com.legacy'};
-      AddedAppsFacade.backendOverride = core;
-      AddedAppsFacade.legacyBackendOverride = legacy;
-
-      ChannelManager.instance
-          .registerChannel(FakeEnumChannel(ChannelType.fdroid, const [sampleApp]));
-      final agg = RecordingAggregate();
-      ModuleManager.instance.bindByType(IAggregateService, agg);
-      addTearDown(() => ModuleManager.instance.unbindByType(IAggregateService));
-
-      final (_, notifier) = await boot(tester, catalog: false, load: true);
-
-      // index read
-      expect(notifier.state.addedAppsIndex['fdroid'], contains('com.legacy'),
-          reason: 'flag off: the index must come from the legacy backend');
-      expect(legacy.listCalls, greaterThan(0));
-      expect(core.listCalls, 0,
-          reason: 'flag off must not read the core backend');
-
-      // tags read: an unmounted context short-circuits right after the read.
-      final ctx = await unmountedContext(tester);
-      await tester
-          .runAsync(() => notifier.showTagPickerForApp(ctx, 'fdroid', sampleApp));
-      expect(legacy.tagsCalls, contains(('fdroid', sampleApp.appId)),
-          reason: 'flag off: the tag read must go through the legacy backend');
-      expect(core.tagsCalls, isEmpty);
-
-      // isAdded + remove
-      await tester
-          .runAsync(() => notifier.removeFromChannel('fdroid', 'com.legacy'));
-      expect(legacy.isAddedCalls, contains(('fdroid', 'com.legacy')),
-          reason: 'flag off: isAdded must go through the legacy backend');
-      expect(legacy.removeCalls, contains(('fdroid', 'com.legacy')),
-          reason: 'flag off: remove must go through the legacy backend');
-      expect(core.isAddedCalls, isEmpty);
-      expect(core.removeCalls, isEmpty);
     });
   });
 }

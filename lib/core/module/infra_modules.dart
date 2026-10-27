@@ -16,7 +16,6 @@ import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/service/user_manager.dart';
@@ -117,7 +116,8 @@ class RhttpModule extends AppModule {
 
 /// 数据库模块（无依赖）
 ///
-/// 初始化 DbManager，注册 Dio/GitHub API/DownloadService 等懒实例。
+/// 注册 Dio/GitHub API/DownloadService 等懒实例。catalog 归 Rust core
+/// （`CatalogFacade`），不再初始化 Dart `DbManager`。
 class DbModule extends AppModule {
   @override
   String get moduleName => 'db';
@@ -136,14 +136,7 @@ class DbModule extends AppModule {
     manager.lazyPut<GithubAuthApi>(
         () => GithubAuthApi(DioClient.createOAuthClient()));
 
-    await DbManager().init();
-    manager.bind<DbManager>(DbManager.instance);
     manager.bind<DatabaseEventBus>(DatabaseEventBus.instance);
-  }
-
-  @override
-  Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(DbManager, DbManager.instance);
   }
 }
 

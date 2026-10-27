@@ -5,7 +5,6 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/router/app_router.dart';
-import 'package:gstore/http/github/dio_client.dart';
 
 import 'state.dart';
 
@@ -282,29 +281,6 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
       if (_disposed) return;
       // 无进展（全量加载中/已在加载更多/异常）时停止，避免死循环
       if (state.apps.length <= before) return;
-    }
-  }
-
-  /// 应用版本更新检查（代理拉取 + GStore 数据库更新）
-  Future<void> checkUpdata() async {
-    // 仅当用户未手动设置代理时，才从远程拉取默认代理
-    if (getProxy().isEmpty || getProxy() == defaultProxy) {
-      try {
-        var proxyConfigRequest = await DioClient.instance.get().get(
-            "https://my-json-server.typicode.com/suno2/GStore-Repositorys/proxy");
-        var proxyUrl = proxyConfigRequest.data["url"];
-        if (proxyUrl?.toString().isNotEmpty ?? false) {
-          log("请求代理地址结果： $proxyUrl");
-          updateProxy(proxyUrl);
-        }
-      } catch (e) {
-        log("拉取代理失败： $e");
-      }
-    }
-
-    var downloadStatus = await "gstore".checkUpdate();
-    if (downloadStatus == DbUpdateResult.success) {
-      await loadAggregatedApps();
     }
   }
 

@@ -7,7 +7,6 @@ import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
-import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 
@@ -47,20 +46,13 @@ class ChannelIntegration {
   static Future<void> initialize() async {
     if (_initialized) return;
 
-    final dbManager = DbManager.instance;
     final githubApi = ModuleManager.instance.require<GithubRestClient>();
 
     // 0. Rust `script.ui_request` → UI handler 回包（与既有模块事件共用一条流）
     _attachScriptUiRouter();
 
-    // 1. 注册本地数据库渠道
-    var localDbChannel = LocalDbChannel(
-      database: dbManager.dbRepositroies["gstore"]!.db,
-      githubApi: githubApi, // 传入 GitHub API 用于查询 releases
-      name: 'LocalDB',
-      description: '本地数据库渠道（离线可用）',
-      priority: 1,
-    );
+    // 1. 本地数据库渠道已下线：catalog 归 Rust core（`CatalogFacade` /
+    //    `FrbCatalogBackend`），不再注册 Dart `LocalDbChannel`。
 
     // 2. 注册 GitHub API 渠道
     var githubChannel = GitHubChannel(
@@ -88,21 +80,17 @@ class ChannelIntegration {
 
     // 注册所有渠道
     manager.registerChannels([
-      localDbChannel,
       githubChannel,
       vivoChannel,
       fdroidChannel,
     ]);
 
     // 5. 加载脚本渠道（用户渠道目录扫描；单个脚本失败跳过，不阻塞内置渠道）
-    //    `CoreFlags.jsChannel == false`：构建并注册 Dart `JsChannel`
-    //    （initialize 在 JsChannel.initialize 内完成，失败降级 checkAvailable false）。
-    //    `CoreFlags.jsChannel == true`：`ChannelLoader` 不构建 Dart 渠道，而是把
-    //    目录里的 zip 渠道包经 `ScriptApi.init/import` 导入 Rust 脚本通道——这是
-    //    生产环境的启动加载入口，切轨后脚本渠道仍随应用启动被真正加载。
+    //    `CoreFlags.jsChannel == true`：`ChannelLoader` 把目录里的 zip 渠道包经
+    //    `ScriptApi.init/import` 导入 Rust 脚本通道——这是生产环境的启动加载入口。
+    //    Dart `JsChannel` 车道已在纯 Rust 清理中删除；flag off 时无脚本渠道车道。
     try {
-      final loaded =
-          await ChannelLoader(dio: DioClient().get()).loadAndRegister();
+      final loaded = await ChannelLoader().loadAndRegister();
       if (loaded.isEmpty && !manager.dartScriptChannelsEnabled) {
         appLog.info('ChannelIntegration: CoreFlags.jsChannel=true，'
             '脚本渠道包已交给 Rust ScriptApi 通道加载');
@@ -114,8 +102,8 @@ class ChannelIntegration {
     // 初始化所有启用的渠道
     await manager.initializeAll();
 
-    // 设置默认渠道
-    manager.setDefaultChannel(ChannelType.localDb);
+    // 默认渠道类型保持 `ChannelType.localDb`（ChannelManager 字段默认值），但不再
+    // 注册 Dart 实例：catalog 读取统一走 `CatalogFacade`（Rust core）。
 
     _initialized = true;
   }

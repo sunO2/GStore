@@ -892,7 +892,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
     final hasReadme = readme != null && readme.isNotEmpty;
 
     // README 文本流：相对路径图片已在渠道层经 rawBaseUrl 绝对化
-    // （resolveReadmeImageUrls，见 GitHubChannel/LocalDbChannel），
+    // （resolveReadmeImageUrls，见 GitHubChannel），
     // 此处仅将内嵌 <img> HTML 转换为 markdown 图片语法
     // （flutter_markdown_plus 不支持内联 HTML；尺寸经 title "WxH" 传递）。
     // 转换在后台 isolate 完成并缓存，避免每次 rebuild 重跑正则。

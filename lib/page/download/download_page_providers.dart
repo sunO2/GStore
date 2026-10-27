@@ -14,10 +14,9 @@ import 'package:gstore/db/apps/AppInfo.dart';
 
 import 'download_status_utils.dart';
 
-/// 目录门面（经 flag 路由：`catalog` 开走 Rust core，关回落旧 backend）。
+/// 目录门面（catalog 归 Rust core：`CatalogFacade` 恒走 `FrbCatalogBackend`）。
 ///
-/// 下载面板的应用信息（图标/名称）读路径与写路径同源，不再直读旧
-/// `apps.db`（旧 DbManager 路径已由门面的 legacy backend 承担）。
+/// 下载面板的应用信息（图标/名称）读路径与写路径同源，不再直读旧 `apps.db`。
 final downloadCatalogFacadeProvider = Provider<CatalogFacade>((ref) {
   return CatalogFacade.instance;
 });

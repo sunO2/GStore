@@ -5,10 +5,9 @@ import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
-/// 目录门面（经 flag 路由：`catalog` 开走 Rust core，关回落旧 backend）。
+/// 目录门面（catalog 归 Rust core：`CatalogFacade` 恒走 `FrbCatalogBackend`）。
 ///
-/// 搜索/分类读路径与写路径同源，不再直读旧 `apps.db`（DbManager 下线时为
-/// null 的旧路径已由门面的 legacy backend 承担）。
+/// 搜索/分类读路径与写路径同源，不再直读旧 `apps.db`。
 final catalogFacadeProvider = Provider<CatalogFacade>((ref) {
   return CatalogFacade.instance;
 });

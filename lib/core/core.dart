@@ -16,7 +16,6 @@ export 'package:gstore/core/model/AppSummary.dart';
 export 'package:gstore/core/data/metadata_repository.dart';
 
 // 核心服务
-export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/service/user_manager.dart';
 export 'package:gstore/core/service/user_provider.dart';
 export 'package:gstore/core/service/backup_service.dart';
@@ -92,7 +91,7 @@ export 'dart:convert';
 
 /// 内存中的应用版本配置（version-only，代理配置走 ConfigService B 轨）。
 ///
-/// 静态 holder：DbManager 更新版本时写入，getConfig 读取（替代原 GetX tagged DI）。
+/// 静态 holder：`getConfig` 读取（替代原 GetX tagged DI）。
 AppInfoConfig? _configHolder;
 
 void updateConfig(String? version) {

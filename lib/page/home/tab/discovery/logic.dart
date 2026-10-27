@@ -25,11 +25,11 @@ import 'widgets/tag_picker_dialog.dart';
 ///
 /// 数据源：ChannelManager（渠道管理器，经 ModuleManager 注册表取用），逐渠道
 /// 加载应用列表；IAggregateService 提供已添加索引（入库状态/批量添加）。
-/// 订阅 appsChangedStream 响应增删入库变化、dbRebuiltStream 响应数据库重建。
+/// 订阅 appsChangedStream 响应增删入库变化。catalog 归 Rust core，不再有 Dart
+/// 数据库重建事件可订阅。
 /// UI 提示统一走 AppDialogs（纯 Flutter），不再依赖 GetX 全局。
 class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   StreamSubscription? _appsSubscription;
-  StreamSubscription? _dbRebuiltSub;
   final List<StreamSubscription> _disposables = [];
 
   /// 是否已释放（async 回调后写 state 前检查）
@@ -68,7 +68,6 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     _debounceTimer?.cancel();
     searchController.dispose();
     _appsSubscription?.cancel();
-    _dbRebuiltSub?.cancel();
     for (final sub in _disposables) {
       sub.cancel();
     }
@@ -83,19 +82,6 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         if (_disposed) return;
         _updateAddedAppsIndex();
       });
-    }
-
-    // 监听数据库重建（DB 更新下载完成后重载渠道列表）
-    try {
-      final dbManager = ModuleManager.instance.get<DbManager>();
-      if (dbManager != null) {
-        _dbRebuiltSub = dbManager.dbRebuiltStream.listen((_) {
-          if (_disposed) return;
-          loadData();
-        });
-      }
-    } catch (_) {
-      // DbManager 未注册：跳过数据库重建订阅
     }
 
     await loadData();

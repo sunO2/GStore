@@ -10,7 +10,6 @@ export 'model/ChannelInfo.dart';
 export 'model/ChannelResult.dart';
 
 // 具体实现
-export 'impl/LocalDbChannel.dart';
 export 'impl/GitHubChannel.dart';
 export 'impl/VivoChannel.dart';
 export 'impl/FdroidChannel.dart';
