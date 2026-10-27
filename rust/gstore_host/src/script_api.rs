@@ -246,6 +246,23 @@ impl ScriptApiInner {
         Ok(())
     }
 
+    /// Returns the persisted env snapshot for `key` as a JSON object string.
+    ///
+    /// Reads the same store [`Self::set_env`] writes — the plaintext
+    /// `channel_env.env_json` row plus the `FileSecretStore` secrets under
+    /// `channel.<key>.<NAME>` — so the UI can echo back exactly what the script
+    /// sees (`{"NAME":"value",...}`, empty object when nothing is stored). This
+    /// never spawns the pack runtime: a channel whose files are missing still
+    /// has a readable env snapshot, and a key that was never saved returns `{}`
+    /// rather than an error. The channel key is validated exactly like
+    /// [`Self::set_env`]; sensitive names are resolved from the secret store and
+    /// are never logged here.
+    pub(crate) fn env(&self, key: &str) -> Result<String, String> {
+        let key = self.channel_key(key)?;
+        let env = script_env::load(&self.db, &self.secrets, &key)?;
+        serde_json::to_string(&env).map_err(|error| format!("internal: encode channel env: {error}"))
+    }
+
     /// Replaces the channel config snapshot read by `host.config.get`.
     ///
     /// Values are channel-scoped and hot-updated on the live entry (the same

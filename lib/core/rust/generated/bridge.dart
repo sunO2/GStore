@@ -552,6 +552,17 @@ abstract class ScriptApi implements RustOpaqueInterface {
   /// `invalid_argument`.
   Future<void> addApp({required String key, required ChannelAppInfo app});
 
+  /// Returns the persisted channel env snapshot for `key` as a JSON object
+  /// string (`{"NAME":"value",...}`, `{}` when nothing is stored).
+  ///
+  /// The read counterpart of [`Self::set_env`]: it reads the same Rust store
+  /// the script sees — the plaintext `channel_env` row plus the
+  /// `channel.<key>.<NAME>` secrets — so the UI can echo back configured
+  /// environment variables without mirroring secrets into the Flutter
+  /// `ConfigStore`. It never spawns the pack runtime and an unknown/never-saved
+  /// key returns `{}` rather than an error.
+  Future<String> env({required String key});
+
   /// Installs one legacy flat pack from zip bytes.
   ///
   /// New packs are decoded with [`gstore_core::channel::PackPolicy::Strict`].
@@ -592,8 +603,8 @@ abstract class ScriptApi implements RustOpaqueInterface {
   /// Runs `main(method, params)` and returns the JSON result as a string.
   ///
   /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
-  /// `getAppDetail`, `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig`
-  /// (entry script) and `versionOptions`, `switchVersion`, `buildHistory`,
+  /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
+  /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
   /// `detailMenu` (detail script). The string is the same JSON the Dart
   /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
   /// the script's `{version, proxy}` payload; parity is defined on the mapped

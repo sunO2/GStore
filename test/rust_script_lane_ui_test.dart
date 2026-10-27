@@ -115,6 +115,10 @@ class _FakeScriptBackend implements ScriptApiBackend {
   }
 
   @override
+  Future<Map<String, String>> getEnv({required String key}) async =>
+      Map.of(lastEnv[key] ?? const {});
+
+  @override
   Future<void> setConfig({
     required String key,
     required Map<String, String> config,

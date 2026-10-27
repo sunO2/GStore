@@ -100,6 +100,12 @@ class _InitGatedScriptBackend implements ScriptApiBackend {
       _requireInit();
 
   @override
+  Future<Map<String, String>> getEnv({required String key}) async {
+    _requireInit();
+    return const {};
+  }
+
+  @override
   Future<void> setConfig({
     required String key,
     required Map<String, String> config,

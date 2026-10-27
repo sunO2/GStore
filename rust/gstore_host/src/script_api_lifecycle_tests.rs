@@ -8,7 +8,9 @@ use gstore_core::ports::{HttpOptions, HttpResponse};
 use serde_json::Value;
 
 use crate::http_port::{ScriptHttp, ScriptHttpLimits, TransportError};
-use crate::script_api_test_support::{harness, harness_with_script_http, zip_with, zip_with_extra};
+use crate::script_api_test_support::{
+    harness, harness_with_script_http, reopen, zip_with, zip_with_extra,
+};
 use crate::TEST_SERIAL;
 
 const ENV_SCRIPT: &str = r#"
@@ -118,6 +120,56 @@ fn script_api_import_remove_refresh_env_run() {
         .expect_err("removed pack must fail");
     println!("[run-after-remove] {missing}");
     assert!(missing.starts_with("pack_not_found:"), "{missing}");
+}
+
+#[test]
+fn script_api_env_read_round_trips_including_sensitive() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("envread");
+    harness
+        .api
+        .import(
+            zip_with(ENV_SCRIPT, None, None),
+            Some("js_envread".to_string()),
+        )
+        .expect("import");
+
+    // A channel that never had env saved reads back an empty JSON object.
+    assert_eq!(
+        harness.api.env("js_envread").expect("env before set"),
+        "{}",
+        "a fresh channel has an empty env snapshot"
+    );
+
+    let mut env = HashMap::new();
+    env.insert("PINGAN_USER".to_string(), "alice".to_string());
+    env.insert("PINGAN_ENV".to_string(), "sit".to_string());
+    // Sensitive name (is_sensitive_key): routed to the secret store, not the row.
+    env.insert("API_TOKEN".to_string(), "s3cr3t".to_string());
+    harness
+        .api
+        .set_env("js_envread", env.clone())
+        .expect("set env");
+
+    let raw = harness.api.env("js_envread").expect("env after set");
+    let read: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&raw).expect("env json");
+    assert_eq!(
+        read,
+        env.clone().into_iter().collect(),
+        "the read mirrors exactly what was written"
+    );
+
+    // A restart (fresh DbHandle over the same files) must still resolve the
+    // sensitive value from the secret store, not just the plaintext row.
+    let reopened = reopen(&harness);
+    let raw = reopened.env("js_envread").expect("env after reopen");
+    let read: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&raw).expect("env json");
+    assert_eq!(read.get("API_TOKEN").map(String::as_str), Some("s3cr3t"));
+    assert_eq!(read.get("PINGAN_USER").map(String::as_str), Some("alice"));
+    assert_eq!(read.get("PINGAN_ENV").map(String::as_str), Some("sit"));
+    println!("[env-read-round-trip] {read:?}");
 }
 
 #[test]

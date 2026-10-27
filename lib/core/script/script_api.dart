@@ -48,6 +48,8 @@ abstract class ScriptApiBackend {
     required Map<String, String> env,
   });
 
+  Future<Map<String, String>> getEnv({required String key});
+
   Future<void> setConfig({
     required String key,
     required Map<String, String> config,
@@ -122,6 +124,14 @@ class FrbScriptApiBackend implements ScriptApiBackend {
     required Map<String, String> env,
   }) =>
       _instance.setEnv(key: key, env: env);
+
+  @override
+  Future<Map<String, String>> getEnv({required String key}) async {
+    final raw = await _instance.env(key: key);
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return const {};
+    return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+  }
 
   @override
   Future<void> setConfig({
@@ -241,6 +251,17 @@ class ScriptApi {
   }) async {
     _ensureEnabled();
     await _backend.setEnv(key: key, env: env);
+  }
+
+  /// Returns the persisted channel env snapshot for [key].
+  ///
+  /// The read counterpart of [setEnv]: it reads the same Rust store the script's
+  /// `host.env.get` sees, so sensitive names are resolved from the Rust secret
+  /// store and are never mirrored into the Flutter `ConfigStore`. An unknown or
+  /// never-saved key yields an empty map.
+  Future<Map<String, String>> getEnv({required String key}) async {
+    _ensureEnabled();
+    return _backend.getEnv(key: key);
   }
 
   /// Replaces the channel config snapshot read by `host.config.get`.

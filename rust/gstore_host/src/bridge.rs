@@ -4449,6 +4449,19 @@ impl ScriptApi {
         self.inner.set_env(&key, env)
     }
 
+    /// Returns the persisted channel env snapshot for `key` as a JSON object
+    /// string (`{"NAME":"value",...}`, `{}` when nothing is stored).
+    ///
+    /// The read counterpart of [`Self::set_env`]: it reads the same Rust store
+    /// the script sees — the plaintext `channel_env` row plus the
+    /// `channel.<key>.<NAME>` secrets — so the UI can echo back configured
+    /// environment variables without mirroring secrets into the Flutter
+    /// `ConfigStore`. It never spawns the pack runtime and an unknown/never-saved
+    /// key returns `{}` rather than an error.
+    pub fn env(&self, key: String) -> Result<String, String> {
+        self.inner.env(&key)
+    }
+
     /// Replaces the channel config snapshot read by `host.config.get`.
     ///
     /// Mirrors [`Self::set_env`]: the snapshot is scoped to `key` (the channel /

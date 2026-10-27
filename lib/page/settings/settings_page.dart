@@ -603,17 +603,23 @@ class _SettingsPageState extends State<SettingsPage> {
                         // 从 meta.json 读取必需环境变量，预填入编辑器
                         final reqVars = pkg.requiredEnvVars;
                         final channelKey = 'js_$baseName';
-                        // 尝试加载已存在的环境变量（回显之前填过的值）
+                        // 尝试加载已存在的环境变量（回显之前填过的值）：
+                        // Rust 轨读 ScriptApi 的渠道 env（与脚本 host.env.get 同一
+                        // 存储，敏感项从密钥存储解析），Dart 旧轨读 ConfigStore。
                         var existingEnv = <String, String>{};
                         try {
-                          final existingRaw = await ConfigStore.instance
-                              .readString('channel_env_$channelKey');
-                          if (existingRaw != null && existingRaw.isNotEmpty) {
-                            final decoded = jsonDecode(existingRaw);
-                            if (decoded is Map) {
-                              existingEnv = decoded.map(
-                                  (k, v) =>
-                                      MapEntry(k.toString(), v.toString()));
+                          if (RustScriptChannelLane.instance.enabled) {
+                            existingEnv = await ScriptApi.instance
+                                .getEnv(key: channelKey);
+                          } else {
+                            final existingRaw = await ConfigStore.instance
+                                .readString('channel_env_$channelKey');
+                            if (existingRaw != null && existingRaw.isNotEmpty) {
+                              final decoded = jsonDecode(existingRaw);
+                              if (decoded is Map) {
+                                existingEnv = decoded.map((k, v) =>
+                                    MapEntry(k.toString(), v.toString()));
+                              }
                             }
                           }
                         } catch (_) {
@@ -844,8 +850,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 读取渠道当前环境变量（两轨统一）。
   ///
-  /// Rust 通道 `ScriptApi` 无 env 读取 API，回退读旧 ConfigStore
-  /// `channel_env_<key>`（导入对话框回显同款）；可能为空，仅作编辑器初值。
+  /// Rust 通道走 `ScriptApi.getEnv`（读 Rust 脚本存储，与脚本 `host.env.get`
+  /// 同一份数据，敏感项从密钥存储解析）；Dart 旧轨仍读 `JsChannel.getAllEnv`。
+  /// 读取失败仅作空初值，不影响编辑器。
   Future<Map<String, String>> _loadChannelEnv(_ImportedChannel channel) async {
     if (!channel.rust) {
       final dartChannel = ChannelManager.instance.getChannelByKey(channel.key);
@@ -853,13 +860,7 @@ class _SettingsPageState extends State<SettingsPage> {
       return const {};
     }
     try {
-      final raw =
-          await ConfigStore.instance.readString('channel_env_${channel.key}');
-      if (raw == null || raw.isEmpty) return const {};
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
-      }
+      return await ScriptApi.instance.getEnv(key: channel.key);
     } catch (_) {
       // 读取失败不影响，使用空值
     }
