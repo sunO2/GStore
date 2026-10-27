@@ -2437,10 +2437,16 @@ impl MetadataPort for HttpMetadataPort {
                     "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/{owner}@{repo}/icon.png"
                 ))
             });
+        let version_name = object
+            .get("versionName")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
         Ok(Some(PackageMetadata {
             package_name,
             app_name,
             icon_url,
+            version_name,
         }))
     }
 }
@@ -2697,7 +2703,8 @@ impl ChannelApi {
         let driver: Option<Arc<dyn ChannelDriver>> = match record.kind() {
             ChannelKind::LocalDb => Some(Arc::new(
                 LocalDbDriver::new(key, meta.clone(), self.inner.db.clone())
-                    .with_metadata(self.inner.metadata.clone()),
+                    .with_metadata(self.inner.metadata.clone())
+                    .with_github(self.inner.config.clone(), self.inner.http.clone()),
             )),
             ChannelKind::Github => Some(Arc::new(GitHubDriver::new(
                 key,
@@ -4597,6 +4604,7 @@ mod channel_api_tests {
                 package_name: Some("com.example.owner".to_string()),
                 app_name: Some("Owner App".to_string()),
                 icon_url: Some("https://example.test/icon.png".to_string()),
+                version_name: None,
             }),
         );
         let repo = FakeRepoPort::new(root.join("repo.db"));

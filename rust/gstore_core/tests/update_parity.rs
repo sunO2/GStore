@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use gstore_core::channel::{ChannelDriver, InMemoryChannelDriver};
+use gstore_core::channel::{ChannelDriver, InMemoryChannelDriver, LocalDbDriver};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
     AppDetail, AppDownload, AppUpdate, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
@@ -17,6 +17,9 @@ use gstore_core::dto::{
 use gstore_core::error::Error;
 use gstore_core::facts::{CorePaths, DeviceFacts, InstalledApp, PlatformFacts};
 use gstore_core::migration::update_pref;
+use gstore_core::ports::{
+    CoreConfig, FakeHttpPort, FakeMetadataPort, HttpResponse, MetadataPort, PackageMetadata,
+};
 use gstore_core::update::service::{
     asset_matches_abi, compare_versions, normalize_abi, pick_closest_apk, select_best_download,
     select_download_with_preference, AppUpdateInfo, ChannelResolver, CheckLogLevel, UpdateService,
@@ -1256,4 +1259,174 @@ fn update_stale_inventory_aborts_per_batch() {
         "stale inventory yields no update"
     );
     assert_eq!(skip_reason(&forced.skipped, "A"), "inventory_stale");
+}
+
+// ---------------------------------------------------------------------------
+// Real-driver local_db update detection (Dart `LocalDbChannel.getAppDetail`)
+// ---------------------------------------------------------------------------
+
+fn localdb_meta() -> ChannelMeta {
+    ChannelMeta {
+        kind: ChannelKind::LocalDb,
+        name: "LocalDB".to_string(),
+        description: "local catalog".to_string(),
+        enabled: true,
+        priority: 10,
+        support_offline: true,
+        last_update_time: None,
+        version: Some("1".to_string()),
+    }
+}
+
+fn seed_localdb_app(db: &DbHandle, app_id: &str, package: &str, user: &str, repo: &str) {
+    let extra = json!({ "packageName": package }).to_string();
+    db.writer()
+        .unwrap()
+        .execute(
+            "INSERT INTO apps(appId,name,user,repositories,icon,des,readme,category,extra) \
+             VALUES (?1,?2,?3,?4,'','desc',NULL,'Tools',?5)",
+            params![app_id, app_id, user, repo, extra],
+        )
+        .unwrap();
+}
+
+fn localdb_releases() -> String {
+    json!([{
+        "name": "v2.0.0",
+        "tag_name": "v2.0.0",
+        "assets": [{
+            "name": "alpha-arm64-v8a.apk",
+            "size": 1234,
+            "download_count": 7,
+            "browser_download_url": "https://example.test/alpha-2.0.0.apk"
+        }]
+    }])
+    .to_string()
+}
+
+fn localdb_http() -> Arc<FakeHttpPort> {
+    let http = Arc::new(FakeHttpPort::new());
+    http.push_response(HttpResponse {
+        status: 200,
+        headers: Vec::new(),
+        body: localdb_releases().into_bytes(),
+    });
+    http
+}
+
+fn localdb_driver(db: &DbHandle, http: Arc<FakeHttpPort>) -> LocalDbDriver {
+    let config = CoreConfig::new(None, None).unwrap();
+    LocalDbDriver::new(
+        ChannelKey::new("local_db").unwrap(),
+        localdb_meta(),
+        db.clone(),
+    )
+    .with_github(config, http)
+}
+
+fn seed_localdb_update_env(db: &DbHandle) {
+    seed_facts(db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        db,
+        SOURCE,
+        1_000_000,
+        &[installed("com.example.alpha", "1.0.0")],
+    );
+    add_added(db, "local_db", "com.example.alpha", 10);
+    seed_localdb_app(
+        db,
+        "com.example.alpha",
+        "com.example.alpha",
+        "acme",
+        "alpha",
+    );
+}
+
+#[test]
+fn update_parity_localdb_real_driver_detects_github_release_update() {
+    let dir = TempDir::new("localdb_real");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_localdb_update_env(&db);
+
+    let driver = localdb_driver(&db, localdb_http());
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    assert_eq!(
+        report.updates.len(),
+        1,
+        "the real local_db driver must detect the GitHub release update"
+    );
+    let info = find(&report.updates, "com.example.alpha");
+    assert_eq!(info.channel_id, "local_db");
+    assert_eq!(info.package_name, "com.example.alpha");
+    assert_eq!(info.installed_version, "1.0.0");
+    assert_eq!(info.latest_version, "v2.0.0");
+    assert_eq!(info.download.name, "alpha-arm64-v8a.apk");
+    assert_eq!(info.download.url, "https://example.test/alpha-2.0.0.apk");
+    assert_eq!(db_status(&db, "com.example.alpha"), "update_available");
+}
+
+#[test]
+fn update_parity_localdb_offline_driver_reports_no_channel_version() {
+    let dir = TempDir::new("localdb_offline");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_localdb_update_env(&db);
+
+    let driver = LocalDbDriver::new(
+        ChannelKey::new("local_db").unwrap(),
+        localdb_meta(),
+        db.clone(),
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    assert!(
+        report.updates.is_empty(),
+        "an offline local_db driver has no version source"
+    );
+    assert_eq!(
+        skip_reason(&report.skipped, "com.example.alpha"),
+        "no_channel_version"
+    );
+}
+
+#[test]
+fn update_parity_localdb_metadata_version_name_wins_over_release() {
+    let dir = TempDir::new("localdb_metadata");
+    let db = DbHandle::open_at(&dir.path().join("gstore_core.db")).unwrap();
+    seed_localdb_update_env(&db);
+
+    let metadata = FakeMetadataPort::new();
+    metadata.set(
+        "acme",
+        "alpha",
+        Some(PackageMetadata {
+            package_name: Some("com.example.alpha".to_string()),
+            app_name: None,
+            icon_url: None,
+            version_name: Some("9.9.9".to_string()),
+        }),
+    );
+    let metadata_port: Arc<dyn MetadataPort> = Arc::new(metadata);
+    let config = CoreConfig::new(None, None).unwrap();
+    let driver = LocalDbDriver::new(
+        ChannelKey::new("local_db").unwrap(),
+        localdb_meta(),
+        db.clone(),
+    )
+    .with_metadata(metadata_port)
+    .with_github(config, localdb_http());
+
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![Arc::new(driver)], clock);
+    let report = service.check_all(true).unwrap();
+
+    let info = find(&report.updates, "com.example.alpha");
+    assert_eq!(
+        info.latest_version, "9.9.9",
+        "Dart prefers metadataVersionName over the GitHub release version"
+    );
 }

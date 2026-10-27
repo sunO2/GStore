@@ -24,6 +24,7 @@ mod driver;
 mod fake;
 mod fdroid;
 mod github;
+mod github_releases;
 mod localdb;
 mod pack;
 mod pack_loader;

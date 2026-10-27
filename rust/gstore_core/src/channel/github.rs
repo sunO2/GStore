@@ -24,6 +24,7 @@ use rusqlite::Row;
 use serde_json::{Map, Value};
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
+use super::github_releases::{api_error, optional_string, GitHubReleases};
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
@@ -31,21 +32,18 @@ use crate::dto::{
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
-use crate::ports::http::{HttpOptions, HttpPort, HttpResponse};
+use crate::ports::http::HttpPort;
 use crate::ports::metadata::{MetadataPort, PackageMetadata};
 
 const GITHUB_API: &str = "https://api.github.com";
 const PER_PAGE: u32 = 30;
-const ACCEPT: &str = "application/vnd.github+json";
-const USER_AGENT: &str = "GStore-App/1.0";
 
 /// GitHub channel driver bound to one [`ChannelKey`].
 pub struct GitHubDriver {
     key: ChannelKey,
     meta: ChannelMeta,
     db: DbHandle,
-    config: CoreConfig,
-    http: Arc<dyn HttpPort>,
+    api: GitHubReleases,
     metadata: Arc<dyn MetadataPort>,
     initialized: AtomicBool,
 }
@@ -141,8 +139,7 @@ impl GitHubDriver {
             key,
             meta,
             db,
-            config,
-            http,
+            api: GitHubReleases::new(config, http),
             metadata,
             initialized: AtomicBool::new(false),
         }
@@ -200,121 +197,6 @@ impl GitHubDriver {
         Ok(apply_metadata(base, metadata, true))
     }
 
-    fn http_options(&self) -> HttpOptions {
-        let mut options = HttpOptions::new()
-            .with_header("Accept", ACCEPT)
-            .with_header("User-Agent", USER_AGENT);
-        if let Some(token) = self.config.github_token() {
-            options = options.with_header("Authorization", format!("Bearer {token}"));
-        }
-        if let Some(proxy) = self.config.proxy_url() {
-            options = options.with_proxy(proxy);
-        }
-        options
-    }
-
-    fn get_value(&self, url: &str) -> Result<(u16, Value), Error> {
-        let options = self.http_options();
-        let response = self.http.get(url, &options)?;
-        let status = response.status;
-        if !response.is_success() {
-            return Err(map_status_error(status, &response, url));
-        }
-        let text = response.text()?;
-        let value = serde_json::from_str(text)
-            .map_err(|error| api_error(status, url, format!("malformed JSON: {error}")))?;
-        Ok((status, value))
-    }
-
-    fn repo_url(&self, owner: &str, repo: &str) -> String {
-        format!("{GITHUB_API}/repos/{owner}/{repo}")
-    }
-
-    fn releases_url(&self, owner: &str, repo: &str) -> String {
-        format!("{GITHUB_API}/repos/{owner}/{repo}/releases?per_page=1")
-    }
-
-    fn readme_url(&self, owner: &str, repo: &str) -> String {
-        format!("{GITHUB_API}/repos/{owner}/{repo}/contents/README.md")
-    }
-
-    fn fetch_releases(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> Result<(Vec<AppDownload>, Option<String>), Error> {
-        let url = self.releases_url(owner, repo);
-        let (status, value) = self.get_value(&url)?;
-        let releases = value.as_array().ok_or_else(|| {
-            api_error(
-                status,
-                &url,
-                "expected a JSON array of releases".to_string(),
-            )
-        })?;
-        let Some(latest) = releases.first().and_then(Value::as_object) else {
-            return Ok((Vec::new(), None));
-        };
-        let version = optional_string(latest, "name", status, &url)?
-            .or(optional_string(latest, "tag_name", status, &url)?);
-        let mut downloads = Vec::new();
-        if let Some(assets) = latest.get("assets") {
-            let assets = assets.as_array().ok_or_else(|| {
-                api_error(status, &url, "release assets must be an array".to_string())
-            })?;
-            for asset in assets {
-                let asset = asset.as_object().ok_or_else(|| {
-                    api_error(status, &url, "release asset must be an object".to_string())
-                })?;
-                let name = optional_string(asset, "name", status, &url)?.unwrap_or_default();
-                let download_url = optional_string(asset, "browser_download_url", status, &url)?
-                    .unwrap_or_default();
-                let size = optional_i64(asset, "size", status, &url)?;
-                let download_count = optional_i64(asset, "download_count", status, &url)?;
-                downloads.push(AppDownload {
-                    url: download_url,
-                    platform: parse_platform(&name),
-                    name,
-                    size,
-                    download_count,
-                    version: version.clone(),
-                    version_code: None,
-                    published_at: None,
-                    hash: None,
-                    hash_type: None,
-                    downloadable: true,
-                    note: None,
-                    extra: None,
-                });
-            }
-        }
-        Ok((downloads, version))
-    }
-
-    fn fetch_readme(&self, owner: &str, repo: &str) -> Result<Option<String>, Error> {
-        let url = self.readme_url(owner, repo);
-        let response = self.http.get(&url, &self.http_options())?;
-        if !response.is_success() {
-            // Dart falls back to the stored text; None lets callers do the same.
-            return Ok(None);
-        }
-        let value: Value = match serde_json::from_slice(&response.body) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        let Some(content) = value.get("content").and_then(Value::as_str) else {
-            return Ok(None);
-        };
-        let encoding = value
-            .get("encoding")
-            .and_then(Value::as_str)
-            .unwrap_or("base64");
-        if encoding != "base64" {
-            return Ok(Some(content.to_string()));
-        }
-        Ok(decode_base64(content).and_then(|bytes| String::from_utf8(bytes).ok()))
-    }
-
     fn apply_metadata_for_info(&self, app: AppSummary) -> Result<AppSummary, Error> {
         let Some(metadata) = self.metadata.fetch(&app.user, &app.repositories)? else {
             return Ok(app);
@@ -367,8 +249,8 @@ impl ChannelDriver for GitHubDriver {
             return Err(Error::NotFound(format!("app not found: {app_id}")));
         }
         let (user, repo) = (parts[0], parts[1]);
-        let url = self.repo_url(user, repo);
-        let (status, value) = self.get_value(&url)?;
+        let url = GitHubReleases::repo_url(user, repo);
+        let (status, value) = self.api.get_value(&url)?;
         let object = value
             .as_object()
             .ok_or_else(|| api_error(status, &url, "expected a JSON object".to_string()))?;
@@ -400,13 +282,13 @@ impl ChannelDriver for GitHubDriver {
 
     fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error> {
         let info = self.get_app_info(app_id, force_refresh)?;
-        let url = self.repo_url(&info.user, &info.repositories);
-        let (status, repo_value) = self.get_value(&url)?;
+        let url = GitHubReleases::repo_url(&info.user, &info.repositories);
+        let (status, repo_value) = self.api.get_value(&url)?;
         let repo = repo_value
             .as_object()
             .ok_or_else(|| api_error(status, &url, "expected a JSON object".to_string()))?;
-        let (downloads, version) = self.fetch_releases(&info.user, &info.repositories)?;
-        let readme = self.fetch_readme(&info.user, &info.repositories)?;
+        let (downloads, version) = self.api.fetch_releases(&info.user, &info.repositories)?;
+        let readme = self.api.fetch_readme(&info.user, &info.repositories)?;
 
         let mut sections = Vec::new();
         if repo.get("stargazers_count").is_some() || repo.get("forks").is_some() {
@@ -442,18 +324,18 @@ impl ChannelDriver for GitHubDriver {
 
     fn fetch_downloads(&self, app_id: &str) -> Result<Vec<AppDownload>, Error> {
         let info = self.get_app_info(app_id, false)?;
-        Ok(self.fetch_releases(&info.user, &info.repositories)?.0)
+        Ok(self.api.fetch_releases(&info.user, &info.repositories)?.0)
     }
 
     fn fetch_readme(&self, app_id: &str) -> Result<Option<String>, Error> {
         let info = self.get_app_info(app_id, false)?;
-        self.fetch_readme(&info.user, &info.repositories)
+        self.api.fetch_readme(&info.user, &info.repositories)
     }
 
     fn fetch_statistics(&self, app_id: &str) -> Result<Option<Map<String, Value>>, Error> {
         let info = self.get_app_info(app_id, false)?;
-        let url = self.repo_url(&info.user, &info.repositories);
-        let (status, value) = self.get_value(&url)?;
+        let url = GitHubReleases::repo_url(&info.user, &info.repositories);
+        let (status, value) = self.api.get_value(&url)?;
         let repo = value
             .as_object()
             .ok_or_else(|| api_error(status, &url, "expected a JSON object".to_string()))?;
@@ -598,7 +480,7 @@ impl ChannelDriver for GitHubDriver {
             "{GITHUB_API}/search/repositories?q={}&per_page={PER_PAGE}",
             encode_component(&query)
         );
-        let (status, value) = self.get_value(&url)?;
+        let (status, value) = self.api.get_value(&url)?;
         let object = value
             .as_object()
             .ok_or_else(|| api_error(status, &url, "expected a JSON object".to_string()))?;
@@ -743,85 +625,6 @@ fn valid_package_name(value: Option<&str>) -> Option<String> {
     Some(value.to_string())
 }
 
-fn api_error(status: u16, url: &str, details: String) -> Error {
-    Error::Serialization(format!("GitHub API status {status} from {url}: {details}"))
-}
-
-fn map_status_error(status: u16, response: &HttpResponse, url: &str) -> Error {
-    let message = format!("GitHub API returned status {status} for {url}");
-    match status {
-        401 => Error::Unauthorized(message),
-        403 => {
-            let body = String::from_utf8_lossy(&response.body).to_ascii_lowercase();
-            if body.contains("rate limit") {
-                Error::RateLimited(message)
-            } else {
-                Error::Forbidden(message)
-            }
-        }
-        404 => Error::NotFound(message),
-        429 => Error::RateLimited(message),
-        _ => Error::Network(message),
-    }
-}
-
-fn optional_string(
-    object: &Map<String, Value>,
-    key: &str,
-    status: u16,
-    url: &str,
-) -> Result<Option<String>, Error> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(api_error(
-            status,
-            url,
-            format!("field {key:?} must be a string"),
-        )),
-    }
-}
-
-fn optional_i64(
-    object: &Map<String, Value>,
-    key: &str,
-    status: u16,
-    url: &str,
-) -> Result<Option<i64>, Error> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(value)) => value
-            .as_i64()
-            .map(Some)
-            .ok_or_else(|| api_error(status, url, format!("field {key:?} must be an integer"))),
-        Some(_) => Err(api_error(
-            status,
-            url,
-            format!("field {key:?} must be an integer"),
-        )),
-    }
-}
-
-fn parse_platform(file_name: &str) -> Option<String> {
-    let lower = file_name.to_ascii_lowercase();
-    for (needle, platform) in [
-        ("universal", "universal"),
-        ("arm64-v8a", "arm64-v8a"),
-        ("arm64", "arm64-v8a"),
-        ("armeabi-v7a", "armeabi-v7a"),
-        ("x86_64", "x86_64"),
-        ("x86", "x86"),
-        ("windows", "windows"),
-        ("linux", "linux"),
-        ("macos", "macos"),
-    ] {
-        if lower.contains(needle) {
-            return Some(platform.to_string());
-        }
-    }
-    None
-}
-
 /// Dart `Uri.encodeComponent` compatible percent-encoding for the search query.
 fn encode_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
@@ -834,47 +637,4 @@ fn encode_component(value: &str) -> String {
         }
     }
     encoded
-}
-
-/// Minimal standard/URL-safe base64 decoder (README contents only).
-fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    let mut clean: Vec<u8> = input
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .map(|byte| match byte {
-            b'-' => b'+',
-            b'_' => b'/',
-            other => other,
-        })
-        .collect();
-    while !clean.len().is_multiple_of(4) {
-        clean.push(b'=');
-    }
-    let mut output = Vec::with_capacity(clean.len() / 4 * 3);
-    for chunk in clean.chunks(4) {
-        let mut values = [0_u8; 4];
-        let mut padding = 0;
-        for (index, byte) in chunk.iter().enumerate() {
-            values[index] = match byte {
-                b'A'..=b'Z' => byte - b'A',
-                b'a'..=b'z' => byte - b'a' + 26,
-                b'0'..=b'9' => byte - b'0' + 52,
-                b'+' => 62,
-                b'/' => 63,
-                b'=' => {
-                    padding += 1;
-                    0
-                }
-                _ => return None,
-            };
-        }
-        output.push((values[0] << 2) | (values[1] >> 4));
-        if padding < 2 {
-            output.push((values[1] << 4) | (values[2] >> 2));
-        }
-        if padding < 1 {
-            output.push((values[2] << 6) | values[3]);
-        }
-    }
-    Some(output)
 }

@@ -464,6 +464,7 @@ fn localdb_github_parity_localdb_metadata_override_and_writes_unsupported() {
             package_name: Some("com.example.alpha.meta".to_string()),
             app_name: Some("Alpha Meta".to_string()),
             icon_url: Some("https://icons.test/meta.png".to_string()),
+            version_name: None,
         }),
     );
     let driver = local_driver(db.clone(), Some(Arc::new(fake.clone())));
@@ -489,6 +490,7 @@ fn localdb_github_parity_localdb_metadata_override_and_writes_unsupported() {
             package_name: None,
             app_name: Some("Gamma Meta".to_string()),
             icon_url: None,
+            version_name: None,
         }),
     );
     let gamma = driver.get_app_detail("com.example.gamma", false).unwrap();
@@ -598,6 +600,7 @@ fn localdb_github_parity_github_list_info_search_and_canonical() {
             package_name: Some("com.example.alpha.meta".to_string()),
             app_name: Some("Alpha Meta".to_string()),
             icon_url: Some("https://icons.test/alpha-meta.png".to_string()),
+            version_name: None,
         }),
     );
     let metadata: Arc<dyn MetadataPort> = Arc::new(fake_meta);
@@ -767,6 +770,7 @@ fn localdb_github_parity_github_add_and_remove() {
             package_name: Some("com.example.new".to_string()),
             app_name: Some("New Meta".to_string()),
             icon_url: Some("https://icons.test/new.png".to_string()),
+            version_name: None,
         }),
     );
     let metadata: Arc<dyn MetadataPort> = Arc::new(fake_meta);
@@ -952,6 +956,7 @@ fn localdb_github_parity_metadata_cache_uses_24h_clock() {
             package_name: Some("com.example.cached".to_string()),
             app_name: Some("Cached".to_string()),
             icon_url: None,
+            version_name: None,
         }),
     );
 

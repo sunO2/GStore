@@ -24,6 +24,12 @@ pub struct PackageMetadata {
     pub app_name: Option<String>,
     /// Icon URL, when metadata provides one.
     pub icon_url: Option<String>,
+    /// APK version name extracted by the metadata pipeline, when present.
+    ///
+    /// Dart `MetadataRepository` surfaces `info.json`'s `versionName` verbatim
+    /// and `LocalDbChannel.getAppDetail` prefers it over the GitHub release
+    /// version (`metadataVersionName ?? latestVersion`).
+    pub version_name: Option<String>,
 }
 
 impl PackageMetadata {
@@ -46,6 +52,14 @@ impl PackageMetadata {
     /// Returns the metadata icon URL, or `fallback` when absent/empty.
     pub fn icon_or<'a>(&'a self, fallback: &'a str) -> &'a str {
         self.icon_url
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(fallback)
+    }
+
+    /// Returns the metadata version name, or `fallback` when absent/empty.
+    pub fn version_name_or<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.version_name
             .as_deref()
             .filter(|value| !value.is_empty())
             .unwrap_or(fallback)

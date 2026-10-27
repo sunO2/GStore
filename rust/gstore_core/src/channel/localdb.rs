@@ -22,13 +22,16 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension, Row};
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
+use super::github_releases::GitHubReleases;
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection,
 };
 use crate::error::Error;
-use crate::ports::metadata::MetadataPort;
+use crate::ports::config::CoreConfig;
+use crate::ports::http::HttpPort;
+use crate::ports::metadata::{MetadataPort, PackageMetadata};
 
 /// Read-only LocalDb channel driver bound to one [`ChannelKey`].
 pub struct LocalDbDriver {
@@ -36,6 +39,7 @@ pub struct LocalDbDriver {
     meta: ChannelMeta,
     db: DbHandle,
     metadata: Option<Arc<dyn MetadataPort>>,
+    api: Option<GitHubReleases>,
     initialized: AtomicBool,
 }
 
@@ -51,6 +55,7 @@ impl LocalDbDriver {
             meta,
             db,
             metadata: None,
+            api: None,
             initialized: AtomicBool::new(false),
         }
     }
@@ -59,6 +64,16 @@ impl LocalDbDriver {
     #[must_use]
     pub fn with_metadata(mut self, metadata: Arc<dyn MetadataPort>) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Attaches a GitHub fetcher so catalog rows pointing at a GitHub
+    /// repository resolve their latest release version and downloads, exactly
+    /// as Dart `LocalDbChannel.getAppDetail` does. Without it the driver is
+    /// offline and every version stays `None`.
+    #[must_use]
+    pub fn with_github(mut self, config: CoreConfig, http: Arc<dyn HttpPort>) -> Self {
+        self.api = Some(GitHubReleases::new(config, http));
         self
     }
 
@@ -92,49 +107,48 @@ impl LocalDbDriver {
             .next())
     }
 
+    /// Fetches metadata for a GitHub-backed row, or `None` when the row has no
+    /// owner/repo or no metadata port is attached.
+    fn metadata_for(&self, app: &AppSummary) -> Result<Option<PackageMetadata>, Error> {
+        if app.user.is_empty() || app.repositories.is_empty() {
+            return Ok(None);
+        }
+        let Some(metadata_port) = &self.metadata else {
+            return Ok(None);
+        };
+        metadata_port.fetch(&app.user, &app.repositories)
+    }
+
     /// Mirrors Dart `_applyMetadataOverride` (`LocalDbChannel.dart:92-126`).
     fn apply_metadata(
         &self,
         app: AppSummary,
         keep_existing_package_name: bool,
     ) -> Result<AppSummary, Error> {
+        let Some(metadata) = self.metadata_for(&app)? else {
+            return Ok(app);
+        };
+        Ok(apply_metadata_values(
+            app,
+            &metadata,
+            keep_existing_package_name,
+        ))
+    }
+
+    /// Queries the latest GitHub release for a GitHub-backed row.
+    ///
+    /// Dart wraps `GithubRestClient.releases` in a try/catch and treats any
+    /// failure as an empty download list, so a channel error here degrades to
+    /// `(vec![], None)` instead of failing the whole detail.
+    fn github_release(&self, app: &AppSummary) -> (Vec<AppDownload>, Option<String>) {
         if app.user.is_empty() || app.repositories.is_empty() {
-            return Ok(app);
+            return (Vec::new(), None);
         }
-        let Some(metadata_port) = &self.metadata else {
-            return Ok(app);
+        let Some(api) = &self.api else {
+            return (Vec::new(), None);
         };
-        let Some(metadata) = metadata_port.fetch(&app.user, &app.repositories)? else {
-            return Ok(app);
-        };
-
-        let override_package = valid_package_name(metadata.package_name.as_deref());
-        let display_name = metadata
-            .app_name
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&app.name)
-            .to_string();
-        let icon = metadata
-            .icon_url
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&app.icon)
-            .to_string();
-        let package_name = if override_package.is_some() {
-            override_package
-        } else if keep_existing_package_name {
-            app.package_name
-        } else {
-            None
-        };
-
-        Ok(AppSummary {
-            package_name,
-            name: display_name,
-            icon,
-            ..app
-        })
+        api.fetch_releases(&app.user, &app.repositories)
+            .unwrap_or_default()
     }
 
     fn fts_search(&self, word: &str) -> Vec<AppSummary> {
@@ -218,6 +232,40 @@ fn valid_package_name(value: Option<&str>) -> Option<String> {
     Some(value.to_string())
 }
 
+/// Applies already-fetched metadata to a summary (`LocalDbChannel._applyMetadataOverride`).
+fn apply_metadata_values(
+    app: AppSummary,
+    metadata: &PackageMetadata,
+    keep_existing_package_name: bool,
+) -> AppSummary {
+    let override_package = valid_package_name(metadata.package_name.as_deref());
+    let display_name = metadata
+        .app_name
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&app.name)
+        .to_string();
+    let icon = metadata
+        .icon_url
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&app.icon)
+        .to_string();
+    let package_name = if override_package.is_some() {
+        override_package
+    } else if keep_existing_package_name {
+        app.package_name
+    } else {
+        None
+    };
+    AppSummary {
+        package_name,
+        name: display_name,
+        icon,
+        ..app
+    }
+}
+
 impl ChannelDriver for LocalDbDriver {
     fn key(&self) -> &ChannelKey {
         &self.key
@@ -259,7 +307,14 @@ impl ChannelDriver for LocalDbDriver {
         let app = self
             .load_app(app_id)?
             .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))?;
-        let app = self.apply_metadata(app, true)?;
+        let metadata = self.metadata_for(&app)?;
+        let version_name = metadata
+            .as_ref()
+            .and_then(|value| value.version_name.clone());
+        let app = match metadata {
+            Some(metadata) => apply_metadata_values(app, &metadata, true),
+            None => app,
+        };
 
         // Dart `_fetchReadmeInternal` with no GitHub client falls back to the
         // row README and then to `des`.
@@ -267,7 +322,15 @@ impl ChannelDriver for LocalDbDriver {
             .readme
             .clone()
             .or_else(|| (!app.des.is_empty()).then(|| app.des.clone()));
-        let mut sections = vec![DetailSection::Downloads];
+        let (downloads, release_version) = self.github_release(&app);
+        // Dart `LocalDbChannel.getAppDetail`: `metadataVersionName ?? latestVersion`.
+        let version = version_name.or(release_version);
+
+        let mut sections = Vec::new();
+        if !downloads.is_empty() {
+            sections.push(DetailSection::Version);
+        }
+        sections.push(DetailSection::Downloads);
         if readme.as_deref().is_some_and(|value| !value.is_empty()) {
             sections.push(DetailSection::Readme);
         }
@@ -280,13 +343,13 @@ impl ChannelDriver for LocalDbDriver {
             name: app.name.clone(),
             icon: app.icon.clone(),
             description: app.des.clone(),
-            version: None,
+            version,
             developer,
             package_name: app.package_name.clone(),
             project_url,
             channel: self.meta.kind,
             sections,
-            downloads: Vec::new(),
+            downloads,
             extra: app.extra.unwrap_or_default(),
         })
     }
@@ -326,8 +389,8 @@ impl ChannelDriver for LocalDbDriver {
             package_name: detail.package_name.clone().unwrap_or_default(),
             name: detail.name.clone(),
             icon: Some(detail.icon.clone()),
-            latest_version: None,
-            latest_download: None,
+            latest_version: detail.version.clone(),
+            latest_download: detail.downloads.first().cloned(),
             detail,
         })
     }

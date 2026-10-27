@@ -21,6 +21,7 @@ fn meta(package_name: &str, app_name: &str, icon: &str) -> PackageMetadata {
         package_name: Some(package_name.to_string()),
         app_name: Some(app_name.to_string()),
         icon_url: Some(icon.to_string()),
+        version_name: None,
     }
 }
 
@@ -261,6 +262,7 @@ fn ports_contract_metadata_ttl_cache_hit_then_refetch_after_ttl() {
         package_name: Some("com.example.real".to_string()),
         app_name: None,
         icon_url: None,
+        version_name: None,
     };
     assert_eq!(
         override_meta.package_name_or("fallback"),
