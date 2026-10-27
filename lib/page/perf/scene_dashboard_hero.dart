@@ -191,7 +191,12 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
     final double? ramPct = mem?.usedPercent;
     final double? swapPct = mem?.swapPercent;
     final double? gpuPct = gpu?.busyPercent;
-    final double? cpuPct = cpu?.usagePercent;
+    // Android 8+ 普通应用读不到 /proc/stat：此时 Rust 的逐核列表为空且总占用为 0。
+    // 不把「未知」伪装成 0%；Shizuku 兜底成功（perCoreUsage 非空）后恢复真实值。
+    final bool cpuUsageUnknown =
+        cpu != null && cpu.perCoreUsage.isEmpty && cpu.usagePercent == 0;
+    final double? cpuPct =
+        (cpu == null || cpuUsageUnknown) ? null : cpu.usagePercent;
 
     return Card(
       key: const Key('scene_hero_rings'),
@@ -335,7 +340,7 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
                   color: scheme.onSurfaceVariant,
                 ),
               )
-            else
+            else ...[
               Wrap(
                 spacing: AppSpacing.sm,
                 runSpacing: AppSpacing.sm,
@@ -344,11 +349,23 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
                     _coreTile(
                       context,
                       id: cores[i].id,
-                      usage: i < usage.length ? usage[i] : 0,
+                      usage: i < usage.length ? usage[i] : null,
                       freqMhz: cores[i].freqMhz,
                     ),
                 ],
               ),
+              // 逐核占用缺失时说明原因（频率仍可见）；不显示误导性的 0%。
+              if (usage.isEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  '逐核占用需 Shizuku 授权（Android 8+ 系统限制）',
+                  key: const Key('scene_hero_per_core_hint'),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
           ],
         ),
       ),
@@ -358,12 +375,14 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
   Widget _coreTile(
     BuildContext context, {
     required int id,
-    required double usage,
+    required double? usage,
     required double? freqMhz,
   }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final color = ScenePerfStyle.cpuColor(scheme, usage);
+    final color = usage == null
+        ? ScenePerfStyle.unavailableColor(scheme)
+        : ScenePerfStyle.cpuColor(scheme, usage);
     return Container(
       key: Key('scene_hero_core_$id'),
       width: ScenePerfStyle.coreTileWidth,
@@ -382,7 +401,7 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
             ),
           ),
           Text(
-            '${usage.toStringAsFixed(0)}%',
+            usage == null ? '—' : '${usage.toStringAsFixed(0)}%',
             style: theme.textTheme.titleSmall?.copyWith(
               color: color,
               fontWeight: AppTypography.weightSemiBold,
@@ -435,8 +454,14 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
             perfPercentBar(context, cap ?? 0,
                 enabled: cap != null, color: color),
             const SizedBox(height: AppSpacing.sm),
-            perfKv(context, '状态',
-                (b?.status?.isNotEmpty ?? false) ? b!.status! : '—'),
+            _batteryStatusRow(context, b),
+            perfKv(
+              context,
+              '温度',
+              b?.temperatureC == null
+                  ? '—'
+                  : '${perfNum(b!.temperatureC)} °C',
+            ),
             perfKv(context, '电流',
                 b?.currentMa == null ? '—' : '${perfNum(b!.currentMa)} mA'),
             perfKv(context, '电压',
@@ -445,6 +470,93 @@ class _SceneDashboardHeroState extends State<SceneDashboardHero> {
         ),
       ),
     );
+  }
+
+  /// 电池充放电状态行：优先使用 sysfs `status`，缺失时按电流方向推断。
+  Widget _batteryStatusRow(BuildContext context, BatteryReport? battery) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final status = _batteryStatus(context, battery);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+      child: Row(
+        children: <Widget>[
+          SizedBox(
+            width: AppSpacing.massive * 2,
+            child: Text(
+              '状态',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Icon(status.icon, size: AppTypography.iconSM, color: status.color),
+          const SizedBox(width: AppSpacing.xs),
+          Text(
+            status.label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: status.color,
+              fontWeight: AppTypography.weightMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 充放电状态（`Charging` / `Discharging` / `Full` / `Not charging` 等）。
+  ///
+  /// 部分设备 sysfs `status` 缺失或为 `Unknown`：此时按电流方向推断
+  /// （正 = 充电、负 = 放电、接近 0 = 待机 / 已充满），避免只显示「—」。
+  ({String label, IconData icon, Color color}) _batteryStatus(
+    BuildContext context,
+    BatteryReport? battery,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final raw = battery?.status?.trim() ?? '';
+    final lower = raw.toLowerCase();
+
+    String? label;
+    var icon = TablerIcons.battery;
+    var color = scheme.onSurfaceVariant;
+
+    if (lower == 'charging' || raw == '充电' || raw == '充电中') {
+      label = '充电中';
+      icon = TablerIcons.bolt;
+      color = scheme.primary;
+    } else if (lower == 'discharging' || raw == '放电' || raw == '放电中') {
+      label = '放电中';
+      color = scheme.onSurface;
+    } else if (lower == 'full' || raw == '已充满' || raw == '充满') {
+      label = '已充满';
+      icon = TablerIcons.battery_charging;
+      color = scheme.primary;
+    } else if (lower == 'not charging' ||
+        lower == 'not_charging' ||
+        raw == '未充电') {
+      label = '未充电';
+    }
+
+    if (label == null) {
+      final current = battery?.currentMa;
+      final cap = battery?.capacityPercent;
+      if (current != null && current > 50) {
+        label = '充电中';
+        icon = TablerIcons.bolt;
+        color = scheme.primary;
+      } else if (current != null && current < -50) {
+        label = '放电中';
+        color = scheme.onSurface;
+      } else if (cap != null && cap >= 99.5) {
+        label = '已充满';
+        icon = TablerIcons.battery_charging;
+        color = scheme.primary;
+      } else if (current != null) {
+        label = '待机';
+      }
+    }
+
+    return (label: label ?? '—', icon: icon, color: color);
   }
 
   Widget _temperatureCard(BuildContext context) {

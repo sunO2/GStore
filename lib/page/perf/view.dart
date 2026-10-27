@@ -62,6 +62,31 @@ class PerfMonitorPage extends ConsumerStatefulWidget {
 class _PerfMonitorPageState extends ConsumerState<PerfMonitorPage> {
   PerfTab _tab = PerfTab.overview;
 
+  /// CPU 轻量轮询定时器（频率 / 逐核占用自动更新）。
+  Timer? _cpuPollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // 页面挂载期间每 2s 只刷新 CPU（1 次模块调用 + 必要时 1 次 Shizuku 读取），
+    // 不触碰「实时刷新 / 后台采样」开关，避免整页 13 份报告的高频拉取。
+    _cpuPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      ref.read(perfMonitorProvider.notifier).refreshCpu();
+    });
+    // 首帧后补一拍：尽快建立特权样本基线（第二次采样即可算出逐核占用）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(perfMonitorProvider.notifier).refreshCpu();
+    });
+  }
+
+  @override
+  void dispose() {
+    _cpuPollTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(perfMonitorProvider);

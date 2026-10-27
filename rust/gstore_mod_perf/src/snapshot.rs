@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::collectors::sysfs_read as sysfs_reader;
 use crate::collectors::{
     battery, battery_health, cooling, cpu, device, gpu, memory, network, pressure, processes,
-    storage, thermal, tunables,
+    sensors, storage, thermal, tunables,
 };
 use crate::collectors::processes::{ProcQuery, ProcSort};
 use crate::state::PerfInstance;
@@ -94,6 +94,11 @@ pub fn storage() -> Value {
 /// 可控面枚举报告（只读；CPU 簇 / cpuset / 热区 / 散热设备 / GPU）。
 pub fn tunables() -> Value {
     to_value(&tunables::collect())
+}
+
+/// 传感器清单（只读元数据；NDK `ASensorManager`）。
+pub fn sensors() -> Value {
+    to_value(&sensors::report())
 }
 
 /// 白名单 sysfs 单路径读取（`perf.sysfs.read` 编排；非白名单 → 结构化 `invalid_arg`）。

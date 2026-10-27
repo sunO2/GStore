@@ -21,6 +21,7 @@ pub mod memory;
 pub mod network;
 pub mod pressure;
 pub mod processes;
+pub mod sensors;
 pub mod storage;
 pub mod sysfs_read;
 pub mod thermal;

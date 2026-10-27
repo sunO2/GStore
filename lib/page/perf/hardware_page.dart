@@ -12,6 +12,7 @@ import 'package:gstore/core/rust/perf/PerfModule.dart';
 import 'battery_diagnostics_card.dart';
 import 'logic.dart';
 import 'perf_common.dart';
+import 'perf_hardware_info.dart';
 import 'state.dart';
 
 /// 性能「硬件详情」内容部件（Riverpod）。
@@ -54,6 +55,10 @@ class PerfHardwarePage extends ConsumerWidget {
         widgets.add(_buildLoadingCard(context));
       } else {
         widgets
+          ..add(const PerfDeviceSpecCard())
+          ..add(const PerfCpuGpuSpecCard())
+          ..add(const PerfDisplayFeaturesCard())
+          ..add(const PerfSensorsCard())
           ..add(_buildCpuCard(context, state))
           ..add(_buildCpuFreqResidencyCard(context, state))
           ..add(_buildMemoryCard(context, state))

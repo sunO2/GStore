@@ -536,4 +536,48 @@ void main() {
       await gateway.controller.close();
     });
   });
+
+  group('SensorsReport (README perf.sensors)', () {
+    test('decodes NDK sensor metadata', () {
+      final report = SensorsReport.fromJson(<String, dynamic>{
+        'count': 1,
+        'sensors': <dynamic>[
+          <String, dynamic>{
+            'name': 'LSM6DSO Accelerometer',
+            'vendor': 'STMicroelectronics',
+            'type_id': 1,
+            'type_name': '加速度计',
+            'string_type': 'android.sensor.accelerometer',
+            'resolution': 0.001,
+            'min_delay_us': 5000,
+            'fifo_max_event_count': 3000,
+            'fifo_reserved_event_count': 128,
+            'reporting_mode': 0,
+            'reporting_mode_name': '连续',
+            'wake_up': true,
+          },
+        ],
+      });
+
+      expect(report.count, 1);
+      final sensor = report.sensors.single;
+      expect(sensor.name, 'LSM6DSO Accelerometer');
+      expect(sensor.vendor, 'STMicroelectronics');
+      expect(sensor.typeId, 1);
+      expect(sensor.typeName, '加速度计');
+      expect(sensor.stringType, 'android.sensor.accelerometer');
+      expect(sensor.resolution, 0.001);
+      expect(sensor.minDelayUs, 5000);
+      expect(sensor.fifoMaxEventCount, 3000);
+      expect(sensor.fifoReservedEventCount, 128);
+      expect(sensor.reportingModeName, '连续');
+      expect(sensor.wakeUp, isTrue);
+    });
+
+    test('missing / null fields degrade to safe defaults', () {
+      final report = SensorsReport.fromJson(const <String, dynamic>{});
+      expect(report.count, 0);
+      expect(report.sensors, isEmpty);
+    });
+  });
 }

@@ -264,6 +264,10 @@ class PerfModule {
   Future<TunablesReport> tunables() =>
       invoke(PerfMethods.tunables, TunablesReport.fromJson);
 
+  /// `perf.sensors`：Android NDK 传感器清单（只读元数据；无权限/Looper 依赖）。
+  Future<SensorsReport> sensors() =>
+      invoke(PerfMethods.sensors, SensorsReport.fromJson);
+
   /// `perf.sysfs.read`：读取白名单内**单个** sysfs / cpuset 节点（写回校验用）。
   ///
   /// [path] 必须命中 Rust 侧白名单（cpufreq `scaling_*` / cpuset `cpus` / 热区

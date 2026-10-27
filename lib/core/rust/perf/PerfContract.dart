@@ -52,6 +52,9 @@ class PerfMethods {
   /// 可控面枚举（CPU cpufreq 策略簇 / cpuset / 热区 / 散热设备 / GPU；**只读**）。
   static const String tunables = 'perf.tunables';
 
+  /// 传感器清单（Android NDK `ASensorManager`，**只读元数据**）。
+  static const String sensors = 'perf.sensors';
+
   /// 白名单内**单个** sysfs / cpuset 节点读取（写回校验用；**只读**）。
   static const String sysfsRead = 'perf.sysfs.read';
 
@@ -83,6 +86,7 @@ class PerfMethods {
     pressure,
     cooling,
     tunables,
+    sensors,
     sysfsRead,
     batteryHealth,
     storage,
@@ -352,6 +356,37 @@ class CpuReport {
 
   /// 频率驻留分布（`freq_residency`）；缺失为空列表。
   final List<PerfFreqResidency> freqResidency;
+
+  /// 覆盖部分字段（用于特权 `/proc/stat` 兜底回填逐核占用 / 总占用）。
+  CpuReport copyWith({
+    double? usagePercent,
+    List<double>? perCoreUsage,
+    int? coreCount,
+    List<double?>? frequenciesMhz,
+    String? governor,
+    List<double>? availableFrequenciesMhz,
+    double? maxFreqMhz,
+    double? minFreqMhz,
+    PerfLoadAvg? loadavg,
+    List<PerfCpuCore>? cores,
+    List<String>? availableGovernors,
+    List<PerfFreqResidency>? freqResidency,
+  }) =>
+      CpuReport(
+        usagePercent: usagePercent ?? this.usagePercent,
+        perCoreUsage: perCoreUsage ?? this.perCoreUsage,
+        coreCount: coreCount ?? this.coreCount,
+        frequenciesMhz: frequenciesMhz ?? this.frequenciesMhz,
+        governor: governor ?? this.governor,
+        availableFrequenciesMhz:
+            availableFrequenciesMhz ?? this.availableFrequenciesMhz,
+        maxFreqMhz: maxFreqMhz ?? this.maxFreqMhz,
+        minFreqMhz: minFreqMhz ?? this.minFreqMhz,
+        loadavg: loadavg ?? this.loadavg,
+        cores: cores ?? this.cores,
+        availableGovernors: availableGovernors ?? this.availableGovernors,
+        freqResidency: freqResidency ?? this.freqResidency,
+      );
 }
 
 /// `perf.memory` 响应（原始单位 KiB + 人类可读串）。
@@ -1011,6 +1046,86 @@ class TunablesReport {
 
   /// GPU 可控面。
   final PerfGpuTunables gpu;
+}
+
+/// `perf.sensors` 响应（Android NDK 传感器清单；只读元数据）。
+class SensorsReport {
+  const SensorsReport({this.count = 0, this.sensors = const <SensorInfo>[]});
+
+  factory SensorsReport.fromJson(Map<String, dynamic> json) => SensorsReport(
+        count: _asInt(json['count']),
+        sensors: _objectList(json['sensors'])
+            .map(SensorInfo.fromJson)
+            .toList(growable: false),
+      );
+
+  /// 传感器数量（与 [sensors] 长度一致）。
+  final int count;
+
+  final List<SensorInfo> sensors;
+}
+
+/// 单个传感器（NDK `ASensor` 只读元数据）。
+class SensorInfo {
+  const SensorInfo({
+    this.name = '',
+    this.vendor = '',
+    this.typeId = 0,
+    this.typeName = '',
+    this.stringType,
+    this.resolution = 0,
+    this.minDelayUs = 0,
+    this.fifoMaxEventCount = 0,
+    this.fifoReservedEventCount = 0,
+    this.reportingMode = 0,
+    this.reportingModeName = '',
+    this.wakeUp = false,
+  });
+
+  factory SensorInfo.fromJson(Map<String, dynamic> json) => SensorInfo(
+        name: _asString(json['name']),
+        vendor: _asString(json['vendor']),
+        typeId: _asInt(json['type_id']),
+        typeName: _asString(json['type_name']),
+        stringType: _asStringOrNull(json['string_type']),
+        resolution: _asDouble(json['resolution']),
+        minDelayUs: _asInt(json['min_delay_us']),
+        fifoMaxEventCount: _asInt(json['fifo_max_event_count']),
+        fifoReservedEventCount: _asInt(json['fifo_reserved_event_count']),
+        reportingMode: _asInt(json['reporting_mode']),
+        reportingModeName: _asString(json['reporting_mode_name']),
+        wakeUp: json['wake_up'] == true,
+      );
+
+  /// 厂商实现名（如 `LSM6DSO Accelerometer`）。
+  final String name;
+  final String vendor;
+
+  /// NDK 数值类型（`ASENSOR_TYPE_*` / 厂商自定义 `0x0001xxxx`）。
+  final int typeId;
+
+  /// 可读类型名（常见类型中文化；未知 → `其他`）。
+  final String typeName;
+
+  /// `android.sensor.accelerometer` 形式的字符串类型；旧设备可能为 `null`。
+  final String? stringType;
+
+  /// 分辨率（传感器单位）。
+  final double resolution;
+
+  /// 最小采样间隔（微秒）。
+  final int minDelayUs;
+
+  /// FIFO 最大 / 预留事件数。
+  final int fifoMaxEventCount;
+  final int fifoReservedEventCount;
+
+  /// 上报模式（`AREPORTING_MODE_*`）与可读名。
+  final int reportingMode;
+  final String reportingModeName;
+
+  /// 是否为唤醒传感器。
+  final bool wakeUp;
 }
 
 /// `perf.sysfs.read` 响应：白名单内**单个**节点读取结果。

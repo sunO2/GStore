@@ -122,8 +122,30 @@ void main() {
     expect(find.text('3 核'), findsOneWidget);
     // 电池 / 温度卡片。
     expect(find.text('88%'), findsOneWidget);
-    expect(find.text('Charging'), findsOneWidget);
+    expect(find.text('充电中'), findsOneWidget);
+    expect(find.text('45.0 °C'), findsOneWidget);
     expect(find.textContaining('最高 47.0'), findsOneWidget);
+  });
+
+  testWidgets('电池状态缺失：按电流方向推断放电中，并显示电池温度', (tester) async {
+    const state = PerfPageState(
+      loading: false,
+      availability: PerfAvailability.ready,
+      battery: BatteryReport(
+        present: true,
+        capacityPercent: 60,
+        currentMa: -520,
+        voltageV: 3.9,
+        temperatureC: 33.5,
+      ),
+    );
+
+    await _pump(tester, const SceneDashboardHero(state: state));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('放电中'), findsOneWidget);
+    expect(find.text('33.5 °C'), findsOneWidget);
+    expect(find.text('60%'), findsOneWidget);
   });
 
   testWidgets('环色随阈值档位（RAM 91% → veryHigh → error；CPU 90% → error）',
@@ -243,5 +265,34 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(applied, <(PerfMode, int?)>[(PerfMode.performance, null)]);
     expect(find.textContaining('失败'), findsOneWidget);
+  });
+
+  testWidgets('逐核占用缺失（Android 8+ 无 Shizuku）→ 显示 — 并提示', (tester) async {
+    const state = PerfPageState(
+      loading: false,
+      availability: PerfAvailability.ready,
+      cpu: CpuReport(
+        usagePercent: 0,
+        perCoreUsage: <double>[],
+        coreCount: 2,
+        cores: <PerfCpuCore>[
+          PerfCpuCore(id: 0, freqMhz: 1800),
+          PerfCpuCore(id: 1, freqMhz: 2400),
+        ],
+      ),
+    );
+    await _pump(tester, const SceneDashboardHero(state: state));
+
+    expect(tester.takeException(), isNull);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('scene_hero_core_0')),
+        matching: find.text('—'),
+      ),
+      findsOneWidget,
+      reason: '占用未知时应显示「—」，不能伪装成 0%',
+    );
+    expect(find.byKey(const Key('scene_hero_per_core_hint')), findsOneWidget);
+    expect(find.text('1800MHz'), findsOneWidget, reason: '频率仍应展示');
   });
 }

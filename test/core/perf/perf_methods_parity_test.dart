@@ -70,8 +70,8 @@ void main() {
       final dartMethods = PerfMethods.all.toSet();
 
       expect(dispatch, isNotEmpty, reason: 'DISPATCH_METHODS 必须可解析且非空');
-      expect(dartMethods, hasLength(24), reason: 'Dart 契约现应为 24 个方法');
-      expect(dispatch, hasLength(24), reason: 'Rust DISPATCH_METHODS 现应为 24 个方法');
+      expect(dartMethods, hasLength(25), reason: 'Dart 契约现应为 25 个方法');
+      expect(dispatch, hasLength(25), reason: 'Rust DISPATCH_METHODS 现应为 25 个方法');
 
       // 无序集合相等：双向差集皆空（**不是**有序相等——两侧顺序本就不同）。
       final rustOnly = dispatch.difference(dartMethods);

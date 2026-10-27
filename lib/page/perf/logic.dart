@@ -19,6 +19,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/perf/battery_source.dart';
+import 'package:gstore/core/perf/cpu_stat_source.dart';
 import 'package:gstore/core/perf/device_state.dart';
 import 'package:gstore/core/perf/fps_session_recorder.dart';
 import 'package:gstore/core/perf/fps_session_store.dart';
@@ -62,6 +63,12 @@ final perfReportStoreProvider =
 /// 最近第三方目标存储（测试覆盖为内存实现）。
 final perfTargetStoreProvider =
     Provider<PerfTargetStore>((ref) => const SharedPrefsPerfTargetStore());
+
+/// `/proc/stat` 特权读取器（Android 8+ 普通应用被 SELinux 拒绝，经 Shizuku 兜底）。
+///
+/// 仅在 Rust 报告的 `perCoreUsage` 为空时使用；测试可覆盖为假 [CommandRunner]。
+final perfCpuStatReaderProvider =
+    Provider<CpuStatReader>((ref) => CpuStatReader());
 
 /// 系统帧率服务（生产 `SystemFpsService()`；测试注入罐头 [CommandRunner]）。
 ///
@@ -411,6 +418,18 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
   /// build 时捕获的本应用帧指标桥（best-effort；失败不影响刷新）。
   RustJniFrameMetricsBridge? _frameMetricsBridge;
 
+  /// build 时捕获的 `/proc/stat` 特权读取器（Android 8+ 逐核占用兜底）。
+  CpuStatReader? _cpuStatReader;
+
+  /// 最近一次特权 `/proc/stat` 采样（用于把逐核占用回填到后续模块报告）。
+  CpuUsageSample? _lastCoreUsage;
+
+  /// 最近一次特权采样的时间（超过 [CpuStatReader.maxGap] 不再回填，避免陈旧值）。
+  DateTime? _lastCoreUsageAt;
+
+  /// CPU 轮询进行中（避免页面定时器重入）。
+  bool _cpuPollingBusy = false;
+
   /// 上次落盘时间（Unix ms），节流历史写入。
   int _lastHistorySaveMs = 0;
 
@@ -465,6 +484,7 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     _historyStore = ref.read(perfHistoryStoreProvider);
     _deviceStateBridge = ref.read(perfDeviceStateBridgeProvider);
     _frameMetricsBridge = ref.read(perfFrameMetricsBridgeProvider);
+    _cpuStatReader = ref.read(perfCpuStatReaderProvider);
     Future<void>.microtask(_restoreHistories);
 
     // 若帧监控已在运行（单例），首帧后启动系统帧率 / 第三方口径轮询。
@@ -607,9 +627,10 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         _readFrameMetrics(),
       ]);
       if (_disposed) return;
+      final CpuReport cpuReport = results[0] as CpuReport;
       state = state.copyWith(
         loading: silent ? null : false,
-        cpu: results[0] as CpuReport,
+        cpu: _applyPrivilegedUsage(cpuReport),
         memory: results[1] as MemoryReport,
         battery: results[2] as BatteryReport,
         thermal: results[3] as ThermalReport,
@@ -624,6 +645,8 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
         frameMetrics: results[12] as FrameMetricsReading?,
       );
       _appendModuleHistories();
+      // 预热特权 `/proc/stat` 基线：首拍只建基线，下一次 2s 轮询即可算出逐核占用。
+      if (cpuReport.perCoreUsage.isEmpty) unawaited(_primePrivilegedUsage());
     } on PerfModuleUnavailableException catch (error) {
       debugPrint('[PerfMonitor] 模块不可用（降级展示）: ${error.code}');
       if (_disposed) return;
@@ -643,6 +666,90 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     } finally {
       _refreshing = false;
     }
+  }
+
+  /// 轻量 CPU 轮询：刷新频率 / 逐核占用（性能页挂载期间每 2s 调用）。
+  ///
+  /// * 实时刷新 / 后台采样开启时，CPU 报告已由既有链路更新，这里只补逐核占用；
+  /// * Rust 的 `perCoreUsage` 为空（Android 8+ `/proc/stat` 被 SELinux 拒绝）时，
+  ///   经 [CpuStatReader]（Shizuku shell）读取同一文件并回填；
+  /// * 无 Shizuku / 读取失败：保持原报告（UI 逐核显示 `—`），绝不伪造 0%。
+  Future<void> refreshCpu() async {
+    if (_disposed || _cpuPollingBusy || !state.moduleReady) return;
+    _cpuPollingBusy = true;
+    try {
+      final CpuReport? moduleCpu =
+          (state.live || state.sampling) ? state.cpu : await _module.cpu();
+      if (_disposed || moduleCpu == null) return;
+
+      // 仅在 Rust 拿不到逐核数据时才走特权兜底（避免无谓的 shell 调用）。
+      if (moduleCpu.perCoreUsage.isNotEmpty) {
+        if (!identical(moduleCpu, state.cpu)) {
+          state = state.copyWith(cpu: moduleCpu);
+        }
+        return;
+      }
+
+      final sample = await _cpuStatReader?.sample();
+      if (_disposed) return;
+      if (sample != null) {
+        _lastCoreUsage = sample;
+        _lastCoreUsageAt = DateTime.now();
+      }
+      state = state.copyWith(cpu: _applyPrivilegedUsage(moduleCpu));
+    } on PerfModuleUnavailableException {
+      // 模块不可用：由既有 availability 流程统一降级，这里静默。
+    } catch (error) {
+      debugPrint('[PerfMonitor] CPU 轮询失败（忽略）: $error');
+    } finally {
+      _cpuPollingBusy = false;
+    }
+  }
+
+  /// 预热特权 `/proc/stat` 基线并立即回填（若已能算出增量）。
+  ///
+  /// 首拍只建立基线（返回 `null`）；后续轮询即可得到真实逐核占用。
+  Future<void> _primePrivilegedUsage() async {
+    if (_disposed) return;
+    final sample = await _cpuStatReader?.sample();
+    if (_disposed || sample == null) return;
+    _lastCoreUsage = sample;
+    _lastCoreUsageAt = DateTime.now();
+    final cpu = state.cpu;
+    if (cpu != null && cpu.perCoreUsage.isEmpty) {
+      state = state.copyWith(cpu: _mergeCpuUsage(cpu, sample));
+    }
+  }
+
+  /// 把最近一次特权 `/proc/stat` 采样回填到 [cpu]（仅在 Rust 逐核缺失时）。
+  ///
+  /// Rust 报告本身可用（`perCoreUsage` 非空）时原样返回，绝不覆盖真实数据。
+  CpuReport _applyPrivilegedUsage(CpuReport cpu) {
+    if (cpu.perCoreUsage.isNotEmpty) return cpu;
+    final sample = _lastCoreUsage;
+    final at = _lastCoreUsageAt;
+    if (sample == null || at == null) return cpu;
+    if (DateTime.now().difference(at) > CpuStatReader.maxGap) return cpu;
+    return _mergeCpuUsage(cpu, sample);
+  }
+
+  /// 用特权 `/proc/stat` 的增量占用回填 [cpu]（按 CPU 编号对齐 `cores[]`）。
+  CpuReport _mergeCpuUsage(CpuReport cpu, CpuUsageSample sample) {
+    final List<double> perCore;
+    if (cpu.cores.isNotEmpty) {
+      perCore = <double>[
+        for (final core in cpu.cores) sample.perCoreById[core.id] ?? 0,
+      ];
+    } else {
+      final ids = sample.perCoreById.keys.toList()..sort();
+      perCore = <double>[
+        for (final id in ids) sample.perCoreById[id] ?? 0,
+      ];
+    }
+    return cpu.copyWith(
+      usagePercent: sample.usagePercent,
+      perCoreUsage: perCore,
+    );
   }
 
   /// 读取批量设备状态（Rust JNI）：**best-effort**，任何失败 → `null`，
@@ -926,7 +1033,9 @@ class PerfMonitorNotifier extends Notifier<PerfPageState> {
     state = state.copyWith(
       sampleCount: state.sampleCount + 1,
       lastSampleTsMs: snap.tsMs,
-      cpu: snap.cpu ?? state.cpu,
+      cpu: snap.cpu == null
+          ? null
+          : _applyPrivilegedUsage(snap.cpu!),
       memory: snap.memory ?? state.memory,
       battery: snap.battery ?? state.battery,
       thermal: snap.thermal ?? state.thermal,

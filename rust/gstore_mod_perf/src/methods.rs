@@ -32,6 +32,7 @@ pub const DISPATCH_METHODS: &[&str] = &[
     "perf.pressure",
     "perf.cooling",
     "perf.tunables",
+    "perf.sensors",
     "perf.sysfs.read",
     "perf.battery_health",
     "perf.storage",
@@ -307,6 +308,10 @@ pub fn dispatch(instance_id: u64, method: &str, payload: &[u8]) -> Result<Vec<u8
         "perf.tunables" => {
             state::require_instance(instance_id)?;
             ok_data(snapshot::tunables())
+        }
+        "perf.sensors" => {
+            state::require_instance(instance_id)?;
+            ok_data(snapshot::sensors())
         }
         "perf.sysfs.read" => {
             state::require_instance(instance_id)?;

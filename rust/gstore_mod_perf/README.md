@@ -66,6 +66,7 @@ cargo build --release --target aarch64-linux-android   # Android（需 .cargo/co
 | `perf.thermal` | — | `{zone_count, max_temp_c, zones:[{source, zone, kind, temp_c}]}` |
 | `perf.cooling` | — | `{count, devices:[{device, type, cur_state, max_state}]}` |
 | `perf.tunables` | — | `{cpu_clusters:[{policy, related_cpus[], available_governors[], governor, available_frequencies_mhz[], min_freq_mhz, max_freq_mhz}], cpusets:[{name, cpus, mems}], thermal_zones:[{zone, type, mode}], cooling_devices:[{device, type, cur_state, max_state}], gpu:{available_frequencies_mhz[], freq_source, governor, governor_source, power_levels, power_source}}` |
+| `perf.sensors` | — | `{count, sensors:[{name, vendor, type_id, type_name, string_type, resolution, min_delay_us, fifo_max_event_count, fifo_reserved_event_count, reporting_mode, reporting_mode_name, wake_up}]}`（NDK `ASensorManager`，**只读元数据**；无需权限 / Looper） |
 | `perf.sysfs.read` | `{path:string}`（**必需**） | `{path, value:string\|null, exists:bool}`；`path` 不在白名单（`/etc/passwd`、`/data/...`、穿越路径）→ 结构化 `invalid_arg`（**永不返回值**） |
 | `perf.pressure` | — | `{cpu:{some,full}, memory:{some,full}, io:{some,full}}`，其中每条记录 `{avg10, avg60, avg300, total_us}`（`some`/`full` 缺失为 `null`） |
 | `perf.gpu` | — | `{name, freq_mhz, freq_source, busy_percent, busy_source}` |
