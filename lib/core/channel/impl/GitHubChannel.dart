@@ -1127,9 +1127,54 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     return updated;
   }
 
+  /// 安装后回填渠道记录的应用名/图标（下载解析 APK 后调用）。
+  ///
+  /// appId 已由 [migrateAppId] 迁移为真实包名；此处按精确 PK 匹配，未命中再按
+  /// apprepo 兜底（渠道迁移失败的场景）。只动渠道库，聚合层通知由调用方编排。
+  /// 未匹配记录返回 null（不做任何修改）。
+  ///
+  /// 渠道库读写归本渠道（legacy backend）：调用方（ApkInfoService）不再直连
+  /// `channel_apps.db`；核心拥有渠道域时 [LegacyWriteGuard] 直接拒绝（fail-closed）。
+  Future<ChannelAddedApp?> updateInstalledNameAndIcon({
+    required String packageName,
+    required String fallbackAppId,
+    String? name,
+    String? icon,
+  }) async {
+    await LegacyWriteGuard.assertAllowed('channel');
+    final db = _database ?? await ChannelDatabaseManager.instance;
+    var matched = await db.dao.getApp(packageName, ChannelType.github.code);
+    if (matched == null) {
+      final byApprepo = await db.dao
+          .getAppsByChannel(ChannelType.github.code)
+          .then((list) => list.where((r) => r.apprepo == fallbackAppId));
+      if (byApprepo.isEmpty) return null;
+      matched = byApprepo.first;
+    }
+    final record = matched;
+    final updated = ChannelAddedApp(
+      appId: record.appId,
+      name: name ?? record.name,
+      user: record.user,
+      repositories: record.repositories,
+      apprepo: record.apprepo ?? fallbackAppId,
+      icon: icon ?? record.icon,
+      description: record.description,
+      category: record.category,
+      addTime: record.addTime,
+      channelCode: ChannelType.github.code,
+      extra: record.extra,
+      // 重建整行时必须带上源标识（与 extra 同级），否则会把记录挂到错的源上
+      sourceId: record.sourceId,
+    );
+    await db.dao.insertApp(updated);
+    await clearCache();
+    appLog.info('GitHubChannel: 渠道记录已回填 name/icon - ${record.appId}');
+    return record;
+  }
+
   /// 合并包名到 extra（保留既有字段，packageName 覆盖为新值）
-  String? _mergePackageName(String? extra, String packageName) {
-    Map<String, dynamic> data;
+  String? _mergePackageName(String? extra, String packageName) {    Map<String, dynamic> data;
     if (extra != null && extra.isNotEmpty) {
       try {
         data = jsonDecode(extra) as Map<String, dynamic>;

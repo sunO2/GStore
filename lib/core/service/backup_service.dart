@@ -14,6 +14,7 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_backup.dart';
 import 'package:gstore/core/config/config_initializer.dart';
@@ -21,6 +22,7 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/service/core_snapshot_backup.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
@@ -54,6 +56,43 @@ class BackupService implements IBackupService {
 
     _isInitialized = true;
     appLog.info('BackupService: 初始化成功');
+  }
+
+  /// 读取某渠道的已添加应用（导出用），按 flag 路由：
+  ///
+  /// - `channels` 开（Rust core 拥有渠道域）→ 读 `RustChannelFacade`（core 的
+  ///   `ChannelApi.listApps`）；
+  /// - 关 → 读旧 Dart 渠道库（legacy backend）。
+  ///
+  /// 注：core 的 `ChannelAppInfo` 不含 `addTime`/`sourceId`/`apprepo`（FRB 面未
+  /// 暴露），core 车道的导出项 `addTime` 记为 0；旧车道保持原样。此差异已在
+  /// 284 证据中记录。
+  Future<List<ChannelAppBackupItem>> _readChannelBackupItems(
+    String code,
+  ) async {
+    if (CoreFlags.channels) {
+      final entries = await RustChannelFacade.instance
+          .getAllApps(key: code, forceRefresh: false);
+      return entries
+          .map((rust.ChannelAppInfo entry) => ChannelAppBackupItem(
+                appId: entry.appId,
+                name: entry.name,
+                user: entry.user,
+                repositories: entry.repositories,
+                icon: entry.icon,
+                description: entry.des,
+                category:
+                    entry.category.isEmpty ? null : entry.category.join(','),
+                addTime: 0,
+                channelCode: code,
+                extra: entry.extraJson,
+              ))
+          .toList();
+    }
+    final channelDb = _channelDb;
+    if (channelDb == null) return const <ChannelAppBackupItem>[];
+    final apps = await channelDb.dao.getAppsByChannel(code);
+    return apps.map(ChannelAppBackupItem.fromChannelAddedApp).toList();
   }
 
   // ==================== 导出功能 ====================
@@ -106,20 +145,15 @@ class BackupService implements IBackupService {
       }
     }
 
-    // 收集渠道数据库应用
+    // 收集渠道数据库应用（flag 路由：channels on 读 Rust core，off 读旧渠道库）
     final channelAppsMap = <String, List<ChannelAppBackupItem>>{};
 
     for (final code in targetCodes) {
       try {
-        final channelDb = _channelDb;
-        if (channelDb == null) continue;
         appLog.info('BackupService: 导出渠道 $code 的数据');
-        final channelApps = await channelDb.dao.getAppsByChannel(code);
+        final backupItems = await _readChannelBackupItems(code);
 
-        if (channelApps.isNotEmpty) {
-          final backupItems = channelApps
-              .map((app) => ChannelAppBackupItem.fromChannelAddedApp(app))
-              .toList();
+        if (backupItems.isNotEmpty) {
           channelAppsMap[code] = backupItems;
           appLog.info('BackupService: 渠道 $code 导出 ${backupItems.length} 个应用');
 

@@ -5,22 +5,21 @@ import 'package:flutter/foundation.dart'
     show compute, debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
 
 import 'download_status_utils.dart';
 
-/// 应用信息数据库（经模块注册表取 DbManager，避免 GetX 服务定位）。
+/// 目录门面（经 flag 路由：`catalog` 开走 Rust core，关回落旧 backend）。
 ///
-/// db 模块经 `context.bindService` 以具体类型注册进 ModuleManager（非 GetX），
-/// 模块下线时 null（页面按默认图标处理）。
-final downloadAppInfoDbProvider = Provider<AppInfoDatabase?>((ref) {
-  return ModuleManager.instance.get<DbManager>()?.dbRepositroies['gstore']?.db;
+/// 下载面板的应用信息（图标/名称）读路径与写路径同源，不再直读旧
+/// `apps.db`（旧 DbManager 路径已由门面的 legacy backend 承担）。
+final downloadCatalogFacadeProvider = Provider<CatalogFacade>((ref) {
+  return CatalogFacade.instance;
 });
 
 /// 下载管理页聚合状态（不可变）。
@@ -74,9 +73,9 @@ class DownloadPageState {
 /// 职责：加载/分组/筛选下载任务、订阅 service.watch(id) 实时状态、
 /// 已完成文件存在性核对、CRUD（删除/清理/批量操作）、应用信息预取缓存。
 class DownloadManagerNotifier extends Notifier<DownloadPageState> {
-  final AppInfoDatabase? appInfoDB;
+  final CatalogFacade? catalogFacade;
 
-  DownloadManagerNotifier({this.appInfoDB});
+  DownloadManagerNotifier({this.catalogFacade});
 
   /// 单一「列表级」watch 订阅（service.watchAll()）。
   ///
@@ -364,7 +363,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 获取应用信息（带缓存）
   Future<AppInfo?> getAppInfo(String appId) async {
-    final db = appInfoDB ?? ref.read(downloadAppInfoDbProvider);
+    final CatalogFacade facade =
+        catalogFacade ?? ref.read(downloadCatalogFacadeProvider);
     // 命中缓存
     if (state.appInfoCache.containsKey(appId)) {
       return state.appInfoCache[appId];
@@ -375,7 +375,20 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     }
     _appInfoLoading.add(appId);
     try {
-      final info = await db?.dao.getAppInfo(appId);
+      // 读路径与 core 同源：走 CatalogFacade（flag on 读 Rust core / flag off
+      // 回落旧 backend），不再直读旧 apps.db。
+      final summary = await facade.getApp(appId);
+      final info = summary == null
+          ? null
+          : AppInfo(
+              summary.appId,
+              summary.name,
+              summary.user,
+              summary.repositories,
+              summary.icon,
+              summary.des,
+              summary.category,
+            );
       _setAppInfoCache(appId, info);
       return info;
     } catch (e) {

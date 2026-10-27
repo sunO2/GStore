@@ -12,12 +12,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:installed_apps/installed_apps.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/update_cache.dart';
@@ -170,6 +170,9 @@ class UpdateManagerService {
   /// 结果为空时必须检测：时间窗仅用于"已有结果"时的防重，
   /// 不能因时间窗跳过而导致启动后看不到可更新应用
   Future<void> ensureChecked({bool force = false}) async {
+    // 核心拥有 update 域时（`CoreFlags.update`）旧 Dart 引擎 inert：检测由
+    // `UpdateFacade`/FRB 负责，本服务仅保留共享状态面。引擎可随后整体删除。
+    if (CoreFlags.update) return;
     // 锁：检测中直接返回（不重复、不排队）
     if (isChecking) return;
 
@@ -189,6 +192,8 @@ class UpdateManagerService {
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
+    // 核心拥有 update 域时旧 Dart 检测引擎 inert（UpdateFacade 走 FRB）。
+    if (CoreFlags.update) return;
     if (isChecking) return; // 并发锁
     _isChecking = true;
     _notifyIsChecking();
@@ -414,6 +419,10 @@ class UpdateManagerService {
     // 优先读缓存
     final cached = getByAppId(appId);
     if (cached != null) return cached;
+
+    // 核心拥有 update 域时单应用检测同样 inert（缓存未命中即返回 null，
+    // 不触碰渠道/引擎）。
+    if (CoreFlags.update) return null;
 
     final channelType = channelCode != null && channelCode.isNotEmpty
         ? ChannelType.fromCode(channelCode)

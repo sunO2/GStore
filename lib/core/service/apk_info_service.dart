@@ -8,10 +8,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
-import 'package:gstore/core/channel/database/channel_added_app.dart';
-import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_native_service.dart';
@@ -129,6 +128,9 @@ class ApkInfoService {
     String? name,
     String? icon,
   }) async {
+    // 渠道记录 appId 迁移属渠道域：核心已拥有（channels on）时由 Rust core 负责
+    // appId 规范化，Dart 侧不再触碰旧渠道库（inert on the core lane，可整体删除）。
+    if (CoreFlags.channels) return;
     try {
       final channel = ChannelManager.instance.getChannel(ChannelType.github);
       if (channel is! GitHubChannel) return;
@@ -153,18 +155,6 @@ class ApkInfoService {
       _reportBlockedWrite('migrateChannelAppId', blocked);
     } catch (e) {
       appLog.error('ApkInfoService: 迁移渠道记录失败 - $e');
-    }
-  }
-
-  /// 清除 GitHub 渠道缓存
-  void _clearGithubCache() {
-    try {
-      final channel = ChannelManager.instance.getChannel(ChannelType.github);
-      if (channel is GitHubChannel) {
-        channel.clearCache();
-      }
-    } catch (e) {
-      appLog.error('ApkInfoService: 清除 GitHub 缓存失败 - $e');
     }
   }
 
@@ -204,37 +194,20 @@ class ApkInfoService {
         return;
       }
 
-      // 更新渠道记录（appId 已由 _updatePackageName 迁移为 packageName；
-      // 精确 PK 匹配优先，apprepo 兜底渠道迁移失败的场景）
-      final db = await ChannelDatabaseManager.instance;
-      var matched = await db.dao.getApp(packageName, ChannelType.github.code);
-      if (matched == null) {
-        final byApprepo = await db.dao
-            .getAppsByChannel(ChannelType.github.code)
-            .then((list) => list.where((r) => r.apprepo == oldAppId));
-        if (byApprepo.isEmpty) return;
-        matched = byApprepo.first;
-      }
-      final record = matched;
-      final updated = ChannelAddedApp(
-        appId: record.appId,
-        name: realName ?? record.name,
-        user: record.user,
-        repositories: record.repositories,
-        apprepo: record.apprepo ?? oldAppId,
-        icon: iconPath ?? record.icon,
-        description: record.description,
-        category: record.category,
-        addTime: record.addTime,
-        channelCode: ChannelType.github.code,
-        extra: record.extra,
-        // 重建整行时必须带上源标识（与 extra 同级），否则会把记录挂到错的源上
-        sourceId: record.sourceId,
+      // 渠道记录读写归 [GitHubChannel]（legacy backend 持有 channel_apps.db）；
+      // 本服务只做编排，不再直连 ChannelDatabase（核心拥有渠道域时 guard 已
+      // fail-closed，此分支不可达）。
+      final channel = ChannelManager.instance.getChannel(ChannelType.github);
+      if (channel is! GitHubChannel) return;
+      final record = await channel.updateInstalledNameAndIcon(
+        packageName: packageName,
+        fallbackAppId: oldAppId,
+        name: realName,
+        icon: iconPath,
       );
-      await db.dao.insertApp(updated);
+      if (record == null) return;
       appLog.info('ApkInfoService: 应用名/图标已更新 '
           '(name=$realName, icon=$iconPath)');
-      _clearGithubCache();
 
       // 聚合库不存 name/icon（只存引用，信息由渠道实时查）——无需重建聚合记录，
       // 仅通知首页刷新即可拉到新数据

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
@@ -340,8 +341,9 @@ class DetailLogic
         canonicalId,
       );
       try {
-        final categories =
-            await "gstore".repoDB.db.dao.getAllCategory();
+        // 读路径与 core 同源：分类预设走 CatalogFacade（flag on 读 Rust core /
+        // flag off 回落旧 backend），不再直读旧 apps.db。
+        final categories = await CatalogFacade.instance.categories();
         presetTags = categories
             .map((c) => c.description.trim())
             .where((d) => d.isNotEmpty)

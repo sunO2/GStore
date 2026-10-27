@@ -8,6 +8,7 @@ import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:jovial_svg/jovial_svg.dart';
 

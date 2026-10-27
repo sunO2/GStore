@@ -1,22 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
+import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
-import 'package:gstore/db/apps/AppInfoDao.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/page/search/providers.dart';
 import 'package:gstore/page/search/view.dart';
 
-/// 手写 Fake DAO（与项目既有测试风格一致：避免 mockito 对带方法体的
+/// 只读 flags 后端：保持镜像 all-false（catalog off → 门面走 legacy backend）。
+class _FakeFlagsBackend implements CoreFlagsBackend {
+  CoreFlagsSnapshot snapshot = CoreFlagsSnapshot.disabled;
+
+  @override
+  Future<CoreFlagsSnapshot> read() async => snapshot;
+
+  @override
+  Future<void> write(CoreFlagsPatch patch) async {}
+}
+
+/// 手写 Fake 目录后端（与项目既有测试风格一致：避免 mockito 对带方法体的
 /// concrete 方法无法 stub / any 泛型推断问题）。
-class _FakeDao implements AppInfoDao {
-  /// 关键词 → 搜索结果（search 内部走 searchWord LIKE 兜底）
-  final Map<String, List<AppInfo>> searchResults = {};
+class _FakeCatalog implements CatalogBackend {
+  /// 关键词 → 搜索结果
+  final Map<String, List<AppSummary>> searchResults = {};
 
   /// 分类 id → 分类结果
-  final Map<String, List<AppInfo>> categoryResults = {};
+  final Map<String, List<AppSummary>> categoryResults = {};
 
-  /// search/queryCategory 实际调用计数
+  /// search/byCategory 实际调用计数
   int searchCallCount = 0;
   int categoryCallCount = 0;
 
@@ -24,94 +37,86 @@ class _FakeDao implements AppInfoDao {
   String? lastKeyword;
 
   @override
-  Future<List<AppInfo>> search(String word) async {
+  Future<List<AppSummary>> search(String keyword) async {
     searchCallCount++;
-    lastKeyword = word;
+    lastKeyword = keyword;
     // 模拟真实 search：返回空或预设结果
-    return searchResults[word] ?? const [];
+    return searchResults[keyword] ?? const [];
   }
 
   @override
-  Future<List<AppInfo>> queryCategory(String word) async {
+  Future<List<AppSummary>> byCategory(String categoryId) async {
     categoryCallCount++;
-    return categoryResults[word] ?? const [];
+    return categoryResults[categoryId] ?? const [];
   }
 
   // ---- 以下抽象成员测试未用到，抛 UnsupportedError ----
   @override
-  Future<List<AppInfo>> getAllApps() => throw UnsupportedError('not used');
+  Future<List<AppSummary>> list() => throw UnsupportedError('not used');
 
   @override
-  Future<AppInfo?> getAppInfo(String appId) =>
+  Future<CatalogPageData> listPage(
+          {required int offset, required int limit}) =>
       throw UnsupportedError('not used');
 
   @override
-  Future<List<AppInfo>> searchFts(String word) =>
+  Future<AppSummary?> getApp(String appId) => throw UnsupportedError('not used');
+
+  @override
+  Future<List<AppCategory>> categories() =>
       throw UnsupportedError('not used');
 
   @override
-  Future<List<AppInfo>> searchWord(String word) =>
+  Future<AppDetailInfo?> getAppDetail(String appId) =>
       throw UnsupportedError('not used');
 
   @override
-  Future<List<AppInfo>> searchCategoryLike(String word) =>
-      throw UnsupportedError('not used');
-
-  @override
-  Future<AppInfoConfig?> getVersion() => throw UnsupportedError('not used');
-
-  @override
-  Future<void> insertConfig(AppInfoConfig config) =>
-      throw UnsupportedError('not used');
-
-  @override
-  Future<List<AppCategory>> getAllCategory() =>
+  Future<CatalogRefreshOutcome> refresh(String url) =>
       throw UnsupportedError('not used');
 }
 
-/// 手写 Fake 数据库：仅暴露 dao，其余 FloorDatabase 成员由 noSuchMethod
-/// 兜底（测试未用到）。
-class _FakeDb implements AppInfoDatabase {
-  _FakeDb(this._dao);
-
-  final _FakeDao _dao;
-
-  @override
-  AppInfoDao get dao => _dao;
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-/// 注入 fake 数据库后创建 ProviderContainer。
-ProviderContainer _container(_FakeDb db) {
+/// 注入 fake 目录后端后创建 ProviderContainer。
+///
+/// flags 保持 all-false → [CatalogFacade] 选 legacy backend（即 fake）。
+ProviderContainer _container(_FakeCatalog backend) {
   final container = ProviderContainer(
     overrides: [
-      searchDatabaseProvider.overrideWithValue(db),
+      catalogFacadeProvider.overrideWithValue(
+        CatalogFacade(legacy: backend, frb: backend),
+      ),
     ],
   );
   addTearDown(container.dispose);
   return container;
 }
 
-AppInfo _app(String id, String name) {
-  return AppInfo(
-    id,
-    name,
-    'sunO2',
-    'GStore-Repositorys',
-    'https://example.com/$id.png',
-    '描述 $name',
-    const ['工具'],
+AppSummary _app(String id, String name) {
+  return AppSummary(
+    appId: id,
+    name: name,
+    user: 'sunO2',
+    repositories: 'GStore-Repositorys',
+    icon: 'https://example.com/$id.png',
+    des: '描述 $name',
+    category: const ['工具'],
   );
 }
 
 void main() {
+  setUp(() {
+    CoreFlags.resetQueueForTest();
+    CoreFlags.installBackend(_FakeFlagsBackend());
+  });
+
+  tearDown(() {
+    CoreFlags.resetBackend();
+  });
+
   group('SearchNotifier', () {
     test('空输入立即清空结果', () async {
-      final dao = _FakeDao()
+      final backend = _FakeCatalog()
         ..searchResults['abc'] = [_app('a1', 'ABC')];
-      final container = _container(_FakeDb(dao));
+      final container = _container(backend);
       final notifier = container.read(searchProvider.notifier);
 
       // 先注入一批结果
@@ -125,28 +130,28 @@ void main() {
     });
 
     test('非空输入防抖 200ms 后展示搜索结果', () async {
-      final dao = _FakeDao()
+      final backend = _FakeCatalog()
         ..searchResults['微信'] = [_app('wx', '微信')];
-      final container = _container(_FakeDb(dao));
+      final container = _container(backend);
       final notifier = container.read(searchProvider.notifier);
 
       notifier.onInputChanged('微信');
       // 防抖期内不应查询
       expect(container.read(searchProvider), isEmpty);
-      expect(dao.searchCallCount, 0);
+      expect(backend.searchCallCount, 0);
 
       // 防抖到期后查询并更新
       await Future<void>.delayed(const Duration(milliseconds: 250));
       final results = container.read(searchProvider);
       expect(results, hasLength(1));
       expect(results.first.name, '微信');
-      expect(dao.searchCallCount, 1);
-      expect(dao.lastKeyword, '微信');
+      expect(backend.searchCallCount, 1);
+      expect(backend.lastKeyword, '微信');
     });
 
     test('防抖期间连续输入只查询最后一次', () async {
-      final dao = _FakeDao();
-      final container = _container(_FakeDb(dao));
+      final backend = _FakeCatalog();
+      final container = _container(backend);
       final notifier = container.read(searchProvider.notifier);
 
       notifier.onInputChanged('微');
@@ -154,33 +159,39 @@ void main() {
       notifier.onInputChanged('微信');
       await Future<void>.delayed(const Duration(milliseconds: 250));
 
-      expect(dao.searchCallCount, 1);
-      expect(dao.lastKeyword, '微信'); // '微' 的查询被防抖取消
+      expect(backend.searchCallCount, 1);
+      expect(backend.lastKeyword, '微信'); // '微' 的查询被防抖取消
     });
 
     test('loadCategory 加载分类应用', () async {
-      final dao = _FakeDao()
+      final backend = _FakeCatalog()
         ..categoryResults['game'] = [_app('g1', '游戏应用')];
-      final container = _container(_FakeDb(dao));
+      final container = _container(backend);
       final notifier = container.read(searchProvider.notifier);
 
       await notifier.loadCategory(AppCategory('game', '游戏', ''));
       final results = container.read(searchProvider);
       expect(results, hasLength(1));
       expect(results.first.name, '游戏应用');
-      expect(dao.categoryCallCount, 1);
+      expect(backend.categoryCallCount, 1);
     });
   });
 
   group('SearchPage widget', () {
     testWidgets('无参数进入：显示搜索框，输入后展示结果列表', (tester) async {
-      final dao = _FakeDao()
+      // 队列在 FakeAsync zone 内重建：否则 CoreFlags.refresh() 的 await 链
+      // 会挂在 setUp 的真实 zone 上，tester.pump 永远 flush 不到。
+      CoreFlags.resetQueueForTest();
+      final backend = _FakeCatalog()
         ..searchResults['apk'] = [_app('a1', 'APK 应用')];
-      final db = _FakeDb(dao);
 
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [searchDatabaseProvider.overrideWithValue(db)],
+          overrides: [
+            catalogFacadeProvider.overrideWithValue(
+              CatalogFacade(legacy: backend, frb: backend),
+            ),
+          ],
           child: const MaterialApp(home: SearchPage()),
         ),
       );

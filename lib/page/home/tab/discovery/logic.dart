@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -625,10 +626,11 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     final currentTags =
         await AddedAppsFacade.instance.tags(code, canonicalId);
 
-    // 加载预置分类：本地库 AppCategory 的 description 作为标签值
+    // 加载预置分类：走 CatalogFacade（flag on 读 Rust core / flag off 回落旧
+    // backend），不再直读旧 apps.db。
     var presetTags = <String>[];
     try {
-      final categories = await "gstore".repoDB.db.dao.getAllCategory();
+      final categories = await CatalogFacade.instance.categories();
       presetTags = categories
           .map((c) => c.description.trim())
           .where((d) => d.isNotEmpty)
