@@ -1,5 +1,7 @@
-/// Update transport backends: the legacy `UpdateManagerService` lane and the
-/// FRB `UpdateApi` lane.
+/// Update transport backends: the FRB `UpdateApi` lane.
+///
+/// The legacy Dart engine lane was removed once the Rust core became
+/// authoritative for `update`.
 library;
 
 import 'dart:convert';
@@ -9,8 +11,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_log.dart';
-import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/core/update/update_report.dart';
 
 /// Optional capability: a transport that records the report of its last check.
@@ -161,69 +161,5 @@ List<AppUpdateInfo> decodeUpdateList(String raw) {
       .map((item) =>
           AppUpdateInfo.fromCacheJson(Map<String, dynamic>.from(item)))
       .toList(growable: false);
-}
-
-/// Legacy backend over `UpdateManagerService`.
-class LegacyUpdateBackend implements UpdateBackend {
-  LegacyUpdateBackend({UpdateManagerService? service}) : _injected = service;
-
-  final UpdateManagerService? _injected;
-
-  /// Resolved per call: module registration (or a test binding) may replace the
-  /// singleton after this backend was constructed.
-  UpdateManagerService get _service =>
-      _injected ?? UpdateManagerService.instance;
-
-  /// Runs the legacy check engine and lets it write the shared state itself.
-  Future<void> runCheck({
-    required bool force,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) =>
-      _service.checkUpdates(
-        force: force,
-        onProgress: onProgress,
-        onLog: onLog,
-        onCheckList: onCheckList,
-      );
-
-  @override
-  Future<List<AppUpdateInfo>> check({required bool force}) async {
-    await _service.checkUpdates(force: force);
-    return List<AppUpdateInfo>.of(_service.updateList);
-  }
-
-  @override
-  Future<List<AppUpdateInfo>> run() => check(force: true);
-
-  @override
-  Future<List<AppUpdateInfo>> list() async =>
-      List<AppUpdateInfo>.of(_service.updateList);
-
-  @override
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
-      _service.getByAppId(appId);
-
-  @override
-  Future<bool> markUpdated(String appId) async {
-    final existed = _service.hasUpdate(appId);
-    await _service.markUpdated(appId);
-    return existed && !_service.hasUpdate(appId);
-  }
-
-  @override
-  Future<bool> hasUpdate(String appId) async => _service.hasUpdate(appId);
-
-  @override
-  Future<int> count() async => _service.updateCount;
-
-  @override
-  Future<bool> cacheValid() async {
-    if (_service.updateList.isEmpty) return false;
-    final last = _service.lastCheckedAt;
-    if (last == null) return false;
-    return DateTime.now().difference(last).inHours < 1;
-  }
 }
 

@@ -4,60 +4,52 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_facade.dart';
 import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/page/update/logic.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 假 UpdateManager：跳过真实渠道检测，回放固定结果并触发全部回调
-/// （UpdateNotifier 通过 UpdateManagerService.instance 查找，注册后即可替换）
-class _FakeUpdateManager extends UpdateManagerService {
-  _FakeUpdateManager(this.items);
+/// 假 core backend：跳过真实渠道检测，回放固定结果。
+///
+/// 检测引擎已删除：`UpdateNotifier` 经 `UpdateFacade` 走 core backend，测试用
+/// `UpdateFacade.backendOverride` 注入本 fake（不再有 fake UpdateManager 覆盖
+/// 已删除的 `checkUpdates`）。
+class _FakeCoreBackend implements UpdateBackend {
+  _FakeCoreBackend(this.items);
 
   /// 本次检测的结果
   final List<AppUpdateInfo> items;
 
-  /// 回调是否被接线（验证 UpdateNotifier → UpdateManager 的连线）
-  bool checkListFired = false;
-  bool progressFired = false;
-  bool logFired = false;
+  @override
+  Future<List<AppUpdateInfo>> check({required bool force}) async => items;
 
   @override
-  void onInit() {
-    // 跳过缓存恢复（测试环境无真实数据库）
+  Future<List<AppUpdateInfo>> run() async => items;
+
+  @override
+  Future<List<AppUpdateInfo>> list() async => items;
+
+  @override
+  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async {
+    for (final item in items) {
+      if (item.appId == appId) return item;
+    }
+    return null;
   }
 
   @override
-  Future<void> checkUpdates({
-    bool force = false,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) async {
-    debugSetState(isChecking: true);
-    // 共享状态（页面订阅镜像，与真实 manager 行为一致）
-    debugSetState(
-      checkList: ['示例应用'],
-      checkedCount: 1,
-      totalCount: 1,
-      checkingAppName: '示例应用',
-      checkLog: [
-        CheckLogEntry(level: CheckLogLevel.info, text: '检测中...'),
-      ],
-    );
-    onCheckList?.call(['示例应用']);
-    checkListFired = onCheckList != null;
-    onProgress?.call(const UpdateCheckProgress(
-      appId: 'com.example.app',
-      appName: '示例应用',
-      index: 0,
-      total: 1,
-    ));
-    progressFired = onProgress != null;
-    onLog?.call(CheckLogLevel.info, '检测中...');
-    logFired = onLog != null;
-    debugSetState(updateList: items, isChecking: false);
-  }
+  Future<bool> markUpdated(String appId) async => true;
+
+  @override
+  Future<bool> hasUpdate(String appId) async =>
+      items.any((item) => item.appId == appId);
+
+  @override
+  Future<int> count() async => items.length;
+
+  @override
+  Future<bool> cacheValid() async => false;
 }
 
 AppUpdateInfo _sampleInfo() => AppUpdateInfo(
@@ -83,14 +75,16 @@ void main() {
   });
 
   tearDown(() async {
+    UpdateFacade.backendOverride = null;
     await ModuleManager.instance.clear();
   });
 
-  /// 注册 fake 服务并构建可读 notifier 的 container。
+  /// 注册状态仓库 + 注入 core backend 并构建可读 notifier 的 container。
   (ProviderContainer, UpdateNotifier) makeNotifier(
       List<AppUpdateInfo> items) {
-    ModuleManager.instance.bind<UpdateManagerService>(_FakeUpdateManager(items));
+    ModuleManager.instance.bind<UpdateManagerService>(UpdateManagerService());
     ModuleManager.instance.bind<BadgeService>(BadgeService());
+    UpdateFacade.backendOverride = _FakeCoreBackend(items);
     final notifier = UpdateNotifier();
     final container = ProviderContainer(overrides: [
       updateProvider.overrideWith(() => notifier),
@@ -106,6 +100,9 @@ void main() {
     final (container, notifier) = makeNotifier([_sampleInfo()]);
 
     await notifier.checkUpdates();
+    // The facade mirrors results through broadcast streams; let the delivery
+    // microtasks run before reading the mirrored state.
+    await Future<void>.delayed(Duration.zero);
 
     final state = container.read(updateProvider);
     // 回调全部接线（onCheckList 预填滚轮名单 / onProgress 进度 / onLog 日志）
@@ -135,6 +132,7 @@ void main() {
     final (container, notifier) = makeNotifier([]);
 
     await notifier.checkUpdates();
+    await Future<void>.delayed(Duration.zero);
 
     final state = container.read(updateProvider);
     expect(state.checkFinished, isTrue);
@@ -143,7 +141,7 @@ void main() {
   });
 
   test('订阅前已恢复的缓存日志/结果：订阅后立即同步显示（回归）', () async {
-    final fake = _FakeUpdateManager([]);
+    final fake = UpdateManagerService();
     // 模拟缓存已在页面订阅前恢复（启动时 BadgeService 触发恢复）
     fake.debugSetState(
       checkLog: [

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/app_update_info.dart';
@@ -8,9 +10,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('UpdateCache saveResults/loadResults 往返保留字段', () async {
-    SharedPreferences.setMockInitialValues({});
-
+  test('UpdateCache loadResults 往返保留字段（种子为持久化 JSON）', () async {
+    // 引擎写入器（saveResults）已删除：以引擎产出的持久化 JSON 作为种子，
+    // 验证仍在生产使用的 loadResults 解析。
     final info = AppUpdateInfo(
       channelId: 'github',
       appId: 'com.example.app',
@@ -28,8 +30,9 @@ void main() {
       detail: null,
       checkedAt: DateTime.fromMillisecondsSinceEpoch(1700000000000),
     );
-
-    await UpdateCache.saveResults([info]);
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'update_results_v1': jsonEncode(<Map<String, dynamic>>[info.toCacheJson()]),
+    });
 
     // 模拟应用重启：重置静态单例（不清空底层存储），跨实例读取
     SharedPreferences.resetStatic();
@@ -54,9 +57,9 @@ void main() {
     expect(loaded, isEmpty);
   });
 
-  test('UpdateCache saveLogs/loadLogs 往返保留级别/文本/时间', () async {
-    SharedPreferences.setMockInitialValues({});
-
+  test('UpdateCache loadLogs 往返保留级别/文本/时间（种子为持久化 JSON）', () async {
+    // 引擎写入器（saveLogs）已删除：以引擎产出的持久化 JSON 作为种子，
+    // 验证仍在生产使用的 loadLogs 解析。
     final logs = [
       CheckLogEntry(
         level: CheckLogLevel.info,
@@ -69,7 +72,10 @@ void main() {
         time: DateTime.fromMillisecondsSinceEpoch(1700000005000),
       ),
     ];
-    await UpdateCache.saveLogs(logs);
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'update_check_logs_v1':
+          jsonEncode(logs.map((e) => e.toJson()).toList()),
+    });
 
     final restored = await UpdateCache.loadLogs();
     expect(restored, hasLength(2));

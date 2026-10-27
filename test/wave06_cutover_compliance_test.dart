@@ -217,7 +217,10 @@ void main() {
       // here even while some unrelated reference keeps the generic scan green.
       final expected = <String, String>{
         'RustChannelFacade': 'lib/core/channel/ChannelManager.dart',
-        'CatalogFacade': 'lib/core/update/update_manager.dart',
+        // The update-engine increment removed the CatalogFacade read that used
+        // to live in `update_manager.dart`; the discovery page is now the
+        // pinned production caller of the catalog facade.
+        'CatalogFacade': 'lib/page/home/tab/discovery/logic.dart',
         'AddedAppsFacade': 'lib/core/service/apk_info_service.dart',
         'UpdateFacade': 'lib/page/update/logic.dart',
       };

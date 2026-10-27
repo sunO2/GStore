@@ -1,14 +1,13 @@
-/// Flag-gated facade over update checking.
+/// Facade over update checking.
 ///
-/// `CoreFlags.update == false` routes to the legacy Dart
-/// `UpdateManagerService`; `true` routes to the FRB `UpdateApi`.
+/// The check runs on the Rust core lane (FRB `UpdateApi`); the legacy Dart
+/// `UpdateManagerService` engine was removed once the core became authoritative
+/// for `update`.
 ///
 /// The facade also owns the shared reactive state surface (results, logs,
-/// progress, last-check time). On the legacy lane the service writes that
-/// state itself; on the core lane the facade mirrors the core result into the
-/// same state holder so the update page, the app list, the badge and the agent
-/// keep a single subscription contract. The legacy check engine is never run
-/// while `update` is authoritative.
+/// progress, last-check time): it mirrors the core result into the same state
+/// holder so the update page, the app list, the badge and the agent keep a
+/// single subscription contract.
 library;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -26,40 +25,26 @@ export 'package:gstore/core/update/update_report.dart';
 
 /// Flag-gated update facade.
 class UpdateFacade {
-  UpdateFacade({UpdateBackend? legacy, UpdateBackend? frb})
-      : _legacy = legacy ?? LegacyUpdateBackend(),
-        _frb = frb ?? FrbUpdateBackend(),
+  UpdateFacade({UpdateBackend? frb})
+      : _frb = frb ?? FrbUpdateBackend(),
         _frbInjected = frb != null;
 
   static UpdateFacade instance = UpdateFacade();
 
-  /// Test seam: replaces the FRB backend.
+  /// Test seam: replaces the core backend.
   @visibleForTesting
   static UpdateBackend? backendOverride;
 
-  /// Test seam: replaces the legacy backend.
-  @visibleForTesting
-  static UpdateBackend? legacyBackendOverride;
-
-  final UpdateBackend _legacy;
   final UpdateBackend _frb;
 
   /// An injected FRB backend is a test seam; only the default production wiring
   /// enforces the bootstrap/catalog ordering gate.
   final bool _frbInjected;
 
-  /// The shared reactive state holder. The legacy engine writes it when
-  /// `update` is off; the facade mirrors the core result into it when on.
+  /// The shared reactive state holder. The facade mirrors the core result into
+  /// it so the update page, the app list, the badge and the agent all read one
+  /// subscription surface.
   UpdateManagerService get _state => UpdateManagerService.instance;
-
-  Future<bool> _enabled() async {
-    try {
-      await CoreFlags.refresh();
-    } catch (_) {
-      // Keep the last mirror; an unavailable flag backend must not arm a flag.
-    }
-    return CoreFlags.update;
-  }
 
   /// The cutover is only legal after the Rust core is authoritative for
   /// `catalog` and the bootstrap has pushed platform facts + inventory.
@@ -83,13 +68,6 @@ class UpdateFacade {
     if (override != null) return override;
     if (!_frbInjected) _assertCutoverOrder();
     return _frb;
-  }
-
-  Future<UpdateBackend> _backend() async {
-    if (!await _enabled()) {
-      return legacyBackendOverride ?? _legacy;
-    }
-    return _coreBackend();
   }
 
   // ===== Shared reactive state (same surface for both lanes) =====
@@ -148,46 +126,23 @@ class UpdateFacade {
 
   void restoreCacheInBackground() => _state.restoreCacheInBackground();
 
-  /// Startup/background lazy check (lock + one-hour window), routed by flag.
+  /// Startup/background lazy check (lock + one-hour window), routed to core.
   Future<void> ensureChecked({bool force = false}) async {
     if (_state.isChecking) return;
     if (!force && _state.updateList.isNotEmpty && await cacheValid()) return;
     await checkUpdates(force: true);
   }
 
-  /// Runs one check on the flag-selected lane and mirrors the result.
+  /// Runs one check on the core lane and mirrors the result.
   ///
   /// Core failures surface as [CoreUpdateException] (typed `CORE_E_*`); the
-  /// facade never falls back to the legacy engine once `update` is on.
+  /// facade never falls back to a legacy engine.
   Future<void> checkUpdates({
     bool force = false,
     void Function(UpdateCheckProgress progress)? onProgress,
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
-    final enabled = await _enabled();
-    if (!enabled) {
-      final backend = legacyBackendOverride ?? _legacy;
-      if (backend is LegacyUpdateBackend) {
-        await backend.runCheck(
-          force: force,
-          onProgress: onProgress,
-          onLog: onLog,
-          onCheckList: onCheckList,
-        );
-        return;
-      }
-      _state.beginFacadeCheck();
-      try {
-        final updates = await backend.check(force: force);
-        _adopt(updates, onLog: onLog, onCheckList: onCheckList);
-      } catch (error) {
-        _state.failFacadeCheck(error.toString());
-        rethrow;
-      }
-      return;
-    }
-
     final backend = _coreBackend();
     _state.beginFacadeCheck();
     try {
@@ -257,26 +212,25 @@ class UpdateFacade {
   // ===== Operations =====
 
   Future<List<AppUpdateInfo>> check({required bool force}) async =>
-      (await _backend()).check(force: force);
+      _coreBackend().check(force: force);
 
-  Future<List<AppUpdateInfo>> run() async => (await _backend()).run();
+  Future<List<AppUpdateInfo>> run() async => _coreBackend().run();
 
-  Future<List<AppUpdateInfo>> list() async => (await _backend()).list();
+  Future<List<AppUpdateInfo>> list() async => _coreBackend().list();
 
   Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
-      (await _backend()).checkApp(appId, channelCode: channelCode);
+      _coreBackend().checkApp(appId, channelCode: channelCode);
 
   Future<bool> markUpdated(String appId) async {
-    final removed = (await _backend()).markUpdated(appId);
-    final result = await removed;
+    final result = await _coreBackend().markUpdated(appId);
     if (result) _state.removeFacadeUpdated(appId);
     return result;
   }
 
   Future<bool> hasUpdate(String appId) async =>
-      (await _backend()).hasUpdate(appId);
+      _coreBackend().hasUpdate(appId);
 
-  Future<int> count() async => (await _backend()).count();
+  Future<int> count() async => _coreBackend().count();
 
-  Future<bool> cacheValid() async => (await _backend()).cacheValid();
+  Future<bool> cacheValid() async => _coreBackend().cacheValid();
 }

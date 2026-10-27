@@ -32,29 +32,6 @@ class UpdateCache {
     }
   }
 
-  /// 记录检测时间
-  static Future<void> saveCheckedAt(DateTime time) async {
-    await LegacyWriteGuard.assertAllowed('update');
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_keyLastCheckedAt, time.millisecondsSinceEpoch);
-    } catch (_) {
-      // 持久化失败不影响内存状态
-    }
-  }
-
-  /// 持久化检测结果列表（可更新应用）
-  static Future<void> saveResults(List<AppUpdateInfo> results) async {
-    await LegacyWriteGuard.assertAllowed('update');
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final json = jsonEncode(results.map((e) => e.toCacheJson()).toList());
-      await prefs.setString(_keyResults, json);
-    } catch (e) {
-      // 持久化失败不影响内存状态
-    }
-  }
-
   /// 读取上次检测结果列表（无记录/损坏返回空列表）
   static Future<List<AppUpdateInfo>> loadResults() async {
     try {
@@ -68,18 +45,6 @@ class UpdateCache {
           .toList();
     } catch (_) {
       return [];
-    }
-  }
-
-  /// 持久化上次检测日志（前台/后台检测同源产出，格式一致）
-  static Future<void> saveLogs(List<CheckLogEntry> logs) async {
-    await LegacyWriteGuard.assertAllowed('update');
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final json = jsonEncode(logs.map((e) => e.toJson()).toList());
-      await prefs.setString(_keyLogs, json);
-    } catch (_) {
-      // 持久化失败不影响内存状态
     }
   }
 

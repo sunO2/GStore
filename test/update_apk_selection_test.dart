@@ -19,7 +19,6 @@ import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_cache.dart';
-import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/page/update/logic.dart';
 import 'package:gstore/page/update/view.dart';
@@ -40,28 +39,6 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 const _appId = 'com.example.app';
 const _channelCode = 'github';
-
-/// 假 UpdateManager：跳过真实渠道检测，直接回放固定结果
-class _FakeUpdateManager extends UpdateManagerService {
-  _FakeUpdateManager(this.items);
-
-  final List<AppUpdateInfo> items;
-
-  @override
-  void onInit() {
-    // 跳过缓存恢复（测试环境无真实数据库）
-  }
-
-  @override
-  Future<void> checkUpdates({
-    bool force = false,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) async {
-    debugSetState(updateList: items);
-  }
-}
 
 /// 最小 IDetailInfo：承载下载候选列表
 class _FakeDetail implements IDetailInfo {
@@ -316,7 +293,7 @@ class _FakePathProvider extends PathProviderPlatform {
 }
 
 Future<void> _pumpUpdatePage(WidgetTester tester, AppUpdateInfo info) async {
-  final fake = _FakeUpdateManager([info]);
+  final fake = UpdateManagerService();
   fake.debugSetState(
     updateList: [info],
     lastCheckedAt: DateTime.now(),
@@ -507,7 +484,7 @@ void main() {
     (ProviderContainer, UpdateNotifier) makeLogic(
         List<AppUpdateInfo> items) {
       // 服务单例经 ModuleManager 解析：bind 让 UpdateManagerService.instance 命中 fake
-      ModuleManager.instance.bind<UpdateManagerService>(_FakeUpdateManager(items));
+      ModuleManager.instance.bind<UpdateManagerService>(UpdateManagerService());
       ModuleManager.instance.bind<BadgeService>(BadgeService());
       final notifier = UpdateNotifier();
       final container = ProviderContainer(overrides: [

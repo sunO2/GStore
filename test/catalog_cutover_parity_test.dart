@@ -1,12 +1,11 @@
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_service.dart';
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/core_flags.dart';
@@ -20,10 +19,6 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sqflite/sqflite.dart' as sqflite;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-// ignore: depend_on_referenced_packages
-import 'package:sqlite3/open.dart';
 
 import 'support/added_apps_read_seams.dart';
 
@@ -237,38 +232,23 @@ const Set<String> _aggregatorAllowlist = <String>{
   'lib/core/module/app_modules.dart',
   'lib/core/module/interfaces/service_interfaces.dart',
   'lib/core/aggregate/aggregate.dart',
+  'lib/core/aggregate/aggregate_service_adapter.dart',
   'lib/core/model/AppIdentity.dart',
   'lib/page/home/tab/applist/widgets/horizontal_app_row.dart',
   'lib/core/aggregate/AppAggregatorManager.dart',
   'lib/core/aggregate/added_apps_facade.dart',
   'lib/core/channel/impl/GitHubChannel.dart',
   'lib/core/channel/impl/VivoChannel.dart',
-  // Test-seam only: `setTestDatabases` binds the injected test DB to the legacy
-  // manager's flag-off lane so flag-routed backup restores stay testable. It is
-  // not a production caller of the legacy manager.
-  'lib/core/service/backup_service.dart',
 };
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  late AppAddedDatabase addedDb;
-
   setUpAll(() {
     SharedPreferences.setMockInitialValues(const <String, Object>{});
-    final factory = createDatabaseFactoryFfi(
-      ffiInit: () => open.overrideFor(OperatingSystem.linux,
-          () => DynamicLibrary.open('libsqlite3.so.0')),
-    );
-    sqflite.databaseFactory = factory;
   });
 
   setUp(() async {
-    final dbFile = p.join(await sqflite.databaseFactory.getDatabasesPath(),
-        'catalog_cutover_parity_test.db');
-    await sqflite.databaseFactory.deleteDatabase(dbFile);
-    addedDb = await AppAddedDatabase.create(dbPath: dbFile);
-
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: false)),
     );
@@ -279,60 +259,50 @@ void main() {
     LegacyWriteGuard.resetForTest();
     CoreFlags.resetBackend();
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     CatalogFacade.backendOverride = null;
-    CatalogFacade.legacyBackendOverride = null;
     ModuleManager.instance.unbindByType(IBackupService);
     BackupService.instance.debugChannelsDirectory = null;
-    await addedDb.close();
-    final dbFile = p.join(await sqflite.databaseFactory.getDatabasesPath(),
-        'catalog_cutover_parity_test.db');
-    await sqflite.databaseFactory.deleteDatabase(dbFile);
   });
 
-  /// Dart can honestly prove the CUTOVER ROUTING: when the flag is off the
-  /// facade must consult only the legacy backend, and when it is on it must
-  /// consult only the core backend. Actual row equality is owned by the Rust
-  /// golden test (`rust/gstore_core/tests/catalog_parity_golden.rs`), not by a
-  /// Dart fake that would just echo the seed data back.
+  /// Dart can honestly prove the CUTOVER ROUTING: the added-apps facade is
+  /// core-only now (its legacy lane was deleted), and the catalog facade is
+  /// core-only too. Actual row equality is owned by the Rust golden test
+  /// (`rust/gstore_core/tests/catalog_parity_golden.rs`), not by a Dart fake
+  /// that would just echo the seed data back.
   test('flag_routing_consults_exactly_one_lane', () async {
-    // ---- Flag off: legacy only -------------------------------------------
-    final legacyAdded = _RecordingAddedApps('legacy');
+    // The added-apps facade is core-only now (the legacy Dart store was
+    // deleted); the catalog store is core-only too. Both must consult exactly
+    // their injected core backend, regardless of the flag.
     final coreAdded = _RecordingAddedApps('facade');
-    final legacyCatalog = _RecordingCatalog('legacy');
     final coreCatalog = _RecordingCatalog('facade');
 
-    var added = AddedAppsFacade(legacy: legacyAdded, frb: coreAdded);
-    var catalog = CatalogFacade(legacy: legacyCatalog, frb: coreCatalog);
+    var added = AddedAppsFacade(frb: coreAdded);
+    var catalog = CatalogFacade(frb: coreCatalog);
 
     await added.list();
     await added.tagsIndex();
     await catalog.list();
     await catalog.categories();
 
-    expect(legacyAdded.calls,
-        containsAll(<String>['legacy.list', 'legacy.tagsIndex']));
-    expect(legacyCatalog.calls,
-        containsAll(<String>['legacy.list', 'legacy.categories']));
-    expect(coreAdded.calls, isEmpty,
-        reason: 'flag off must not consult the core backend');
-    expect(coreCatalog.calls, isEmpty,
-        reason: 'flag off must not consult the core backend');
+    expect(coreAdded.calls,
+        containsAll(<String>['facade.list', 'facade.tagsIndex']),
+        reason: 'added apps are core-only regardless of the flag');
+    expect(coreCatalog.calls,
+        containsAll(<String>['facade.list', 'facade.categories']),
+        reason: 'the catalog store is core-only regardless of the flag');
 
-    // ---- Flag on: core only ----------------------------------------------
+    // ---- Flag on: still core only ----------------------------------------
     CoreFlags.resetBackend();
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true)),
     );
     await CoreFlags.refresh();
 
-    final legacyAddedOn = _RecordingAddedApps('legacy');
     final coreAddedOn = _RecordingAddedApps('facade');
-    final legacyCatalogOn = _RecordingCatalog('legacy');
     final coreCatalogOn = _RecordingCatalog('facade');
 
-    added = AddedAppsFacade(legacy: legacyAddedOn, frb: coreAddedOn);
-    catalog = CatalogFacade(legacy: legacyCatalogOn, frb: coreCatalogOn);
+    added = AddedAppsFacade(frb: coreAddedOn);
+    catalog = CatalogFacade(frb: coreCatalogOn);
 
     await added.list();
     await added.tagsIndex();
@@ -343,10 +313,6 @@ void main() {
         containsAll(<String>['facade.list', 'facade.tagsIndex']));
     expect(coreCatalogOn.calls,
         containsAll(<String>['facade.list', 'facade.categories']));
-    expect(legacyAddedOn.calls, isEmpty,
-        reason: 'flag on must make zero legacy-manager calls');
-    expect(legacyCatalogOn.calls, isEmpty,
-        reason: 'flag on must make zero legacy-manager calls');
   });
 
   test('cutover_callers_do_not_touch_the_legacy_manager', () async {
@@ -387,27 +353,24 @@ void main() {
 
   test('catalog_restores_through_core_and_a_channel_block_is_a_warning',
       () async {
-    // The catalog domain is restored through the flag-routed facade (core lane);
-    // a channel-domain block is a typed WARNING on the result — never a thrown
-    // exception and never a whole-restore failure. The core lane is made
-    // deterministic by injecting a recording core backend; the legacy lane is
-    // replaced by a backend whose every member throws, so reaching it fails.
+    // The catalog domain is restored through the core facade; a channel-domain
+    // block is a typed WARNING on the result — never a thrown exception and
+    // never a whole-restore failure. The core lane is made deterministic by
+    // injecting a recording core backend.
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true)),
     );
     await CoreFlags.refresh();
 
     final core = _RecordingAddedApps('core');
-    final legacy = ThrowingAddedApps();
     AddedAppsFacade.backendOverride = core;
-    AddedAppsFacade.legacyBackendOverride = legacy;
 
     // Only the channel marker is armed: the catalog write proceeds, the channel
     // write is refused (fail-closed) and surfaced as a warning.
     LegacyWriteGuard.probeOverride =
         (String domain) async => domain == 'channel';
 
-    BackupService.instance.setTestDatabases(addedDb);
+    BackupService.instance.setTestInitialized();
     ModuleManager.instance.bindByType(IBackupService, BackupService.instance);
 
     final channelsDir = Directory.systemTemp.createTempSync('restore_core_lane');
@@ -461,8 +424,6 @@ void main() {
         reason: 'the file-path restore must complete, not abort');
     expect(core.calls, contains('core.add'),
         reason: 'the catalog portion must restore through the core backend');
-    expect(legacy.calls, isEmpty,
-        reason: 'catalog on must never reach the legacy manager lane');
     expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse,
         reason: '_restoreChannelPackages must fail closed on a channel block');
 

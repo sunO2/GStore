@@ -179,28 +179,27 @@ _ReportCoreBackend _goldenCoreBackend({
   );
 }
 
-/// Legacy-lane fake manager: reproduces `UpdateManagerService.checkUpdates`
-/// state + persistence (the same four prefs keys) without touching channels.
+/// Fixture lane: reproduces the deleted Dart engine's canonical state +
+/// persistence (the same four prefs keys) without touching channels.
+///
+/// The engine and its `UpdateCache` writers were removed in this increment, so
+/// the fixture reproduces the four-key output directly. The parity diff below
+/// therefore still compares a legacy-shaped canonical document against the real
+/// Rust golden.
 ///
 /// [checkCount] is FIXTURE INSTRUMENTATION, not a production counter. It exists
-/// only so this test can prove the legacy engine did (legacy half) or did not
-/// (core half) run.
+/// only so this test can prove the fixture lane ran (or did not).
 class _FixtureUpdateManager extends UpdateManagerService {
   _FixtureUpdateManager({List<AppUpdateInfo>? updates})
       : _fixture = updates ?? const <AppUpdateInfo>[];
 
   final List<AppUpdateInfo> _fixture;
 
-  /// Fixture instrumentation: number of times this fake legacy engine ran.
+  /// Fixture instrumentation: number of times this fixture lane ran.
   int checkCount = 0;
 
-  @override
-  Future<void> checkUpdates({
-    bool force = false,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) async {
+  /// Replays the deleted engine's canonical state + four-key persistence.
+  Future<void> runFixtureCheck() async {
     checkCount++;
     final logs = <CheckLogEntry>[
       CheckLogEntry(
@@ -233,12 +232,26 @@ class _FixtureUpdateManager extends UpdateManagerService {
       checkedCount: _fixture.length,
       totalCount: _fixture.length,
     );
-    // The real manager persists these four keys; parity is defined on them.
-    await UpdateCache.saveCheckedAt(_checkedAt);
-    await UpdateCache.saveResults(_fixture);
-    await UpdateCache.saveLogs(logs);
-    onCheckList?.call(<String>[for (final update in _fixture) update.appName]);
-    onLog?.call(CheckLogLevel.update, logs.last.text);
+    // The real manager persisted these keys; the fixture writes them directly
+    // (its writer helpers were removed with the engine). Parity is defined on
+    // these four keys.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      'update_last_checked_at',
+      _checkedAt.millisecondsSinceEpoch,
+    );
+    await prefs.setString(
+      'update_results_v1',
+      jsonEncode(<Map<String, dynamic>>[
+        for (final update in _fixture) update.toCacheJson(),
+      ]),
+    );
+    await prefs.setString(
+      'update_check_logs_v1',
+      jsonEncode(<Map<String, dynamic>>[
+        for (final entry in logs) entry.toJson(),
+      ]),
+    );
   }
 }
 
@@ -316,61 +329,6 @@ class _ReportCoreBackend extends _RecordingCoreBackend
 
   @override
   CoreCheckReport? get lastReport => report;
-}
-
-/// A legacy backend that records every call and does nothing else. Injecting it
-/// on the core half proves the production facade never reaches the legacy lane
-/// while `update` is authoritative — independently of the fixture counter.
-class _RecordingLegacyBackend extends UpdateBackend {
-  final List<String> calls = <String>[];
-
-  @override
-  Future<List<AppUpdateInfo>> check({required bool force}) async {
-    calls.add('check:$force');
-    return const <AppUpdateInfo>[];
-  }
-
-  @override
-  Future<List<AppUpdateInfo>> run() async {
-    calls.add('run');
-    return const <AppUpdateInfo>[];
-  }
-
-  @override
-  Future<List<AppUpdateInfo>> list() async {
-    calls.add('list');
-    return const <AppUpdateInfo>[];
-  }
-
-  @override
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async {
-    calls.add('checkApp:$appId');
-    return null;
-  }
-
-  @override
-  Future<bool> markUpdated(String appId) async {
-    calls.add('markUpdated:$appId');
-    return false;
-  }
-
-  @override
-  Future<bool> hasUpdate(String appId) async {
-    calls.add('hasUpdate:$appId');
-    return false;
-  }
-
-  @override
-  Future<int> count() async {
-    calls.add('count');
-    return 0;
-  }
-
-  @override
-  Future<bool> cacheValid() async {
-    calls.add('cacheValid');
-    return false;
-  }
 }
 
 /// Core-lane fake that throws a raw core error, exactly like a rejected FRB
@@ -473,12 +431,10 @@ List<String> _canonicalDiff(
 }
 
 const Set<String> _legacyManagerAllowlist = <String>{
-  // The legacy service definition itself.
+  // The state-holder definition itself.
   'lib/core/update/update_manager.dart',
-  // The facade owns the only remaining calls: the legacy backend
-  // (`update_backends.dart`) and the shared reactive state mirror
-  // (`update_facade.dart`). No production caller may touch it directly.
-  'lib/core/update/update_backends.dart',
+  // The facade owns the shared reactive state mirror (`update_facade.dart`).
+  // No production caller may touch it directly.
   'lib/core/update/update_facade.dart',
 };
 
@@ -493,7 +449,6 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     UpdateFacade.backendOverride = null;
-    UpdateFacade.legacyBackendOverride = null;
     CoreBootstrap.reset();
     await ModuleManager.instance.clear();
   });
@@ -501,21 +456,19 @@ void main() {
   test('update_cutover_parity_diff_empty', () async {
     final goldenCanonical = _goldenCanonical();
 
-    // ---- legacy lane: flag off, legacy service writes the canonical state ----
+    // ---- fixture lane: the deleted engine's canonical output, simulated ----
     CoreFlags.installBackend(_FakeFlagsBackend(const CoreFlagsSnapshot()));
     await CoreFlags.refresh();
     UpdateFacade.backendOverride = null;
-    UpdateFacade.legacyBackendOverride = null;
 
     final legacyManager = _FixtureUpdateManager(updates: _legacyUpdates());
     legacyManager.debugSetState(lastCheckedAt: _checkedAt);
     await _seedPreferredApk();
-    await _runNotifierCheck(legacyManager);
+    await legacyManager.runFixtureCheck();
 
-    // Positive control: the legacy fixture engine really ran, so the probe
-    // below is demonstrably capable of firing (it is not a dead counter).
+    // Positive control: the fixture lane really ran (not a dead counter).
     expect(legacyManager.checkCount, 1,
-        reason: 'positive control: the legacy fixture engine must run once');
+        reason: 'positive control: the fixture lane must run once');
 
     final legacyPrefs = await SharedPreferences.getInstance();
     final legacyCanonical = _canonicalFromPrefs(legacyPrefs);
@@ -557,25 +510,17 @@ void main() {
     await _seedPreferredApk();
     final coreBackend = _goldenCoreBackend();
     UpdateFacade.backendOverride = coreBackend;
-    // Production-boundary proof: a recording legacy backend is available, but
-    // with `update` authoritative the facade must never consult it.
-    final legacyProbe = _RecordingLegacyBackend();
-    UpdateFacade.legacyBackendOverride = legacyProbe;
 
     final coreManager = _FixtureUpdateManager();
     coreManager.debugSetState(lastCheckedAt: _checkedAt);
     final coreState = await _runNotifierCheck(coreManager);
 
-    // The facade path is REAL: the core backend was consulted and the legacy
-    // engine was not. A fake that never runs cannot fake parity.
+    // The facade path is REAL: the core backend was consulted. A fake that
+    // never runs cannot fake parity.
     expect(coreBackend.calls, isNotEmpty,
         reason: 'flag on + facade path must consult the core backend');
-    expect(legacyProbe.calls, isEmpty,
-        reason:
-            'flag on must never consult the legacy backend, even when injected');
     expect(coreManager.checkCount, 0,
-        reason:
-            'fixture instrumentation: flag on must not run the legacy engine');
+        reason: 'fixture instrumentation: the fixture lane must not run here');
     expect(coreState.updateList, hasLength(2),
         reason: 'the facade must mirror the core report into the shared state');
 
@@ -664,12 +609,12 @@ void main() {
   });
 
   test('fixture_check_count_probe_is_falsifiable', () async {
-    // Committed positive control for the D1 probe: it fires when the legacy
-    // engine runs and stays zero when nothing ran.
+    // Committed positive control for the D1 probe: it fires when the fixture
+    // lane runs and stays zero when nothing ran.
     final called = _FixtureUpdateManager(updates: _legacyUpdates());
-    await called.checkUpdates(force: true);
+    await called.runFixtureCheck();
     expect(called.checkCount, 1,
-        reason: 'the fixture probe must fire when the legacy engine runs');
+        reason: 'the fixture probe must fire when the fixture lane runs');
     final notCalled = _FixtureUpdateManager(updates: _legacyUpdates());
     expect(notCalled.checkCount, 0,
         reason: 'the fixture probe stays zero when nothing ran');

@@ -72,42 +72,22 @@ const List<_Writer> _writers = <_Writer>[
       'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'addApp', 'channel'),
   _Writer('lib/core/channel/impl/FdroidChannel.dart', 'removeApp', 'channel'),
-  _Writer('lib/core/channel/impl/channel_loader.dart', 'importZip', 'channel'),
-  _Writer('lib/core/channel/impl/channel_loader.dart', 'removeChannel',
-      'channel'),
-  _Writer('lib/core/channel/impl/JsChannel.dart', '_persistApps', 'js_channel'),
-  _Writer('lib/core/channel/impl/JsChannel.dart', 'removeApp', 'js_channel'),
-  _Writer('lib/core/js/js_channel_runtime.dart', '_registerDatabaseHost',
-      'js_channel'),
   _Writer('lib/core/service/apk_info_service.dart',
       '_updateNameAndIconAfterInstall', 'channel'),
   _Writer(
       'lib/core/service/backup_service.dart', '_importChannelApps', 'channel'),
   _Writer('lib/core/service/backup_service.dart', '_restoreChannelPackages',
       'channel'),
-  _Writer('lib/core/service/db_manager.dart', 'addDBRepositroy', 'channel'),
   // ---------------------------------------------------------------- catalog
-  _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'addApp', 'catalog'),
-  _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'addApps', 'catalog'),
-  _Writer(
-      'lib/core/aggregate/AppAggregatorManager.dart', 'removeApp', 'catalog'),
-  _Writer(
-      'lib/core/aggregate/AppAggregatorManager.dart', 'renameApp', 'catalog'),
-  _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'setTags', 'catalog'),
-  _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'addTag', 'catalog'),
-  _Writer(
-      'lib/core/aggregate/AppAggregatorManager.dart', 'removeTag', 'catalog'),
-  _Writer('lib/core/aggregate/AppAggregatorManager.dart', 'clearChannel',
-      'catalog'),
-  _Writer(
-      'lib/core/aggregate/AppAggregatorManager.dart', 'clearAll', 'catalog'),
-  _Writer('lib/core/aggregate/added_apps_facade.dart', 'setOrder', 'catalog'),
-  _Writer('lib/core/service/db_manager.dart', '_checkUpdateDBOfRepositroy',
-      'catalog'),
+  // The pure-Rust cleanup deleted the legacy Dart added-apps store
+  // (`AppAddedDatabase`) and its DB-backed writers on `AppAggregatorManager`
+  // (addApp/addApps/removeApp/renameApp/setTags/addTag/removeTag/clearChannel/
+  // clearAll) plus the facade's legacy `setOrder`. The catalog domain is now
+  // written only by the Rust core, so no Dart `catalog` writer remains here.
   // ----------------------------------------------------------------- update
-  _Writer('lib/core/update/update_cache.dart', 'saveCheckedAt', 'update'),
-  _Writer('lib/core/update/update_cache.dart', 'saveResults', 'update'),
-  _Writer('lib/core/update/update_cache.dart', 'saveLogs', 'update'),
+  // The update-engine increment deleted the Dart `UpdateCache` result/log/time
+  // writers (`saveCheckedAt` / `saveResults` / `saveLogs`); only the surviving
+  // preferred-APK writer remains a guarded legacy writer.
   _Writer('lib/core/update/update_cache.dart', 'savePreferredApk', 'update'),
   _Writer('lib/core/config/providers/update_config_provider.dart', 'save',
       'update'),
@@ -233,15 +213,6 @@ String _stripComments(String source) {
   return out.toString();
 }
 
-/// Recursively lists `.dart` sources under [dir].
-List<File> _dartFiles(Directory dir) {
-  final files = <File>[];
-  for (final entity in dir.listSync(recursive: true)) {
-    if (entity is File && entity.path.endsWith('.dart')) files.add(entity);
-  }
-  return files;
-}
-
 void main() {
   setUp(() {
     LegacyWriteGuard.resetForTest();
@@ -280,28 +251,8 @@ void main() {
           reason: 'every legacy writer must call '
               'LegacyWriteGuard.assertAllowed(<domain>) before writing:\n'
               '${failures.join('\n')}');
-      expect(_writers.length, greaterThanOrEqualTo(40),
+      expect(_writers.length, greaterThanOrEqualTo(17),
           reason: 'the writer inventory must stay exhaustive');
-    });
-
-    test('js_channel has guarded Dart writer call sites after B3', () {
-      // Closeout-B3 re-domained the Dart JS writers from `channel` to
-      // `js_channel`; the field is no longer reserved. Every JS writer must
-      // probe the js_channel marker instead of the channel one.
-      final guarded = <String>[];
-      for (final file in _dartFiles(Directory('lib'))) {
-        if (file.readAsStringSync().contains("assertAllowed('js_channel')")) {
-          guarded.add(file.path.replaceAll(r'\', '/'));
-        }
-      }
-      expect(
-        guarded,
-        containsAll(<String>[
-          'lib/core/channel/impl/JsChannel.dart',
-          'lib/core/js/js_channel_runtime.dart',
-        ]),
-        reason: 'the JS writers must probe the js_channel marker: $guarded',
-      );
     });
 
     test('guard binds at bootstrap through the CoreApi facade', () {
@@ -413,9 +364,9 @@ void main() {
       }
 
       expect(seen, expected);
-      // Closeout-B3 adds the js_channel domain (Dart JS writers).
-      expect(expected.toSet(),
-          <String>{'channel', 'js_channel', 'catalog', 'update'});
+      // The pure-Rust cleanup deleted the Dart JS writers, so the `js_channel`
+      // domain no longer has any guarded Dart writer.
+      expect(expected.toSet(), <String>{'channel', 'catalog', 'update'});
     });
   });
 

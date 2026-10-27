@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/core_flags.dart';
@@ -291,30 +291,26 @@ void main() {
   tearDown(() {
     CoreFlags.resetBackend();
     CatalogFacade.backendOverride = null;
-    CatalogFacade.legacyBackendOverride = null;
     AddedAppsFacade.backendOverride = null;
-    AddedAppsFacade.legacyBackendOverride = null;
     UpdateFacade.backendOverride = null;
-    UpdateFacade.legacyBackendOverride = null;
   });
 
-  test('flag off routes catalog/added/update to the legacy backends only',
+  test('catalog/added/update are core-only (the legacy lanes were deleted)',
       () async {
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot()),
     );
     await CoreFlags.refresh();
 
-    final legacyCatalog = _FakeCatalogBackend('legacy');
     final frbCatalog = _FakeCatalogBackend('frb');
-    final legacyAdded = _FakeAddedAppsBackend('legacy');
     final frbAdded = _FakeAddedAppsBackend('frb');
-    final legacyUpdate = _FakeUpdateBackend('legacy');
     final frbUpdate = _FakeUpdateBackend('frb');
 
-    final catalog = CatalogFacade(legacy: legacyCatalog, frb: frbCatalog);
-    final added = AddedAppsFacade(legacy: legacyAdded, frb: frbAdded);
-    final update = UpdateFacade(legacy: legacyUpdate, frb: frbUpdate);
+    final catalog = CatalogFacade(frb: frbCatalog);
+    final added = AddedAppsFacade(frb: frbAdded);
+    // The legacy Dart update engine was removed: the update facade always runs
+    // on the core backend, independent of the flag.
+    final update = UpdateFacade(frb: frbUpdate);
 
     expect((await catalog.list()).single.appId, 'com.example.alpha');
     expect((await catalog.search('alpha')).length, 1);
@@ -332,28 +328,29 @@ void main() {
     expect((await update.run()).single.appId, 'owner/repo');
     expect(await update.count(), 1);
 
-    expect(frbCatalog.calls, isEmpty,
-        reason: 'flag off must not touch FRB catalog');
-    expect(frbAdded.calls, isEmpty,
-        reason: 'flag off must not touch FRB added apps');
-    expect(frbUpdate.calls, isEmpty,
-        reason: 'flag off must not touch FRB update');
+    // The catalog store no longer has a legacy lane: even with the flag off the
+    // facade consults the core backend.
     expect(
-      legacyCatalog.calls,
+      frbCatalog.calls,
       containsAll(<String>[
-        'legacy.list',
-        'legacy.search:alpha',
-        'legacy.categories',
-        'legacy.getAppDetail:com.example.alpha',
-        'legacy.refresh:https://example.test/apps.db',
+        'frb.list',
+        'frb.search:alpha',
+        'frb.categories',
+        'frb.getAppDetail:com.example.alpha',
+        'frb.refresh:https://example.test/apps.db',
       ]),
     );
-    expect(legacyAdded.calls, contains('legacy.setOrder:github:owner/repo:9'));
-    expect(legacyUpdate.calls, contains('legacy.check:true'));
+    // Added apps are core-only too: the legacy Dart store was deleted.
+    expect(frbAdded.calls, contains('frb.setOrder:github:owner/repo:9'));
+    expect(frbAdded.calls, contains('frb.add:github:owner/repo:3'));
+    expect(frbAdded.calls, contains('frb.setTags:github:owner/repo:favorite'));
+    // Update no longer has a legacy lane: even with the flag off the facade
+    // consults the core backend.
+    expect(frbUpdate.calls, contains('frb.check:true'));
+    expect(frbUpdate.calls, contains('frb.run'));
   });
 
-  test('flag on routes catalog/added/update to the FRB backends only',
-      () async {
+  test('catalog/added/update route to the FRB backends', () async {
     CoreFlags.installBackend(
       _FakeFlagsBackend(
         const CoreFlagsSnapshot(catalog: true, update: true),
@@ -361,16 +358,13 @@ void main() {
     );
     await CoreFlags.refresh();
 
-    final legacyCatalog = _FakeCatalogBackend('legacy');
     final frbCatalog = _FakeCatalogBackend('frb');
-    final legacyAdded = _FakeAddedAppsBackend('legacy');
     final frbAdded = _FakeAddedAppsBackend('frb');
-    final legacyUpdate = _FakeUpdateBackend('legacy');
     final frbUpdate = _FakeUpdateBackend('frb');
 
-    final catalog = CatalogFacade(legacy: legacyCatalog, frb: frbCatalog);
-    final added = AddedAppsFacade(legacy: legacyAdded, frb: frbAdded);
-    final update = UpdateFacade(legacy: legacyUpdate, frb: frbUpdate);
+    final catalog = CatalogFacade(frb: frbCatalog);
+    final added = AddedAppsFacade(frb: frbAdded);
+    final update = UpdateFacade(frb: frbUpdate);
 
     expect((await catalog.list()).single.appId, 'com.example.alpha');
     expect((await catalog.listPage(offset: 0, limit: 10)).total, 1);
@@ -386,12 +380,6 @@ void main() {
     expect(await update.markUpdated('owner/repo'), isTrue);
     expect(await update.cacheValid(), isTrue);
 
-    expect(legacyCatalog.calls, isEmpty,
-        reason: 'flag on must not touch legacy catalog');
-    expect(legacyAdded.calls, isEmpty,
-        reason: 'flag on must not touch legacy added apps');
-    expect(legacyUpdate.calls, isEmpty,
-        reason: 'flag on must not touch legacy update');
     expect(frbCatalog.calls, contains('frb.list'));
     expect(frbAdded.calls, contains('frb.add:github:owner/repo:null'));
     expect(frbUpdate.calls, contains('frb.run'));
@@ -408,7 +396,6 @@ void main() {
     const eventJson =
         '{"event":"catalog.changed","payload":{"key":"local_db","app_id":null,"removed":false}}';
     final catalog = CatalogFacade(
-      legacy: _FakeCatalogBackend('legacy'),
       frb: _FakeCatalogBackend('frb', eventsJson: eventJson),
     );
 
@@ -419,7 +406,7 @@ void main() {
     expect(outcome.eventsJson, contains('"event":"catalog.changed"'));
   });
 
-  test('flag-on backend errors surface instead of silently falling back',
+  test('core backend errors surface instead of silently falling back',
       () async {
     CoreFlags.installBackend(
       _FakeFlagsBackend(const CoreFlagsSnapshot(catalog: true)),
@@ -427,7 +414,6 @@ void main() {
     await CoreFlags.refresh();
 
     final catalog = CatalogFacade(
-      legacy: _FakeCatalogBackend('legacy'),
       frb: _ThrowingCatalogBackend(),
     );
 

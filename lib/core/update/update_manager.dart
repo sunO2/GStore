@@ -1,25 +1,21 @@
-/// 集中式更新管理服务
+/// 更新检测共享状态仓库
 ///
-/// 统一的更新检测入口 + 状态仓库 + 缓存：
-/// - 消除启动/更新页/Agent 三处重复检测（锁 + 时间窗）
-/// - 检测结果以 Rx 状态暴露，供红点/可更新分区/更新页/Agent 共用
-/// - 支持手动强制检测、Agent 单应用查询、安装后状态刷新
+/// 检测由 `UpdateFacade`（core/FRB 通道）负责；本服务只保留响应式状态面：
+/// - 检测结果/日志/进度/时间以广播 stream + live getter 暴露，供红点/
+///   可更新分区/更新页/Agent 共用
+/// - `UpdateFacade` 通过 `beginFacadeCheck`/`adoptFacadeCheck`/`failFacadeCheck`/
+///   `removeFacadeUpdated` 把 core 结果回放到本服务
 /// - 启动恢复缓存结果（重启后立即可展示上次可更新应用）
-/// - 检测过程输出详细日志（onLog）与逐应用进度（onProgress），供更新页滚轮/图标/日志展示
+///
+/// 旧 Dart 检测引擎（`ensureChecked`/`checkUpdates`/`checkApp`/`markUpdated`
+/// 及其私有助手）已在核心接管 update 域后删除。
 library;
 
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:installed_apps/installed_apps.dart';
-import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/catalog/catalog_facade.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_log.dart';
 
@@ -128,9 +124,6 @@ class UpdateManagerService {
   /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
   late final Future<void> cacheRestored = _restoreCache();
 
-  /// 时间窗（小时）：非强制检测时，距上次检测不足该时长则跳过
-  static const int cacheValidHours = 1;
-
   /// 模块初始化时调用：启动恢复缓存结果（重启后立即展示上次检测出的可更新应用）
   void restoreCacheInBackground() {
     unawaited(cacheRestored);
@@ -166,279 +159,6 @@ class UpdateManagerService {
     }
   }
 
-  /// 启动后懒检测（后台静默；时间窗内跳过）
-  /// 结果为空时必须检测：时间窗仅用于"已有结果"时的防重，
-  /// 不能因时间窗跳过而导致启动后看不到可更新应用
-  Future<void> ensureChecked({bool force = false}) async {
-    // 核心拥有 update 域时（`CoreFlags.update`）旧 Dart 引擎 inert：检测由
-    // `UpdateFacade`/FRB 负责，本服务仅保留共享状态面。引擎可随后整体删除。
-    if (CoreFlags.update) return;
-    // 锁：检测中直接返回（不重复、不排队）
-    if (isChecking) return;
-
-    // 时间窗：非强制、已有结果、缓存有效 → 跳过
-    if (!force && updateList.isNotEmpty && await _isCacheValid()) return;
-
-    await checkUpdates(force: true);
-  }
-
-  /// 主动检测（页面刷新 / 手动触发）
-  /// [onProgress] 逐应用进度回调（检测前 appId 占位，检测后携带名称/图标），供更新页滚轮/图标/进度展示
-  /// [onLog] 检测过程日志回调（渠道不可用/未安装/版本对比/发现更新等），供更新页日志输出
-  /// [onCheckList] 待检测应用名列表回调（检测前一次性提供，供更新页滚轮预填完整名单）
-  Future<void> checkUpdates({
-    bool force = false,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) async {
-    // 核心拥有 update 域时旧 Dart 检测引擎 inert（UpdateFacade 走 FRB）。
-    if (CoreFlags.update) return;
-    if (isChecking) return; // 并发锁
-    _isChecking = true;
-    _notifyIsChecking();
-
-    void log(CheckLogLevel level, String msg) {
-      appLog.debug('[UpdateManager] $msg');
-      // 统一收集（前台页面回调 + 内存流 + 持久化，保证前后台格式一致）
-      _checkLog.add(CheckLogEntry(level: level, text: msg));
-      _notifyCheckLog();
-      onLog?.call(level, msg);
-    }
-
-    try {
-      // 新一轮检测：清空历史日志，开始提示统一由 manager 产出
-      _checkLog.clear();
-      _notifyCheckLog();
-      log(CheckLogLevel.info, '开始检测应用更新...');
-
-      final manager = ChannelManager.instance;
-      // 已添加应用走 facade（flag off → legacy manager，flag on → core）。
-      final addedApps = await AddedAppsFacade.instance.list();
-      final total = addedApps.length;
-
-      // 构建待检测应用名列表（优先 catalog 真实名，兜底 appId）供滚轮预填
-      List<String> appNames;
-      try {
-        final nameById = <String, String>{};
-        for (final added in addedApps) {
-          final summary = await CatalogFacade.instance.getApp(added.appId);
-          final name = (summary?.name ?? '').trim();
-          nameById[added.appId] = name.isEmpty ? added.appId : name;
-        }
-        appNames = [
-          for (final added in addedApps) nameById[added.appId] ?? added.appId,
-        ];
-      } catch (_) {
-        // catalog 获取失败时用 appId 兜底
-        appNames = [for (final added in addedApps) added.appId];
-      }
-      onCheckList?.call(appNames);
-      // 共享状态：待检测名单/总数（页面订阅镜像，后台检测同样产出）
-      _checkList
-        ..clear()
-        ..addAll(appNames);
-      _notifyCheckList();
-      _totalCount = total;
-      _notifyTotalCount();
-      log(CheckLogLevel.info, '已添加应用共 $total 个');
-
-      final newUpdateList = <AppUpdateInfo>[];
-      for (var i = 0; i < addedApps.length; i++) {
-        final added = addedApps[i];
-        // 检测前进度：appId 占位（名称以 onCheckList 预填的滚轮为准）
-        final preProgress = UpdateCheckProgress(
-          appId: added.appId,
-          appName: appNames[i],
-          index: i,
-          total: total,
-        );
-        onProgress?.call(preProgress);
-        _publishProgress(preProgress);
-        final info = await _checkOneApp(added, manager, log);
-        // 检测后进度：携带结果名称/图标
-        if (info != null) {
-          newUpdateList.add(info);
-          final postProgress = UpdateCheckProgress(
-            appId: info.appId,
-            appName: info.appName,
-            iconUrl: info.iconUrl,
-            index: i,
-            total: total,
-            hasResult: true,
-          );
-          onProgress?.call(postProgress);
-          _publishProgress(postProgress);
-        }
-      }
-
-      _updateList
-        ..clear()
-        ..addAll(newUpdateList);
-      _notifyUpdateList();
-      _lastCheckedAt = DateTime.now();
-      _notifyLastCheckedAt();
-      // 持久化检测时间 + 结果 + 日志（跨重启时间窗 + 结果展示 + 日志回看）
-      await UpdateCache.saveCheckedAt(_lastCheckedAt!);
-      await UpdateCache.saveResults(newUpdateList);
-      await UpdateCache.saveLogs(List.of(_checkLog));
-      log(CheckLogLevel.update, '检测完成：发现 ${newUpdateList.length} 个可更新应用');
-      if (newUpdateList.isEmpty) {
-        log(CheckLogLevel.none, '所有已添加应用均已是最新版本');
-      }
-    } catch (e) {
-      appLog.error('UpdateManager: 检测更新失败 - $e');
-      onLog?.call(CheckLogLevel.error, '检测失败: $e');
-    } finally {
-      _isChecking = false;
-      _notifyIsChecking();
-    }
-  }
-
-  /// 发布进度到共享状态（前台/后台检测同源，页面订阅镜像）
-  void _publishProgress(UpdateCheckProgress progress) {
-    _currentProgress = progress;
-    _notifyCurrentProgress();
-    _checkedCount = progress.index + 1;
-    _notifyCheckedCount();
-    _totalCount = progress.total;
-    _notifyTotalCount();
-    _checkingAppName = progress.appName;
-    _notifyCheckingAppName();
-    if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
-      _checkingIconUrl = progress.iconUrl;
-      _notifyCheckingIconUrl();
-    }
-  }
-
-  /// 检测单个应用（复用渠道 checkAppUpdate + 已安装版本比对）
-  /// 检测过程输出详细日志（与旧版 UpdateLogic._checkOneApp 等价）
-  Future<AppUpdateInfo?> _checkOneApp(
-    AddedAppInfo addedApp,
-    ChannelManager manager,
-    void Function(CheckLogLevel level, String message) log,
-  ) async {
-    final appId = addedApp.appId;
-    if (appId.isEmpty) return null;
-
-    final channelType = ChannelType.fromCode(addedApp.channelId);
-    if (channelType == null) return null;
-    final channel = manager.getChannel(channelType);
-    final channelName = channelType.description;
-    if (channel == null) {
-      log(CheckLogLevel.skip, '$appId：渠道不可用');
-      return null;
-    }
-
-    log(CheckLogLevel.info, '$appId（$channelName）：获取渠道信息...');
-    try {
-      final checkResult = await channel.checkAppUpdate(appId);
-      if (!checkResult.success || checkResult.data == null) {
-        log(CheckLogLevel.skip, '$appId：${checkResult.error ?? '渠道检测失败'}');
-        return null;
-      }
-      final check = checkResult.data!;
-      final displayName = check.name.isNotEmpty ? check.name : appId;
-
-      final packageName = check.packageName.trim().isNotEmpty
-          ? check.packageName.trim()
-          : appId;
-      if (packageName.isEmpty) {
-        log(CheckLogLevel.skip, '$displayName：无有效包名');
-        return null;
-      }
-
-      // 仅检测已安装的应用
-      final isInstalled = await InstalledApps.isAppInstalled(packageName);
-      if (isInstalled != true) {
-        log(CheckLogLevel.skip, '$displayName（$packageName）：未安装，跳过');
-        return null;
-      }
-
-      final installed = await InstalledApps.getAppInfo(packageName);
-      final installedVersion = installed?.versionName;
-      if (installedVersion == null || installedVersion.isEmpty) {
-        log(CheckLogLevel.skip, '$displayName：已安装但无法获取版本号');
-        return null;
-      }
-
-      final latestVersion = check.latestVersion;
-      if (latestVersion == null || latestVersion.isEmpty) {
-        log(CheckLogLevel.skip, '$displayName：渠道无版本信息（已安装 $installedVersion）');
-        return null;
-      }
-
-      // 最新版本更大则有更新
-      final hasUpdate = compareVersion(installedVersion, latestVersion) == 1;
-      log(
-        hasUpdate ? CheckLogLevel.installed : CheckLogLevel.none,
-        '$displayName：已安装 $installedVersion → 渠道最新 $latestVersion',
-      );
-
-      if (!hasUpdate) {
-        log(CheckLogLevel.none, '$displayName：已是最新版本');
-        return null;
-      }
-
-      final defaultDownload = check.latestDownload;
-      if (defaultDownload == null) {
-        log(CheckLogLevel.skip, '$displayName：有更新但无可下载文件');
-        return null;
-      }
-
-      // 用户 APK 选择偏好：存储命中 → 文件名相似度匹配最接近候选；否则现有
-      // selectBestDownload 规则（check.latestDownload 即渠道按设备架构选出的最佳）
-      final preferred = await UpdateCache.preferredApkName(addedApp.channelId, appId);
-      final download = selectDownloadWithPreference(
-        fallback: defaultDownload,
-        candidates: check.detail.downloads,
-        preferred: preferred,
-      );
-
-      log(CheckLogLevel.update, '$displayName：发现更新 $latestVersion');
-
-      return AppUpdateInfo(
-        channelId: addedApp.channelId,
-        appId: appId,
-        appName: displayName,
-        iconUrl: check.icon,
-        packageName: packageName,
-        installedVersion: installedVersion,
-        latestVersion: latestVersion,
-        latestDownload: download,
-        detail: check.detail,
-      );
-    } catch (e) {
-      log(CheckLogLevel.error, '$appId：检测异常 - $e');
-      return null;
-    }
-  }
-
-  /// 单应用查询（Agent 指定 appId；不污染全量缓存）
-  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async {
-    // 优先读缓存
-    final cached = getByAppId(appId);
-    if (cached != null) return cached;
-
-    // 核心拥有 update 域时单应用检测同样 inert（缓存未命中即返回 null，
-    // 不触碰渠道/引擎）。
-    if (CoreFlags.update) return null;
-
-    final channelType = channelCode != null && channelCode.isNotEmpty
-        ? ChannelType.fromCode(channelCode)
-        : null;
-    if (channelType == null) return null;
-
-    final inst = ChannelManager.instance.getChannel(channelType);
-    if (inst == null) return null;
-
-    final added = AddedAppInfo(
-      channelId: channelType.code,
-      appId: appId,
-    );
-    return _checkOneApp(added, ChannelManager.instance, (_, __) {});
-  }
-
   /// 指定应用是否有更新
   bool hasUpdate(String appId) => updateList.any((e) => e.appId == appId);
 
@@ -454,41 +174,6 @@ class UpdateManagerService {
       if (e.appId == appId) return e;
     }
     return null;
-  }
-
-  /// 安装更新成功后刷新状态：从可更新列表移除
-  /// 防御：若设备版本仍旧（安装未生效）则不移除
-  Future<void> markUpdated(String appId) async {
-    final info = getByAppId(appId);
-    if (info == null) return;
-    // 复核已安装版本是否已提升
-    try {
-      final installed = await InstalledApps.getAppInfo(info.packageName);
-      final installedVersion = installed?.versionName;
-      if (installedVersion != null &&
-          installedVersion.isNotEmpty &&
-          compareVersion(installedVersion, info.latestVersion) == 1) {
-        // 版本已提升 → 从列表移除
-        _updateList.removeWhere((e) => e.appId == appId);
-        _notifyUpdateList();
-        await UpdateCache.saveResults(List.of(_updateList));
-        appLog.info('UpdateManager: 应用已更新，移除可更新项 - $appId');
-      } else {
-        appLog.info('UpdateManager: 应用安装后版本未提升，保留可更新项 - $appId');
-      }
-    } catch (e) {
-      // 复核失败（如插件不可用）→ 直接移除（调用方确已触发安装）
-      _updateList.removeWhere((e) => e.appId == appId);
-      _notifyUpdateList();
-      await UpdateCache.saveResults(List.of(_updateList));
-    }
-  }
-
-  /// 缓存是否有效（距上次检测未超时间窗）
-  Future<bool> _isCacheValid() async {
-    final last = _lastCheckedAt ?? await UpdateCache.lastCheckedAt();
-    if (last == null) return false;
-    return DateTime.now().difference(last).inHours < cacheValidHours;
   }
 
   // ===== Facade/core 通道的共享状态镜像 =====

@@ -14,32 +14,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// 更新管理页 widget 测试
 /// 复现"缓存有更新 → 点日志按钮 → 标题状态"场景
-class _FakeUpdateManager extends UpdateManagerService {
-  _FakeUpdateManager(this.items);
-
-  final List<AppUpdateInfo> items;
-
-  @override
-  void onInit() {}
-
-  @override
-  Future<void> checkUpdates({
-    bool force = false,
-    void Function(UpdateCheckProgress progress)? onProgress,
-    void Function(CheckLogLevel level, String message)? onLog,
-    void Function(List<String> appNames)? onCheckList,
-  }) async {
-    debugSetState(
-      checkList: ['示例应用'],
-      checkedCount: 1,
-      totalCount: 1,
-      checkLog: [
-        CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用'),
-      ],
-      updateList: items,
-    );
-  }
-}
+///
+/// 检测引擎已删除：这里只注入共享状态仓库（UpdateManagerService）的缓存态，
+/// 页面进入直接展示缓存结果，不再触发检测。
 
 AppUpdateInfo _sampleInfo() => AppUpdateInfo(
       channelId: 'github',
@@ -65,7 +42,7 @@ void main() {
 
   testWidgets('缓存有更新：点日志按钮后标题显示"检测完成"而非"正在检测"', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    final fake = _FakeUpdateManager([_sampleInfo()]);
+    final fake = UpdateManagerService();
     // 模拟缓存已恢复：有可更新结果 + 历史日志 + 上次检测时间
     fake.debugSetState(
       updateList: [_sampleInfo()],
@@ -104,7 +81,7 @@ void main() {
 
   testWidgets('无更新缓存：进入直接显示检测完成页（含历史日志）', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    final fake = _FakeUpdateManager([]);
+    final fake = UpdateManagerService();
     fake.debugSetState(
       checkLog: [
         CheckLogEntry(level: CheckLogLevel.none, text: '所有已添加应用均已是最新版本'),
