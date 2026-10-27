@@ -14,9 +14,6 @@ import 'package:rhttp/rhttp.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_service.dart';
-import 'package:gstore/core/download/core/dio_download_engine.dart';
-import 'package:gstore/core/download/manager/download_manager.dart';
-import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/service/db_manager.dart';
@@ -138,20 +135,6 @@ class DbModule extends AppModule {
     // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
     manager.lazyPut<GithubAuthApi>(
         () => GithubAuthApi(DioClient.createOAuthClient()));
-    manager.lazyPut<DownloadManager>(() => DownloadManager(
-          engine: DioDownloadEngine(dio: DioClient().get()),
-          repository: DownloadRepository(),
-          onApkReady: (filePath) async {
-            final m = manager.get<InstallManager>();
-            if (m == null) return;
-            try {
-              await m.installApk(filePath, moduleInstall: true);
-            } catch (error) {
-              // 标记归属拦截/安装异常都不得逃逸成未处理的异步错误。
-              appLog.error('DbModule: onApkReady 安装失败（已记录） - $error');
-            }
-          },
-        ));
 
     await DbManager().init();
     manager.bind<DbManager>(DbManager.instance);

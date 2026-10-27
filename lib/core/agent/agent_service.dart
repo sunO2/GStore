@@ -46,9 +46,7 @@ import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
-import 'package:gstore/core/download/model/download_task_database.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
@@ -3246,11 +3244,11 @@ class AgentService {
   /// 下载管理
   Future<String> _manageDownloads(String action, String fileName) async {
     try {
-      final repository = DownloadRepository();
       final service = ModuleManager.instance.get<IDownloadService>();
       switch (action) {
         case 'list':
-          final items = await repository.all();
+          if (service == null) return '下载模块未启用';
+          final items = await service.listTasks();
           if (items.isEmpty) return '暂无下载记录';
           final lines = items
               .map((d) => '• ${d.appName} ${d.fileName} 状态: ${_statusLabel(d.status)}')
@@ -3260,7 +3258,7 @@ class AgentService {
         case 'pause':
           if (fileName.isEmpty) return '暂停需要 fileName';
           if (service == null) return '下载模块未启用';
-          final items = await repository.all();
+          final items = await service.listTasks();
           final item = items.where((d) => d.fileName == fileName).firstOrNull;
           if (item == null) return '未找到下载: $fileName';
           final id = item.id;
@@ -3271,7 +3269,7 @@ class AgentService {
         case 'resume':
           if (fileName.isEmpty) return '恢复需要 fileName';
           if (service == null) return '下载模块未启用';
-          final items = await repository.all();
+          final items = await service.listTasks();
           final item = items.where((d) => d.fileName == fileName).firstOrNull;
           if (item == null) return '未找到下载: $fileName';
           final id = item.id;
@@ -3280,23 +3278,25 @@ class AgentService {
           return '已恢复下载 $fileName';
 
         case 'cleanCompleted':
-          await LegacyWriteGuard.assertAllowed('download');
-          final db = await downloadTaskDatabase;
-          await db.database.delete(
-            'DownloadTaskEntity',
-            where: 'status IN (?, ?, ?)',
-            whereArgs: [
-              DownloadStatusEnum.completed.index,
-              DownloadStatusEnum.failed.index,
-              DownloadStatusEnum.cancelled.index,
-            ],
-          );
+          if (service == null) return '下载模块未启用';
+          final items = await service.listTasks();
+          final done = items.where((d) =>
+              d.status == DownloadStatusEnum.completed ||
+              d.status == DownloadStatusEnum.failed ||
+              d.status == DownloadStatusEnum.cancelled);
+          for (final d in done) {
+            final id = d.id;
+            if (id != null) await service.remove(id);
+          }
           return '已清理所有已完成下载记录';
 
         case 'clearAll':
-          await LegacyWriteGuard.assertAllowed('download');
-          final db = await downloadTaskDatabase;
-          await db.database.delete('DownloadTaskEntity');
+          if (service == null) return '下载模块未启用';
+          final items = await service.listTasks();
+          for (final d in items) {
+            final id = d.id;
+            if (id != null) await service.remove(id);
+          }
           return '已清空所有下载记录';
 
         default:

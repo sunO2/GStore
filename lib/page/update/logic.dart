@@ -309,7 +309,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
         throw StateError('下载未完成（状态：${done.status}）');
       }
 
-      // 下载完成（DownloadManager 内部已自动安装 APK）：
+      // 下载完成（内核下载服务已自动安装 APK）：
       // 通知 UpdateManager 刷新状态（复核版本后从可更新列表移除，红点自动更新）
       await _manager.markUpdated(info.appId);
       // 同步页面列表（UpdateManager 订阅也会同步，这里双保险）

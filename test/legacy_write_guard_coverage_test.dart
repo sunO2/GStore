@@ -48,9 +48,8 @@ class _Writer {
   /// How many `assertAllowed('<domain>')` calls the method body must contain.
   ///
   /// One entry per declaration is not enough for a method that guards several
-  /// writes (e.g. `AgentService._manageDownloads` guards `cleanCompleted` and
-  /// `clearAll` separately): counting the occurrences makes removing any single
-  /// guard fail.
+  /// writes (e.g. a loader that guards both an import and a removal): counting
+  /// the occurrences makes removing any single guard fail.
   final int occurrences;
 
   @override
@@ -115,20 +114,10 @@ const List<_Writer> _writers = <_Writer>[
   _Writer('lib/core/config/providers/update_config_provider.dart', 'clear',
       'update'),
   // --------------------------------------------------------------- download
-  _Writer(
-      'lib/core/download/manager/download_repository.dart', 'save', 'download'),
-  _Writer('lib/core/download/manager/download_repository.dart', 'deleteById',
-      'download'),
-  _Writer('lib/page/download/download_page_providers.dart', 'deleteDownload',
-      'download'),
-  _Writer('lib/page/download/download_page_providers.dart',
-      'deleteDownloadsByAppId', 'download'),
-  _Writer('lib/page/download/download_page_providers.dart', 'clearCompleted',
-      'download'),
-  _Writer(
-      'lib/page/download/download_page_providers.dart', 'clearAll', 'download'),
-  _Writer('lib/core/agent/agent_service.dart', '_manageDownloads', 'download',
-      occurrences: 2),
+  // Wave 6B closeout: the Dart download kernel + its Floor persistence were
+  // removed and every panel/agent reader now routes through the Rust-only
+  // `IDownloadService`. No Dart writer targets the `download` domain anymore,
+  // so the inventory below no longer carries a download entry.
   // ---------------------------------------------------------------- install
   // Wave 6B cutover: a direct user-picked APK install creates no core state,
   // so `_installApkDirect` is intentionally NOT a guarded legacy writer.
@@ -137,7 +126,6 @@ const List<_Writer> _writers = <_Writer>[
   // mapped branch keeps the literal-domain assertion honest.
   _Writer('lib/page/database_manage/logic.dart', 'deleteRow', 'channel'),
   _Writer('lib/page/database_manage/logic.dart', 'deleteRow', 'catalog'),
-  _Writer('lib/page/database_manage/logic.dart', 'deleteRow', 'download'),
 ];
 
 /// Extracts the brace-balanced body of the declaration of [method] in
@@ -427,7 +415,7 @@ void main() {
       expect(seen, expected);
       // Closeout-B3 adds the js_channel domain (Dart JS writers).
       expect(expected.toSet(),
-          <String>{'channel', 'js_channel', 'catalog', 'update', 'download'});
+          <String>{'channel', 'js_channel', 'catalog', 'update'});
     });
   });
 

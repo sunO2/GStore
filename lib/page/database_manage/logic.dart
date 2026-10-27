@@ -71,7 +71,6 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'apps.db': ('应用目录库', 'GStore 应用商店种子目录（支持在线更新）', true),
     'added_apps.db': ('我的应用', '已添加应用引用 + 标签', false),
     'channel_apps.db': ('渠道收藏', '各渠道添加的应用记录', false),
-    'download_task.db': ('下载任务', '下载队列/进度/历史记录', true),
     'fdroid_repo.db': ('F-Droid 仓库', 'F-Droid 源与索引缓存', false),
   };
 
@@ -84,7 +83,6 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'added_apps': '已添加应用',
     'added_app_tags': '应用标签',
     'channel_added_app': '渠道已添加应用',
-    'DownloadTaskEntity': '下载任务',
   };
 
   /// 受管只读主表：不允许行级删除（属 App 运行时管理的数据）。
@@ -107,7 +105,7 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
         await _scanDir(gstoreDir, found, seen);
       }
 
-      // 2. sqflite 默认库目录（download_task.db 等）
+      // 2. sqflite 默认库目录（added_apps.db / channel_apps.db 等）
       final dbDir = await _sqfliteDir();
       if (!p.equals(dbDir.path, docs.path)) {
         await _scanDir(dbDir, found, seen);
@@ -330,25 +328,6 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     if (readonlyReason != null) {
       return _DeleteGuard.blocked(readonlyReason);
     }
-    // 下载任务表：仅允许删除终态（非 queued/downloading/paused 由下载管理器持有）
-    if (table == 'DownloadTaskEntity' || table == 'download_task') {
-      final status = row['status'];
-      // status 0=queued 1=downloading 2=completed 3=failed 4=paused 5=cancelled
-      if (status is int && (status == 0 || status == 1)) {
-        return const _DeleteGuard.blocked('进行中的下载任务不能删除，请先取消或等待完成');
-      }
-      if (status is int && status == 4) {
-        return const _DeleteGuard.blocked('已暂停的下载任务请先删除下载中心的任务或恢复后再处理');
-      }
-      final filePath = row['filePath'] as String?;
-      if (filePath != null && filePath.isNotEmpty) {
-        final f = File(filePath);
-        if (await f.exists()) {
-          return const _DeleteGuard.allowed('删除记录后，已下载的 APK 文件将保留在下载目录，可手动清理');
-        }
-      }
-      return const _DeleteGuard.allowed();
-    }
     // 其余普通表允许
     return const _DeleteGuard.allowed();
   }
@@ -372,10 +351,6 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
         case 'category':
         case 'apps_fts':
           await LegacyWriteGuard.assertAllowed('catalog');
-          break;
-        case 'DownloadTaskEntity':
-        case 'download_task':
-          await LegacyWriteGuard.assertAllowed('download');
           break;
       }
       final conn = await _openWritable(dbPath);

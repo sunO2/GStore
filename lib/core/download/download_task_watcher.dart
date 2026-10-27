@@ -9,13 +9,10 @@ import 'package:gstore/core/service/install_manager.dart';
 
 /// 统一监听**所有**下载任务，驱动「通知栏进度」与「下载完自动安装」。
 ///
-/// 为什么要有这一层：这两件事原来都写死在 Dart 版 `DownloadManager` 内部
+/// 为什么要有这一层：这两件事原来都写死在 Dart 版下载管理器内部
 /// （传输回调里直接调通知服务、完成后调 `onApkReady`）。换成 Rust 内核后
 /// **通知与自动安装会一起失效**。改为从 [IDownloadService.watchAll] 这个
-/// 全局任务流驱动，两种内核就都覆盖到了。
-///
-/// Dart 内核的 [DownloadManager.watchAll] 返回**空流**——它已经自己发过通知了，
-/// 这里再发一次会重复弹两条。
+/// 全局任务流驱动，就覆盖到了唯一的内核实现（`RustDownloadService`）。
 class DownloadTaskWatcher {
   DownloadTaskWatcher._();
 

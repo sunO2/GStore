@@ -59,7 +59,7 @@ class LocalLlmModel {
       };
 }
 
-/// 本地推理服务：模型文件管理（下载走 Flutter DownloadManager）+ 加载/对话 +
+/// 本地推理服务：模型文件管理（下载走 IDownloadService）+ 加载/对话 +
 /// 面向 Agent 的 **本地 OpenAI 兼容端点**（loopback）。
 ///
 /// 为何把 HTTP 端点放在 Dart 而不是模块内：dlopen 的 .so 里 spawn 线程在 Android
@@ -173,7 +173,7 @@ class LocalLlmService {
     return model;
   }
 
-  /// 下载模型：复用 DownloadManager（断点续传/进度/持久化），返回任务 id。
+  /// 下载模型：复用 IDownloadService（断点续传/进度/持久化），返回任务 id。
   /// 注意：`download()` 立即返回排队任务，**完成与否必须由 [watchDownload] 判定**。
   Future<int?> downloadModel(LocalLlmModel m, {bool force = false}) async {
     final service = ModuleManager.instance.get<IDownloadService>();

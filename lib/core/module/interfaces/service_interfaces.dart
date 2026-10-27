@@ -78,8 +78,8 @@ abstract class IDownloadService {
   /// 列出全部下载任务。
   ///
   /// **这是面板任务列表的数据源**——换实现即换真源：
-  /// Dart 实现读 Floor，Rust 实现向内核查询。
-  /// 调用方不应再直接读 `DownloadRepository`，否则切内核后面板会看不到任务。
+  /// Rust 实现向内核查询。调用方只应经本接口读取，不得直连任何 Dart 持久化
+  /// 实现，否则面板会看不到内核任务。
   Future<List<DownloadTask>> listTasks();
 
   /// 监听下载任务状态

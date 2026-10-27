@@ -8,7 +8,7 @@
   直接绑定到 `RustDownloadService.instance`。它是 `DownloadFacade` 之上的薄适配层：
   参数整形、请求头透传、`forceDownload` 语义、`DownloadTask` 视图模型转换。
   模块不可用是**类型化失败**（`DownloadModuleUnavailableException`，错误码
-  `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`），绝不静默回落到 Dart `DownloadManager`。
+  `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`），绝不静默回落到任何 Dart 实现。
 - **DownloadFacade（类型化 Dart 边界）**：所有启动、查询、变更、事件都经它走 FRB
   `DownloadApi`，并把核心错误（含“模块未挂载”标记）映射成类型化 Dart 异常。没有
   module-direct 分支，因此不存在“模块实例 / 核心实例”两套状态混跑。
@@ -17,8 +17,6 @@
   core 只在 resync/reconcile 时**只读**打开模块库做对账，从不改写模块行。
 - **DownloadTask（Dart 视图模型）**：`DownloadStatusEnum` 枚举 + 进度/速度/ETA/分段，
   由 core DTO 映射而来；持久化归属已上移到 core/module 两层数据库。
-- **DownloadManager / DownloadEngine（历史实现，未绑定）**：Dart 侧旧编排与传输内核，
-  仅保留给既有 Dart 测试/对照使用，`IDownloadService` 不会路由到它们。
 - **下载策略**：各渠道 `IDownloadStrategy` 只负责生成/校验 `DownloadRequest`
   （URL 转换、代理、请求头、超时等预处理），不再触碰传输与持久化。
 
@@ -79,7 +77,7 @@
 
 业务代码一律经 `ModuleManager.instance.get<IDownloadService>()` 取当前内核；自 Wave 6B
 起它**恒为** `RustDownloadService`（模块不可用时为 `null` 或调用抛类型化
-`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`，绝不静默回落到 Dart `DownloadManager`）：
+`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`，绝不静默回落到任何 Dart 实现）：
 
 ```dart
 final service = ModuleManager.instance.get<IDownloadService>();
@@ -138,21 +136,22 @@ DownloadStrategyManager.instance.registerAll([
 ## 传输层说明
 
 - **生产路径**：`gstore_mod_download` 自己执行传输；Dart 侧只传 `DownloadStartRequest`
-  （URL、`dest_path`、headers、期望 SHA-256 等），不参与字节搬运。
-- **历史 Dart 内核（未绑定）**：旧 `DownloadManager` 仍保留 `DioDownloadEngine`，底层
-  `HttpClientAdapter` 为 `RhttpAdapter`（`lib/http/rhttp_adapter.dart`）；仅供旧测试/对照，
-  `IDownloadService` 不会走到这里。
-- **GZip 修复（历史内核）**：rhttp 对 `content-encoding: gzip` 的响应会先解压再移除该头；当头部仍存在
-  时说明响应体仍是压缩字节，`RhttpAdapter` 会在适配器层用 `dart:io` 的 `gzip/zlib` 解码器手工解压，
-  移除 `content-encoding` 并写入 `x-gstore-decoded-encoding` 标记头。`DownloadEngine` 据此识别
-  "已解码流"：不按 `content-length` 校验总字节数、不尝试 Range 分段（gzip 流无法部分读取），
-  避免解压后字节数与声明大小不符导致的误判。
+  （URL、`dest_path`、headers、期望 SHA-256 等），不参与字节搬运。Dart 侧历史传输内核
+  已整体删除，不存在第二条字节搬运路径。
 
 ## 旧管线已删除
 
 `DownloadService`（`lib/core/service/downloadService.dart`）、
 `segment/{segment_planner,segment_downloader,segment_merger}.dart`、
 `lib/http/download/DownloadStatus*.dart`（旧 `DownloadStatus` 实体 / Floor 数据库 / DAO）
-已全部删除，迁移到上面的新架构。新代码请只用 `IDownloadService` + `DownloadTask`；下载状态
-以 core 镜像库为准。`DownloadRepository` / `GStoreDownloadDatabase` 仅由未绑定的历史
-`DownloadManager` 与旧下载页代码使用，不参与 Rust-only 绑定路径。
+已全部删除，迁移到上面的新架构。
+
+自 Wave 6B 收尾起，Dart 侧历史下载内核与其 Floor 持久化也已整体删除：旧编排
+`download/manager/` 下的管理器、传输内核 `download/core/` 下的引擎与事件、
+`download/manager/` 下的 Floor 仓储、`download/model/` 下的 Floor 数据库 / DAO / 实体
+（数据库文件 `*_database.dart`、`*_database.g.dart`、`*_dao.dart`、`*_entity.dart`），
+以及 `download/rust/` 下仅测试使用的未绑定映射。删除后 Dart 侧**没有**任何下载传输 /
+持久化实现，`download_task.db` 不再由 Dart 创建或写入。
+
+新代码请只用 `IDownloadService` + `DownloadTask`；下载状态以 core 镜像库为准。模块不可用时
+调用方观察到类型化失败 `DownloadModuleUnavailableException`，绝不静默回落到 Dart Floor。

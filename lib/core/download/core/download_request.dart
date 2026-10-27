@@ -1,6 +1,6 @@
 /// A pure-data description of a single download to perform.
 ///
-/// Produced by [DownloadStrategyManager] and consumed by [DownloadEngine].
+/// Produced by [DownloadStrategyManager] and consumed by the download service.
 /// This is passive data only — it does not perform any orchestration,
 /// queueing, or side effects on its own.
 class DownloadRequest {

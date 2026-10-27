@@ -9,31 +9,24 @@
 /// throws `LegacyWriteBlocked` *before* the `try`, so the core-backed
 /// delete/clear never runs and the list never updates.
 ///
-/// The guard belongs ONLY on the Dart-Floor fallback write (used when the core
-/// `IDownloadService` is unavailable). These tests fail on the pre-fix code:
-/// with the marker armed + the core service available, the delete/clear actions
-/// threw before performing any `service.remove(...)`.
+/// The Dart download kernel + its Floor fallback were then removed entirely:
+/// the panel now routes every read/write through the Rust-only
+/// `IDownloadService` and never probes the legacy marker. These tests pin that
+/// contract: the core-backed delete/clear runs on the service, and a retried
+/// terminal task rebuilds the single list-level watch.
 library;
 
 import 'dart:async';
-import 'dart:ffi';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
-import 'package:gstore/core/download/model/download_task_database.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/page/download/download_page_providers.dart';
-import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-// sqlite3 为 sqflite_common_ffi 传递依赖，仅用其 `open` 覆写动态库加载路径。
-// ignore: depend_on_referenced_packages
-import 'package:sqlite3/open.dart';
 
 /// Core service double: `listTasks` reads the live in-memory rows and `remove`
 /// records the id AND drops the row, so a post-action `loadTasks()` reflects the
@@ -160,27 +153,12 @@ List<int?> _visibleIds(ProviderContainer container) => container
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUpAll(() {
-    // Linux 仅有 libsqlite3.so.0（无 .so 符号链接），显式指定动态库；
-    // 与 migration_test / live_progress_test 一致。
-    open.overrideFor(OperatingSystem.linux,
-        () => DynamicLibrary.open('libsqlite3.so.0'));
-  });
-
   setUp(() async {
     await ModuleManager.instance.clear();
     LegacyWriteGuard.resetForTest();
   });
 
   tearDown(() async {
-    await closeDownloadTaskDatabase();
-    try {
-      final path = p.join(
-          await databaseFactoryFfi.getDatabasesPath(), 'download_task.db');
-      await databaseFactoryFfi.deleteDatabase(path);
-    } catch (_) {
-      // 文件可能不存在，忽略
-    }
     await ModuleManager.instance.clear();
     LegacyWriteGuard.resetForTest();
   });
@@ -283,55 +261,6 @@ void main() {
           reason: 'clearAll must remove every core row after the confirm');
       expect(_visibleIds(container), isEmpty);
     }, timeout: const Timeout(Duration(seconds: 30)));
-  });
-
-  group('armed marker + NO core service: the Dart-Floor fallback stays guarded',
-      () {
-    test('deleteDownload does not delete the Floor row (guard blocks it)',
-        () async {
-      // Seed a real Floor row while the marker is still disarmed.
-      LegacyWriteGuard.probeOverride = (domain) async => false;
-      final saved = await DownloadRepository().save(_task(null));
-      final id = saved!.id!;
-
-      // Now arm the marker and leave the core service unbound.
-      LegacyWriteGuard.probeOverride = (domain) async => true;
-
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-      final notifier = container.read(downloadManagerProvider.notifier);
-      await notifier.load();
-      expect(_visibleIds(container), <int>[id]);
-
-      await notifier.deleteDownload(saved);
-
-      final stillThere = await DownloadRepository().getById(id);
-      expect(stillThere, isNotNull,
-          reason: 'the genuine Dart write path must stay guarded: a blocked '
-              'fallback delete must leave the Floor row intact');
-    });
-
-    test('clearCompleted does not delete Floor rows (guard blocks it)',
-        () async {
-      LegacyWriteGuard.probeOverride = (domain) async => false;
-      await DownloadRepository()
-          .save(_task(null, status: DownloadStatusEnum.completed));
-      final before = await DownloadRepository().all();
-      expect(before, hasLength(1));
-
-      LegacyWriteGuard.probeOverride = (domain) async => true;
-
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-      final notifier = container.read(downloadManagerProvider.notifier);
-      await notifier.load();
-
-      await notifier.clearCompleted();
-
-      final after = await DownloadRepository().all();
-      expect(after, hasLength(1),
-          reason: 'a blocked fallback clear must not remove the Floor rows');
-    });
   });
 
   group('retry revives a terminal task: the watch must be re-subscribed', () {

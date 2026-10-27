@@ -6,9 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
-import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
-import 'package:gstore/core/download/model/download_task_database.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/service/db_manager.dart';
@@ -16,7 +14,6 @@ import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 
 import 'download_status_utils.dart';
-import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// 应用信息数据库（经模块注册表取 DbManager，避免 GetX 服务定位）。
 ///
@@ -24,12 +21,6 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 /// 模块下线时 null（页面按默认图标处理）。
 final downloadAppInfoDbProvider = Provider<AppInfoDatabase?>((ref) {
   return ModuleManager.instance.get<DbManager>()?.dbRepositroies['gstore']?.db;
-});
-
-/// 下载任务仓库（读/写下载数据库；watch 流由 service 内部仓库负责，
-/// 页面侧实例仅供 CRUD）。
-final downloadRepositoryProvider = Provider<DownloadRepository>((ref) {
-  return DownloadRepository();
 });
 
 /// 下载管理页聚合状态（不可变）。
@@ -83,7 +74,6 @@ class DownloadPageState {
 /// 职责：加载/分组/筛选下载任务、订阅 service.watch(id) 实时状态、
 /// 已完成文件存在性核对、CRUD（删除/清理/批量操作）、应用信息预取缓存。
 class DownloadManagerNotifier extends Notifier<DownloadPageState> {
-  final DownloadRepository repository = DownloadRepository();
   final AppInfoDatabase? appInfoDB;
 
   DownloadManagerNotifier({this.appInfoDB});
@@ -154,12 +144,15 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 任务列表的数据源统一走服务接口。
   ///
   /// 必须走接口而不是直接读 Floor：Rust 内核的任务写在模块自己的库里，
-  /// 直接读 Floor 会导致「切了内核但面板看不到任务」。
+  /// 直接读 Floor 会导致「切了内核但面板看不到任务」。下载内核只有一个
+  /// （`IDownloadService` → `RustDownloadService`）；服务缺失是**类型化失败**，
+  /// 绝不静默回落到 Dart Floor。
   Future<List<DownloadTask>> _allTasks() async {
     final svc = _service ?? ModuleManager.instance.get<IDownloadService>();
-    if (svc != null) return svc.listTasks();
-    debugPrint('下载列表: IDownloadService 不可用，回落 Floor 仓储');
-    return repository.all();
+    if (svc == null) {
+      throw DownloadModuleUnavailableException();
+    }
+    return svc.listTasks();
   }
 
   /// 从新管线仓库加载全部任务并重建分组
@@ -715,24 +708,15 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       }
 
       // 3. 删除任务记录：**必须走服务接口**
-      //    Rust 内核的任务存在模块自己的库里，只删 Floor 是删不掉的（列表会"复活"）
+      //    Rust 内核的任务存在模块自己的库里，只删 Floor 是删不掉的（列表会"复活"）。
+      //    服务缺失时 _runServiceAction 给出类型化提示，绝不回落 Dart Floor。
       if (id != null) {
-        if (service != null) {
-          if (!await _runServiceAction(
-            '删除记录',
-            (target) => target.remove(id),
-            service: service,
-          )) {
-            return;
-          }
-        } else {
-          // 守卫只保护「内核不可用 → 回落 Dart Floor」这条旧写入路径：
-          // 内核可用时删除走 service.remove(id)，与旧写入域标记无关，不能被
-          // LegacyWriteBlocked 拦下（否则 delete 永远在 try 外抛出、列表不刷新）。
-          await LegacyWriteGuard.assertAllowed('download');
-          final db = await downloadTaskDatabase;
-          await db.database
-              .delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
+        if (!await _runServiceAction(
+          '删除记录',
+          (target) => target.remove(id),
+          service: service,
+        )) {
+          return;
         }
       }
 
@@ -743,6 +727,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         '已删除 ${downStatus.appName} 的下载记录',
         title: '已删除',
       );
+    } on DownloadModuleUnavailableException catch (e) {
+      AppDialogs.showError(e.userMessage, title: '删除失败');
     } catch (e) {
       AppDialogs.showError(
         '删除下载记录失败: $e',
@@ -755,28 +741,20 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   Future<void> deleteDownloadsByAppId(String appId) async {
     try {
       final service = ModuleManager.instance.get<IDownloadService>();
-      if (service != null) {
-        final tasks = await _allTasks();
-        final ids = tasks
-            .where((t) => t.appId == appId)
-            .map((t) => t.id)
-            .whereType<int>()
-            .toList();
-        for (final id in ids) {
-          if (!await _runServiceAction(
-            '删除记录',
-            (target) => target.remove(id),
-            service: service,
-          )) {
-            return;
-          }
+      final tasks = await _allTasks();
+      final ids = tasks
+          .where((t) => t.appId == appId)
+          .map((t) => t.id)
+          .whereType<int>()
+          .toList();
+      for (final id in ids) {
+        if (!await _runServiceAction(
+          '删除记录',
+          (target) => target.remove(id),
+          service: service,
+        )) {
+          return;
         }
-      } else {
-        // 守卫只保护内核不可用时的 Dart Floor 回落写入。
-        await LegacyWriteGuard.assertAllowed('download');
-        final db = await downloadTaskDatabase;
-        await db.database.delete('DownloadTaskEntity',
-            where: 'appId = ?', whereArgs: [appId]);
       }
 
       await loadTasks();
@@ -785,6 +763,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         '已删除该应用的所有下载记录',
         title: '已删除',
       );
+    } on DownloadModuleUnavailableException catch (e) {
+      AppDialogs.showError(e.userMessage, title: '删除失败');
     } catch (e) {
       AppDialogs.showError(
         '删除下载记录失败: $e',
@@ -821,30 +801,17 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       }
 
       // 删除记录：内核任务在模块自己的库里，只删 Floor 删不掉（列表会"复活"）。
-      // 内核可用时逐条走服务接口；不可用时才回落 Floor，并受旧写入守卫保护。
+      // 逐条走服务接口；服务缺失时给出类型化提示，绝不回落 Dart Floor。
       final service = ModuleManager.instance.get<IDownloadService>();
-      if (service != null) {
-        final ids = completed.map((t) => t.id).whereType<int>().toList();
-        for (final id in ids) {
-          if (!await _runServiceAction(
-            '清理记录',
-            (target) => target.remove(id),
-            service: service,
-          )) {
-            return;
-          }
+      final ids = completed.map((t) => t.id).whereType<int>().toList();
+      for (final id in ids) {
+        if (!await _runServiceAction(
+          '清理记录',
+          (target) => target.remove(id),
+          service: service,
+        )) {
+          return;
         }
-      } else {
-        await LegacyWriteGuard.assertAllowed('download');
-        final db = await downloadTaskDatabase;
-        await db.database.delete(
-          'DownloadTaskEntity',
-          where: 'status IN (?, ?)',
-          whereArgs: [
-            DownloadStatusEnum.completed.index,
-            DownloadStatusEnum.failed.index,
-          ],
-        );
       }
 
       // 刷新列表
@@ -855,6 +822,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         count > 0 ? '已清理 $count 条已完成记录' : '没有需要清理的记录',
         title: '清理完成',
       );
+    } on DownloadModuleUnavailableException catch (e) {
+      AppDialogs.showError(e.userMessage, title: '清理失败');
     } catch (e) {
       AppDialogs.showError(
         '清理下载记录失败: $e',
@@ -914,22 +883,16 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       }
 
       // 清空记录：内核任务在模块自己的库里，只清 Floor 清不掉（列表会"复活"）。
-      // 内核可用时逐条走服务接口；不可用时才回落 Floor，并受旧写入守卫保护。
-      if (service != null) {
-        final ids = tasks.map((t) => t.id).whereType<int>().toList();
-        for (final id in ids) {
-          if (!await _runServiceAction(
-            '清空记录',
-            (target) => target.remove(id),
-            service: service,
-          )) {
-            return;
-          }
+      // 逐条走服务接口；服务缺失时给出类型化提示，绝不回落 Dart Floor。
+      final ids = tasks.map((t) => t.id).whereType<int>().toList();
+      for (final id in ids) {
+        if (!await _runServiceAction(
+          '清空记录',
+          (target) => target.remove(id),
+          service: service,
+        )) {
+          return;
         }
-      } else {
-        await LegacyWriteGuard.assertAllowed('download');
-        final db = await downloadTaskDatabase;
-        await db.database.delete('DownloadTaskEntity');
       }
 
       // 刷新列表
@@ -939,6 +902,8 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         '已清空所有下载记录',
         title: '清空完成',
       );
+    } on DownloadModuleUnavailableException catch (e) {
+      AppDialogs.showError(e.userMessage, title: '清空失败');
     } catch (e) {
       AppDialogs.showError(
         '清空下载记录失败: $e',
