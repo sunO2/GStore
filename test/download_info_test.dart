@@ -5,7 +5,7 @@ import 'package:gstore/core/model/proxy/GitHubChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/LocalDbChannelDetailProxy.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 
 void main() {
   group('DownloadInfo.formattedSize', () {

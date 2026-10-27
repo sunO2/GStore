@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart' show JsChannelDetailProxy;
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/script/script_api.dart';

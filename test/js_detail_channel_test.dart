@@ -9,6 +9,7 @@ import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_detail_channel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';

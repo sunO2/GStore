@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/js/js_native_host.dart';

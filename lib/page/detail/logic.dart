@@ -7,7 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';

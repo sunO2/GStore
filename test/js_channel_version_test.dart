@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
 class _FakeAppDao implements ChannelAddedAppDao {

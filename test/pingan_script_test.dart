@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';

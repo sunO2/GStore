@@ -1,6 +1,5 @@
 import 'package:gstore/core/channel/detail_callbacks.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart'
-    show JsChannelDetailProxy;
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/script_ui_request_router.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 

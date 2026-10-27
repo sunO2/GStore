@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
-import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/channel_build_history_sheet.dart';
 import 'package:gstore/core/design/channel_version_picker_sheet.dart';
