@@ -229,11 +229,36 @@ impl AggregationService {
     fn aggregate_slice(&self, added: &[AddedApp]) -> Result<Vec<AggregatedApp>, Error> {
         let tags = self.added.tags_index()?;
         let categories = self.category_descriptions();
+
+        // Resolve every distinct channel driver once for this page and prefetch
+        // its icons once, so a page never performs one icon probe per row.
+        let mut page_ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in added {
+            page_ids
+                .entry(row.channel_id.clone())
+                .or_default()
+                .push(row.app_id.clone());
+        }
+        let mut channels: BTreeMap<
+            String,
+            (Option<std::sync::Arc<dyn crate::channel::ChannelDriver>>, BTreeMap<String, String>),
+        > = BTreeMap::new();
+        for (channel_id, app_ids) in &page_ids {
+            let driver = (self.channels)(channel_id);
+            let icons = match driver.as_deref() {
+                Some(driver) => driver.prefetch_icons(app_ids),
+                None => BTreeMap::new(),
+            };
+            channels.insert(channel_id.clone(), (driver, icons));
+        }
+
         let mut results = Vec::with_capacity(added.len());
 
         for row in added {
-            let driver = (self.channels)(&row.channel_id);
-            let Some(resolved) = self.resolve_row(row, driver.as_deref())? else {
+            let Some((driver, icons)) = channels.get(&row.channel_id) else {
+                continue;
+            };
+            let Some(resolved) = self.resolve_row(row, driver.as_deref(), icons)? else {
                 continue;
             };
             let key = format!("{}:{}", row.channel_id, row.app_id);
@@ -262,6 +287,7 @@ impl AggregationService {
         &self,
         row: &AddedApp,
         driver: Option<&dyn crate::channel::ChannelDriver>,
+        icons: &BTreeMap<String, String>,
     ) -> Result<Option<ResolvedRow>, Error> {
         let Some(driver) = driver else {
             let Some(fallback) = self.fallback.as_ref() else {
@@ -287,7 +313,7 @@ impl AggregationService {
         };
 
         let kind = driver.meta().kind;
-        match driver.get_app_info(&row.app_id, false) {
+        match driver.get_app_info_with(&row.app_id, icons) {
             Ok(summary) => Ok(Some(ResolvedRow {
                 app: summary,
                 channel: kind,
@@ -587,4 +613,260 @@ fn compare_recent(left: &AggregatedApp, right: &AggregatedApp) -> std::cmp::Orde
         .add_time
         .cmp(&left.added_app.add_time)
         .then_with(|| left.added_app.app_id.cmp(&right.added_app.app_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::channel::{ChannelDriver, FdroidDriver};
+    use crate::dto::{ChannelKey, ChannelKind, ChannelMeta};
+    use crate::ports::repo::RepoMeta;
+    use crate::ports::{CoreConfig, FakeRepoPort, RepoApp, RepoPort};
+
+    const SOURCE_A: &str = "https://fdroid-a.test/repo";
+    const SOURCE_B: &str = "https://fdroid-b.test/repo";
+
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gstore_core_aggregate_{tag}_{}_{}",
+                std::process::id(),
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Counts the prefetch contract for an aggregate page: one
+    /// `ensure_active_index` probe (`get_repo_meta`) and one batch
+    /// `get_app_icons` per channel driver.
+    struct CountingRepo {
+        inner: FakeRepoPort,
+        meta_calls: AtomicU64,
+        batch_calls: AtomicU64,
+    }
+
+    impl CountingRepo {
+        fn new(inner: FakeRepoPort) -> Self {
+            Self {
+                inner,
+                meta_calls: AtomicU64::new(0),
+                batch_calls: AtomicU64::new(0),
+            }
+        }
+
+        fn meta_calls(&self) -> u64 {
+            self.meta_calls.load(Ordering::SeqCst)
+        }
+
+        fn batch_calls(&self) -> u64 {
+            self.batch_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl RepoPort for CountingRepo {
+        fn download_repo(&self, source: &str) -> Result<RepoMeta, Error> {
+            self.inner.download_repo(source)
+        }
+
+        fn get_app_count(&self, source: &str) -> Result<u64, Error> {
+            self.inner.get_app_count(source)
+        }
+
+        fn search_apps(
+            &self,
+            source: &str,
+            query: &str,
+            limit: usize,
+        ) -> Result<Vec<RepoApp>, Error> {
+            self.inner.search_apps(source, query, limit)
+        }
+
+        fn get_repo_meta(&self, source: &str) -> Result<Option<RepoMeta>, Error> {
+            self.meta_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_repo_meta(source)
+        }
+
+        fn clear_apps(&self, source: &str) -> Result<(), Error> {
+            self.inner.clear_apps(source)
+        }
+
+        fn get_one_app(&self, source: &str, package_name: &str) -> Result<Option<RepoApp>, Error> {
+            self.inner.get_one_app(source, package_name)
+        }
+
+        fn get_app_icons(
+            &self,
+            source: &str,
+            package_names: &[String],
+        ) -> Result<Vec<(String, String)>, Error> {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_app_icons(source, package_names)
+        }
+
+        fn db_path(&self) -> &Path {
+            self.inner.db_path()
+        }
+    }
+
+    fn meta() -> ChannelMeta {
+        ChannelMeta {
+            kind: ChannelKind::Fdroid,
+            name: "F-Droid".to_string(),
+            description: "F-Droid channel".to_string(),
+            enabled: true,
+            priority: 0,
+            support_offline: true,
+            last_update_time: None,
+            version: Some("1".to_string()),
+        }
+    }
+
+    fn repo_app(package_name: &str) -> RepoApp {
+        RepoApp {
+            package_name: package_name.to_string(),
+            name: format!("App {package_name}"),
+            summary: "summary".to_string(),
+            version: Some("1.0".to_string()),
+            version_code: Some(1),
+            icon: Some(format!("icons/{package_name}.png")),
+            apk_url: None,
+            size: None,
+            categories: vec!["Tools".to_string()],
+            metadata: None,
+        }
+    }
+
+    fn seeded_repo(source: &str, app_ids: &[String], db_path: &str) -> Arc<CountingRepo> {
+        let inner = FakeRepoPort::new(db_path);
+        inner.add_repo(RepoMeta {
+            source: source.to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: None,
+            timestamp: None,
+            app_count: app_ids.len() as u64,
+        });
+        for app_id in app_ids {
+            inner.add_app(source, repo_app(app_id));
+        }
+        Arc::new(CountingRepo::new(inner))
+    }
+
+    fn driver(
+        db: &DbHandle,
+        repo: Arc<CountingRepo>,
+        source: &str,
+        key: &str,
+    ) -> Arc<dyn ChannelDriver> {
+        let config = CoreConfig::default()
+            .with_fdroid_sources(vec![source.to_string()])
+            .unwrap();
+        Arc::new(FdroidDriver::new(
+            ChannelKey::new(key).unwrap(),
+            meta(),
+            db.clone(),
+            config,
+            repo,
+        ))
+    }
+
+    fn resolver(
+        drivers: std::collections::HashMap<String, Arc<dyn ChannelDriver>>,
+    ) -> ChannelResolver {
+        Arc::new(move |code: &str| drivers.get(code).cloned())
+    }
+
+    fn seed_added(db: &DbHandle, channel: &str, app_ids: &[String]) {
+        let added = AddedAppsService::new(db.clone());
+        for app_id in app_ids {
+            added.add(channel, app_id, None).unwrap();
+        }
+    }
+
+    #[test]
+    fn aggregate_page_prefetches_once_per_driver() {
+        // Single channel, 20 rows: one ensure probe and one batch call.
+        let dir = TempDir::new("single_channel");
+        let db = DbHandle::open(&dir.0).unwrap();
+        let ids: Vec<String> = (0..20)
+            .map(|index| format!("com.example.app{index:02}"))
+            .collect();
+        seed_added(&db, "fdroid", &ids);
+        let repo = seeded_repo(SOURCE_A, &ids, "/tmp/gstore_core_aggregate_single.db");
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            "fdroid".to_string(),
+            driver(&db, repo.clone(), SOURCE_A, "fdroid"),
+        );
+        let service = AggregationService::new(db.clone(), resolver(drivers)).unwrap();
+
+        let (page, total) = service.aggregate_page(0, 20).unwrap();
+
+        assert_eq!(total, 20);
+        assert_eq!(page.len(), 20);
+        assert_eq!(
+            repo.meta_calls(),
+            1,
+            "one channel must ensure its index once for the page"
+        );
+        assert_eq!(
+            repo.batch_calls(),
+            1,
+            "one channel must prefetch its icons in exactly one batch"
+        );
+
+        // Two channels, 10 rows each: each driver prefetches exactly once.
+        let dir = TempDir::new("two_channels");
+        let db = DbHandle::open(&dir.0).unwrap();
+        let left: Vec<String> = (0..10)
+            .map(|index| format!("com.left.app{index:02}"))
+            .collect();
+        let right: Vec<String> = (0..10)
+            .map(|index| format!("com.right.app{index:02}"))
+            .collect();
+        seed_added(&db, "fdroid", &left);
+        seed_added(&db, "fdroid_b", &right);
+        let repo_a = seeded_repo(SOURCE_A, &left, "/tmp/gstore_core_aggregate_left.db");
+        let repo_b = seeded_repo(SOURCE_B, &right, "/tmp/gstore_core_aggregate_right.db");
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            "fdroid".to_string(),
+            driver(&db, repo_a.clone(), SOURCE_A, "fdroid"),
+        );
+        drivers.insert(
+            "fdroid_b".to_string(),
+            driver(&db, repo_b.clone(), SOURCE_B, "fdroid_b"),
+        );
+        let service = AggregationService::new(db.clone(), resolver(drivers)).unwrap();
+
+        let (page, total) = service.aggregate_page(0, 20).unwrap();
+
+        assert_eq!(total, 20);
+        assert_eq!(page.len(), 20);
+        assert_eq!(repo_a.batch_calls(), 1);
+        assert_eq!(repo_b.batch_calls(), 1);
+        assert_eq!(
+            repo_a.batch_calls() + repo_b.batch_calls(),
+            2,
+            "two channels must produce two prefetches, not one per row"
+        );
+    }
 }

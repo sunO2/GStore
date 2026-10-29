@@ -41,7 +41,7 @@ use std::sync::Arc;
 use rusqlite::{OptionalExtension, Row};
 use serde_json::{Map, Value};
 
-use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
+use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver, IconMap};
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
@@ -544,6 +544,59 @@ impl FdroidDriver {
             labels,
         }
     }
+
+    /// Shared [`ChannelDriver::get_app_info`] body with an optional
+    /// pre-resolved icon.
+    ///
+    /// `prefetched` is the icon a page-scoped
+    /// [`ChannelDriver::prefetch_icons`] resolved through the same index the
+    /// detail page reads, so it is byte-identical to what `stored_icon` would
+    /// return for that row. When it is absent the existing `stored_icon` /
+    /// `lookup` logic runs unchanged, which is why a miss keeps exact
+    /// single-row semantics (including the index refresh inside `stored_icon`).
+    fn app_info_impl(
+        &self,
+        app_id: &str,
+        force_refresh: bool,
+        prefetched: Option<&str>,
+    ) -> Result<AppSummary, Error> {
+        let stored = self.find_stored(app_id)?;
+        if !force_refresh {
+            if let Some(record) = &stored {
+                let mut index = IconIndex::default();
+                let bases = self.icon_bases();
+                match self.row_source(record) {
+                    RowSource::Active(source) => {
+                        let icon = match prefetched {
+                            Some(icon) => icon.to_string(),
+                            None => self.stored_icon(record, Some(&source), &bases, &mut index),
+                        };
+                        return Ok(self.summary_with_icon(record, Some(&source), icon));
+                    }
+                    RowSource::Unknown => {
+                        if let Some(source) = self.active_sources().first().cloned() {
+                            let icon = match prefetched {
+                                Some(icon) => icon.to_string(),
+                                None => self.stored_icon(record, Some(&source), &bases, &mut index),
+                            };
+                            return Ok(self.summary_with_icon(record, Some(&source), icon));
+                        }
+                    }
+                    RowSource::Disabled => {}
+                }
+            }
+        }
+        let Some((source, app)) = self.lookup(app_id, stored.as_ref())? else {
+            return Err(Error::NotFound(format!(
+                "app not found in enabled F-Droid sources: {app_id}"
+            )));
+        };
+        let mut summary = self.summary_from_repo(&app, &source);
+        if let Some(icon) = prefetched {
+            summary.icon = icon.to_string();
+        }
+        Ok(summary)
+    }
 }
 
 impl ChannelDriver for FdroidDriver {
@@ -601,34 +654,92 @@ impl ChannelDriver for FdroidDriver {
     }
 
     fn get_app_info(&self, app_id: &str, force_refresh: bool) -> Result<AppSummary, Error> {
-        let stored = self.find_stored(app_id)?;
-        if !force_refresh {
-            if let Some(record) = &stored {
-                let mut index = IconIndex::default();
-                let bases = self.icon_bases();
-                match self.row_source(record) {
-                    RowSource::Active(source) => {
-                        let icon =
-                            self.stored_icon(record, Some(&source), &bases, &mut index);
-                        return Ok(self.summary_with_icon(record, Some(&source), icon));
+        self.app_info_impl(app_id, force_refresh, None)
+    }
+
+    /// Page-scoped icon prefetch for the aggregate home/list read.
+    ///
+    /// Resolution order (chosen so the returned string is byte-identical to the
+    /// icon [`ChannelDriver::get_app_info`] returns for the same app on the same
+    /// driver state, i.e. the icon [`Self::get_app_detail`] shows):
+    ///
+    /// 1. Empty input or no active source: empty map.
+    /// 2. `ensure_active_index` at most ONCE for the whole page (best effort: a
+    ///    failed download leaves the existing local index in place and never
+    ///    fails the page).
+    /// 3. Every app id is classified with the same `find_stored` + `row_source`
+    ///    the info path uses: an active row is probed only against its own
+    ///    source, an unknown identity only against the first active source, and
+    ///    an un-stored/disabled row against every active source in order (only
+    ///    when a single source is active — with several sources its first-hit
+    ///    source cannot be determined without per-row lookups, so it is left out
+    ///    and resolved by the fallback).
+    /// 4. Exactly one `get_app_icons` batch per candidate source.
+    /// 5. Only non-empty batch hits enter the map, rebased with the same
+    ///    `absolute_icon_url` the index lookup uses. A row whose index entry is
+    ///    missing or icon-less is deliberately omitted so the caller falls back
+    ///    to `stored_icon`, which is what produces its detail-identical icon.
+    fn prefetch_icons(&self, app_ids: &[String]) -> IconMap {
+        let mut icons = IconMap::new();
+        if app_ids.is_empty() {
+            return icons;
+        }
+        let active = self.active_sources();
+        if active.is_empty() {
+            return icons;
+        }
+        // Best effort: download a missing index once for the whole page.
+        let _ = self.ensure_active_index();
+
+        let mut groups: Vec<Vec<String>> = vec![Vec::new(); active.len()];
+        for app_id in app_ids {
+            let Ok(stored) = self.find_stored(app_id) else {
+                continue;
+            };
+            let targets: Vec<usize> = match stored.as_ref().map(|record| self.row_source(record)) {
+                Some(RowSource::Active(source)) => {
+                    match active.iter().position(|candidate| *candidate == source) {
+                        Some(index) => vec![index],
+                        None => continue,
                     }
-                    RowSource::Unknown => {
-                        if let Some(source) = self.active_sources().first().cloned() {
-                            let icon =
-                                self.stored_icon(record, Some(&source), &bases, &mut index);
-                            return Ok(self.summary_with_icon(record, Some(&source), icon));
-                        }
-                    }
-                    RowSource::Disabled => {}
                 }
+                Some(RowSource::Unknown) => vec![0],
+                Some(RowSource::Disabled) | None => {
+                    if active.len() == 1 {
+                        vec![0]
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            for index in targets {
+                groups[index].push(app_id.clone());
             }
         }
-        let Some((source, app)) = self.lookup(app_id, stored.as_ref())? else {
-            return Err(Error::NotFound(format!(
-                "app not found in enabled F-Droid sources: {app_id}"
-            )));
-        };
-        Ok(self.summary_from_repo(&app, &source))
+
+        for (index, source) in active.iter().enumerate() {
+            let ids = &groups[index];
+            if ids.is_empty() {
+                continue;
+            }
+            let Ok(hits) = self.repo.get_app_icons(source, ids) else {
+                continue;
+            };
+            for (package_name, icon) in hits {
+                if icon.is_empty() || icons.contains_key(&package_name) {
+                    continue;
+                }
+                icons.insert(
+                    package_name.clone(),
+                    absolute_icon_url(&icon, &package_name, source),
+                );
+            }
+        }
+        icons
+    }
+
+    fn get_app_info_with(&self, app_id: &str, icons: &IconMap) -> Result<AppSummary, Error> {
+        self.app_info_impl(app_id, false, icons.get(app_id).map(String::as_str))
     }
 
     fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
@@ -650,7 +761,6 @@ impl ChannelDriver for FdroidDriver {
     }
 
     fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
-        self.ensure_active_index()?;
         let detail = self.get_app_detail(app_id, false)?;
         Ok(AppUpdate {
             app_id: detail.app_id.clone(),
@@ -1126,4 +1236,282 @@ fn extract_arch(apk_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::dto::ChannelKind;
+    use crate::ports::fake::FakeRepoPort;
+    use crate::ports::repo::RepoMeta;
+
+    const SOURCE: &str = "https://fdroid.test/repo";
+    const APP_ID: &str = "com.example.restored";
+
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gstore_core_fdroid_{tag}_{}_{}",
+                std::process::id(),
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Counts the two calls the page-scoped prefetch contract constrains: the
+    /// `get_repo_meta` probes made by `ensure_active_index` and the batch
+    /// `get_app_icons` round-trips.
+    struct CountingRepo {
+        inner: FakeRepoPort,
+        meta_calls: AtomicU64,
+        batch_calls: AtomicU64,
+    }
+
+    impl CountingRepo {
+        fn new(inner: FakeRepoPort) -> Self {
+            Self {
+                inner,
+                meta_calls: AtomicU64::new(0),
+                batch_calls: AtomicU64::new(0),
+            }
+        }
+
+        fn meta_calls(&self) -> u64 {
+            self.meta_calls.load(Ordering::SeqCst)
+        }
+
+        fn batch_calls(&self) -> u64 {
+            self.batch_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl RepoPort for CountingRepo {
+        fn download_repo(&self, source: &str) -> Result<RepoMeta, Error> {
+            self.inner.download_repo(source)
+        }
+
+        fn get_app_count(&self, source: &str) -> Result<u64, Error> {
+            self.inner.get_app_count(source)
+        }
+
+        fn search_apps(
+            &self,
+            source: &str,
+            query: &str,
+            limit: usize,
+        ) -> Result<Vec<RepoApp>, Error> {
+            self.inner.search_apps(source, query, limit)
+        }
+
+        fn get_repo_meta(&self, source: &str) -> Result<Option<RepoMeta>, Error> {
+            self.meta_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_repo_meta(source)
+        }
+
+        fn clear_apps(&self, source: &str) -> Result<(), Error> {
+            self.inner.clear_apps(source)
+        }
+
+        fn get_one_app(&self, source: &str, package_name: &str) -> Result<Option<RepoApp>, Error> {
+            self.inner.get_one_app(source, package_name)
+        }
+
+        fn get_app_icons(
+            &self,
+            source: &str,
+            package_names: &[String],
+        ) -> Result<Vec<(String, String)>, Error> {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_app_icons(source, package_names)
+        }
+
+        fn db_path(&self) -> &Path {
+            self.inner.db_path()
+        }
+    }
+
+    fn repo_app(package_name: &str, icon: &str) -> RepoApp {
+        RepoApp {
+            package_name: package_name.to_string(),
+            name: format!("App {package_name}"),
+            summary: "summary".to_string(),
+            version: Some("1.0".to_string()),
+            version_code: Some(1),
+            icon: Some(icon.to_string()),
+            apk_url: None,
+            size: None,
+            categories: vec!["Tools".to_string()],
+            metadata: None,
+        }
+    }
+
+    fn meta() -> ChannelMeta {
+        ChannelMeta {
+            kind: ChannelKind::Fdroid,
+            name: "F-Droid".to_string(),
+            description: "F-Droid channel".to_string(),
+            enabled: true,
+            priority: 0,
+            support_offline: true,
+            last_update_time: None,
+            version: Some("1".to_string()),
+        }
+    }
+
+    fn driver(db: &DbHandle, repo: Arc<CountingRepo>) -> FdroidDriver {
+        let config = CoreConfig::default()
+            .with_fdroid_sources(vec![SOURCE.to_string()])
+            .unwrap();
+        FdroidDriver::new(
+            ChannelKey::new("fdroid").unwrap(),
+            meta(),
+            db.clone(),
+            config,
+            repo,
+        )
+    }
+
+    fn seed_row(db: &DbHandle, app_id: &str, icon: &str, source_id: Option<&str>) {
+        db.with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO channel_apps(channel_key,app_id,name,user,repositories,icon,\
+                 description,category,add_time,source_id) \
+                 VALUES ('fdroid',?1,'Restored App','','com.example.restored',?2,\
+                 'restored summary','Tools',1700000000000,?3)",
+                rusqlite::params![app_id, icon, source_id],
+            )
+            .map_err(|error| crate::db::DbError(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn prefetch_icons_batches_once_per_page() {
+        let dir = TempDir::new("prefetch_batch");
+        let db = DbHandle::open(&dir.0).unwrap();
+        let inner = FakeRepoPort::new("/tmp/gstore_core_fdroid_prefetch.db");
+        inner.add_repo(RepoMeta {
+            source: SOURCE.to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: None,
+            timestamp: None,
+            app_count: 20,
+        });
+        let ids: Vec<String> = (0..20)
+            .map(|index| format!("com.example.app{index:02}"))
+            .collect();
+        for id in &ids {
+            inner.add_app(SOURCE, repo_app(id, &format!("icons/{id}.png")));
+        }
+        let repo = Arc::new(CountingRepo::new(inner));
+        let driver = driver(&db, repo.clone());
+
+        let icons = driver.prefetch_icons(&ids);
+
+        assert_eq!(
+            repo.meta_calls(),
+            1,
+            "ensure_active_index must run at most once per page"
+        );
+        assert_eq!(
+            repo.batch_calls(),
+            1,
+            "one active source must produce exactly one get_app_icons batch"
+        );
+        assert_eq!(icons.len(), ids.len());
+        assert_eq!(
+            icons.get(&ids[0]).map(String::as_str),
+            Some(format!("{SOURCE}/icons/{}.png", ids[0]).as_str())
+        );
+    }
+
+    #[test]
+    fn get_app_info_with_hit_matches_get_app_info() {
+        let dir = TempDir::new("info_hit");
+        let db = DbHandle::open(&dir.0).unwrap();
+        seed_row(&db, APP_ID, "icons/old.png", Some(SOURCE));
+        let inner = FakeRepoPort::new("/tmp/gstore_core_fdroid_info_hit.db");
+        inner.add_repo(RepoMeta {
+            source: SOURCE.to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: None,
+            timestamp: None,
+            app_count: 1,
+        });
+        inner.add_app(SOURCE, repo_app(APP_ID, "icons/new.png"));
+        let repo = Arc::new(CountingRepo::new(inner));
+        let driver = driver(&db, repo.clone());
+
+        let plain = driver.get_app_info(APP_ID, false).unwrap();
+        let icons = driver.prefetch_icons(&[APP_ID.to_string()]);
+        assert!(
+            icons.contains_key(APP_ID),
+            "the index carries the app, so the page map must hit"
+        );
+        let with = driver.get_app_info_with(APP_ID, &icons).unwrap();
+
+        assert_eq!(with, plain, "a map hit must not change any summary field");
+        assert_eq!(with.icon, format!("{SOURCE}/icons/new.png"));
+    }
+
+    #[test]
+    fn get_app_info_with_miss_matches_get_app_info() {
+        let dir = TempDir::new("info_miss");
+        let db = DbHandle::open(&dir.0).unwrap();
+        seed_row(&db, APP_ID, "icons/old.png", Some(SOURCE));
+        let inner = FakeRepoPort::new("/tmp/gstore_core_fdroid_info_miss.db");
+        inner.add_repo(RepoMeta {
+            source: SOURCE.to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: None,
+            timestamp: None,
+            app_count: 1,
+        });
+        inner.add_app(SOURCE, repo_app(APP_ID, "icons/new.png"));
+        let repo = Arc::new(CountingRepo::new(inner));
+        let indexed_driver = driver(&db, repo.clone());
+
+        let empty = IconMap::new();
+        let with = indexed_driver.get_app_info_with(APP_ID, &empty).unwrap();
+        let plain = indexed_driver.get_app_info(APP_ID, false).unwrap();
+        assert_eq!(with, plain, "a map miss must equal the single-row path");
+
+        // Same miss contract on a clean install with no local index at all.
+        let no_index_dir = TempDir::new("info_miss_no_index");
+        let no_index_db = DbHandle::open(&no_index_dir.0).unwrap();
+        seed_row(&no_index_db, APP_ID, "icons/old.png", Some(SOURCE));
+        let bare = FakeRepoPort::new("/tmp/gstore_core_fdroid_info_miss_no_index.db");
+        let bare_repo = Arc::new(CountingRepo::new(bare));
+        let bare_driver = driver(&no_index_db, bare_repo);
+
+        let with = bare_driver
+            .get_app_info_with(APP_ID, &IconMap::new())
+            .unwrap();
+        let plain = bare_driver.get_app_info(APP_ID, false).unwrap();
+        assert_eq!(
+            with, plain,
+            "without a local index the miss path must still match get_app_info"
+        );
+    }
 }

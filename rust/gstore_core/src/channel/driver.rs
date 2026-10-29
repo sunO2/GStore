@@ -9,6 +9,8 @@
 //! downstream crates cannot implement the trait because its supertrait lives in
 //! the private `sealed` module.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::sealed;
@@ -16,6 +18,15 @@ use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
 };
 use crate::error::Error;
+
+/// Icons resolved in one page-scoped prefetch, keyed by app id.
+///
+/// A driver fills this map once per page via [`ChannelDriver::prefetch_icons`]
+/// and the page then reads each row through
+/// [`ChannelDriver::get_app_info_with`]. The map is intentionally a plain value
+/// (never stored on the driver): a driver-level cache would never invalidate,
+/// so a refreshed repository index would keep serving stale home icons.
+pub type IconMap = BTreeMap<String, String>;
 
 /// A channel category (mirrors Dart `db.AppCategory`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +105,31 @@ pub trait ChannelDriver: sealed::Sealed + Send + Sync {
     ) -> Result<AppSummary, Error> {
         let _ = version;
         self.get_app_info(app_id, force_refresh)
+    }
+
+    /// Resolves icons for `app_ids` once so a page can render many rows without
+    /// one icon probe per row.
+    ///
+    /// The default returns an empty map, which makes every
+    /// [`ChannelDriver::get_app_info_with`] call fall back to
+    /// [`ChannelDriver::get_app_info`]; drivers that can batch their index
+    /// lookup override this.
+    fn prefetch_icons(&self, _app_ids: &[String]) -> IconMap {
+        IconMap::new()
+    }
+
+    /// Reads one app, reusing an icon already resolved by
+    /// [`ChannelDriver::prefetch_icons`].
+    ///
+    /// A hit in `icons` supplies the icon directly; everything else is produced
+    /// by the same code path as [`ChannelDriver::get_app_info`]. A miss falls
+    /// back to [`ChannelDriver::get_app_info`] unchanged, so single-row
+    /// semantics (including any index refresh) are never altered.
+    ///
+    /// # Errors
+    /// Propagates the [`Error`] returned by [`ChannelDriver::get_app_info`].
+    fn get_app_info_with(&self, app_id: &str, _icons: &IconMap) -> Result<AppSummary, Error> {
+        self.get_app_info(app_id, false)
     }
 
     /// Reads one app's detail page payload.

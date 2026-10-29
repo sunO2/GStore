@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use gstore_core::channel::{ChannelDriver, FdroidDriver};
 use gstore_core::db::{DbError, DbHandle};
@@ -78,22 +78,28 @@ struct IndexRepo {
     indexed: AtomicBool,
     downloads: AtomicU64,
     one_app_calls: AtomicU64,
+    icon: RwLock<String>,
     app: RepoApp,
 }
 
 impl IndexRepo {
     fn new(indexed: bool) -> Self {
+        Self::with_icon(indexed, ABSOLUTE_ICON)
+    }
+
+    fn with_icon(indexed: bool, icon: &str) -> Self {
         Self {
             indexed: AtomicBool::new(indexed),
             downloads: AtomicU64::new(0),
             one_app_calls: AtomicU64::new(0),
+            icon: RwLock::new(icon.to_string()),
             app: RepoApp {
                 package_name: APP_ID.to_string(),
                 name: "Restored App".to_string(),
                 summary: "restored summary".to_string(),
                 version: Some("1.0".to_string()),
                 version_code: Some(1),
-                icon: Some(ABSOLUTE_ICON.to_string()),
+                icon: Some(icon.to_string()),
                 apk_url: None,
                 size: None,
                 categories: vec!["Tools".to_string()],
@@ -108,6 +114,17 @@ impl IndexRepo {
 
     fn one_app_calls(&self) -> u64 {
         self.one_app_calls.load(Ordering::SeqCst)
+    }
+
+    /// Simulates a `download_repo` refresh replacing the indexed icon asset.
+    fn replace_icon(&self, icon: &str) {
+        *self.icon.write().unwrap() = icon.to_string();
+    }
+
+    fn repo_app(&self) -> RepoApp {
+        let mut app = self.app.clone();
+        app.icon = Some(self.icon.read().unwrap().clone());
+        app
     }
 
     fn repo_meta(&self, source: &str) -> RepoMeta {
@@ -145,7 +162,7 @@ impl RepoPort for IndexRepo {
         if source != SOURCE || !self.indexed.load(Ordering::SeqCst) {
             return Ok(Vec::new());
         }
-        Ok(vec![self.app.clone()])
+        Ok(vec![self.repo_app()])
     }
 
     fn get_repo_meta(&self, source: &str) -> Result<Option<RepoMeta>, Error> {
@@ -167,7 +184,7 @@ impl RepoPort for IndexRepo {
         if source != SOURCE || package_name != APP_ID || !self.indexed.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        Ok(Some(self.app.clone()))
+        Ok(Some(self.repo_app()))
     }
 
     fn db_path(&self) -> &Path {
@@ -380,5 +397,75 @@ fn list_with_absolute_icons_consults_the_local_index_once_without_downloading() 
         repo.one_app_calls(),
         1,
         "the list path probes the index once per row, exactly like detail"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// guard: a repository refresh must be re-probed by the SAME driver instance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn same_driver_icon_refresh_reprobes_the_index() {
+    let dir = TempDir::new("refresh_reprobe");
+    let db = DbHandle::open(dir.path()).unwrap();
+    seed_restored_row(&db, RELATIVE_ICON, Some(SOURCE), None);
+    let repo = Arc::new(IndexRepo::with_icon(true, RELATIVE_ICON));
+    // One driver for both reads: a driver-level icon cache would go stale here.
+    let driver = driver(&db, repo.clone(), &[SOURCE]);
+
+    let first = driver.get_app_info(APP_ID, false).unwrap();
+    assert_eq!(first.icon, ABSOLUTE_ICON);
+
+    // Simulate `download_repo` refreshing the index: icons/x.png becomes the
+    // versioned icons/x.123.png.
+    repo.replace_icon("icons/com.example.restored.123.png");
+    const REFRESHED_ICON: &str = "https://fdroid.test/repo/icons/com.example.restored.123.png";
+
+    let refreshed = driver.get_app_info(APP_ID, false).unwrap();
+    assert_eq!(
+        refreshed.icon, REFRESHED_ICON,
+        "get_app_info must re-probe the index, not reuse a stale driver-level cache"
+    );
+
+    let detail = driver.get_app_detail(APP_ID, false).unwrap();
+    assert_eq!(detail.icon, REFRESHED_ICON);
+    assert_eq!(
+        refreshed.icon, detail.icon,
+        "home icon must equal the detail icon after a repository refresh"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// guard: a stale stored icon without a local index must still match detail
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_local_index_stale_stored_icon_matches_detail() {
+    let dir = TempDir::new("no_index_stale");
+    let db = DbHandle::open(dir.path()).unwrap();
+    seed_restored_row(
+        &db,
+        "icons/com.example.restored.old.png",
+        Some(SOURCE),
+        None,
+    );
+    // No local index yet; the index that will be downloaded reports a new icon.
+    let repo = Arc::new(IndexRepo::with_icon(
+        false,
+        "icons/com.example.restored.new.png",
+    ));
+    let driver = driver(&db, repo.clone(), &[SOURCE]);
+
+    let info = driver.get_app_info(APP_ID, false).unwrap();
+    let detail = driver.get_app_detail(APP_ID, false).unwrap();
+
+    const NEW_ICON: &str = "https://fdroid.test/repo/icons/com.example.restored.new.png";
+    assert_eq!(
+        info.icon, NEW_ICON,
+        "the info path must ensure the index instead of trusting the stale stored icon"
+    );
+    assert_eq!(
+        info.icon, detail.icon,
+        "home icon must equal the detail icon on a clean install with no local index"
     );
 }
