@@ -1,6 +1,7 @@
 // F-Droid 仓库管理器实现
 use rusqlite::{Connection, Result as SqliteResult, ToSql};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use crate::models::*;
 
 // 调试打印宏
@@ -328,6 +329,18 @@ impl RepoManager {
     pub fn new(db_path: &str) -> Result<Self, String> {
         let conn = Connection::open(db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
+
+        // ★ 并发 hygiene（对齐 gstore_core/src/db.rs）：WAL 允许读写并行，
+        //   busy_timeout 让并发初始化/写入短暂等待而不是立刻 SQLITE_BUSY。
+        //   必须用 pragma_update —— `execute("PRAGMA ...")` 会因 PRAGMA 返回结果行而报错。
+        //   ★ 两者都是 **best-effort**：部分文件系统无法创建 WAL/-shm，若在此硬失败，
+        //   整个进程生命周期的 F-Droid 读写都会作废；所以只打印一行诊断并回落到默认 journal。
+        if let Err(e) = conn.busy_timeout(Duration::from_millis(5000)) {
+            eprintln!("repo: busy_timeout unavailable, continuing: {e}");
+        }
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
+            eprintln!("repo: journal_mode=WAL unavailable, continuing with the default journal: {e}");
+        }
 
         // 创建表
         Self::init_database(&conn)
@@ -1830,6 +1843,30 @@ mod repo_meta_tests {
             v["screenshots"]["phone"]["en-US"],
             "https://mirror/fdroid/repo/com.x/en-US/a.png"
         );
+    }
+
+    #[test]
+    fn file_db_enables_wal_journal_mode() {
+        let dir = std::env::temp_dir().join(format!("gstore_wal_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("repo.db");
+        let mgr = RepoManager::new(db.to_str().unwrap()).unwrap();
+
+        let (mode, busy_timeout) = {
+            let conn = mgr.db.lock().unwrap();
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            let busy_timeout: i64 = conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .unwrap();
+            (mode, busy_timeout)
+        };
+        assert_eq!(mode.to_lowercase(), "wal");
+        assert_eq!(busy_timeout, 5000);
+
+        drop(mgr);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 }
