@@ -5,8 +5,9 @@
 //!
 //! * [`AggregationService`] walks `added_apps` in `add_time DESC` order, asks
 //!   the owning channel driver for each app, and keeps the input order.
-//! * Channel misses degrade to the stored reference (placeholder summary)
-//!   instead of failing the whole list; unknown channel codes are skipped.
+//! * Channel misses degrade in a fixed order: driver → [`ChannelAppFallback`]
+//!   (`channel_apps`) → stored-reference placeholder. Without a fallback the
+//!   legacy behavior is unchanged (unknown channel codes are skipped).
 //! * User tags and catalog category descriptions are merged into each
 //!   summary's category list, preserving first occurrence.
 //! * [`sort_filter`], [`categories_from_apps`], [`recent`], and
@@ -42,6 +43,31 @@ pub type ChannelResolver = std::sync::Arc<
     dyn Fn(&str) -> Option<std::sync::Arc<dyn crate::channel::ChannelDriver>> + Send + Sync,
 >;
 
+/// Resolves a `(channel_key, app_id)` pair from the `channel_apps` projection.
+///
+/// This is the second step of the unified read order (driver → channel store →
+/// placeholder). It covers lanes without a core driver, most importantly the
+/// `js_*` script lanes whose metadata already lives in `channel_apps`, and any
+/// historical membership row whose channel driver is gone.
+pub trait ChannelAppFallback: Send + Sync {
+    /// Returns the stored summary, or `None` when the projection has no row.
+    fn get(&self, channel_key: &str, app_id: &str) -> Result<Option<AppSummary>, Error>;
+}
+
+/// Where [`AggregatedApp::app`] came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataState {
+    /// Resolved live from the owning channel driver.
+    #[default]
+    Resolved,
+    /// Resolved from the `channel_apps` projection (no usable driver).
+    FromChannelStore,
+    /// Neither a driver nor the projection had metadata; the summary is a
+    /// placeholder built from the `added_apps` reference.
+    Unresolved,
+}
+
 /// One added app plus its resolved channel summary.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AggregatedApp {
@@ -57,6 +83,17 @@ pub struct AggregatedApp {
     pub is_from_cache: bool,
     /// Driver failure message when aggregation fell back after an error.
     pub error: Option<String>,
+    /// Provenance of [`AggregatedApp::app`].
+    #[serde(default)]
+    pub metadata_state: MetadataState,
+}
+
+struct ResolvedRow {
+    app: AppSummary,
+    channel: ChannelKind,
+    is_from_cache: bool,
+    error: Option<String>,
+    metadata_state: MetadataState,
 }
 
 /// Sort mode for the aggregated app list.
@@ -90,24 +127,43 @@ pub struct AggregationService {
     db: DbHandle,
     added: AddedAppsService,
     channels: ChannelResolver,
+    fallback: Option<std::sync::Arc<dyn ChannelAppFallback>>,
 }
 
 impl AggregationService {
     /// Creates the service around `db` and the channel resolver.
+    ///
+    /// Without a fallback this preserves the legacy read path exactly: unknown
+    /// channels are skipped, and a driver failure degrades to the placeholder.
     pub fn new(db: DbHandle, channels: ChannelResolver) -> Result<Self, Error> {
         Ok(Self {
             added: AddedAppsService::new(db.clone()),
             db,
             channels,
+            fallback: None,
         })
+    }
+
+    /// Enables the unified read order by resolving misses from `channel_apps`.
+    ///
+    /// With a fallback configured, a row without a driver (or whose driver
+    /// failed) is resolved from the projection before degrading to the
+    /// placeholder; a row with neither driver nor projection row becomes an
+    /// [`MetadataState::Unresolved`] placeholder instead of being skipped.
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: std::sync::Arc<dyn ChannelAppFallback>) -> Self {
+        self.fallback = Some(fallback);
+        self
     }
 
     /// Aggregates every added app without dedup, preserving `add_time DESC`
     /// order.
     ///
-    /// Unknown channels are skipped; a driver `NotFound` degrades to the cached
-    /// placeholder without an error; any other driver error degrades the same
-    /// way but records the error and uses [`ChannelKind::LocalDb`].
+    /// Without a fallback, unknown channels are skipped; a driver `NotFound`
+    /// degrades to the cached placeholder without an error; any other driver
+    /// error degrades the same way but records the error and uses
+    /// [`ChannelKind::LocalDb`]. With a fallback, misses resolve from
+    /// `channel_apps` first and then become an unresolved placeholder.
     pub fn aggregate_all(&self) -> Result<Vec<AggregatedApp>, Error> {
         let added = self.added.list()?;
         self.aggregate_slice(&added)
@@ -176,25 +232,12 @@ impl AggregationService {
         let mut results = Vec::with_capacity(added.len());
 
         for row in added {
-            let Some(driver) = (self.channels)(&row.channel_id) else {
+            let driver = (self.channels)(&row.channel_id);
+            let Some(resolved) = self.resolve_row(row, driver.as_deref())? else {
                 continue;
             };
-            let driver_kind = driver.meta().kind;
             let key = format!("{}:{}", row.channel_id, row.app_id);
-
-            let (mut app, channel, is_from_cache, error) =
-                match driver.get_app_info(&row.app_id, false) {
-                    Ok(summary) => (summary, driver_kind, false, None),
-                    Err(Error::NotFound(_)) => {
-                        (placeholder(row), driver_kind, true, None)
-                    }
-                    Err(other) => (
-                        placeholder(row),
-                        ChannelKind::LocalDb,
-                        true,
-                        Some(other.to_string()),
-                    ),
-                };
+            let mut app = resolved.app;
 
             let merged = merge_categories(&app, tags.get(&key), &categories);
             if !merged.is_empty() {
@@ -204,14 +247,81 @@ impl AggregationService {
             results.push(AggregatedApp {
                 added_app: row.clone(),
                 app,
-                channel,
+                channel: resolved.channel,
                 channel_code: row.channel_id.clone(),
-                is_from_cache,
-                error,
+                is_from_cache: resolved.is_from_cache,
+                error: resolved.error,
+                metadata_state: resolved.metadata_state,
             });
         }
 
         Ok(results)
+    }
+
+    fn resolve_row(
+        &self,
+        row: &AddedApp,
+        driver: Option<&dyn crate::channel::ChannelDriver>,
+    ) -> Result<Option<ResolvedRow>, Error> {
+        let Some(driver) = driver else {
+            let Some(fallback) = self.fallback.as_ref() else {
+                return Ok(None);
+            };
+            let channel = channel_kind_for_code(&row.channel_id);
+            return Ok(Some(match fallback.get(&row.channel_id, &row.app_id)? {
+                Some(summary) => ResolvedRow {
+                    app: summary,
+                    channel,
+                    is_from_cache: false,
+                    error: None,
+                    metadata_state: MetadataState::FromChannelStore,
+                },
+                None => ResolvedRow {
+                    app: placeholder(row),
+                    channel,
+                    is_from_cache: true,
+                    error: None,
+                    metadata_state: MetadataState::Unresolved,
+                },
+            }));
+        };
+
+        let kind = driver.meta().kind;
+        match driver.get_app_info(&row.app_id, false) {
+            Ok(summary) => Ok(Some(ResolvedRow {
+                app: summary,
+                channel: kind,
+                is_from_cache: false,
+                error: None,
+                metadata_state: MetadataState::Resolved,
+            })),
+            Err(error) => {
+                let fallback_summary = match self.fallback.as_ref() {
+                    Some(fallback) => fallback.get(&row.channel_id, &row.app_id)?,
+                    None => None,
+                };
+                if let Some(summary) = fallback_summary {
+                    return Ok(Some(ResolvedRow {
+                        app: summary,
+                        channel: kind,
+                        is_from_cache: false,
+                        error: None,
+                        metadata_state: MetadataState::FromChannelStore,
+                    }));
+                }
+                let (channel, recorded_error) = match error {
+                    Error::NotFound(_) => (kind, None),
+                    other => (ChannelKind::LocalDb, Some(other.to_string())),
+                };
+                Ok(Some(ResolvedRow {
+                    app: placeholder(row),
+                    channel,
+                    is_from_cache: true,
+                    error: recorded_error,
+                    metadata_state: MetadataState::Unresolved,
+                }))
+            }
+        }
     }
 
     fn category_descriptions(&self) -> BTreeMap<String, String> {
@@ -418,6 +528,16 @@ pub fn dedup_channels_and_packages(apps: Vec<AggregatedApp>) -> Vec<AggregatedAp
         .collect()
 }
 
+fn channel_kind_for_code(code: &str) -> ChannelKind {
+    ChannelKind::from_code(code).unwrap_or_else(|_| {
+        if code.starts_with("js") {
+            ChannelKind::JsLocal
+        } else {
+            ChannelKind::Custom
+        }
+    })
+}
+
 fn placeholder(row: &AddedApp) -> AppSummary {
     AppSummary {
         app_id: row.app_id.clone(),
@@ -430,6 +550,7 @@ fn placeholder(row: &AddedApp) -> AppSummary {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     }
 }
 

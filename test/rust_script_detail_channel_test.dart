@@ -1,69 +1,65 @@
 /// Regression for the JS-channel (`js_*`, Rust script lane) DETAIL page.
 ///
-/// The Rust host collapses three different outcomes — the pack having no
-/// `getAppDetail` case (undefined), a `{ok:false, data:null, error}` envelope,
-/// and a JS throw — into the bare JSON `null`
-/// (`rust/gstore_host/src/script_runtime_entry.rs` `ScriptEntry::run` :171 +
-/// `unwrap_envelope` :301-307; `gstore_script/src/script/engine.rs` :215-216
-/// maps `undefined` → `Null`). `ScriptApi.run` therefore SUCCEEDS and returns
-/// the string `"null"`.
+/// Todo 8 rerouted this channel's data reads through the unified
+/// [RustChannelFacade] (`ChannelApi`) surface: `getAppDetail` + the four
+/// detail-page methods are typed facade calls, and the typed results are mapped
+/// back to the `Map<String, dynamic>` shape the page's `JsChannelDetailProxy`
+/// consumes. The old `ScriptApi.run` JSON path is gone.
 ///
-/// Before the fix [RustScriptDetailChannel.load] took the non-Map branch and
-/// set `state.errorMessage = '详情加载失败（脚本未返回详情数据）'`, and
-/// `lib/page/detail/view.dart` (:83-85) replaced the WHOLE body with the error
-/// view — discarding the prefill it had just rendered (the user-visible
-/// "详情页加载失败 脚本未返回详情数据").
-///
-/// After the fix a null reply keeps the prefill (no hard error); only a real
-/// exception sets a typed `errorMessage`.
+/// The Rust host collapses "no detail" — the pack having no `getAppDetail` case
+/// (undefined), a `{ok:false, data:null, error}` envelope, and a JS throw — into
+/// the typed `not_found` error (`rust/gstore_core/src/channel/script/channel.rs`
+/// `MISSING_DETAIL`). [RustScriptDetailChannel.load] therefore keeps the prefill
+/// already rendered on `not_found` (no hard error) instead of replacing the body
+/// with the error view; only a non-`not_found` failure sets a typed
+/// `errorMessage`.
 library;
 
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
-import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
-import 'package:gstore/core/rust/generated/script_pack.dart' as rust_pack;
 import 'package:gstore/core/script/rust_script_detail_channel.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/page/detail/state.dart';
 
-/// In-memory `ScriptApiBackend` (the FRB seam): the raw JSON string the Rust
-/// `run` would return, or a thrown exception. No FRB dylib is loaded.
-class _FakeScriptBackend implements ScriptApiBackend {
-  _FakeScriptBackend({this.reply = 'null', this.throwError, this.replies, this.replyFor});
+/// In-memory [ChannelApiBackend] (the FRB facade seam).
+///
+/// It is seeded with the same raw JSON strings the Rust `run` would have
+/// returned and projects them to the typed facade values the real host returns
+/// — so the test bodies keep their JSON setup while the assertions prove the
+/// channel reached the *facade* backend. Calls are recorded under the pack
+/// method names (`getAppDetail` / `versionOptions` / `switchVersion` /
+/// `buildHistory` / `detailMenu`) with a JSON `params` string, mirroring the old
+/// `ScriptApi.run` seam so the scenario assertions stay readable.
+class _FakeFacadeBackend implements ChannelApiBackend {
+  _FakeFacadeBackend({this.reply = 'null', this.throwError, this.replies, this.replyFor});
 
   /// Raw JSON string the script reply decodes to (`'null'` = no detail).
   String reply;
 
-  /// When non-null, [run] throws it (a typed FRB failure / pack-not-found).
+  /// When non-null, the reply is thrown (a real FRB failure).
   Object? throwError;
 
   /// Per-method raw JSON overrides; a method absent here falls back to [reply].
   Map<String, String>? replies;
 
   /// When non-null, consulted AFTER [replies] and BEFORE [reply]: lets a test
-  /// vary the reply by method AND request params (e.g. `buildHistory` per
-  /// requested version, proving the channel asked for the tracked version's
-  /// builds). Methods present in [replies] still win.
+  /// vary the reply by method AND request params.
   String Function(String method, String paramsJson)? replyFor;
 
   final List<Map<String, Object?>> runCalls = [];
+  final List<Map<String, Object?>> actionCalls = [];
 
-  @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    runCalls.add({'key': key, 'method': method, 'params': paramsJson});
+  String _raw(String method, String paramsJson) {
     final err = throwError;
     if (err != null) throw err;
     final byMethod = replies;
@@ -75,75 +71,215 @@ class _FakeScriptBackend implements ScriptApiBackend {
     return reply;
   }
 
-  @override
-  Future<void> init({
-    required String dataDir,
-    required String filesDir,
-    required String cacheDir,
-  }) async {}
+  void _record(String key, String method, Map<String, Object?> params) {
+    runCalls.add({
+      'key': key,
+      'method': method,
+      'params': jsonEncode(params),
+    });
+  }
 
   @override
-  Future<rust_pack.ScriptPackInfo> import_({
-    required List<int> packZipBytes,
-    String? expectedKey,
-  }) async =>
-      rust_pack.ScriptPackInfo(
-        key: expectedKey ?? 'js_probe',
-        name: '',
-        description: '',
-        icon: '',
-        hasDetail: false,
-      );
-
-  @override
-  Future<void> remove({required String key}) async {}
-
-  @override
-  Future<rust_pack.ScriptPackInfo> refresh({required String key}) async =>
-      rust_pack.ScriptPackInfo(
-        key: key,
-        name: '',
-        description: '',
-        icon: '',
-        hasDetail: false,
-      );
-
-  @override
-  Future<void> setEnv({
-    required String key,
-    required Map<String, String> env,
-  }) async {}
-
-  @override
-  Future<Map<String, String>> getEnv({required String key}) async => const {};
-
-  @override
-  Future<void> setConfig({
-    required String key,
-    required Map<String, String> config,
-  }) async {}
-
-  @override
-  Future<List<rust_pack.ScriptPackInfo>> list() async => const [];
-
-  @override
-  Future<String> storedApps({required String key}) async => '[]';
-
-  @override
-  Future<void> addApp({
-    required String key,
-    required rust.ChannelAppInfo app,
-  }) async {}
-
-  @override
-  Future<void> releaseDetail({
+  Future<rust.ChannelAppDetailInfo> getAppDetail({
     required String key,
     required String appId,
-  }) async {}
+    required bool forceRefresh,
+  }) async {
+    final params = <String, Object?>{'appId': appId};
+    _record(key, 'getAppDetail', params);
+    final raw = _raw('getAppDetail', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      throw const ChannelApiException(
+        'not_found',
+        '脚本未返回详情数据（脚本未实现或数据获取失败）',
+      );
+    }
+    return _detailFromJson(decoded, raw);
+  }
+
+  @override
+  Future<rust.ScriptVersionOptions?> scriptVersionOptions({
+    required String key,
+    required String appId,
+    String? env,
+    String? currentVersion,
+  }) async {
+    final params = <String, Object?>{
+      'appId': appId,
+      if (env != null) 'env': env,
+      if (currentVersion != null) 'currentVersion': currentVersion,
+    };
+    _record(key, 'versionOptions', params);
+    final raw = _raw('versionOptions', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return _versionOptionsFromJson(decoded, raw);
+  }
+
+  @override
+  Future<rust.ChannelAppDetailInfo?> scriptSwitchVersion({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+    String? buildJson,
+  }) async {
+    final params = <String, Object?>{
+      'appId': appId,
+      'env': env,
+      'version': version,
+      if (buildJson != null) 'build': jsonDecode(buildJson),
+    };
+    _record(key, 'switchVersion', params);
+    final raw = _raw('switchVersion', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return _detailFromJson(decoded, raw);
+  }
+
+  @override
+  Future<List<rust.ScriptBuild>> scriptBuildHistory({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+  }) async {
+    final params = <String, Object?>{
+      'appId': appId,
+      'version': version,
+      'env': env,
+    };
+    _record(key, 'buildHistory', params);
+    final raw = _raw('buildHistory', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return const [];
+    final rawBuilds = decoded['builds'];
+    if (rawBuilds is! List) return const [];
+    return [
+      for (final entry in rawBuilds)
+        if (entry is Map) _buildFromJson(entry),
+    ];
+  }
+
+  @override
+  Future<List<rust.ChannelDetailAction>> scriptDetailMenu({
+    required String key,
+    required String appId,
+  }) async {
+    final params = <String, Object?>{'appId': appId};
+    _record(key, 'detailMenu', params);
+    final raw = _raw('detailMenu', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! List) return const [];
+    return [
+      for (final entry in decoded)
+        if (entry is Map)
+          rust.ChannelDetailAction(
+            action: entry['action']?.toString() ?? '',
+            jscall: entry['jscall']?.toString() ?? '',
+            icon: entry['icon']?.toString(),
+            clickIsDimiss: entry['clickIsDimiss'] as bool?,
+          ),
+    ];
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+      'unexpected facade call: ${invocation.memberName}');
+
+  @override
+  Future<void> scriptDetailAction({
+    required String key,
+    required String appId,
+    required String jscall,
+  }) async {
+    actionCalls.add({'key': key, 'appId': appId, 'jscall': jscall});
+    runCalls.add({
+      'key': key,
+      'method': jscall,
+      'params': jsonEncode(<String, Object?>{'appId': appId}),
+    });
+  }
+
+  static rust.ChannelAppDetailInfo _detailFromJson(Map<dynamic, dynamic> json, String extraJson) {
+    final rawSections = json['sections'];
+    return rust.ChannelAppDetailInfo(
+      appId: json['appId']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      icon: json['icon']?.toString() ?? '',
+      description: (json['description'] ?? json['des'])?.toString() ?? '',
+      version: json['version']?.toString(),
+      developer: (json['developer'] ?? json['user'])?.toString(),
+      packageName: json['packageName']?.toString(),
+      projectUrl: json['projectUrl']?.toString(),
+      channel: 'js_local',
+      sections:
+          rawSections is List ? rawSections.map((e) => e.toString()).toList() : const [],
+      downloads: const [],
+      // The real host stores the whole pack reply in `AppDetail.extra`; the
+      // channel decodes it as the base map.
+      extraJson: extraJson,
+      labels: const <rust.ChannelLabel>[],
+    );
+  }
+
+  static rust.ScriptVersionOptions _versionOptionsFromJson(
+      Map<dynamic, dynamic> json, String extraJson) {
+    final rawVersions = json['versions'];
+    final versions = <rust.ScriptVersionOption>[];
+    if (rawVersions is List) {
+      for (final entry in rawVersions) {
+        if (entry is Map) {
+          versions.add(rust.ScriptVersionOption(
+            version: entry['version']?.toString() ?? '',
+            envs: (entry['envs'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                const [],
+            buildCount: (entry['buildCount'] as num?)?.toInt() ?? 0,
+          ));
+        }
+      }
+    }
+    return rust.ScriptVersionOptions(
+      title: json['title']?.toString(),
+      envs: (json['envs'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      versions: versions,
+      currentEnv: json['currentEnv']?.toString(),
+      currentVersion: json['currentVersion']?.toString(),
+      extraJson: extraJson,
+    );
+  }
+
+  static rust.ScriptBuild _buildFromJson(Map<dynamic, dynamic> json) {
+    const known = {'num', 'publishedAt', 'size', 'changelog', 'installTimes'};
+    final extra = <String, Object?>{};
+    json.forEach((key, value) {
+      if (!known.contains(key)) extra[key.toString()] = value;
+    });
+    return rust.ScriptBuild(
+      num: (json['num'] as num?)?.toInt() ?? 0,
+      publishedAt: json['publishedAt']?.toString(),
+      size: (json['size'] as num?)?.toInt(),
+      changelog: json['changelog']?.toString(),
+      installTimes: (json['installTimes'] as num?)?.toInt(),
+      extraJson: jsonEncode(extra),
+    );
+  }
 }
 
-/// Flags backend that turns the Rust lane on so `ScriptApi.run` does not refuse
-/// with [ScriptApiDisabledException].
+/// Minimal [ScriptApiBackend]: only `releaseDetail` (retained for `dispose`).
+class _NoopScriptBackend implements ScriptApiBackend {
+  @override
+  Future<void> releaseDetail({required String key, required String appId}) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+      'unused ScriptApi method: ${invocation.memberName}');
+}
+
+/// Flags backend that turns the Rust lane on.
 class _OnFlagsBackend implements CoreFlagsBackend {
   @override
   Future<CoreFlagsSnapshot> read() async =>
@@ -165,12 +301,9 @@ class _CapturingCallbacks implements DetailCallbacks {
   /// the same top-level `dc.*` calls `DetailVersionPickerMixin` would.
   RustScriptDetailChannel? channel;
 
-  /// Recorded `showVersionPicker`/`showBuildHistory` invocations (the payloads
-  /// the mixin would render).
   final List<Map<String, dynamic>> versionPickerCalls = [];
   final List<Map<String, dynamic>> buildHistoryCalls = [];
 
-  /// The "user selection" the simulated pickers resolve to; null = cancel.
   ({String env, String version})? versionSelection;
   Map<String, dynamic>? buildSelection;
 
@@ -185,10 +318,6 @@ class _CapturingCallbacks implements DetailCallbacks {
   @override
   void showError(String message, {String? title}) => errors.add(message);
 
-  /// Simulates `DetailVersionPickerMixin.showVersionPicker`'s downstream: the
-  /// mixin resolves the user's {env, version} pick, then calls
-  /// `detailChannel.switchVersion` (top-level) and `refreshDetail`. For the
-  /// Rust lane those calls must be top-level (no parked eval) or they deadlock.
   @override
   Future<void> showVersionPicker({
     required Map<String, dynamic> options,
@@ -205,9 +334,6 @@ class _CapturingCallbacks implements DetailCallbacks {
     if (detail != null) await refreshDetail(detailData: detail);
   }
 
-  /// Simulates `DetailVersionPickerMixin.showBuildHistory`'s downstream: the
-  /// mixin resolves the selected build, then calls
-  /// `detailChannel.switchVersion(..., build:)` (top-level) and `refreshDetail`.
   @override
   Future<void> showBuildHistory({
     required List<Map<String, dynamic>> builds,
@@ -232,7 +358,6 @@ class _CapturingCallbacks implements DetailCallbacks {
     if (detail != null) await refreshDetail(detailData: detail);
   }
 
-  // The following are not reached by `load()`; no-op stubs.
   @override
   Future<void> updateDetail({required Map<String, dynamic> partial}) async {}
 
@@ -308,6 +433,8 @@ void main() {
 
   tearDown(() {
     CoreFlags.resetBackend();
+    RustChannelFacade.resetBackend();
+    ScriptApi.resetBackend();
     ScriptUiHandlerRegistry.instance.resetForTest();
   });
 
@@ -321,16 +448,17 @@ void main() {
     description: '请求描述',
   );
 
-  /// Builds the channel bound to a fresh state + capturing callbacks.
+  /// Builds the channel bound to a fresh state + capturing callbacks, installing
+  /// [backend] as the process-wide facade backend for the test.
   (RustScriptDetailChannel, DetailState, _CapturingCallbacks) build(
-    _FakeScriptBackend backend,
+    _FakeFacadeBackend backend,
   ) {
-    final api = ScriptApi(backend: backend);
+    RustChannelFacade.installBackend(backend);
     final channel = RustScriptDetailChannel(
       appId: request.appId,
       channelKey: 'js_probe',
       request: request,
-      api: api,
+      api: ScriptApi(backend: _NoopScriptBackend()),
     );
     final cb = _CapturingCallbacks();
     final state = DetailState()..request = request;
@@ -341,12 +469,12 @@ void main() {
 
   group('RustScriptDetailChannel.load — null reply keeps the prefill', () {
     test('raw "null" reply: no error, prefill applied, page not blank', () async {
-      final backend = _FakeScriptBackend(reply: 'null');
+      final backend = _FakeFacadeBackend(reply: 'null');
       final (channel, state, cb) = build(backend);
 
       await channel.load();
 
-      // The seam was reached with the documented shape (getAppDetail first,
+      // The facade was reached with the documented shape (getAppDetail first,
       // then the independent detailMenu refresh).
       expect(backend.runCalls, hasLength(2));
       expect(backend.runCalls.first['method'], 'getAppDetail');
@@ -357,20 +485,16 @@ void main() {
         'com.example.one',
       );
 
-      // Null reply is NOT a hard failure: no error message (so view.dart's
-      // `errorMessage.isNotEmpty` branch is not taken → body is not replaced).
       expect(state.errorMessage, isEmpty,
           reason: 'a null reply must not hard-error the detail page');
       expect(cb.errors, isEmpty);
 
-      // Prefill was applied (only one refreshDetail: the prefill).
       expect(cb.refreshCalls, hasLength(1));
       expect(state.detailInfo, isNotNull, reason: 'page must not be blank');
       expect(state.detailInfo!.appId, 'com.example.one');
       expect(state.detailInfo!.name, 'Req App');
       expect(state.detailInfo!.packageName, 'com.example.one');
 
-      // Loading flags still cleared.
       expect(state.isLoadingDetail, isFalse);
       expect(state.downloadsLoading, isFalse);
       expect(state.readmeLoading, isFalse);
@@ -379,7 +503,7 @@ void main() {
 
     test('whitespace-padded "null" reply: still no error, prefill kept',
         () async {
-      final backend = _FakeScriptBackend(reply: '  null \n');
+      final backend = _FakeFacadeBackend(reply: '  null \n');
       final (channel, state, cb) = build(backend);
 
       await channel.load();
@@ -391,9 +515,9 @@ void main() {
     });
   });
 
-  group('RustScriptDetailChannel.load — Map reply applies the detail', () {
+  group('RustScriptDetailChannel.load — object reply applies the detail', () {
     test('object reply: detail replaced, no error', () async {
-      final backend = _FakeScriptBackend(
+      final backend = _FakeFacadeBackend(
         reply: jsonEncode({
           'appId': 'com.example.one',
           'name': 'Full App',
@@ -417,7 +541,7 @@ void main() {
   group('RustScriptDetailChannel.load — real exception still errors', () {
     test('api throws: errorMessage set, prefill was still applied first',
         () async {
-      final backend = _FakeScriptBackend(
+      final backend = _FakeFacadeBackend(
         throwError: StateError('pack not found'),
       );
       final (channel, state, cb) = build(backend);
@@ -427,10 +551,8 @@ void main() {
       expect(state.errorMessage, isNotEmpty,
           reason: 'a real exception must still surface a typed error');
       expect(state.errorMessage, contains('详情加载失败'));
-      // The prefill had already been rendered before the throw.
       expect(cb.refreshCalls, hasLength(1));
       expect(state.detailInfo, isNotNull);
-      // Flags cleared even on the error path.
       expect(state.isLoadingDetail, isFalse);
       expect(state.downloadsLoading, isFalse);
       expect(state.readmeLoading, isFalse);
@@ -439,16 +561,15 @@ void main() {
   });
 
   group('RustScriptDetailChannel "更多" actions — detailMenu', () {
-    test('load refreshes actions; jsswitchUA onTap keeps the pack-driven jscall',
+    test('load refreshes actions; a jsswitchUA action routes through scriptDetailAction',
         () async {
-      final backend = _FakeScriptBackend(replies: {
+      final backend = _FakeFacadeBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': jsonEncode([
           {'action': '切换版本', 'jscall': 'jsswitchVersion'},
           {'action': '历史构建', 'jscall': 'jsBuildHistory'},
           {'action': '切换UA', 'jscall': 'jsswitchUA'},
         ]),
-        'jsswitchUA': 'null',
       });
       final (channel, state, cb) = build(backend);
 
@@ -459,21 +580,19 @@ void main() {
       expect(state.errorMessage, isEmpty);
       expect(cb.errors, isEmpty);
 
-      // `jsswitchUA` is NOT special-cased → the default branch keeps the
-      // pack-driven jscall (its handlers only touch Flutter state → no deadlock).
+      // `jsswitchUA` has no top-level handler → it runs the pack's jscall through
+      // the facade's fresh-runtime `scriptDetailAction` (no shared entry `op`,
+      // no deadlock, and no `_api.run`).
       backend.runCalls.clear();
+      backend.actionCalls.clear();
       await channel.getActions().last.onTap();
-      expect(backend.runCalls, hasLength(1));
-      expect(backend.runCalls.single['key'], 'js_probe');
-      expect(backend.runCalls.single['method'], 'jsswitchUA');
-      expect(
-        jsonDecode(backend.runCalls.single['params']! as String),
-        {'appId': 'com.example.one'},
-      );
+      expect(backend.actionCalls, [
+        {'key': 'js_probe', 'appId': 'com.example.one', 'jscall': 'jsswitchUA'},
+      ]);
     });
 
     test('null detailMenu: empty actions, no error, page not blank', () async {
-      final backend = _FakeScriptBackend(replies: {
+      final backend = _FakeFacadeBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': 'null',
       });
@@ -488,7 +607,7 @@ void main() {
     });
 
     test('absent detailMenu (default null): empty actions, no error', () async {
-      final backend = _FakeScriptBackend(reply: 'null');
+      final backend = _FakeFacadeBackend(reply: 'null');
       final (channel, state, cb) = build(backend);
 
       await channel.load();
@@ -502,7 +621,7 @@ void main() {
   group('RustScriptDetailChannel versions — pack methods', () {
     test('versionOptions/switchVersion/buildHistory decode and forward params',
         () async {
-      final backend = _FakeScriptBackend(replies: {
+      final backend = _FakeFacadeBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': 'null',
         'versionOptions': jsonEncode({
@@ -571,7 +690,7 @@ void main() {
     });
 
     test('versionOptions omits env when null; non-map reply → null', () async {
-      final backend = _FakeScriptBackend(replies: {
+      final backend = _FakeFacadeBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': 'null',
         'versionOptions': jsonEncode({'envs': ['sit']}),
@@ -587,8 +706,7 @@ void main() {
         {'appId': 'com.example.one'},
       );
 
-      // A null reply is "the script has nothing" → null, never a throw.
-      final backendNull = _FakeScriptBackend(replies: {
+      final backendNull = _FakeFacadeBackend(replies: {
         'getAppDetail': 'null',
         'detailMenu': 'null',
         'switchVersion': 'null',
@@ -608,17 +726,14 @@ void main() {
 
   group('RustScriptDetailChannel actions — no parked-eval deadlock', () {
     // DEADLOCK invariant: the pack's own `jsswitchVersion`/`jsBuildHistory`
-    // jscalls run a whole Rust eval that holds `op`
-    // (`rust/gstore_host/src/script_runtime_entry.rs` `ScriptEntry::run`) while
-    // the pack's synchronous `host.ui.call('showVersionPicker'/'showBuildHistory')`
-    // parks that eval (`rust/gstore_host/src/ui_api.rs::request` →
-    // `rx.recv_timeout`). The Flutter handler then calls back into the script via
-    // `versionOptions`/`switchVersion` → `ScriptApi.run` → `op.lock()` →
-    // deadlock. The fix re-dispatches those two actions to TOP-LEVEL
-    // versionOptions/buildHistory + the bound callbacks (no parked eval → no
-    // nested `run`).
+    // jscalls run a whole Rust eval that holds `op` while the pack's synchronous
+    // `host.ui.call('showVersionPicker'/'showBuildHistory')` parks that eval. The
+    // Flutter handler then calls back into the script via
+    // `versionOptions`/`switchVersion`; Todo 7's guard rejects that re-entrant
+    // dispatch with `CORE_E_SCRIPT_UI_REENTRANT`. The fix routes those actions to
+    // the TOP-LEVEL facade detail methods (no parked eval, no nested run).
 
-    _FakeScriptBackend deadlockBackend() => _FakeScriptBackend(replies: {
+    _FakeFacadeBackend deadlockBackend() => _FakeFacadeBackend(replies: {
           'getAppDetail': 'null',
           'detailMenu': jsonEncode([
             {'action': '切换版本', 'jscall': 'jsswitchVersion'},
@@ -645,7 +760,6 @@ void main() {
               {'num': 6, 'ipaName': 'b.apk'},
             ],
           }),
-          'jsswitchUA': 'null',
         });
 
     test('(i) 切换版本 onTap: top-level versionOptions+switchVersion, refresh applied',
@@ -658,7 +772,6 @@ void main() {
       await channel.load();
       backend.runCalls.clear();
 
-      // Completing (no hang) is asserted by the timeout.
       await channel
           .getActions()
           .first
@@ -754,7 +867,7 @@ void main() {
 
       // The `showUAPicker`/`refreshDetail` ui.* handlers only touch Flutter
       // state — dispatched while a pack eval may be parked, they must issue
-      // ZERO ScriptApi.run calls (else they would re-enter and deadlock).
+      // ZERO facade data calls (else they would re-enter and deadlock).
       backend.runCalls.clear();
       ScriptUiHandlerRegistry.instance.resetForTest();
       ScriptUiHandlerRegistry.instance.bind(
@@ -796,8 +909,6 @@ void main() {
           'downloads': <Object?>[],
         });
 
-    // `currentVersion: 'A'` mirrors the pack default (latest == entry here):
-    // BEFORE the fix this is what 历史构建 used even after switching to B.
     String versionOptionsJson() => jsonEncode({
           'envs': ['sit', 'prod'],
           'versions': [
@@ -822,12 +933,10 @@ void main() {
           ],
         });
 
-    /// Backend whose `buildHistory`/`switchVersion` replies vary by the requested
-    /// version, so the assertions prove WHICH version's builds were fetched.
-    _FakeScriptBackend trackedBackend({
+    _FakeFacadeBackend trackedBackend({
       String? getAppDetail,
     }) =>
-        _FakeScriptBackend(
+        _FakeFacadeBackend(
           replies: {
             'getAppDetail': getAppDetail ?? entryDetailJson(),
             'detailMenu': jsonEncode([
@@ -859,11 +968,9 @@ void main() {
       await channel.load(); // getAppDetail → version A (tracked)
       backend.runCalls.clear();
 
-      // 切换版本 → top-level versionOptions + switchVersion (tracks current = B)
       await channel.getActions().first.onTap();
       backend.runCalls.clear();
 
-      // 历史构建 → buildHistory must use the tracked B, not versionOptions' A
       await channel.getActions()[1].onTap();
 
       final bhCall = backend.runCalls.singleWhere(
@@ -877,7 +984,6 @@ void main() {
       expect(cb.buildHistoryCalls, hasLength(1));
       expect(cb.buildHistoryCalls.single['version'], 'B');
       expect(cb.buildHistoryCalls.single['env'], 'sit');
-      // The sheet received B's builds (not A's), proving the request was B.
       expect(
         (cb.buildHistoryCalls.single['builds'] as List).single,
         {'num': 20, 'ipaName': 'B.apk'},
@@ -913,7 +1019,6 @@ void main() {
       final backend = trackedBackend();
       final (channel, _, cb) = build(backend);
       cb.channel = channel;
-      // No versionSelection → the picker only records the options payload.
 
       await channel.load(); // tracked = A
       backend.runCalls.clear();
@@ -933,7 +1038,6 @@ void main() {
 
     test('(iv) null tracked version → 历史构建 falls back to versionOptions.currentVersion',
         () async {
-      // getAppDetail WITHOUT a `version` → `_currentVersion` stays null.
       final backend = trackedBackend(
         getAppDetail: jsonEncode({
           'appId': 'com.example.one',

@@ -72,14 +72,14 @@ void main() {
       final (apps, total) = await AddedAppsFacade.instance
           .getAggregatedAppsPage(offset: 0, limit: 20);
 
-      expect(total, 1, reason: 'total is the core backend row count');
-      expect(apps, hasLength(1), reason: 'the row must be joined and returned');
+      expect(total, 1, reason: 'total is the Rust page row count');
+      expect(apps, hasLength(1), reason: 'the page row must be returned');
       expect(apps.single.addedAppInfo.channelId, 'fdroid');
       expect(apps.single.addedAppInfo.appId, 'com.added');
-      expect(core.listCalls, greaterThan(0),
-          reason: 'rows must come from the core backend');
-      expect(core.tagsIndexCalls, greaterThan(0),
-          reason: 'tags must come from the core backend');
+      expect(core.pageCalls, greaterThan(0),
+          reason: 'rows must come from LibraryApi.page');
+      expect(core.tagsIndexCalls, 0,
+          reason: 'tags are merged by Rust; Dart must not run the old join');
     });
 
     test('(guard) legacy writer guard still fails closed, facade core write does not',

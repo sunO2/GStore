@@ -1,28 +1,26 @@
-/// Post-wave06 bug fix: F-Droid channel search must stay on the **Dart lane**
-/// even while `CoreFlags.channels` is on.
+/// Post-wave06: F-Droid is fully cut over to the Rust core, so channel reads
+/// must route through the Rust facade (like github/vivo) when
+/// `CoreFlags.channels` is on, and only fall back to the Dart `IChannel` lane
+/// when the flag is off.
 ///
-/// Root cause (Oracle-verified, see `rust/target/test-evidence/270-fdroid-dart-lane.txt`):
-/// wave-6 cut every channel read over to the Rust core facade (`cdffd124`), and
-/// `CoreFlags.channels` defaults true. But the core `fdroid` driver is provably
-/// non-functional: `FdroidDriver::search_apps`/`get_all_apps` early-return `[]`
-/// when `active_sources()` is empty, and `CoreConfig.fdroid_sources` is never
-/// populated at runtime (`ChannelApi::init` builds `CoreConfig::new(None, token)`;
-/// the only `with_fdroid_sources` caller is the one-time migration import that
-/// persists to `update_prefs` but never updates the live config). Even with
-/// sources, the core `HostRepoPort` queries a single `data_dir/repo.db` the core
-/// never downloads — the Dart path indexes per-source `docs/fdroid_<hash>.db`.
-/// github/vivo are stateless HTTP drivers and local_db reads the core DB, so
-/// only fdroid is broken. The Dart path (`FdroidChannel.searchApps` →
-/// `IFdroidRepoService` → per-source repo module) works and is what the in-file
-/// fdroid search widget already uses.
+/// History: wave-6 cut every channel read over to the Rust core facade
+/// (`cdffd124`) and `CoreFlags.channels` defaults true, but the core `fdroid`
+/// driver was non-functional at the time — `CoreConfig.fdroid_sources` was never
+/// populated at runtime and the core never downloaded its `data_dir/repo.db`
+/// index — so fdroid was gated off the facade (`_dartOnlyFacadeCodes`).
 ///
-/// The fix gates ONLY fdroid off the facade in `ChannelManager`, at the
-/// predicate (not the UI): the facade lane is skipped for fdroid and the Dart
-/// `IChannel` fallback serves the read. This test proves the routing.
+/// That gap is closed: `FdroidRepoManager` pushes the enabled sources to the core
+/// via `setFdroidSources` (arming the driver with sources), and
+/// `FdroidDriver::search_apps` / `get_app_detail` now call `ensure_active_index`
+/// to download the index on demand — mirroring Dart `FdroidChannel`, which
+/// downloads the index lazily. So fdroid's list/search/info/detail/add/remove all
+/// go through the facade, exactly like github/vivo.
 ///
-/// No native library is loadable inside `flutter test`, so the `ChannelApiBackend`
-/// and `IFdroidRepoService` are the seams; the assertions prove which lane served
-/// the request, never that a fake invented a result.
+/// This test proves the routing: with the flag on fdroid goes through the facade
+/// (and the Dart repo service is untouched); with the flag off it falls back to
+/// the Dart lane. No native library is loadable inside `flutter test`, so the
+/// `ChannelApiBackend` and `IFdroidRepoService` are the seams; the assertions
+/// prove which lane served the request, never that a fake invented a result.
 library;
 
 import 'package:dio/dio.dart';
@@ -60,8 +58,8 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
   }
 }
 
-/// The channels-domain facade seam. Records every call so a test can prove the
-/// fdroid lane never reached it; only `search` is exercised (vivo control).
+/// The channels-domain facade seam. Records every call so a test can prove which
+/// lane served the request; only `search` is exercised (fdroid + vivo control).
 class _RecordingFacadeBackend implements ChannelApiBackend {
   final List<String> calls = <String>[];
 
@@ -84,6 +82,7 @@ class _RecordingFacadeBackend implements ChannelApiBackend {
         readme: '# readme',
         category: <String>['Tools'],
         extraJson: null,
+        labels: <rust.ChannelLabel>[],
       ),
     ];
   }
@@ -167,8 +166,7 @@ void main() {
     return backend;
   }
 
-  test('flag on: fdroid search stays on the Dart path, facade untouched',
-      () async {
+  test('flag on: fdroid search routes to the Rust facade', () async {
     await _setChannelsFlag(channels: true);
     final fake = _FakeFdroidRepoService();
     final backend = wireFdroidLane(fake);
@@ -177,22 +175,17 @@ void main() {
         await ChannelManager.instance.searchAppsByCode('fdroid', 'demo');
 
     expect(result.success, isTrue,
-        reason: 'fdroid search must succeed via the Dart lane with the flag on');
-    expect(result.data!.map((a) => a.appId), contains('com.demo'),
-        reason: 'the Dart repo service row must surface');
-    expect(fake.searchCalls, 1,
-        reason: 'the fdroid search must go through the Dart IFdroidRepoService');
-    expect(
-      backend.calls.where((c) => c.startsWith('search:fdroid')).toList(),
-      isEmpty,
-      reason: 'the gate must keep fdroid off the Rust facade',
-    );
-    expect(backend.calls, isEmpty,
-        reason: 'the fdroid lane must not touch the facade at all');
+        reason: 'fdroid search must succeed via the Rust facade');
+    expect(result.data!.map((a) => a.appId), contains('owner/repo'),
+        reason: 'the facade row must surface for fdroid');
+    expect(backend.calls, contains('search:fdroid:demo:false'),
+        reason: 'fdroid search must go through the Rust facade after the cutover');
+    expect(fake.searchCalls, 0,
+        reason: 'the Dart IFdroidRepoService must not serve fdroid search '
+            'when the flag is on');
   });
 
-  test('control: vivo still routes to the facade (gate is fdroid-scoped)',
-      () async {
+  test('control: vivo still routes to the facade', () async {
     await _setChannelsFlag(channels: true);
     final backend = _RecordingFacadeBackend();
     RustChannelFacade.installBackend(backend);
@@ -206,7 +199,7 @@ void main() {
     expect(backend.calls.where((c) => c.startsWith('search:vivo')).length, 1);
   });
 
-  test('flag off: fdroid search still works via the Dart path', () async {
+  test('flag off: fdroid search falls back to the Dart path', () async {
     await _setChannelsFlag(channels: false);
     final fake = _FakeFdroidRepoService();
     final backend = wireFdroidLane(fake);
@@ -216,7 +209,8 @@ void main() {
 
     expect(result.success, isTrue);
     expect(result.data!.map((a) => a.appId), contains('com.demo'));
-    expect(fake.searchCalls, 1);
+    expect(fake.searchCalls, 1,
+        reason: 'flag off must serve fdroid through the Dart lane');
     expect(backend.calls, isEmpty,
         reason: 'flag off must never touch the Rust facade');
   });

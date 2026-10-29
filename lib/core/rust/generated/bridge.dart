@@ -11,10 +11,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'script_pack.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `encode_update_report`, `fdroid_config`, `finish_init`, `from_summary`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `new`, `new`, `now_millis`, `open_core_db`, `pack_err`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `write_plain_env`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `FdroidSourceSpec`, `HostDriverResolver`, `HostRepoPort`, `HttpMetadataPort`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`, `run`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -139,6 +139,21 @@ abstract class CatalogApi implements RustOpaqueInterface {
   /// `CoreEvent::CatalogChanged`; otherwise it is the JSON literal `null`.
   Future<CatalogRefreshResult> refresh({required String url});
 
+  /// Downloads and validates a remote catalog, switching `current` when newer.
+  Future<CatalogRepoDownload> repoDownload({required String url});
+
+  /// Registers a validated seed database (content-addressed, idempotent).
+  Future<CatalogRepoStatus> repoEnsureSeed({required String path});
+
+  /// Materializes the current repository database into the core catalog.
+  Future<CatalogMaterializeResult> repoMaterialize();
+
+  /// Selects a repository entry by version or file name.
+  Future<CatalogRepoStatus> repoSelect({required String version});
+
+  /// Current catalog repository snapshot.
+  Future<CatalogRepoStatus> repoStatus();
+
   /// Searches by keyword (empty keyword yields an empty list).
   Future<List<ChannelAppInfo>> search({required String keyword});
 }
@@ -208,6 +223,10 @@ abstract class ChannelApi implements RustOpaqueInterface {
       RustLib.instance.api.crateBridgeChannelApiInit(
           dataDir: dataDir, filesDir: filesDir, cacheDir: cacheDir);
 
+  /// Returns the unified library facade, sharing this facade's database
+  /// handle and driver resolution.
+  Future<LibraryApi> library_();
+
   /// Lists every registered channel in deterministic key order.
   Future<List<ChannelEntry>> list();
 
@@ -231,6 +250,59 @@ abstract class ChannelApi implements RustOpaqueInterface {
   /// Removes an installed pack (row plus version directories).
   Future<bool> removePack({required String key});
 
+  /// Runs a pack's `detail.js` `buildHistory({appId, version, env})`.
+  ///
+  /// A missing result (JSON null / no `builds` array) degrades to an empty list.
+  Future<List<ScriptBuild>> scriptBuildHistory(
+      {required String key,
+      required String appId,
+      required String env,
+      required String version});
+
+  /// Runs one page-scoped pack `jscall` (for example `jsswitchUA`) on a fresh
+  /// per-call [`ScriptDetail`].
+  ///
+  /// Unlike the four typed detail reads, an action may drive the UI through
+  /// `host.ui.call` (e.g. `showUAPicker`). It runs on a NEW `ScriptDetail`, never
+  /// the shared entry runtime, so a parked round-trip cannot contend on the
+  /// entry's `op` guard and cannot deadlock a re-entrant dispatch. The pack drives
+  /// the UI itself; the action's own result is not surfaced.
+  Future<void> scriptDetailAction(
+      {required String key, required String appId, required String jscall});
+
+  /// Runs a pack's `detail.js` `detailMenu(appId)`.
+  ///
+  /// A missing/non-array result degrades to an empty list.
+  Future<List<ChannelDetailAction>> scriptDetailMenu(
+      {required String key, required String appId});
+
+  /// Runs a pack's `detail.js` `switchVersion({appId, env, version, build?})`
+  /// and returns the typed detail page.
+  ///
+  /// `build_json` is an optional JSON object (`{num, ipaName}`) selecting a
+  /// historical build; malformed JSON is a typed `invalid_argument`. Returns
+  /// `Ok(None)` when the pack answers JSON null; an unknown/uninstalled pack
+  /// is a typed `not_found`.
+  Future<ChannelAppDetailInfo?> scriptSwitchVersion(
+      {required String key,
+      required String appId,
+      required String env,
+      required String version,
+      String? buildJson});
+
+  /// Runs a pack's `detail.js` `versionOptions({appId, env?, currentVersion?})`.
+  ///
+  /// The current version is forwarded as the script's `version` filter (the
+  /// pack `main` dispatch reads only `appId`/`env`; the extra key is additive).
+  /// Returns `Ok(None)` when the pack answers JSON null (unimplemented /
+  /// `{ok:false}` / a JS throw); an unknown/uninstalled pack is a typed
+  /// `not_found`.
+  Future<ScriptVersionOptions?> scriptVersionOptions(
+      {required String key,
+      required String appId,
+      String? env,
+      String? currentVersion});
+
   /// Searches one channel by keyword.
   Future<List<ChannelAppInfo>> search(
       {required String key,
@@ -245,9 +317,12 @@ abstract class ChannelApi implements RustOpaqueInterface {
 
   /// Replaces the active F-Droid source set and rebinds the F-Droid driver.
   ///
-  /// The Dart `FdroidRepoManager` pushes the enabled source URLs here on every
-  /// source change (the core cannot read the Dart config store). URLs are
-  /// validated before anything is stored; an invalid URL is a typed error.
+  /// The Dart `FdroidRepoManager` pushes the enabled sources here on every
+  /// source change (the core cannot read the Dart config store). Each entry is
+  /// either a JSON-encoded spec (id/name/url/mirrors/mirror_first/enabled) or a
+  /// bare URL; the full set is persisted into the core DB `update_prefs` table
+  /// under key `fdroid_sources` so mirrors survive restarts. URLs are validated
+  /// before anything is stored; an invalid URL is a typed error.
   Future<void> setFdroidSources({required List<String> sources});
 
   /// Removes a channel registration and its driver binding.
@@ -497,6 +572,90 @@ abstract class InstanceHandle implements RustOpaqueInterface {
   Future<String> instanceId();
 }
 
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LibraryApi>>
+abstract class LibraryApi implements RustOpaqueInterface {
+  /// Adds an app: channel metadata first, membership second.
+  Future<AddedAppEntry> add(
+      {required String channel,
+      required ChannelAppInfo app,
+      PlatformInt64? sortOrder});
+
+  /// Adds only `added_apps` membership; never writes `channel_apps`.
+  ///
+  /// Backup restore uses this for reference-only items so a placeholder
+  /// name/icon cannot overwrite a good `channel_apps` metadata row.
+  Future<AddedAppEntry> addMembership(
+      {required String channel,
+      required String appId,
+      PlatformInt64? sortOrder});
+
+  /// Adds one tag to an app.
+  Future<void> addTag(
+      {required String channel, required String appId, required String tag});
+
+  /// Deletes every membership row.
+  Future<PlatformInt64> clearAll();
+
+  /// Deletes every membership row in one channel.
+  Future<PlatformInt64> clearChannel({required String channel});
+
+  /// Number of library members in one channel.
+  Future<PlatformInt64> countChannel({required String channel});
+
+  /// Returns one membership row, if present.
+  Future<AddedAppEntry?> get_({required String channel, required String appId});
+
+  /// Whether `(channel, app_id)` is a library member.
+  Future<bool> isAdded({required String channel, required String appId});
+
+  /// Lists every membership row, newest first.
+  Future<List<AddedAppEntry>> list();
+
+  /// Lists one channel's membership rows, newest first.
+  Future<List<AddedAppEntry>> listChannel({required String channel});
+
+  /// Returns one page of the unified read model, newest first.
+  Future<LibraryPage> page(
+      {required PlatformInt64 offset, required PlatformInt64 limit});
+
+  /// Removes membership, keeping the channel's saved metadata row.
+  Future<bool> remove({required String channel, required String appId});
+
+  /// Removes one tag from an app.
+  Future<void> removeTag(
+      {required String channel, required String appId, required String tag});
+
+  /// Re-fetches metadata for membership rows missing a `channel_apps` row.
+  ///
+  /// Never deletes a membership row. `local_db` is skipped because its
+  /// metadata lives in the `apps` catalog, not `channel_apps`.
+  Future<RepairReport> repairMissingMetadata();
+
+  /// Sets one membership row's sort weight.
+  Future<void> setOrder(
+      {required String channel,
+      required String appId,
+      required PlatformInt64 sortOrder});
+
+  /// Replaces all tags for one app.
+  Future<void> setTags(
+      {required String channel,
+      required String appId,
+      required List<String> tags});
+
+  /// Returns one app's tags, earliest first.
+  Future<List<String>> tags({required String channel, required String appId});
+
+  /// Returns all tag buckets keyed by `"{channel}:{app_id}"`.
+  Future<List<TagGroup>> tagsIndex();
+
+  /// Toggles membership and returns whether the app is now added.
+  Future<bool> toggle({required String channel, required ChannelAppInfo app});
+
+  /// Total number of library members.
+  Future<PlatformInt64> totalCount();
+}
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LogBridge>>
 abstract class LogBridge implements RustOpaqueInterface {
   /// 订阅日志流。首次订阅时补发环形缓冲中的历史日志。
@@ -606,22 +765,6 @@ abstract class ScriptApi implements RustOpaqueInterface {
 
   /// Removes an installed pack, its cached runtimes, and its channel env.
   Future<void> remove({required String key});
-
-  /// Runs `main(method, params)` and returns the JSON result as a string.
-  ///
-  /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
-  /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
-  /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
-  /// `detailMenu`, `jsswitchVersion`, `jsBuildHistory`, `jsswitchUA` (detail
-  /// script). The string is the same JSON the Dart
-  /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
-  /// the script's `{version, proxy}` payload; parity is defined on the mapped
-  /// [`gstore_core::channel::ChannelConfig`] shape (`version` string,
-  /// `proxy` nullable), not on the raw payload types.
-  Future<String> run(
-      {required String key,
-      required String method,
-      required String paramsJson});
 
   /// Replaces the channel config snapshot read by `host.config.get`.
   ///
@@ -765,6 +908,38 @@ class AddedAppEntry {
           isEnabled == other.isEnabled;
 }
 
+/// Result of materializing the repository into the core catalog.
+class CatalogMaterializeResult {
+  final bool materialized;
+  final String? version;
+  final PlatformInt64 apps;
+  final PlatformInt64 categories;
+
+  const CatalogMaterializeResult({
+    required this.materialized,
+    this.version,
+    required this.apps,
+    required this.categories,
+  });
+
+  @override
+  int get hashCode =>
+      materialized.hashCode ^
+      version.hashCode ^
+      apps.hashCode ^
+      categories.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogMaterializeResult &&
+          runtimeType == other.runtimeType &&
+          materialized == other.materialized &&
+          version == other.version &&
+          apps == other.apps &&
+          categories == other.categories;
+}
+
 /// One page of the local catalog plus the unpaged total.
 class CatalogPage {
   final List<ChannelAppInfo> apps;
@@ -833,6 +1008,111 @@ class CatalogRefreshResult {
           eventsJson == other.eventsJson;
 }
 
+/// Result of a repository download.
+class CatalogRepoDownload {
+  final String? version;
+  final bool changed;
+  final CatalogRepoStatus status;
+
+  const CatalogRepoDownload({
+    this.version,
+    required this.changed,
+    required this.status,
+  });
+
+  @override
+  int get hashCode => version.hashCode ^ changed.hashCode ^ status.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogRepoDownload &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          changed == other.changed &&
+          status == other.status;
+}
+
+/// One catalog repository entry crossing the FRB boundary.
+class CatalogRepoEntry {
+  final String file;
+  final String version;
+  final String sha256;
+  final String source;
+  final String kind;
+  final PlatformInt64 addedAt;
+  final PlatformInt64 apps;
+
+  const CatalogRepoEntry({
+    required this.file,
+    required this.version,
+    required this.sha256,
+    required this.source,
+    required this.kind,
+    required this.addedAt,
+    required this.apps,
+  });
+
+  @override
+  int get hashCode =>
+      file.hashCode ^
+      version.hashCode ^
+      sha256.hashCode ^
+      source.hashCode ^
+      kind.hashCode ^
+      addedAt.hashCode ^
+      apps.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogRepoEntry &&
+          runtimeType == other.runtimeType &&
+          file == other.file &&
+          version == other.version &&
+          sha256 == other.sha256 &&
+          source == other.source &&
+          kind == other.kind &&
+          addedAt == other.addedAt &&
+          apps == other.apps;
+}
+
+/// Repository snapshot crossing the FRB boundary.
+class CatalogRepoStatus {
+  final String? currentVersion;
+  final String? currentFile;
+  final PlatformInt64 apps;
+  final PlatformInt64 categories;
+  final List<CatalogRepoEntry> entries;
+
+  const CatalogRepoStatus({
+    this.currentVersion,
+    this.currentFile,
+    required this.apps,
+    required this.categories,
+    required this.entries,
+  });
+
+  @override
+  int get hashCode =>
+      currentVersion.hashCode ^
+      currentFile.hashCode ^
+      apps.hashCode ^
+      categories.hashCode ^
+      entries.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CatalogRepoStatus &&
+          runtimeType == other.runtimeType &&
+          currentVersion == other.currentVersion &&
+          currentFile == other.currentFile &&
+          apps == other.apps &&
+          categories == other.categories &&
+          entries == other.entries;
+}
+
 /// Full app detail crossing the FRB boundary.
 class ChannelAppDetailInfo {
   final String appId;
@@ -847,6 +1127,7 @@ class ChannelAppDetailInfo {
   final List<String> sections;
   final List<ChannelAppDownloadInfo> downloads;
   final String extraJson;
+  final List<ChannelLabel> labels;
 
   const ChannelAppDetailInfo({
     required this.appId,
@@ -861,6 +1142,7 @@ class ChannelAppDetailInfo {
     required this.sections,
     required this.downloads,
     required this.extraJson,
+    required this.labels,
   });
 
   @override
@@ -876,7 +1158,8 @@ class ChannelAppDetailInfo {
       channel.hashCode ^
       sections.hashCode ^
       downloads.hashCode ^
-      extraJson.hashCode;
+      extraJson.hashCode ^
+      labels.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -894,7 +1177,8 @@ class ChannelAppDetailInfo {
           channel == other.channel &&
           sections == other.sections &&
           downloads == other.downloads &&
-          extraJson == other.extraJson;
+          extraJson == other.extraJson &&
+          labels == other.labels;
 }
 
 /// One download candidate in an app detail payload.
@@ -977,6 +1261,7 @@ class ChannelAppInfo {
   final String? readme;
   final List<String> category;
   final String? extraJson;
+  final List<ChannelLabel> labels;
 
   const ChannelAppInfo({
     required this.appId,
@@ -989,6 +1274,7 @@ class ChannelAppInfo {
     this.readme,
     required this.category,
     this.extraJson,
+    required this.labels,
   });
 
   @override
@@ -1002,7 +1288,8 @@ class ChannelAppInfo {
       des.hashCode ^
       readme.hashCode ^
       category.hashCode ^
-      extraJson.hashCode;
+      extraJson.hashCode ^
+      labels.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1018,7 +1305,8 @@ class ChannelAppInfo {
           des == other.des &&
           readme == other.readme &&
           category == other.category &&
-          extraJson == other.extraJson;
+          extraJson == other.extraJson &&
+          labels == other.labels;
 }
 
 /// One channel category.
@@ -1066,6 +1354,42 @@ class ChannelConfigInfo {
           runtimeType == other.runtimeType &&
           version == other.version &&
           proxy == other.proxy;
+}
+
+/// One action from a pack's `detail.js` `detailMenu` result.
+///
+/// Mirrors the core [`DetailAction`] and the JSON Dart `_refreshActions` reads
+/// (`action`, `jscall`, `icon`, `clickIsDimiss`). FRB emits these as camelCase
+/// Dart fields (`clickIsDimiss`), matching the pack contract.
+class ChannelDetailAction {
+  final String action;
+  final String jscall;
+  final String? icon;
+  final bool? clickIsDimiss;
+
+  const ChannelDetailAction({
+    required this.action,
+    required this.jscall,
+    this.icon,
+    this.clickIsDimiss,
+  });
+
+  @override
+  int get hashCode =>
+      action.hashCode ^
+      jscall.hashCode ^
+      icon.hashCode ^
+      clickIsDimiss.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelDetailAction &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          jscall == other.jscall &&
+          icon == other.icon &&
+          clickIsDimiss == other.clickIsDimiss;
 }
 
 /// One registered channel exposed to Dart.
@@ -1121,6 +1445,35 @@ class ChannelEntry {
           supportOffline == other.supportOffline &&
           lastUpdateTime == other.lastUpdateTime &&
           version == other.version;
+}
+
+/// One dynamic display label crossing the FRB boundary.
+class ChannelLabel {
+  final String key;
+  final String label;
+  final String value;
+  final String? icon;
+
+  const ChannelLabel({
+    required this.key,
+    required this.label,
+    required this.value,
+    this.icon,
+  });
+
+  @override
+  int get hashCode =>
+      key.hashCode ^ label.hashCode ^ value.hashCode ^ icon.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ChannelLabel &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          label == other.label &&
+          value == other.value &&
+          icon == other.icon;
 }
 
 /// One imported local pack.
@@ -2010,6 +2363,72 @@ class InventoryStatusDto {
           stale == other.stale;
 }
 
+/// One unified library read row crossing the FRB boundary.
+class LibraryEntry {
+  final AddedAppEntry added;
+  final ChannelAppInfo app;
+  final String channelCode;
+  final String channelKind;
+  final bool isFromCache;
+  final String? error;
+  final String metadataState;
+
+  const LibraryEntry({
+    required this.added,
+    required this.app,
+    required this.channelCode,
+    required this.channelKind,
+    required this.isFromCache,
+    this.error,
+    required this.metadataState,
+  });
+
+  @override
+  int get hashCode =>
+      added.hashCode ^
+      app.hashCode ^
+      channelCode.hashCode ^
+      channelKind.hashCode ^
+      isFromCache.hashCode ^
+      error.hashCode ^
+      metadataState.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LibraryEntry &&
+          runtimeType == other.runtimeType &&
+          added == other.added &&
+          app == other.app &&
+          channelCode == other.channelCode &&
+          channelKind == other.channelKind &&
+          isFromCache == other.isFromCache &&
+          error == other.error &&
+          metadataState == other.metadataState;
+}
+
+/// One page of the unified library read model.
+class LibraryPage {
+  final List<LibraryEntry> entries;
+  final PlatformInt64 total;
+
+  const LibraryPage({
+    required this.entries,
+    required this.total,
+  });
+
+  @override
+  int get hashCode => entries.hashCode ^ total.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LibraryPage &&
+          runtimeType == other.runtimeType &&
+          entries == other.entries &&
+          total == other.total;
+}
+
 /// Counters for one legacy source crossing the FRB boundary.
 class MigrationCountsDto {
   final PlatformInt64 inserted;
@@ -2087,6 +2506,28 @@ class PlatformFactsDto {
           capturedAt == other.capturedAt;
 }
 
+/// Outcome of [`LibraryApi::repair_missing_metadata`].
+class RepairReport {
+  final int repaired;
+  final int unresolved;
+
+  const RepairReport({
+    required this.repaired,
+    required this.unresolved,
+  });
+
+  @override
+  int get hashCode => repaired.hashCode ^ unresolved.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RepairReport &&
+          runtimeType == other.runtimeType &&
+          repaired == other.repaired &&
+          unresolved == other.unresolved;
+}
+
 /// Three-way download resync report (FRB data class).
 ///
 /// `snapshot_path` is `None` in dry-run; every other field is meaningful in
@@ -2140,6 +2581,118 @@ class ResyncReportDto {
           conflicts == other.conflicts &&
           needsRestart == other.needsRestart &&
           snapshotPath == other.snapshotPath;
+}
+
+/// One build row of a pack's `buildHistory` result
+/// (`{num, publishedAt, size, changelog, installTimes, ...}`).
+///
+/// Pack-specific keys (`builtBy`, `ipaName`, `fileUrl`, ...) are preserved in
+/// [`Self::extra_json`].
+class ScriptBuild {
+  final PlatformInt64 num;
+  final String? publishedAt;
+  final PlatformInt64? size;
+  final String? changelog;
+  final PlatformInt64? installTimes;
+  final String extraJson;
+
+  const ScriptBuild({
+    required this.num,
+    this.publishedAt,
+    this.size,
+    this.changelog,
+    this.installTimes,
+    required this.extraJson,
+  });
+
+  @override
+  int get hashCode =>
+      num.hashCode ^
+      publishedAt.hashCode ^
+      size.hashCode ^
+      changelog.hashCode ^
+      installTimes.hashCode ^
+      extraJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ScriptBuild &&
+          runtimeType == other.runtimeType &&
+          num == other.num &&
+          publishedAt == other.publishedAt &&
+          size == other.size &&
+          changelog == other.changelog &&
+          installTimes == other.installTimes &&
+          extraJson == other.extraJson;
+}
+
+/// One version row of a pack's `versionOptions` result (`{version, envs, buildCount}`).
+class ScriptVersionOption {
+  final String version;
+  final List<String> envs;
+  final PlatformInt64 buildCount;
+
+  const ScriptVersionOption({
+    required this.version,
+    required this.envs,
+    required this.buildCount,
+  });
+
+  @override
+  int get hashCode => version.hashCode ^ envs.hashCode ^ buildCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ScriptVersionOption &&
+          runtimeType == other.runtimeType &&
+          version == other.version &&
+          envs == other.envs &&
+          buildCount == other.buildCount;
+}
+
+/// A pack's `versionOptions` result (`{title?, envs, versions, currentEnv?, currentVersion?}`).
+///
+/// Pack-specific keys are preserved verbatim in [`Self::extra_json`] (a JSON
+/// object string), following the `ChannelAppInfo.extra_json` convention.
+class ScriptVersionOptions {
+  final String? title;
+  final List<String> envs;
+  final List<ScriptVersionOption> versions;
+  final String? currentEnv;
+  final String? currentVersion;
+  final String extraJson;
+
+  const ScriptVersionOptions({
+    this.title,
+    required this.envs,
+    required this.versions,
+    this.currentEnv,
+    this.currentVersion,
+    required this.extraJson,
+  });
+
+  @override
+  int get hashCode =>
+      title.hashCode ^
+      envs.hashCode ^
+      versions.hashCode ^
+      currentEnv.hashCode ^
+      currentVersion.hashCode ^
+      extraJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ScriptVersionOptions &&
+          runtimeType == other.runtimeType &&
+          title == other.title &&
+          envs == other.envs &&
+          versions == other.versions &&
+          currentEnv == other.currentEnv &&
+          currentVersion == other.currentVersion &&
+          extraJson == other.extraJson;
 }
 
 /// One `"{channel}:{app_id}"` tag bucket.

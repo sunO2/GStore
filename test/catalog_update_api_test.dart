@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -99,6 +100,13 @@ class _FakeCatalogBackend implements CatalogBackend {
     return CatalogRefreshOutcome(
         changed: eventsJson != 'null', eventsJson: eventsJson);
   }
+
+  // 新增的版本仓库方法本文件未使用；由 noSuchMethod 兜底（否则接口新增成员会编译失败）。
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError(
+          'unused CatalogBackend member: ${invocation.memberName}');
+
 }
 
 class _FakeAddedAppsBackend implements AddedAppsBackend {
@@ -111,6 +119,12 @@ class _FakeAddedAppsBackend implements AddedAppsBackend {
   Future<void> add(String channel, String appId,
       {int? sortOrder, AppSummary? appInfo}) async {
     calls.add('$label.add:$channel:$appId:$sortOrder');
+  }
+
+  @override
+  Future<void> addMembership(String channel, String appId,
+      {int? sortOrder}) async {
+    calls.add('$label.addMembership:$channel:$appId:$sortOrder');
   }
 
   @override
@@ -130,7 +144,8 @@ class _FakeAddedAppsBackend implements AddedAppsBackend {
   }
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     calls.add('$label.toggle:$channel:$appId');
     return true;
   }
@@ -158,6 +173,13 @@ class _FakeAddedAppsBackend implements AddedAppsBackend {
     calls.add('$label.listChannel:$channel');
     return list();
   }
+
+  @override
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  }) =>
+      throw UnimplementedError('page not used by this test');
 
   @override
   Future<AddedAppInfo?> get(String channel, String appId) async {
@@ -450,4 +472,11 @@ class _ThrowingCatalogBackend implements CatalogBackend {
 
   @override
   Future<CatalogRefreshOutcome> refresh(String url) async => _fail();
+
+  // 新增的版本仓库方法本文件未使用；由 noSuchMethod 兜底（否则接口新增成员会编译失败）。
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError(
+          'unused CatalogBackend member: ${invocation.memberName}');
+
 }

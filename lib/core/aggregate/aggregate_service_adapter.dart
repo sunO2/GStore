@@ -1,14 +1,8 @@
 /// Thin [IAggregateService] adapter over the core-only [AddedAppsFacade].
 ///
-/// `AppAggregatorManager` is now DB-free (it only performs the pure metadata
-/// join), so it can no longer satisfy [IAggregateService]. This adapter keeps
-/// the public `IAggregateService` contract for the two consumers
-/// (`applist`/`discovery`), delegating every read/write to the flag-routed
-/// facade and forwarding the change signal from the manager.
-///
-/// No recursion: the facade's aggregated reads delegate to
-/// [AppAggregatorManager.aggregateWithMeta], which never calls back into this
-/// adapter or the facade.
+/// `AppAggregatorManager` is now DB-free and the home read comes from the Rust
+/// `LibraryApi.page` model, so this adapter delegates every read/write to the
+/// facade and forwards the change signal from the manager.
 library;
 
 import 'package:gstore/core/aggregate/added_app_types.dart';
@@ -70,7 +64,7 @@ class AggregateServiceAdapter implements IAggregateService {
     required String channelCode,
     required AppSummary appInfo,
   }) =>
-      _facade.toggle(channelCode, appInfo.appId);
+      _facade.toggle(channelCode, appInfo.appId, appInfo: appInfo);
 
   @override
   Future<List<String>> getTags({

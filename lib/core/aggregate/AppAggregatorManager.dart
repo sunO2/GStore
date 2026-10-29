@@ -14,9 +14,9 @@ import 'package:gstore/core/script/rust_script_lane.dart';
 
 /// 应用聚合管理器
 ///
-/// DB-free：持久化在 Rust core（经 `AddedAppsFacade`），本类只负责把
-/// "已添加应用引用行 + 用户标签索引"与渠道实时元数据做**纯 join**
-/// （[aggregateWithMeta]）。不再持有任何 Dart 数据库句柄，也不提供 CRUD。
+/// DB-free：持久化在 Rust core，本类只保留纯 join 工具（[aggregateWithMeta]）
+/// 与变化通知。S3 起首页读模型由 Rust `LibraryApi.page` 提供，本类不再参与
+/// 首页读取；[aggregateWithMeta] 仅供遗留/测试路径使用。
 ///
 /// 变化通知：[appsChangedStream] 退化为纯信号（payload 恒为空列表），消费方
 /// 收到信号后经 `AddedAppsFacade` 重新读取核心投影。
@@ -170,22 +170,30 @@ class AppAggregatorManager {
       final channelCode = addedApp.channelId;
       try {
         final channel = _channelManager.getChannelByCode(channelCode);
-        if (channel == null) {
-          // Rust 脚本通道（`js_<stem>`）刻意不注册为 Dart channel，
-          // getChannelByCode 恒返回 null；若直接丢弃，入库成功的 JS 应用永远
-          // 不出现在首页（"js渠道入库成功，但是首页不显示"）。flag on 且命中
-          // 通道包时走 lane 分支取真实元数据，其余未知渠道保持原有丢弃语义。
-          final lane = RustScriptChannelLane.instance;
-          if (lane.enabled && lane.packFor(channelCode) != null) {
-            return _aggregateRustLaneApp(addedApp, mergeCategories);
-          }
+        // Rust 脚本通道（`js_<stem>`）刻意不注册为 Dart channel，
+        // getChannelByCode 恒返回 null；若直接丢弃，入库成功的 JS 应用永远
+        // 不出现在首页（"js渠道入库成功，但是首页不显示"）。flag on 且命中
+        // 通道包时走 lane 分支取真实元数据。
+        final lane = RustScriptChannelLane.instance;
+        if (channel == null && lane.enabled && lane.packFor(channelCode) != null) {
+          return _aggregateRustLaneApp(addedApp, mergeCategories);
+        }
+        // 其余未知渠道（既无 Dart 实例、又非门面可用的枚举 code）保持原有丢弃语义；
+        // 门面可用的枚举渠道（github/vivo/fdroid）即使没有 Dart 实例也应聚合。
+        if (channel == null && !_channelManager.facadeEligible(channelCode)) {
           debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
           return null;
         }
 
         debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} ($channelCode)');
-        final result = await channel.getAppInfo(addedApp.appId);
+        // 经 ChannelManager 门面路由：flag on 时读 Rust core 的 channel_apps
+        // （core 拥有 channel 域后 Dart 渠道库是切轨前冻结副本、其读辅助被
+        // LegacyWriteGuard 拦截 → 图标/详情恒空），flag off 回落 Dart IChannel。
+        final result =
+            await _channelManager.getAppInfoByCode(channelCode, addedApp.appId);
         final key = '${addedApp.channelId}:${addedApp.appId}';
+        final channelType =
+            ChannelType.fromCode(channelCode) ?? ChannelType.custom;
 
         if (result.success && result.data != null) {
           final summary = result.data!;
@@ -195,7 +203,7 @@ class AppAggregatorManager {
             appInfo: merged.isEmpty
                 ? summary
                 : summary.copyWith(category: merged),
-            channel: channel.info.type,
+            channel: channelType,
             channelCode: channelCode,
           );
         } else {
@@ -208,7 +216,7 @@ class AppAggregatorManager {
             appInfo: merged.isEmpty
                 ? summary
                 : summary.copyWith(category: merged),
-            channel: channel.info.type,
+            channel: channelType,
             channelCode: channelCode,
             isFromCache: true,
           );
@@ -326,6 +334,10 @@ class AggregatedAppInfo {
   /// 错误信息
   final String? error;
 
+  /// 统一读模型给出的元数据来源：`resolved` / `from_channel_store` /
+  /// `unresolved`（Dart 侧纯 join 路径为 null）。
+  final String? metadataState;
+
   AggregatedAppInfo({
     required this.addedAppInfo,
     required this.appInfo,
@@ -333,6 +345,7 @@ class AggregatedAppInfo {
     required this.channelCode,
     this.isFromCache = false,
     this.error,
+    this.metadataState,
   });
 
   /// 应用身份（渠道 + 渠道内 ID + 真实包名）

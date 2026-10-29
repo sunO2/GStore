@@ -17,6 +17,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 /// - 下方 AppIcon(24×24) + 应用名称（bodySmall）
 class _FakeDetailInfo implements IDetailInfo {
   @override
+  List<AppLabel> get labels => const [];
+  @override
   String get packageName => 'com.example.app';
   @override
   String get appName => '测试应用';

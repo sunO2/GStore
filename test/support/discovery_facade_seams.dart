@@ -56,7 +56,8 @@ class RecordingAddedApps implements AddedAppsBackend {
   }
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     toggleCalls.add((channel, appId));
     final set = added.putIfAbsent(channel, () => <String>{});
     if (set.remove(appId)) return false;

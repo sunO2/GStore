@@ -15,6 +15,7 @@
 //! | `native_call` | `ns=ui` -> the `script.ui_request` round-trip; other namespaces -> unregistered envelope |
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,10 @@ pub(crate) struct ScriptHostImpl {
     app_id: Arc<Mutex<Option<String>>>,
     config: Arc<Mutex<ConfigMap>>,
     ui_budget: Duration,
+    /// Set while this host is parked inside a `host.ui.call` round-trip. Shared
+    /// with the owning [`ScriptEntry`](crate::script_runtime_entry::ScriptEntry)
+    /// so a re-entrant dispatch is rejected instead of deadlocking on `op`.
+    parked: Arc<AtomicBool>,
 }
 
 impl ScriptHostImpl {
@@ -53,6 +58,7 @@ impl ScriptHostImpl {
         app_id: Arc<Mutex<Option<String>>>,
         config: Arc<Mutex<ConfigMap>>,
         ui_budget: Duration,
+        parked: Arc<AtomicBool>,
     ) -> Self {
         Self {
             db,
@@ -61,6 +67,7 @@ impl ScriptHostImpl {
             app_id,
             config,
             ui_budget,
+            parked,
         }
     }
 
@@ -187,14 +194,16 @@ impl ScriptHost for ScriptHostImpl {
         if request.namespace != "ui" || !crate::ui_api::is_ui_method(&request.method) {
             return Ok(None);
         }
-        crate::ui_api::request(
+        self.parked.store(true, Ordering::SeqCst);
+        let result = crate::ui_api::request(
             channel,
             self.current_app_id(),
             &request.method,
             &request.payload,
             self.ui_budget,
-        )
-        .map(Some)
+        );
+        self.parked.store(false, Ordering::SeqCst);
+        result.map(Some)
     }
 
     fn ui_request(
@@ -208,12 +217,15 @@ impl ScriptHost for ScriptHostImpl {
                 request.method
             )));
         }
-        crate::ui_api::request(
+        self.parked.store(true, Ordering::SeqCst);
+        let result = crate::ui_api::request(
             channel,
             self.current_app_id(),
             &request.method,
             &request.payload,
             self.ui_budget,
-        )
+        );
+        self.parked.store(false, Ordering::SeqCst);
+        result
     }
 }

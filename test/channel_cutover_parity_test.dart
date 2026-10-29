@@ -16,6 +16,7 @@ import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/home/tab/discovery/logic.dart';
+import 'package:gstore/page/home/tab/discovery/search_channel.dart';
 
 /// Flags backend that only toggles `channels` (the B2 gate).
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -55,6 +56,7 @@ rust.ChannelAppInfo _fixtureApp() => const rust.ChannelAppInfo(
       readme: '# readme',
       category: <String>['Tools'],
       extraJson: '{"packageName":"com.example.app"}',
+      labels: <rust.ChannelLabel>[],
     );
 
 AppSummary _legacyApp() => const AppSummary(
@@ -74,6 +76,10 @@ AppSummary _legacyApp() => const AppSummary(
 /// discovery tests can prove which lane served the request.
 class _RecordingFacadeBackend implements ChannelApiBackend {
   final List<String> calls = <String>[];
+
+  @override
+  Future<rust.LibraryApi> library() async =>
+      throw UnimplementedError('library() is not used by this test');
 
   @override
   Future<List<rust.ChannelEntry>> list() async {
@@ -261,6 +267,51 @@ class _RecordingFacadeBackend implements ChannelApiBackend {
   Future<void> setFdroidSources({required List<String> sources}) async {
     calls.add('setFdroidSources:${sources.join(',')}');
   }
+
+  // Todo 2 added the four JS detail-page methods to `ChannelApiBackend`; this
+  // recording fake must implement them to stay a concrete implementation. No
+  // parity test exercises them.
+  @override
+  Future<rust.ScriptVersionOptions?> scriptVersionOptions({
+    required String key,
+    required String appId,
+    String? env,
+    String? currentVersion,
+  }) async =>
+      null;
+
+  @override
+  Future<rust.ChannelAppDetailInfo?> scriptSwitchVersion({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+    String? buildJson,
+  }) async =>
+      null;
+
+  @override
+  Future<List<rust.ScriptBuild>> scriptBuildHistory({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+  }) async =>
+      const [];
+
+  @override
+  Future<List<rust.ChannelDetailAction>> scriptDetailMenu({
+    required String key,
+    required String appId,
+  }) async =>
+      const [];
+
+  @override
+  Future<void> scriptDetailAction({
+    required String key,
+    required String appId,
+    required String jscall,
+  }) async {}
 }
 
 /// Legacy lane fixture: same observable data as [_RecordingFacadeBackend].
@@ -534,6 +585,63 @@ void main() {
     expect(backend.calls, contains('getAppInfo:vivo:$_appId:false'));
     expect(backend.calls, contains('checkUpdate:vivo'));
     expect(stub.getAllAppsCalls, 0);
+  });
+
+  test('discovery save-to-channel writes through the facade after flip',
+      () async {
+    await _setChannelsFlag(channels: true);
+    final (container, notifier) = _makeContainer();
+    addTearDown(container.dispose);
+    backend.calls.clear();
+
+    final outcome = await notifier.saveSearchToChannel('vivo', _legacyApp());
+
+    expect(outcome, isA<SearchSaved>());
+    expect(backend.calls, contains('addApp:vivo:$_appId'),
+        reason: 'flag on 时发现页「添加」必须写 Rust facade（Dart 写被守卫拒绝）');
+  });
+
+  test('by-code info/add/remove/detail/canonical route to the facade after flip',
+      () async {
+    await _setChannelsFlag(channels: true);
+    final manager = ChannelManager.instance;
+    backend.calls.clear();
+
+    final info = await manager.getAppInfoByCode('vivo', _appId);
+    final added = await manager.addAppByCode('vivo', _legacyApp());
+    final removed = await manager.removeAppByCode('vivo', _appId);
+    final canonical = await manager.canonicalAppIdByCode('vivo', _legacyApp());
+    final detail = await manager.getAppDetailByCode('vivo', _appId);
+
+    expect(info.success, isTrue);
+    expect(info.data?.appId, _appId);
+    expect(added.success, isTrue);
+    expect(removed.success, isTrue);
+    expect(canonical, _appId);
+    expect(detail.success, isFalse,
+        reason: 'the recording backend throws for getAppDetail');
+
+    expect(backend.calls, contains('getAppInfo:vivo:$_appId:false'));
+    expect(backend.calls, contains('addApp:vivo:$_appId'));
+    expect(backend.calls, contains('removeApp:vivo:$_appId'));
+    expect(backend.calls, contains('canonicalAppId:vivo:$_appId'));
+    expect(backend.calls, contains('getAppDetail:vivo:$_appId:false'));
+  });
+
+  test('by-code reads fall back to the Dart channel when the flag is off',
+      () async {
+    await _setChannelsFlag(channels: false);
+    final manager = ChannelManager.instance;
+    backend.calls.clear();
+
+    final info = await manager.getAppInfoByCode('vivo', _appId);
+    final added = await manager.addAppByCode('vivo', _legacyApp());
+
+    expect(info.success, isTrue);
+    expect(info.data?.appId, _appId);
+    expect(added.success, isTrue);
+    expect(backend.calls, isEmpty,
+        reason: 'flag off 时 by-code 方法不得触碰 Rust facade');
   });
 
   test('channel list/search/detail/categories/update-check parity', () async {

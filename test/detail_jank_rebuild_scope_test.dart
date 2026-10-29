@@ -116,6 +116,8 @@ DownloadTask _task(int id, {int received = 0, int total = 1000}) => DownloadTask
 // ==================== 最小 IDetailInfo stub ====================
 
 class _StubDetail implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   List<DownloadInfo> downloadsValue = const [];
   List<DetailSection> sectionsValue = const [];
 

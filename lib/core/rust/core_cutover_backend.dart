@@ -76,7 +76,8 @@ class FrbCutoverCore implements CutoverCore {
 }
 
 /// Production backend over the real legacy paths.
-class FrbCoreCutoverBackend implements CoreCutoverBackend {
+class FrbCoreCutoverBackend
+    implements CoreCutoverBackend, ChannelBackfillProbe {
   FrbCoreCutoverBackend({
     required this.paths,
     required this.dataDir,
@@ -126,6 +127,30 @@ class FrbCoreCutoverBackend implements CoreCutoverBackend {
       imported: imported,
       legacyPresent: legacyPresent,
     );
+  }
+
+  /// A repair is needed when the legacy `<documents>/channel_apps.db` still has
+  /// `channel_added_app` rows that the core `channel_apps` projection is
+  /// missing — the fingerprint of the "add to home wrote only added_apps" bug.
+  ///
+  /// Once every legacy enum-channel row is projected this returns `false`, so
+  /// the marker-present repair runs at most once; `resyncChannels` is idempotent
+  /// (upsert), so a partial projection is also repaired safely.
+  @override
+  Future<bool> channelBackfillNeeded() async {
+    final source = paths.legacyChannelDb;
+    final legacyCount = await _count(source, 'channel_added_app');
+    // Missing file (0) or an unreadable-but-present file (null): nothing a repair
+    // could import. Only genuine rows justify a re-run.
+    if (legacyCount == null || legacyCount == 0) return false;
+    final coreDb = await _core.coreDbPath();
+    try {
+      return !await _parity.channels(source, coreDb);
+    } catch (_) {
+      // Core DB/table unreadable: the projection cannot contain the legacy rows,
+      // so a one-time (idempotent) repair is warranted.
+      return true;
+    }
   }
 
   @override

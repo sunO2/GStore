@@ -18,6 +18,8 @@ import 'package:gstore/page/detail/widgets.dart';
 /// - 无可展开内容（无项目主页且无统计）时隐藏展开按钮
 /// - 全部为空 → SizedBox.shrink
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String packageNameValue;
   String? versionValue;
   String? developerValue;
@@ -89,6 +91,8 @@ class _FakeDetailInfo implements IDetailInfo {
 /// 模型字段与 extra 解耦的假实现（模拟 LocalDb/GitHub 渐进路径：
 /// extra 为纯存储 map，不含 version/packageName/channelId 镜像）
 class _SplitDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String packageNameValue;
   String? versionValue;
   String? developerValue;

@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -54,6 +55,23 @@ abstract class CatalogBackend {
   Future<AppDetailInfo?> getAppDetail(String appId);
 
   Future<CatalogRefreshOutcome> refresh(String url);
+
+  // ---- 版本化目录仓库（Rust 拥有 `<data_dir>/catalog_repo`）----
+
+  /// 当前仓库快照（当前版本、条目、apps/categories 计数）。
+  Future<rust.CatalogRepoStatus> repoStatus();
+
+  /// 登记随包 seed（Rust 校验 + sha256 内容寻址 + 去重）。
+  Future<rust.CatalogRepoStatus> repoEnsureSeed({required String path});
+
+  /// 下载远端目录库；校验失败会抛错且不切换当前版本。
+  Future<rust.CatalogRepoDownload> repoDownload({required String url});
+
+  /// 切换当前版本。
+  Future<rust.CatalogRepoStatus> repoSelect({required String version});
+
+  /// 必要时把当前版本物化进 core `apps`/`category`。
+  Future<rust.CatalogMaterializeResult> repoMaterialize();
 }
 
 /// Production FRB backend. The `CatalogApi` handle is created lazily.
@@ -152,9 +170,40 @@ class FrbCatalogBackend implements CatalogBackend {
     );
   }
 
+  @override
+  Future<rust.CatalogRepoStatus> repoStatus() =>
+      _call((api) => api.repoStatus());
+
+  @override
+  Future<rust.CatalogRepoStatus> repoEnsureSeed({required String path}) =>
+      _call((api) => api.repoEnsureSeed(path: path));
+
+  @override
+  Future<rust.CatalogRepoDownload> repoDownload({required String url}) =>
+      _call((api) => api.repoDownload(url: url));
+
+  @override
+  Future<rust.CatalogRepoStatus> repoSelect({required String version}) =>
+      _call((api) => api.repoSelect(version: version));
+
+  @override
+  Future<rust.CatalogMaterializeResult> repoMaterialize() =>
+      _call((api) => api.repoMaterialize());
+
   List<AppSummary> _mapApps(List<rust.ChannelAppInfo> apps) =>
       apps.map(appSummaryFromRust).toList(growable: false);
 }
+
+/// Maps FRB `ChannelLabel`s to the Dart [AppLabel] model — field-for-field, no
+/// synthesis. Empty in ⇒ empty out.
+List<AppLabel> _labelsFromRust(List<rust.ChannelLabel> labels) => labels
+    .map((label) => AppLabel(
+          key: label.key,
+          label: label.label,
+          value: label.value,
+          icon: label.icon,
+        ))
+    .toList(growable: false);
 
 /// Maps one FRB app summary to the Dart model (same shape as
 /// `ChannelManager._toAppSummary`).
@@ -176,6 +225,7 @@ AppSummary appSummaryFromRust(rust.ChannelAppInfo info) {
     readme: info.readme,
     category: info.category.isEmpty ? null : info.category,
     extra: extra,
+    labels: _labelsFromRust(info.labels),
   );
 }
 
@@ -208,27 +258,50 @@ AppDetailInfo appDetailFromRust(rust.ChannelAppDetailInfo info) {
     sections: sections,
     downloads: info.downloads
         .map(
-          (download) => DownloadInfo(
-            url: download.url,
-            name: download.name,
-            size: download.size?.toInt(),
-            downloadCount: download.downloadCount?.toInt(),
-            version: download.version,
-            versionCode: download.versionCode?.toInt(),
-            publishedAt: download.publishedAt == null
-                ? null
-                : DateTime.fromMillisecondsSinceEpoch(
-                    download.publishedAt!.toInt(),
-                  ),
-            platform: download.platform,
-            hash: download.hash,
-            hashType: download.hashType,
-            downloadable: download.downloadable,
-            note: download.note,
-          ),
+          (download) {
+            final size = download.size?.toInt();
+            final count = download.downloadCount?.toInt();
+            return DownloadInfo(
+              url: download.url,
+              name: download.name,
+              size: size,
+              downloadCount: count,
+              version: download.version,
+              versionCode: download.versionCode?.toInt(),
+              publishedAt: download.publishedAt == null
+                  ? null
+                  : DateTime.fromMillisecondsSinceEpoch(
+                      download.publishedAt!.toInt(),
+                    ),
+              platform: download.platform,
+              hash: download.hash,
+              hashType: download.hashType,
+              downloadable: download.downloadable,
+              note: download.note,
+              extra: <String, DownloadTag>{
+                DownloadItemExtra.size: DownloadTag(
+                  text: formatFileSize(size),
+                  iconName: 'sd_storage',
+                ),
+                DownloadItemExtra.platform: DownloadTag(
+                  text: download.platform ?? '',
+                  iconName: 'phone_android',
+                ),
+                DownloadItemExtra.version: DownloadTag(
+                  text: download.version ?? '',
+                  iconName: 'tag',
+                ),
+                DownloadItemExtra.downloadCount: DownloadTag(
+                  text: formatFileCount(count),
+                  iconName: 'download',
+                ),
+              },
+            );
+          },
         )
         .toList(growable: false),
     extra: extra,
+    labels: _labelsFromRust(info.labels),
   );
 }
 
@@ -271,4 +344,21 @@ class CatalogFacade {
   /// (`"null"` when nothing changed).
   Future<CatalogRefreshOutcome> refresh(String url) async =>
       (await _backend()).refresh(url);
+
+  // ---- 版本化目录仓库（Rust 拥有 `<data_dir>/catalog_repo`）----
+
+  Future<rust.CatalogRepoStatus> repoStatus() async =>
+      (await _backend()).repoStatus();
+
+  Future<rust.CatalogRepoStatus> repoEnsureSeed({required String path}) async =>
+      (await _backend()).repoEnsureSeed(path: path);
+
+  Future<rust.CatalogRepoDownload> repoDownload({required String url}) async =>
+      (await _backend()).repoDownload(url: url);
+
+  Future<rust.CatalogRepoStatus> repoSelect({required String version}) async =>
+      (await _backend()).repoSelect(version: version);
+
+  Future<rust.CatalogMaterializeResult> repoMaterialize() async =>
+      (await _backend()).repoMaterialize();
 }

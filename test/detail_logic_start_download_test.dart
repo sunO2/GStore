@@ -138,6 +138,8 @@ class _StubChannel extends IChannel {
 /// 模拟 IDetailInfo（detailInfo 字段类型）
 class _FakeDetailInfo implements IDetailInfo {
   @override
+  List<AppLabel> get labels => const [];
+  @override
   String get appId => 'com.example.app';
   @override
   String get appName => '测试应用';

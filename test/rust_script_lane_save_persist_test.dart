@@ -41,7 +41,6 @@ import 'package:gstore/page/home/tab/discovery/search_channel.dart';
 class _PersistentScriptBackend implements ScriptApiBackend {
   final Map<String, rust_pack.ScriptPackInfo> packs = {};
   final Map<String, List<Map<String, Object?>>> stored = {};
-  final Map<String, List<Map<String, Object?>>> scriptResults = {};
   final List<String> addAppKeys = [];
 
   @override
@@ -99,18 +98,6 @@ class _PersistentScriptBackend implements ScriptApiBackend {
     required String key,
     required Map<String, String> config,
   }) async {}
-
-  @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    if (method == 'searchApps' || method == 'getAllApps') {
-      return jsonEncode(scriptResults[key] ?? const <Object?>[]);
-    }
-    return 'null';
-  }
 
   @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
@@ -190,7 +177,8 @@ class _RecordingAddedAppsBackend implements AddedAppsBackend {
   final Map<String, Set<String>> added = {};
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     toggleCalls.add((channel, appId));
     return true;
   }

@@ -66,8 +66,7 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
 /// proven by
 /// `cargo test --manifest-path rust/gstore_host/Cargo.toml --lib script_api_parity`.
 class _RecordingScriptApiBackend implements ScriptApiBackend {
-  final List<({String key, String method, String paramsJson})> runs =
-      <({String key, String method, String paramsJson})>[];
+  final List<String> storedAppsKeys = <String>[];
 
   @override
   Future<void> init({
@@ -118,20 +117,13 @@ class _RecordingScriptApiBackend implements ScriptApiBackend {
   }) async {}
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    runs.add((key: key, method: method, paramsJson: paramsJson));
-    return 'null';
-  }
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async => const [];
 
   @override
-  Future<String> storedApps({required String key}) async => '[]';
+  Future<String> storedApps({required String key}) async {
+    storedAppsKeys.add(key);
+    return '[]';
+  }
 
   @override
   Future<void> addApp({
@@ -285,36 +277,26 @@ void main() {
     expect(loaded, isNotEmpty);
     expect(manager.dynamicChannels, isEmpty);
 
-    // SEAM-BACKED (b): the facade forwards the exact method name and payload to
-    // its backend. The backend is a seam; nothing here claims a Rust result.
-    const paramsJson = '{"token":"T-42"}';
-    await ScriptApi.instance.run(
-      key: 'js_example',
-      method: 'getConfig',
-      paramsJson: paramsJson,
-    );
-    expect(backend.runs, hasLength(1));
-    expect(backend.runs.single.key, 'js_example');
-    expect(backend.runs.single.method, 'getConfig');
-    expect(backend.runs.single.paramsJson, paramsJson);
+    // SEAM-BACKED (b): the facade forwards a retained pack-lifecycle call (the
+    // key) to its backend. The backend is a seam; nothing here claims a Rust
+    // result. (The JS **data** path runs through `ChannelApi`, never this
+    // facade — see `ScriptApi`'s demotion to pack lifecycle.)
+    await ScriptApi.instance.storedApps(key: 'js_example');
+    expect(backend.storedAppsKeys, <String>['js_example']);
 
     // SEAM-BACKED (b): the flag gate runs before the backend and surfaces the
     // stable typed refusal.
     await _setFlag(jsChannel: false);
-    final runsBefore = backend.runs.length;
+    final before = backend.storedAppsKeys.length;
     await expectLater(
-      ScriptApi.instance.run(
-        key: 'js_example',
-        method: 'getConfig',
-        paramsJson: paramsJson,
-      ),
+      ScriptApi.instance.storedApps(key: 'js_example'),
       throwsA(isA<ScriptApiDisabledException>().having(
         (e) => e.errorCode,
         'errorCode',
         'CORE_E_SCRIPT_JS_CHANNEL_DISABLED',
       )),
     );
-    expect(backend.runs.length, runsBefore,
+    expect(backend.storedAppsKeys.length, before,
         reason: 'the disabled flag must never reach the backend');
   });
 }

@@ -684,13 +684,13 @@ fn migration_v3_upgrades_to_v4() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4, "V3 must upgrade to user_version=4");
+    assert_eq!(version, 5, "V3 must upgrade to user_version=5");
     let ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(ledger, 4, "V4 adds exactly one ledger row");
+    assert_eq!(ledger, 5, "V4+V5 add two ledger rows");
 
     for table in [
         "installed_app",
@@ -772,7 +772,7 @@ fn schema_stamps_v4_and_adds_columns() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     for table in [
         "installed_app",

@@ -10,10 +10,11 @@ use gstore_script::ScriptRuntime;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
-use crate::dto::ChannelKey;
+use crate::dto::{AppDetail, ChannelKey};
 use crate::error::Error;
 
 use super::config::ScriptDetailConfig;
+use super::convert;
 use super::dispatch;
 
 /// Query for `versionOptions`.
@@ -178,6 +179,23 @@ impl ScriptDetail {
             params.insert("build".to_string(), JsonValue::Object(build.clone()));
         }
         self.call_main("switchVersion", &params)
+    }
+
+    /// `switchVersion` mapped to the typed [`AppDetail`] the driver returns.
+    ///
+    /// A pack's `switchVersion` reply has the same shape as `getAppDetail`, so
+    /// the conversion lives once in [`convert::detail`]. A JSON `null` result
+    /// (unimplemented method / `{ok:false}` / a JS throw) and a non-object
+    /// payload both degrade to `Ok(None)`, matching Dart's `decoded is! Map`
+    /// check, so the caller preserves the existing null-degradation.
+    pub fn switch_version_detail(
+        &self,
+        query: SwitchVersionQuery<'_>,
+    ) -> Result<Option<AppDetail>, Error> {
+        match self.switch_version(query)? {
+            Some(value) if value.is_object() => convert::detail(&value).map(Some),
+            _ => Ok(None),
+        }
     }
 
     /// `buildHistory({appId, version, env})`.

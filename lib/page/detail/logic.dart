@@ -9,9 +9,12 @@ import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
+import 'package:gstore/core/channel/impl/facade_detail_channel.dart';
 import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/event/app_event.dart';
+import 'package:gstore/core/event/live_refresh.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -67,6 +70,10 @@ class DetailLogic
   bool _started = false;
   bool _shutDown = false;
 
+  /// 目录变化（Rust 上行 `catalog.changed`）的防抖订阅：仅在本页受影响的
+  /// app（`app_id` 命中）或整渠道变更（`app_id == null`）时重取详情。
+  LiveRefreshSubscription? _liveRefresh;
+
   DetailLogic({DetailState? state}) : state = state ?? DetailState();
 
   /// 设置路由 extra（DetailPage build 内经 GoRouterState.of(context).extra 传入）。
@@ -100,9 +107,39 @@ class DetailLogic
   Future<void> start() async {
     if (_started) return;
     _started = true;
+    // 目录变化（catalog.changed）→ 防抖重取详情；仅本页受影响的 app 或整渠道
+    // 变更触发（复用既有 detailChannel.load()，无新 loading UI）。
+    _liveRefresh = LiveRefreshSubscription(
+      shouldRefresh: _affectedByCatalogChange,
+      onRefresh: _refetchForLiveEvent,
+    );
     _channelManager = ModuleManager.instance.get<ChannelManager>();
     _initializeFromArguments();
     await _initAndLoad();
+  }
+
+  /// 本页是否受该目录变更影响：
+  /// - `catalog.changed.app_id` 命中当前 app → 是（仅该 app）；
+  /// - `app_id == null`（整渠道变更）且 `key` 命中当前渠道（或缺省）→ 是；
+  /// - 其余（其他 app / 其他渠道）→ 否，不重取。
+  bool _affectedByCatalogChange(AppEvent event) {
+    if (event.type != AppEventTypes.catalogChanged) return false;
+    final req = request;
+    if (req == null) return false;
+    final data = event.data;
+    final appId = data?['app_id'];
+    if (appId != null) return appId.toString() == req.appId;
+    final key = data?['key'];
+    final code = req.channelCode ?? req.channel.code;
+    return key == null || key.toString() == code;
+  }
+
+  /// 目录变化 → 防抖后重取详情（复用 [detailChannel] 的既有 load 路径）。
+  void _refetchForLiveEvent() {
+    if (_shutDown) return;
+    final channel = detailChannel;
+    if (channel == null) return;
+    unawaited(channel.load());
   }
 
   /// 获取 channel → bind → load
@@ -114,6 +151,20 @@ class DetailLogic
     if (ch == null) {
       // Rust 脚本通道：flag on 时 js_* 渠道包归 ScriptApi，Dart 渠道已注销。
       if (await _loadRustScriptChannel(req, code)) return;
+      // 门面可用的渠道（如 local_db，Dart 实例已下线）没有 Dart IChannel，
+      // 但 core 拥有其数据 → 构造门面详情通道，避免误报「渠道不可用」。
+      final manager = _channelManager;
+      if (manager != null && manager.facadeEligible(code)) {
+        final dc = FacadeDetailChannel(
+          appId: req.appId,
+          channelCode: code,
+          request: req,
+        );
+        dc.bind(state, this);
+        detailChannel = dc;
+        await dc.load();
+        return;
+      }
       if (CoreFlags.jsChannel) {
         // 解析失败：给出类型化错误，避免 SizedBox.shrink() 静默白屏。
         state.errorMessage = '渠道不可用或未注册: $code';
@@ -316,16 +367,20 @@ class DetailLogic
     final req = request;
     if (req == null) return;
     final code = req.channelCode ?? req.channel.code;
-    final channelInstance = _channelManager?.getChannelByCode(code);
+    final manager = _channelManager;
     String canonicalId = req.appId;
-    // 非 JS 渠道：通过 getAppInfo 解析 canonical appId
-    if (channelInstance != null) {
+    // 经门面路由解析 canonical appId：flag on 时 core 拥有 channel 域，Dart 渠道读被
+    // 守卫拦截；lane code / 无实例时 getAppInfoByCode 失败，回退原 appId。
+    if (manager != null) {
       try {
-        final basicInfo =
-            await channelInstance.getAppInfo(req.appId, forceRefresh: false);
+        final basicInfo = await manager.getAppInfoByCode(
+          code,
+          req.appId,
+          forceRefresh: false,
+        );
         final appSummary = basicInfo.success ? basicInfo.data : null;
         if (appSummary != null) {
-          canonicalId = await channelInstance.canonicalAppId(appSummary);
+          canonicalId = await manager.canonicalAppIdByCode(code, appSummary);
         }
       } catch (e) {
         appLog.error('DetailLogic: 解析 canonical appId 失败 - $e');
@@ -623,6 +678,8 @@ class DetailLogic
     _shutDown = true;
     _actionBusyTimer?.cancel();
     _actionBusyTimer = null;
+    _liveRefresh?.dispose();
+    _liveRefresh = null;
     final binding = _scriptUiBinding;
     _scriptUiBinding = null;
     if (binding != null) {

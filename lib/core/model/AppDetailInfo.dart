@@ -6,6 +6,44 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/StatTag.dart';
 
+/// 单个动态展示标签（跨渠道统一模型）。
+///
+/// 与 Rust `Label` / FRB `ChannelLabel` 同构：`key` 为稳定标识，`label` 为展示名，
+/// `value` 为展示值，`icon` 为可选 Material 图标名。模型层只做**逐字段透传**：
+/// 空 `labels` 保持为空，绝不合成、猜测或补齐任何标签。
+class AppLabel {
+  /// 稳定标识（渠道内唯一，如 'version' / 'downloads'）。
+  final String key;
+
+  /// 展示名（如 '版本' / '下载量'）。
+  final String label;
+
+  /// 展示值（如 '1.2.3' / '1.2万'）。
+  final String value;
+
+  /// 可选 Material 图标名（如 'tag'），null → UI 默认图标。
+  final String? icon;
+
+  const AppLabel({
+    required this.key,
+    required this.label,
+    required this.value,
+    this.icon,
+  });
+
+  /// 序列化（round-trip / 持久化用）；`icon` 为 null 时省略。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'key': key,
+        'label': label,
+        'value': value,
+        if (icon != null) 'icon': icon,
+      };
+
+  @override
+  String toString() =>
+      'AppLabel{key: $key, label: $label, value: $value, icon: $icon}';
+}
+
 /// 详情页可展示的区块类型
 enum DetailSection {
   /// 版本信息
@@ -271,6 +309,9 @@ class AppDetailInfo {
   /// 渠道特有扩展信息
   final Map<String, dynamic> extra;
 
+  /// 动态展示标签（来自渠道 typed DTO 的 `labels`；空即空，不合成）。
+  final List<AppLabel> labels;
+
   AppDetailInfo({
     required this.appId,
     required this.name,
@@ -284,8 +325,10 @@ class AppDetailInfo {
     this.projectUrl,
     List<DownloadInfo>? downloads,
     Map<String, dynamic>? extra,
+    List<AppLabel>? labels,
   })  : downloads = downloads ?? [],
-        extra = extra ?? {};
+        extra = extra ?? {},
+        labels = labels ?? const [];
 
   /// 从extra获取统计数据
   StatisticsInfo? get statistics {
@@ -364,6 +407,7 @@ class AppDetailInfo {
     String? projectUrl,
     List<DownloadInfo>? downloads,
     Map<String, dynamic>? extra,
+    List<AppLabel>? labels,
   }) {
     return AppDetailInfo(
       appId: appId ?? this.appId,
@@ -378,6 +422,7 @@ class AppDetailInfo {
       projectUrl: projectUrl ?? this.projectUrl,
       downloads: downloads ?? this.downloads,
       extra: extra ?? Map.from(this.extra),
+      labels: labels ?? this.labels,
     );
   }
 

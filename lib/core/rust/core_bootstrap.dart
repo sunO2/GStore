@@ -17,15 +17,19 @@ library;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart'
-    show debugPrint, kDebugMode, visibleForTesting;
+    show ValueNotifier, debugPrint, kDebugMode, visibleForTesting;
 
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/catalog/catalog_seed_bootstrap.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/migration/cutover_paths.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/core_cutover.dart';
 import 'package:gstore/core/rust/core_cutover_backend.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/service/localdb_gstore_cleanup.dart';
+import 'package:gstore/core/service/localdb_gstore_migration.dart';
 
 /// Inventory/facts source identity pinned by the plan (`android_frontend`).
 const String kCoreSourceId = 'android_frontend';
@@ -248,6 +252,16 @@ class CoreBootstrap {
         }
       }
 
+      // 随包 catalog seed：写 `<files_dir>/catalog_seed.db`，交给 Rust 校验 +
+      // 内容寻址去重（repoEnsureSeed），并按需物化进 core catalog
+      // （repoMaterialize）。失败在 ensure 内部已捕获，永不阻塞启动。
+      //
+      // 与 cutover 相同的测试约定：注入的 bootstrap backend 是测试 seam，
+      // 只有生产 backend 才真正跑 seed 自举。
+      if (_backendOverride == null) {
+        await CatalogSeedBootstrap.ensure(filesDir: dirs.$2);
+      }
+
       _ready = true;
     } catch (error, stackTrace) {
       debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');
@@ -256,6 +270,63 @@ class CoreBootstrap {
       }
     } finally {
       _pending = null;
+    }
+  }
+
+  /// 运行「需要导航已挂载」的一次性迁移。
+  ///
+  /// `local_db → gstore` 迁移在 UI 上展示不可取消的进度框，而
+  /// [AppDialogs.showProgress] 依赖 `appNavigatorKey`；`main()` 在 `runApp`
+  /// 之前 await 了 [start]，此时没有 navigator，进度框会被静默跳过。因此该
+  /// 迁移改由 [main] 在首帧后调用本方法执行（生产 backend 才会真正跑）。
+  ///
+  /// 先执行修复后的迁移（只移动既有 `added_apps('local_db')` 成员），再执行
+  /// 一次性清理（移除历史缺陷误加入 `gstore` 的应用；危险操作需用户确认）。
+  /// 失败非致命：内部已吞错，这里再兜一层，绝不影响已启动的 UI。
+  static Future<void> runDeferredMigrations() async {
+    if (_backendOverride != null) return;
+    if (!_ready) return;
+    await _runLocalDbMigration();
+    await _runLocalDbCleanup();
+  }
+
+  /// 一次性 `local_db` → `gstore` 迁移，带不可取消的进度遮罩。
+  ///
+  /// navigator 尚未挂载时 [AppDialogs.showProgress] / [AppDialogs.dismissLoading]
+  /// 静默跳过；迁移本身失败也绝不阻塞启动。
+  static Future<void> _runLocalDbMigration() async {
+    final progress = ValueNotifier<({int done, int total, String message})>(
+      (done: 0, total: 0, message: '正在迁移本地库数据…'),
+    );
+    AppDialogs.showProgress(progress: progress);
+    try {
+      final report = await LocalDbGStoreMigration.run(
+        onProgress: (done, total) => progress.value = (
+          done: done,
+          total: total,
+          message: '正在迁移本地库数据…',
+        ),
+      );
+      debugPrint('[CoreBootstrap] local_db → gstore 迁移: $report');
+    } catch (error) {
+      debugPrint('[CoreBootstrap] local_db → gstore 迁移失败（不影响启动）: $error');
+    } finally {
+      AppDialogs.dismissLoading();
+      progress.dispose();
+    }
+  }
+
+  /// 一次性清理：移除历史缺陷误加入 `gstore` 的应用（确认 + 确定进度）。
+  ///
+  /// 合法集来自迁移前 Rust 自动备份（`<data_dir>/gstore_core.db.bak-v4-*`），
+  /// 因此绝不会误删用户真正添加的应用；`local_db` 与目录库从不改动。
+  static Future<void> _runLocalDbCleanup() async {
+    try {
+      final dirs = await _resolveDirs();
+      final report = await LocalDbGStoreCleanup.run(dataDir: dirs.$1);
+      debugPrint('[CoreBootstrap] gstore 错误数据清理: $report');
+    } catch (error) {
+      debugPrint('[CoreBootstrap] gstore 错误数据清理失败（不影响启动）: $error');
     }
   }
 

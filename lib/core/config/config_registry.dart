@@ -34,6 +34,9 @@ class ConfigKeys {
   /// GitHub 代理前缀
   static const String proxyUrl = 'proxy_url';
 
+  /// 目录库下载地址（远端 catalog DB；空串 = 未配置）
+  static const String catalogUrl = 'catalog_url';
+
   /// Agent 模型列表（JSON）
   static const String agentModels = 'agent_models';
 
@@ -164,6 +167,21 @@ class AppCoreConfigModule extends ConfigModule {
           example: 'https://gh-proxy.org/',
           description: 'GitHub 代理前缀（空串表示不使用）',
           descriptionEn: 'GitHub proxy prefix (empty = disabled)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.catalogUrl,
+          type: ConfigValueType.string,
+          defaultValue: 'https://github.com/sunO2/GStore-Repositorys',
+          agentAccessible: true,
+          category: 'catalog',
+          example: 'https://github.com/<owner>/<repo>',
+          description:
+              '目录库地址：可填 GitHub 仓库地址（自动解析最新 release 的 assets[0]）'
+              '或直接的 .db 下载地址（空串 = 未配置，检查更新时提示输入）',
+          descriptionEn:
+              'Catalog source: a GitHub repo URL (resolves the latest release '
+              'assets[0]) or a direct .db download URL '
+              '(empty = unset; prompted on check-update)',
         ),
         const ConfigEntry(
           key: ConfigKeys.agentModels,

@@ -50,6 +50,7 @@ fn sample_app(app_id: &str) -> AppSummary {
         readme: Some(format!("# {app_id}")),
         category: Some(vec!["tools".to_string()]),
         extra: Some(extra),
+        labels: Vec::new(),
     }
 }
 

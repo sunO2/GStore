@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::dto::{AppDetail, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection};
+use crate::dto::{
+    AppDetail, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection, detail_labels,
+};
 use crate::error::Error;
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
@@ -289,8 +291,10 @@ impl ChannelDriver for InMemoryChannelDriver {
             readme: _,
             category: _,
             extra,
+            labels: _,
         } = app;
         let developer = (!user.is_empty()).then_some(user);
+        let labels = detail_labels(None, developer.as_deref(), package_name.as_deref());
         Ok(AppDetail {
             app_id,
             name,
@@ -304,6 +308,7 @@ impl ChannelDriver for InMemoryChannelDriver {
             sections: vec![DetailSection::Version, DetailSection::Readme],
             downloads: Vec::new(),
             extra: extra.unwrap_or_default(),
+            labels,
         })
     }
 

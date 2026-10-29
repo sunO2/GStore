@@ -396,6 +396,12 @@ main() async {
       });
     }),
   ));
+
+  // 需要 navigator 已挂载的一次性迁移（进度框只能在 runApp 之后显示）：
+  // `local_db → gstore` 遗留数据迁移。非致命、幂等，失败不影响启动。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(CoreBootstrap.runDeferredMigrations());
+  });
 }
 
 /// 消费"管理空间"入口请求。

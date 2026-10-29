@@ -44,6 +44,14 @@ class AppEventTypes {
   /// Rust 模块事件（上行）：data = {eventType, moduleId, instanceId, data(base64)}
   static const String rustEvent = 'rust.event';
 
+  /// 渠道元数据/状态变化（Rust 上行，`CoreEvent::ChannelChanged`）：
+  /// data = {key, kind}。线名与 `gstore_core::event::EVT_CHANNEL_CHANGED` 一致。
+  static const String channelChanged = 'channel.changed';
+
+  /// 渠道目录变化（Rust 上行，`CoreEvent::CatalogChanged`）：
+  /// data = {key, app_id, removed}。线名与 `gstore_core::event::EVT_CATALOG_CHANGED` 一致。
+  static const String catalogChanged = 'catalog.changed';
+
   /// 主题变化（示例：可下行到 Rust 模块）
   static const String themeChanged = 'theme.changed';
 }

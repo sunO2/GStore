@@ -91,14 +91,6 @@ class _FakeScriptBackend implements ScriptApiBackend {
   }) async {}
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async =>
-      'null';
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async => packs.values.toList();
 
   @override

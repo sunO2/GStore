@@ -11,8 +11,11 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/event/app_event.dart';
+import 'package:gstore/core/event/live_refresh.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
@@ -31,6 +34,12 @@ import 'widgets/tag_picker_dialog.dart';
 class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   StreamSubscription? _appsSubscription;
   final List<StreamSubscription> _disposables = [];
+
+  /// 渠道/目录变化（Rust 上行）的防抖订阅：一串事件只重跑一次加载。
+  LiveRefreshSubscription? _liveRefresh;
+
+  /// 本轮事件串里是否出现过 `channel.changed`（决定是否刷新渠道包缓存）。
+  bool _laneRefreshPending = false;
 
   /// 是否已释放（async 回调后写 state 前检查）
   bool _disposed = false;
@@ -66,6 +75,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   void _dispose() {
     _disposed = true;
     _debounceTimer?.cancel();
+    _liveRefresh?.dispose();
+    _liveRefresh = null;
     searchController.dispose();
     _appsSubscription?.cancel();
     for (final sub in _disposables) {
@@ -75,6 +86,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   }
 
   Future<void> _subscribeAndLoad() async {
+    // 渠道/目录变化（Rust 上行 channel.changed / catalog.changed）→ 防抖重跑
+    // 加载；`channel.changed` 还会刷新已安装渠道包缓存（RustScriptChannelLane）。
+    _liveRefresh = LiveRefreshSubscription(
+      onEvent: _noteLiveEvent,
+      onRefresh: _onLiveRefresh,
+    );
     // 监听已添加应用变化（aggregate 模块下线时跳过订阅）
     final aggregator = _aggregator;
     if (aggregator != null) {
@@ -84,6 +101,33 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       });
     }
 
+    await loadData();
+  }
+
+  /// 记录本轮事件串里出现过的变更类型（`channel.changed` → 需刷新渠道包缓存）。
+  void _noteLiveEvent(AppEvent event) {
+    if (event.type == AppEventTypes.channelChanged) {
+      _laneRefreshPending = true;
+    }
+  }
+
+  /// 渠道/目录变化 → 防抖后重跑加载（复用 [loadData] 的既有 loading 态）。
+  void _onLiveRefresh() {
+    if (_disposed) return;
+    unawaited(_runLiveRefresh());
+  }
+
+  /// 防抖触发的实际刷新：`channel.changed` 先刷新渠道包缓存，再重跑 [loadData]。
+  Future<void> _runLiveRefresh() async {
+    if (_laneRefreshPending) {
+      _laneRefreshPending = false;
+      try {
+        await RustScriptChannelLane.instance.refresh();
+      } catch (e) {
+        appLog.error('DiscoveryNotifier: 刷新 Rust 脚本通道失败 - $e');
+      }
+      if (_disposed) return;
+    }
     await loadData();
   }
 
@@ -111,6 +155,13 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     // Rust 脚本通道（CoreFlags.jsChannel=true 时 Rust ScriptApi 拥有渠道包，
     // Dart dynamicChannels 为空）→ 把已安装的 js_* 渠道包并入；Set 天然去重。
     codes.addAll(RustScriptChannelLane.instance.codes);
+    // gstore 由 Rust core 注册、Dart 无 IChannel 实例：flag on 时显式并入，
+    // 使「GStore」在侧栏可见（数据源 = 本地 catalog）。
+    if (CoreFlags.channels) {
+      codes.add(ChannelType.gstore.code);
+    }
+    // local_db 只是内部目录读取器（Rust 仍注册其 driver），不是发现页渠道。
+    codes.remove(ChannelType.localDb.code);
     final result = codes.toList()..sort();
     debugPrint('DiscoveryNotifier: sortedChannelCodes = $result');
     debugPrint(
@@ -263,12 +314,18 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         final channelInstance = _channelManager?.getChannelByCode(channelCode);
         // Rust lane code 无 Dart 渠道实例；聚合层用原始 appId 落库，仍可入库。
         final isLane = channelInstance == null && _isRustLaneCode(channelCode);
-        if (channelInstance != null || isLane) {
+        final facadeEligible = channelInstance == null &&
+            (_channelManager?.facadeEligible(channelCode) ?? false);
+        if (channelInstance != null || isLane || facadeEligible) {
           try {
             // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标。
-            // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
-            // flag off 回落旧 backend；不再经 _aggregator 的旧 catalog 写守卫。
-            await AddedAppsFacade.instance.toggle(channelCode, appInfo.appId);
+            // 走 AddedAppsFacade：Rust `LibraryService` 一次调用写渠道元数据
+            // （channel_apps）+ 入库标记（added_apps），Dart 不再补写元数据。
+            await AddedAppsFacade.instance.toggle(
+              channelCode,
+              appInfo.appId,
+              appInfo: appInfo,
+            );
             successCount++;
           } catch (e) {
             failCount++;
@@ -378,6 +435,12 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     for (final code in rustLane.codes) {
       if (!codes.contains(code)) codes.add(code);
     }
+    // gstore 由 Rust core 注册（Dart 无实例）：flag on 时显式加载已加入行，
+    // 与侧栏条目保持一致；local_db 是内部目录读取器，发现页永不加载它。
+    if (CoreFlags.channels && !codes.contains(ChannelType.gstore.code)) {
+      codes.add(ChannelType.gstore.code);
+    }
+    codes.remove(ChannelType.localDb.code);
 
     var updated = state.channelApps;
     for (final code in codes) {
@@ -516,6 +579,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     switch (type) {
       case ChannelType.localDb:
         return TablerIcons.database;
+      case ChannelType.gstore:
+        return TablerIcons.database;
       case ChannelType.github:
         return TablerIcons.code;
       case ChannelType.http:
@@ -543,16 +608,17 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   /// （用户报告「无法入库」）。聚合层 [IAggregateService] 对无渠道实例的 code
   /// 用原始 appId 落库，因此 lane code 直接走聚合即可。
   Future<void> toggleApp(BuildContext context, String code, AppSummary appInfo) async {
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    final isLane = channelInstance == null && _isRustLaneCode(code);
-    if (channelInstance == null && !isLane) return;
+    if (!_canWriteCode(code)) return;
 
     try {
-      // 走 AddedAppsFacade（flag 在 facade 内部分流）：flag on 写 Rust core，
-      // flag off 回落旧 backend。canonical id 取 appInfo.appId——不再经
-      // _aggregator 的旧 catalog 写守卫（flag on 时旧守卫抛
-      // LegacyWriteBlocked(catalog)，正是用户报告的报错）。
-      final added = await AddedAppsFacade.instance.toggle(code, appInfo.appId);
+      // 走 AddedAppsFacade：Rust `LibraryService.toggle` 写渠道元数据
+      // （channel_apps，js lane 由脚本 driver 承接）+ 入库标记（added_apps）。
+      // Dart 不再自己补写元数据；canonical id 由 Rust 按 driver 计算。
+      final added = await AddedAppsFacade.instance.toggle(
+        code,
+        appInfo.appId,
+        appInfo: appInfo,
+      );
 
       // 重新加载该渠道的应用列表
       await _refreshChannelApps(code);
@@ -599,13 +665,19 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       BuildContext context, String code, AppSummary appInfo) async {
     // 关键：标签 key 必须与聚合库一致——addApp 落库用的是 canonicalAppId 规范化后的 appId
     // （如 GitHub 收录后为真实包名），原始 appId（如 owner/repo）作 key 会匹配不到聚合库
-    final channelInstance = _channelManager?.getChannelByCode(code);
+    final manager = _channelManager;
+    final channelInstance = manager?.getChannelByCode(code);
     final isLane = channelInstance == null && _isRustLaneCode(code);
-    if (channelInstance == null && !isLane) return;
-    // lane code 无 Dart 渠道可规范化：聚合层对无渠道实例的 code 用原始 appId，保持一致。
-    final canonicalId = channelInstance != null
-        ? await channelInstance.canonicalAppId(appInfo)
-        : appInfo.appId;
+    // 门面可用的枚举渠道（github/vivo/fdroid）即使没有 Dart 实例也可规范化。
+    final facadeEligible = manager?.facadeEligible(code) ?? false;
+    if (channelInstance == null && !isLane && !facadeEligible) return;
+    // lane code 不在 core channel 注册表里：直接用原始 appId（与聚合层一致），
+    // 避免对 js_* 发起注定 not_found 的门面调用。
+    final canonicalId = isLane
+        ? appInfo.appId
+        : (manager != null
+            ? await manager.canonicalAppIdByCode(code, appInfo)
+            : appInfo.appId);
 
     // 读取当前标签（用规范化 appId）；读路径与写路径同源：走 AddedAppsFacade
     // （flag on 读 Rust core / flag off 回落旧 backend），不再直读旧聚合服务。
@@ -650,6 +722,19 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
   }
 
+  /// Whether a discovery row for [code] can be written to the library.
+  ///
+  /// A Dart channel instance is the legacy path; Rust script-lane codes and
+  /// facade-eligible builtins without a Dart instance (e.g. `gstore`, whose
+  /// driver lives only in the Rust core) still write through `AddedAppsFacade`.
+  bool _canWriteCode(String code) {
+    final manager = _channelManager;
+    if (manager == null) return false;
+    if (manager.getChannelByCode(code) != null) return true;
+    if (_isRustLaneCode(code)) return true;
+    return manager.facadeEligible(code);
+  }
+
   /// Whether [code] names an installed Rust-lane pack (`js_*`) this process owns.
   ///
   /// The lane pack is deliberately NOT a Dart channels-domain channel, so a lane
@@ -677,16 +762,18 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     if (rustLane.enabled && rustLane.packFor(code) != null) {
       return _saveSearchToRustLane(code, app);
     }
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) {
+    final manager = _channelManager;
+    if (manager == null) {
       return const SearchSaveFailed(
         SearchSaveFailed.channelUnavailable,
         '渠道不可用或未注册',
       );
     }
     try {
-      // 统一调用 IChannel.addApp（各渠道内部处理保存逻辑）
-      final result = await channelInstance.addApp(app);
+      // 经 ChannelManager 门面路由：flag on 时写 Rust core 的 `channel_apps`
+      // （core 拥有 channel 域后，Dart 渠道 addApp 会被 LegacyWriteGuard 拒绝），
+      // flag off 回落 Dart IChannel.addApp（各渠道内部处理保存逻辑）。
+      final result = await manager.addAppByCode(code, app);
       if (!result.success) {
         appLog.error(
             'DiscoveryNotifier: $code 保存搜索结果失败 - ${result.error}');
@@ -773,10 +860,18 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     String appId, {
     bool showSnack = true,
   }) async {
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    if (channelInstance == null) return false;
+    // Rust 脚本通道（js_*）既不在 Dart 渠道表、也不在 core channel 注册表里：
+    // 保持原有「不处理」语义（无 remove API）。
+    final rustLane = RustScriptChannelLane.instance;
+    if (rustLane.enabled && rustLane.packFor(code) != null) return false;
+    final manager = _channelManager;
+    if (manager == null) return false;
+    final channelInstance = manager.getChannelByCode(code);
+    // 门面可用的枚举渠道（github/vivo/fdroid）即使没有 Dart 实例也可移除。
+    if (channelInstance == null && !manager.facadeEligible(code)) return false;
     try {
-      final result = await channelInstance.removeApp(appId);
+      // 经 ChannelManager 门面路由：flag on 走 core，flag off 回落 Dart IChannel。
+      final result = await manager.removeAppByCode(code, appId);
       if (!result.success) {
         appLog.error(
             'DiscoveryNotifier: $code 移除应用失败 - ${result.error}');
@@ -909,13 +1004,11 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   Future<void> addAllFromChannel(String code) async {
     final apps = state.channelApps[code] ?? [];
     if (apps.isEmpty) return;
-    final channelInstance = _channelManager?.getChannelByCode(code);
-    final isLane = channelInstance == null && _isRustLaneCode(code);
-    if (channelInstance == null && !isLane) return;
+    if (!_canWriteCode(code)) return;
 
     try {
-      // 逐应用走 facade（facade 无批量等价方法）；canonical id = app.appId，
-      // flag on 写 Rust core / flag off 回落旧 backend，不再经旧 catalog 写守卫。
+      // 逐应用走 facade（facade 无批量等价方法）；Rust `LibraryService` 每次
+      // 调用同时写渠道元数据与入库标记，Dart 不再补写 channel_apps。
       for (final app in apps) {
         await AddedAppsFacade.instance.add(code, app.appId, appInfo: app);
       }
@@ -995,6 +1088,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
         return TablerIcons.database;
+      case ChannelType.gstore:
+        return TablerIcons.database;
       case ChannelType.github:
         return TablerIcons.code;
       case ChannelType.http:
@@ -1071,11 +1166,23 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
     for (final channel in manager.enabledChannels) {
       final code = channelCode(channel);
+      if (code == ChannelType.localDb.code) continue;
       options.putIfAbsent(
         code,
         () => SearchChannelOption(code: code, name: channel.info.name),
       );
     }
+    // gstore：core 注册的可写渠道，Dart 无实例；flag on 时提供搜索项。
+    if (CoreFlags.channels) {
+      options.putIfAbsent(
+        ChannelType.gstore.code,
+        () => SearchChannelOption(
+          code: ChannelType.gstore.code,
+          name: ChannelType.gstore.description,
+        ),
+      );
+    }
+    options.remove(ChannelType.localDb.code);
     final rustLane = RustScriptChannelLane.instance;
     if (rustLane.enabled) {
       for (final pack in rustLane.packs) {
@@ -1124,6 +1231,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
         return '本地数据库';
+      case ChannelType.gstore:
+        return 'GStore';
       case ChannelType.github:
         return 'GitHub';
       case ChannelType.http:
@@ -1793,6 +1902,8 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
         return '本地数据库';
+      case ChannelType.gstore:
+        return 'GStore';
       case ChannelType.github:
         return 'GitHub';
       case ChannelType.http:
@@ -1816,6 +1927,8 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   IconData _channelIcon(String code) {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
+        return TablerIcons.database;
+      case ChannelType.gstore:
         return TablerIcons.database;
       case ChannelType.github:
         return TablerIcons.code;

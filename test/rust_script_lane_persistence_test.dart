@@ -27,6 +27,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -47,9 +48,6 @@ class _InitGatedScriptBackend implements ScriptApiBackend {
 
   final Map<String, rust_pack.ScriptPackInfo> packs = {};
   final Map<String, List<Map<String, Object?>>> stored = {};
-
-  /// `"<key>:<method>"` → the raw JSON string `ScriptApi.run` would return.
-  final Map<String, String> runResults = {};
 
   void _requireInit() {
     if (!initialized) {
@@ -113,16 +111,6 @@ class _InitGatedScriptBackend implements ScriptApiBackend {
       _requireInit();
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    _requireInit();
-    return runResults['$key:$method'] ?? 'null';
-  }
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
     _requireInit();
     final values = packs.values.toList()..sort((a, b) => a.key.compareTo(b.key));
@@ -148,6 +136,53 @@ class _InitGatedScriptBackend implements ScriptApiBackend {
   }) async =>
       _requireInit();
 }
+
+/// In-memory `ChannelApiBackend` (the unified channel seam) for the lane search
+/// path. The lane reads `searchApps` through `RustChannelFacade.search`; a pack
+/// that does not implement `searchApps` (empty result) falls back to
+/// `getAllApps` + a local filter.
+class _FakeChannelApiBackend implements ChannelApiBackend {
+  final Map<String, List<rust.ChannelAppInfo>> searchResults = {};
+  final Map<String, List<rust.ChannelAppInfo>> allAppsResults = {};
+  final List<String> searchCalls = [];
+  final List<String> getAllAppsCalls = [];
+
+  @override
+  Future<List<rust.ChannelAppInfo>> search({
+    required String key,
+    required String keyword,
+    required bool forceRefresh,
+  }) async {
+    searchCalls.add('$key:$keyword');
+    return searchResults[key] ?? const [];
+  }
+
+  @override
+  Future<List<rust.ChannelAppInfo>> listApps({
+    required String key,
+    required bool forceRefresh,
+  }) async {
+    getAllAppsCalls.add(key);
+    return allAppsResults[key] ?? const [];
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+      'unused facade method: ${invocation.memberName}');
+}
+
+/// One `rust.ChannelAppInfo` as `ChannelApi.search`/`getAllApps` would emit it.
+rust.ChannelAppInfo _channelAppInfo(String appId, String name) =>
+    rust.ChannelAppInfo(
+      appId: appId,
+      name: name,
+      user: '',
+      repositories: '',
+      icon: '',
+      des: 'desc',
+      category: const <String>[],
+      labels: const <rust.ChannelLabel>[],
+    );
 
 class _FakeFlagsBackend implements CoreFlagsBackend {
   _FakeFlagsBackend(this.snapshot);
@@ -200,14 +235,6 @@ rust_pack.ScriptPackInfo _pack(String key, {String name = 'Probe Pack'}) =>
       hasDetail: false,
     );
 
-/// One script-side AppInfo row as a pack's `searchApps`/`getAllApps` returns it.
-Map<String, Object?> _appInfo(String appId, String name) => {
-      'appId': appId,
-      'name': name,
-      'des': 'desc',
-      'icon': '',
-    };
-
 Uint8List _zipOf(String entry) {
   final archive = Archive()..addFile(ArchiveFile.string('entry.js', entry));
   return Uint8List.fromList(ZipEncoder().encode(archive)!);
@@ -227,6 +254,7 @@ void main() {
     ScriptApi.resetBackend();
     ScriptChannelService.resetForTest();
     RustScriptChannelLane.resetForTest();
+    RustChannelFacade.resetBackend();
     await ChannelManager.instance.disposeAll();
     ModuleManager.instance.unbind<ChannelManager>();
   });
@@ -323,14 +351,16 @@ void main() {
   // Lane search contract (unit level)
   // ---------------------------------------------------------------------------
 
-  test('searchApps maps the script result and never reads the saved rows',
+  test('searchApps maps the facade result and never reads the saved rows',
       () async {
     await _setFlag(jsChannel: true);
     final backend = _InitGatedScriptBackend();
     _installScriptService(backend);
     backend.packs['js_probe'] = _pack('js_probe');
-    backend.runResults['js_probe:searchApps'] =
-        jsonEncode([_appInfo('com.probe', 'Probe App')]);
+    // The unified channel path (ChannelApi.search) serves the search result.
+    final facade = _FakeChannelApiBackend()
+      ..searchResults['js_probe'] = [_channelAppInfo('com.probe', 'Probe App')];
+    RustChannelFacade.installBackend(facade);
     // A saved row that must NOT leak into the search result.
     backend.stored['js_probe'] = [
       {
@@ -354,6 +384,8 @@ void main() {
 
     final apps = await lane.searchApps('js_probe', 'probe');
     expect(apps.map((a) => a.appId), ['com.probe']);
+    expect(facade.searchCalls, ['js_probe:probe'],
+        reason: 'the lane search must read through the ChannelApi facade');
   });
 
   test('flag off: searchApps returns empty without touching the Rust store',
@@ -361,8 +393,6 @@ void main() {
     await _setFlag(jsChannel: false);
     final backend = _InitGatedScriptBackend();
     _installScriptService(backend);
-    backend.runResults['js_probe:searchApps'] =
-        jsonEncode([_appInfo('com.probe', 'Probe App')]);
 
     final lane = RustScriptChannelLane();
     RustScriptChannelLane.installForTest(lane);
@@ -399,10 +429,14 @@ void main() {
       final backend = _InitGatedScriptBackend();
       _installScriptService(backend);
       backend.packs['js_probe'] = _pack('js_probe');
-      // The script's searchApps returns one app. There are NO saved channel_apps
-      // rows (a freshly imported pack), so filtering stored rows yields nothing.
-      backend.runResults['js_probe:searchApps'] =
-          jsonEncode([_appInfo('com.probe', 'Probe App')]);
+      // The unified channel path returns one app. There are NO saved
+      // channel_apps rows (a freshly imported pack), so filtering stored rows
+      // yields nothing.
+      final facade = _FakeChannelApiBackend()
+        ..searchResults['js_probe'] = [
+          _channelAppInfo('com.probe', 'Probe App')
+        ];
+      RustChannelFacade.installBackend(facade);
 
       final lane = RustScriptChannelLane();
       RustScriptChannelLane.installForTest(lane);
@@ -421,8 +455,9 @@ void main() {
       expect(
           notifier.state.channelApps['js_probe']?.map((a) => a.appId),
           contains('com.probe'),
-          reason: 'the Rust-lane search must run the script entry, '
+          reason: 'the Rust-lane search must read the channel data path, '
               'not filter the (empty) saved rows');
+      expect(facade.searchCalls, contains('js_probe:probe'));
     });
 
     test('searchApps fallback runs getAllApps when searchApps is unimplemented',
@@ -431,10 +466,11 @@ void main() {
       final backend = _InitGatedScriptBackend();
       _installScriptService(backend);
       backend.packs['js_probe'] = _pack('js_probe');
-      // searchApps returns null (unimplemented) => fall back to getAllApps.
-      backend.runResults['js_probe:searchApps'] = 'null';
-      backend.runResults['js_probe:getAllApps'] =
-          jsonEncode([_appInfo('com.probe', 'Probe App')]);
+      // searchApps returns nothing (unimplemented) => fall back to getAllApps.
+      final facade = _FakeChannelApiBackend()
+        ..searchResults['js_probe'] = const []
+        ..allAppsResults['js_probe'] = [_channelAppInfo('com.probe', 'Probe App')];
+      RustChannelFacade.installBackend(facade);
 
       final lane = RustScriptChannelLane();
       RustScriptChannelLane.installForTest(lane);

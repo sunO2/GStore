@@ -42,6 +42,8 @@ const _channelCode = 'github';
 
 /// 最小 IDetailInfo：承载下载候选列表
 class _FakeDetail implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   _FakeDetail({required this.downloads});
 
   @override

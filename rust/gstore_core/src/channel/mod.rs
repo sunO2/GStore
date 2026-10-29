@@ -25,6 +25,7 @@ mod fake;
 mod fdroid;
 mod github;
 mod github_releases;
+mod gstore;
 mod localdb;
 mod pack;
 mod pack_loader;
@@ -37,7 +38,12 @@ mod vivo;
 pub use driver::{ChannelCategory, ChannelConfig, ChannelDriver};
 pub use fake::{InMemoryChannelDriver, InMemoryChannelStore};
 pub use fdroid::FdroidDriver;
+// Reused by the `channel_apps` fallback to rebuild repo-relative icon keys and
+// by the cutover/restore paths to drop a stale source/mirror icon prefix; the
+// F-Droid driver owns the single implementation of these helpers.
+pub(crate) use fdroid::{join_repo_url, normalize_repo_asset_path, rebase_icon};
 pub use github::GitHubDriver;
+pub use gstore::GStoreDriver;
 pub use localdb::LocalDbDriver;
 pub use pack::{validate_channel_key, ChannelPack, PackIconSource};
 pub use pack_loader::{InstalledPack, PackError, PackLimits, PackPolicy, PackStore};

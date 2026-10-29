@@ -39,13 +39,10 @@ abstract final class DetailExtra {
   /// 值类型：`StatisticsInfo` 或 `Map<String, dynamic>`
   static const String statistics = 'statistics';
 
-  /// 应用信息行（自定义键值对展示行）
-  /// 值类型：`List<Map<String, String>>`，每项含 label/value
-  static const String appInfoRows = 'appInfoRows';
-
-  /// 标签列表（自由标签，如 "开源"、"免费"）
-  /// 值类型：`List<String>`
-  static const String tags = 'tags';
+  // 已移除：`appInfoRows` / `tags`（自由键值行 / 自由标签）。
+  // 这两个 extra 键从未被写入或读取（grep 全库仅剩定义本身），其职责已被
+  // typed `AppDetailInfo.labels`（`List<AppLabel{key,label,value,icon}>`）取代——
+  // 详情信息区/标签一律走 labels，不再从 extra 里挖自由键值对。
 
   /// GitHub API 原始数据（如 stargazers_count / forks_count 等）
   /// 值类型：`Map<String, dynamic>`

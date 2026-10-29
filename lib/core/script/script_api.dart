@@ -55,12 +55,6 @@ abstract class ScriptApiBackend {
     required Map<String, String> config,
   });
 
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  });
-
   Future<List<rust_pack.ScriptPackInfo>> list();
 
   Future<String> storedApps({required String key});
@@ -141,14 +135,6 @@ class FrbScriptApiBackend implements ScriptApiBackend {
       _instance.setConfig(key: key, config: config);
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) =>
-      _instance.run(key: key, method: method, paramsJson: paramsJson);
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() => _instance.list();
 
   @override
@@ -172,6 +158,12 @@ class FrbScriptApiBackend implements ScriptApiBackend {
 
 /// Dart facade over the Rust-hosted JS channel lane, gated by
 /// `CoreFlags.jsChannel`.
+///
+/// This is a **pack-lifecycle** facade only (import/remove/refresh/list/env/
+/// storedApps/addApp/releaseDetail). It no longer runs a pack's `main`: the JS
+/// **data** path reads channel data through `ChannelApi` / [RustChannelFacade],
+/// whose JS runtime authority is the host's `ChannelApiInner.script_drivers`
+/// (+ the per-call `ScriptDetail`).
 ///
 /// Every entry point refuses with [ScriptApiDisabledException] while the flag is
 /// off, before the backend is touched, so no production caller can reach the
@@ -273,19 +265,6 @@ class ScriptApi {
     await _backend.setConfig(key: key, config: config);
   }
 
-  /// Runs `main(method, params)` and returns the raw JSON result string.
-  ///
-  /// `getConfig` is allowlisted alongside the entry methods; the result is the
-  /// script's `{version, proxy}` payload (use [getConfig] for the mapped shape).
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    _ensureEnabled();
-    return _backend.run(key: key, method: method, paramsJson: paramsJson);
-  }
-
   /// Lists installed packs in deterministic key order.
   Future<List<rust_pack.ScriptPackInfo>> list() async {
     _ensureEnabled();
@@ -319,26 +298,5 @@ class ScriptApi {
   }) async {
     _ensureEnabled();
     await _backend.releaseDetail(key: key, appId: appId);
-  }
-
-  /// Runs the allowlisted `getConfig` method and maps the raw payload to the
-  /// same `{version, proxy}` shape as Dart `JsChannel.getConfig`:
-  /// `version` defaults to `''`, `proxy` stays nullable, non-strings stringify.
-  ///
-  /// Returns `null` when the script did not return a JSON object (the Dart lane
-  /// treats that as "no config").
-  Future<Map<String, Object?>?> getConfig({required String key}) async {
-    _ensureEnabled();
-    final raw = await _backend.run(
-      key: key,
-      method: 'getConfig',
-      paramsJson: '{}',
-    );
-    final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) return null;
-    return <String, Object?>{
-      'version': decoded['version']?.toString() ?? '',
-      'proxy': decoded['proxy']?.toString(),
-    };
   }
 }

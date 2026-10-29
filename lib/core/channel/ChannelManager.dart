@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:gstore/core/catalog/catalog_facade.dart' show appDetailFromRust;
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
@@ -7,8 +8,12 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/model/AppDetailInfoView.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/script/rust_script_lane.dart'
+    show channelAppInfoFromSummary;
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
 /// 动态渠道（脚本化渠道）轻接口：拥有唯一字符串 key 的渠道。
@@ -231,11 +236,14 @@ class ChannelManager {
     return ChannelType.fromCode(code) ?? ChannelType.custom;
   }
 
-  /// 门面尚未接通数据源的渠道：F-Droid 的仓库索引由 Dart 侧按「每源一个库」下载
-  /// (docs/fdroid_<hash>.db)，core HostRepoPort 既拿不到源配置
-  /// (CoreConfig.fdroid_sources 运行期恒空)，也从不下载索引（查的是另一个空库
-  /// <data>/repo.db）→ 门面搜索/列表恒空。core 侧接通源配置与索引后再移出此集合。
-  static const Set<String> _dartOnlyFacadeCodes = <String>{'fdroid'};
+  /// 仍只走 Dart 渠道实现、暂不交给 Rust 门面的渠道 code。
+  ///
+  /// F-Droid 已完成整体切轨：`FdroidRepoManager` 启动时把启用源推给 core
+  /// (`setFdroidSources`)，core 的 `FdroidDriver` 负责索引下载（`ensure_active_index`
+  /// 在 search/detail 时按需拉取到 `<data_dir>/repo.db`）与 `channel_apps` 读写。
+  /// 因此 fdroid 的列表/搜索/信息/详情/增删全部走门面，与 github/vivo 一致。
+  /// 该集合保留为未来「core 侧尚未接通数据源」的渠道逃生口，当前为空。
+  static const Set<String> _dartOnlyFacadeCodes = <String>{};
 
   bool _facadeEligibleCode(String code) =>
       CoreFlags.channels && !_dartOnlyFacadeCodes.contains(code);
@@ -243,6 +251,20 @@ class ChannelManager {
   bool _facadeEligibleType(ChannelType? from) =>
       CoreFlags.channels &&
       !_dartOnlyFacadeCodes.contains((from ?? _defaultChannelType).code);
+
+  /// A channel that does not model categories (e.g. a JS pack) reports a typed
+  /// `unsupported` code; the UI shows the same "no categories" state as an empty
+  /// list, so callers degrade on the code rather than surfacing an error.
+  bool _isUnsupportedCategoryError(Object error) =>
+      error is ChannelApiException && error.code == 'unsupported';
+
+  /// Whether channel `code`'s data is served by the Rust core facade
+  /// (`CoreFlags.channels` on and the code is not on the Dart-only list).
+  ///
+  /// Public so consumers that need to branch (e.g. the detail page deciding
+  /// between the core one-shot load and the Dart progressive `fetch*` path) can
+  /// ask the same question the by-code routing methods use.
+  bool facadeEligible(String code) => _facadeEligibleCode(code);
 
   /// Rust `ChannelAppInfo` → Dart `AppSummary`（extra 仍是 JSON 对象）。
   AppSummary _toAppSummary(rust.ChannelAppInfo info) {
@@ -427,6 +449,147 @@ class ChannelManager {
     return channel.searchApps(keyword, forceRefresh: forceRefresh);
   }
 
+  /// 按渠道 code 读取单个应用信息（发现页/首页聚合/详情页共用）。
+  ///
+  /// `CoreFlags.channels == true` 且 code 非 Dart-only 时走 Rust facade
+  /// （core 拥有 channel 域后，Dart 渠道库是切轨前的冻结副本、且其读辅助被
+  /// `LegacyWriteGuard` 拦截），否则回落已注册的 Dart [IChannel]。
+  Future<ChannelResult<AppSummary?>> getAppInfoByCode(
+    String code,
+    String appId, {
+    bool forceRefresh = false,
+  }) async {
+    if (_facadeEligibleCode(code)) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        final info = await RustChannelFacade.instance.getAppInfo(
+          key: code,
+          appId: appId,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(data: _toAppSummary(info), from: fromType);
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.getAppInfo(appId, forceRefresh: forceRefresh);
+  }
+
+  /// 按渠道 code 读取应用详情（详情页用）。
+  ///
+  /// 门面路径返回 core 的 `AppDetail`（经 [appDetailFromRust] 映射后再用
+  /// [AppDetailInfoView] 适配为 [IDetailInfo]）；其余回落 Dart 渠道。
+  Future<ChannelResult<IDetailInfo>> getAppDetailByCode(
+    String code,
+    String appId, {
+    bool forceRefresh = false,
+  }) async {
+    if (_facadeEligibleCode(code)) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        final detail = await RustChannelFacade.instance.getAppDetail(
+          key: code,
+          appId: appId,
+          forceRefresh: forceRefresh,
+        );
+        return ChannelResult.success(
+          data: AppDetailInfoView(appDetailFromRust(detail)),
+          from: fromType,
+        );
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.getAppDetail(appId, forceRefresh: forceRefresh);
+  }
+
+  /// 按渠道 code 保存应用到渠道（发现页「添加」用）。
+  ///
+  /// 门面路径把 [AppSummary] 映射为 FRB `ChannelAppInfo` 后写 core 的
+  /// `channel_apps`；其余回落 Dart `IChannel.addApp`。core 拥有 channel 域后，
+  /// Dart 写入会被 `LegacyWriteGuard` 拒绝，故 github/vivo/fdroid 必须走门面。
+  Future<ChannelResult<void>> addAppByCode(String code, AppSummary app) async {
+    if (_facadeEligibleCode(code)) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        await RustChannelFacade.instance.addApp(
+          key: code,
+          app: channelAppInfoFromSummary(app),
+        );
+        return ChannelResult.success(data: null, from: fromType);
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.addApp(app);
+  }
+
+  /// 按渠道 code 从渠道移除应用。
+  Future<ChannelResult<void>> removeAppByCode(
+    String code,
+    String appId,
+  ) async {
+    if (_facadeEligibleCode(code)) {
+      final fromType = _resultTypeForCode(code);
+      try {
+        await RustChannelFacade.instance.removeApp(key: code, appId: appId);
+        return ChannelResult.success(data: null, from: fromType);
+      } catch (e) {
+        return ChannelResult.failure(from: fromType, error: e.toString());
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) {
+      return ChannelResult.failure(
+        from: _resultTypeForCode(code),
+        error: '渠道不可用或未注册',
+      );
+    }
+    return channel.removeApp(appId);
+  }
+
+  /// 按渠道 code 规范化 appId（门面路径经 core 的 `canonical_app_id`）。
+  ///
+  /// 失败/不可用时回退原 appId（与 Dart `IChannel.canonicalAppId` 的
+  /// 「无法规范化即原样返回」语义一致），绝不抛错中断添加流程。
+  Future<String> canonicalAppIdByCode(String code, AppSummary app) async {
+    if (_facadeEligibleCode(code)) {
+      try {
+        return await RustChannelFacade.instance.canonicalAppId(
+          key: code,
+          app: channelAppInfoFromSummary(app),
+        );
+      } catch (e) {
+        appLog.error('ChannelManager: 门面规范化 appId 失败 ($code) - $e');
+        return app.appId;
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) return app.appId;
+    return channel.canonicalAppId(app);
+  }
+
   /// 使用指定渠道按分类搜索
   Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
@@ -446,6 +609,12 @@ class ChannelManager {
           from: fromType,
         );
       } catch (e) {
+        if (_isUnsupportedCategoryError(e)) {
+          return ChannelResult.success(
+            data: const <AppSummary>[],
+            from: fromType,
+          );
+        }
         return ChannelResult.failure(from: fromType, error: e.toString());
       }
     }
@@ -482,6 +651,12 @@ class ChannelManager {
           from: fromType,
         );
       } catch (e) {
+        if (_isUnsupportedCategoryError(e)) {
+          return ChannelResult.success(
+            data: const <db.AppCategory>[],
+            from: fromType,
+          );
+        }
         return ChannelResult.failure(from: fromType, error: e.toString());
       }
     }

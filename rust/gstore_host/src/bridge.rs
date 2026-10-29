@@ -2103,13 +2103,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use gstore_core::channel::{
-    validate_channel_key, ChannelCategory, ChannelDriver, ChannelRegistry, FdroidDriver,
-    GitHubDriver, InstalledPack, LocalDbDriver, PackError, PackStore, ScriptChannel,
-    ScriptChannelConfig, ScriptChannelStore, SqliteChannelStore, VivoDriver,
+    validate_channel_key, BuildHistoryQuery, ChannelCategory, ChannelDriver, ChannelRegistry,
+    DetailAction, FdroidDriver, GStoreDriver, GitHubDriver, InstalledPack, LocalDbDriver,
+    PackError, PackStore, ScriptChannel, ScriptChannelConfig, ScriptChannelStore, ScriptDetail,
+    ScriptDetailConfig, SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
 };
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
-    AppDetail, AppDownload, AppSummary, ChannelKey, ChannelKind, ChannelMeta, DetailSection,
+    AppDetail, AppDownload, AppSummary, ChannelKey, ChannelKind, ChannelMeta, DetailSection, Label,
 };
 use gstore_core::ports::{
     validate_secret_key, CachedMetadataPort, CoreConfig, FileSecretPort, FileSecretStore,
@@ -2117,6 +2118,8 @@ use gstore_core::ports::{
 };
 use gstore_core::Error as CoreError;
 use gstore_core::channel_migration::is_sensitive_key;
+use gstore_core::CoreEvent;
+use serde::{Deserialize, Serialize};
 
 use crate::http_port::ScriptHttp;
 use crate::script_api::DEFAULT_UI_BUDGET;
@@ -2124,6 +2127,40 @@ use crate::script_host_impl::{ConfigMap, EnvMap, ScriptHostImpl};
 
 fn core_err(error: CoreError) -> String {
     format!("{}: {}", error.code(), error.message())
+}
+
+/// Publishes one [`CoreEvent`] on the shared module-event bridge.
+///
+/// `event.wire_name()` is the **single source** of the wire string (never a
+/// hard-coded literal here), and `event.to_json()` is the single source of the
+/// body, so a `CoreEvent` variant can never drift from what Dart receives. The
+/// bridge is the same one `script.ui_request` uses
+/// (`event_bridge::push_event` → `moduleEvents` → `AppEventBus`); no separate
+/// channel is introduced.
+fn push_core_event(event: &CoreEvent) {
+    let wire = event.wire_name();
+    match event.to_json() {
+        Ok(body) => crate::event_bridge::push_event(0, 0, wire, body.into_bytes()),
+        Err(error) => eprintln!("emit {wire} failed: {error}"),
+    }
+}
+
+/// Publishes a `channel.changed` event for a registered channel.
+fn push_channel_changed(key: &ChannelKey, kind: ChannelKind) {
+    push_core_event(&CoreEvent::ChannelChanged {
+        key: key.clone(),
+        kind,
+    });
+}
+
+/// Publishes a `channel.changed` event for a validated key string.
+///
+/// A key that fails [`ChannelKey::new`] cannot name a real channel, so it is a
+/// programming error rather than a runtime one; nothing is emitted for it.
+fn push_channel_changed_str(key: &str, kind: ChannelKind) {
+    if let Ok(key) = ChannelKey::new(key) {
+        push_channel_changed(&key, kind);
+    }
 }
 
 fn pack_err(error: PackError) -> String {
@@ -2179,6 +2216,37 @@ pub struct ChannelRegistration {
     pub version: Option<String>,
 }
 
+/// One dynamic display label crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct ChannelLabel {
+    pub key: String,
+    pub label: String,
+    pub value: String,
+    pub icon: Option<String>,
+}
+
+impl From<Label> for ChannelLabel {
+    fn from(label: Label) -> Self {
+        Self {
+            key: label.key,
+            label: label.label,
+            value: label.value,
+            icon: label.icon,
+        }
+    }
+}
+
+impl From<ChannelLabel> for Label {
+    fn from(label: ChannelLabel) -> Self {
+        Self {
+            key: label.key,
+            label: label.label,
+            value: label.value,
+            icon: label.icon,
+        }
+    }
+}
+
 /// One app summary crossing the FRB boundary.
 #[derive(Debug, Clone)]
 pub struct ChannelAppInfo {
@@ -2192,6 +2260,7 @@ pub struct ChannelAppInfo {
     pub readme: Option<String>,
     pub category: Vec<String>,
     pub extra_json: Option<String>,
+    pub labels: Vec<ChannelLabel>,
 }
 
 impl ChannelAppInfo {
@@ -2207,6 +2276,7 @@ impl ChannelAppInfo {
             readme: app.readme,
             category: app.category.unwrap_or_default(),
             extra_json: app.extra.map(|extra| serde_json::Value::Object(extra).to_string()),
+            labels: app.labels.into_iter().map(ChannelLabel::from).collect(),
         }
     }
 
@@ -2238,6 +2308,7 @@ impl ChannelAppInfo {
                 Some(self.category)
             },
             extra,
+            labels: self.labels.into_iter().map(Label::from).collect(),
         })
     }
 }
@@ -2295,6 +2366,7 @@ pub struct ChannelAppDetailInfo {
     pub sections: Vec<String>,
     pub downloads: Vec<ChannelAppDownloadInfo>,
     pub extra_json: String,
+    pub labels: Vec<ChannelLabel>,
 }
 
 fn section_code(section: DetailSection) -> &'static str {
@@ -2334,8 +2406,179 @@ impl From<AppDetail> for ChannelAppDetailInfo {
                 .map(ChannelAppDownloadInfo::from)
                 .collect(),
             extra_json: serde_json::Value::Object(detail.extra).to_string(),
+            labels: detail.labels.into_iter().map(ChannelLabel::from).collect(),
         }
     }
+}
+
+/// One action from a pack's `detail.js` `detailMenu` result.
+///
+/// Mirrors the core [`DetailAction`] and the JSON Dart `_refreshActions` reads
+/// (`action`, `jscall`, `icon`, `clickIsDimiss`). FRB emits these as camelCase
+/// Dart fields (`clickIsDimiss`), matching the pack contract.
+#[derive(Debug, Clone)]
+pub struct ChannelDetailAction {
+    pub action: String,
+    pub jscall: String,
+    pub icon: Option<String>,
+    pub click_is_dimiss: Option<bool>,
+}
+
+impl From<DetailAction> for ChannelDetailAction {
+    fn from(action: DetailAction) -> Self {
+        Self {
+            action: action.action,
+            jscall: action.jscall,
+            icon: action.icon,
+            click_is_dimiss: action.click_is_dimiss,
+        }
+    }
+}
+
+/// One version row of a pack's `versionOptions` result (`{version, envs, buildCount}`).
+#[derive(Debug, Clone)]
+pub struct ScriptVersionOption {
+    pub version: String,
+    pub envs: Vec<String>,
+    pub build_count: i64,
+}
+
+/// A pack's `versionOptions` result (`{title?, envs, versions, currentEnv?, currentVersion?}`).
+///
+/// Pack-specific keys are preserved verbatim in [`Self::extra_json`] (a JSON
+/// object string), following the `ChannelAppInfo.extra_json` convention.
+#[derive(Debug, Clone)]
+pub struct ScriptVersionOptions {
+    pub title: Option<String>,
+    pub envs: Vec<String>,
+    pub versions: Vec<ScriptVersionOption>,
+    pub current_env: Option<String>,
+    pub current_version: Option<String>,
+    pub extra_json: String,
+}
+
+/// One build row of a pack's `buildHistory` result
+/// (`{num, publishedAt, size, changelog, installTimes, ...}`).
+///
+/// Pack-specific keys (`builtBy`, `ipaName`, `fileUrl`, ...) are preserved in
+/// [`Self::extra_json`].
+#[derive(Debug, Clone)]
+pub struct ScriptBuild {
+    pub num: i64,
+    pub published_at: Option<String>,
+    pub size: Option<i64>,
+    pub changelog: Option<String>,
+    pub install_times: Option<i64>,
+    pub extra_json: String,
+}
+
+impl ScriptVersionOption {
+    fn from_value(value: &serde_json::Value) -> Self {
+        let map = value.as_object();
+        Self {
+            version: json_text(map, "version").unwrap_or_default(),
+            envs: json_string_list(map, "envs"),
+            build_count: json_i64(map, "buildCount").unwrap_or(0),
+        }
+    }
+}
+
+impl ScriptVersionOptions {
+    /// Parses a `versionOptions` payload; `None` for a non-object (Dart's
+    /// `decoded is! Map` degrade).
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let map = value.as_object()?;
+        Some(Self {
+            title: json_text(Some(map), "title"),
+            envs: json_string_list(Some(map), "envs"),
+            versions: map
+                .get("versions")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| items.iter().map(ScriptVersionOption::from_value).collect())
+                .unwrap_or_default(),
+            current_env: json_text(Some(map), "currentEnv"),
+            current_version: json_text(Some(map), "currentVersion"),
+            extra_json: json_extra(
+                map,
+                &["title", "envs", "versions", "currentEnv", "currentVersion"],
+            ),
+        })
+    }
+}
+
+impl ScriptBuild {
+    fn from_value(value: &serde_json::Value) -> Self {
+        let map = value.as_object();
+        Self {
+            num: json_i64(map, "num").unwrap_or(0),
+            published_at: json_text(map, "publishedAt"),
+            size: json_i64(map, "size"),
+            changelog: json_text(map, "changelog"),
+            install_times: json_i64(map, "installTimes"),
+            extra_json: map
+                .map(|map| {
+                    json_extra(
+                        map,
+                        &["num", "publishedAt", "size", "changelog", "installTimes"],
+                    )
+                })
+                .unwrap_or_else(|| "{}".to_string()),
+        }
+    }
+}
+
+fn json_text(
+    map: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<String> {
+    match map.and_then(|map| map.get(key))? {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+fn json_string_list(
+    map: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Vec<String> {
+    map.and_then(|map| map.get(key))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| match value {
+                    serde_json::Value::String(text) => Some(text.clone()),
+                    serde_json::Value::Number(number) => Some(number.to_string()),
+                    serde_json::Value::Bool(flag) => Some(flag.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_i64(map: Option<&serde_json::Map<String, serde_json::Value>>, key: &str) -> Option<i64> {
+    match map.and_then(|map| map.get(key))? {
+        serde_json::Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|float| float.fract() == 0.0)
+                .map(|float| float as i64)
+        }),
+        serde_json::Value::String(text) => text.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_extra(map: &serde_json::Map<String, serde_json::Value>, known: &[&str]) -> String {
+    let extra: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .filter(|(key, _)| !known.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    serde_json::Value::Object(extra).to_string()
 }
 
 /// One channel category.
@@ -2457,6 +2700,31 @@ impl MetadataPort for HttpMetadataPort {
     }
 }
 
+/// One F-Droid source as pushed by Dart.
+///
+/// Dart encodes each source as a JSON string over the unchanged
+/// `setFdroidSources(sources: Vec<String>)` FRB boundary; a bare URL string is
+/// still accepted and mapped to a spec with no mirrors. `mirrors` is the
+/// mirror-first fallback list handed to the repo module's `download_repo`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FdroidSourceSpec {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    url: String,
+    #[serde(default)]
+    mirrors: Vec<String>,
+    #[serde(default)]
+    mirror_first: bool,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Host `RepoPort` adapter over the optional `gstore_mod_repo` module.
 ///
 /// The module is mounted by Dart; until it is, every operation is a typed
@@ -2466,15 +2734,20 @@ struct HostRepoPort {
     db_path: PathBuf,
     data_dir: PathBuf,
     port: std::sync::Mutex<Option<crate::repo_port::ModuleRepoPort<crate::repo_port::ModuleManagerBridge>>>,
+    fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>>,
 }
 
 impl HostRepoPort {
-    fn new(data_dir: impl AsRef<Path>) -> Self {
+    fn new(
+        data_dir: impl AsRef<Path>,
+        fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>>,
+    ) -> Self {
         let data_dir = data_dir.as_ref().to_path_buf();
         Self {
             db_path: data_dir.join("repo.db"),
             data_dir,
             port: std::sync::Mutex::new(None),
+            fdroid_specs,
         }
     }
 
@@ -2512,6 +2785,32 @@ impl HostRepoPort {
         })?;
         f(port)
     }
+
+    fn mirrors_for(&self, source: &str) -> (Vec<String>, bool) {
+        self.fdroid_specs
+            .read()
+            .ok()
+            .and_then(|specs| {
+                specs
+                    .iter()
+                    .find(|spec| spec_matches_source(spec, source))
+                    .map(|spec| (spec.mirrors.clone(), spec.mirror_first))
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn normalize_fdroid_source(source: &str) -> String {
+    source.trim().trim_end_matches('/').to_string()
+}
+
+fn spec_matches_source(spec: &FdroidSourceSpec, source: &str) -> bool {
+    let normalized = normalize_fdroid_source(source);
+    normalize_fdroid_source(&spec.url) == normalized
+        || spec
+            .mirrors
+            .iter()
+            .any(|mirror| normalize_fdroid_source(mirror) == normalized)
 }
 
 impl RepoPort for HostRepoPort {
@@ -2519,7 +2818,8 @@ impl RepoPort for HostRepoPort {
         &self,
         source: &str,
     ) -> Result<gstore_core::ports::RepoMeta, CoreError> {
-        self.with_port(|port| port.download_repo(source))
+        let (mirrors, mirror_first) = self.mirrors_for(source);
+        self.with_port(|port| port.download_repo_with_mirrors(source, &mirrors, mirror_first))
     }
 
     fn get_app_count(&self, source: &str) -> Result<u64, CoreError> {
@@ -2569,9 +2869,10 @@ struct ChannelApiInner {
     script_http: Arc<dyn ScriptHttp>,
     metadata: Arc<dyn MetadataPort>,
     repo: Arc<dyn RepoPort>,
-    /// Active F-Droid source URLs. Loaded from the persisted `update_prefs`
-    /// row at init and refreshed by [`ChannelApi::set_fdroid_sources`].
-    fdroid_sources: RwLock<Vec<String>>,
+    /// Active F-Droid sources (with mirrors). Loaded from the persisted
+    /// `update_prefs` row at init and refreshed by [`ChannelApi::set_fdroid_sources`].
+    /// Shared with [`HostRepoPort`] so downloads can use each source's mirrors.
+    fdroid_sources: Arc<RwLock<Vec<FdroidSourceSpec>>>,
     /// Lazily-built script-lane drivers, keyed by pack channel key.
     script_drivers: Mutex<HashMap<ChannelKey, Arc<dyn ChannelDriver>>>,
 }
@@ -2601,6 +2902,7 @@ impl ChannelApiInner {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(ConfigMap::new())),
             DEFAULT_UI_BUDGET,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         ));
         let store: Arc<dyn ScriptChannelStore> =
             Arc::new(crate::script_db::SqliteScriptChannelStore::new(self.db.clone()));
@@ -2616,23 +2918,65 @@ impl ChannelApiInner {
         Ok(Some(driver))
     }
 
+    /// Resolves a channel code to its driver, registry first then script lane.
+    ///
+    /// This is the resolver the library facade uses: it covers the built-in
+    /// registry drivers (including the read-only `local_db`), any `js_*` script
+    /// pack, and returns `None` for an unknown code. Unlike
+    /// [`ChannelApi::driver`] it never turns a miss into an error, which is what
+    /// [`gstore_core::library::LibraryDriverResolver`] expects.
+    fn driver(&self, code: &str) -> Option<Arc<dyn ChannelDriver>> {
+        let key = ChannelKey::new(code).ok()?;
+        if let Ok(driver) = self.registry.driver(&key) {
+            return Some(driver);
+        }
+        self.script_driver(&key).ok().flatten()
+    }
+
     /// The base config with the current F-Droid source set applied.
     fn fdroid_config(&self) -> Result<CoreConfig, String> {
-        let sources = self
+        let specs = self
             .fdroid_sources
             .read()
-            .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?
-            .clone();
+            .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?;
+        let sources = enabled_source_urls(&specs);
         self.config
             .clone()
             .with_fdroid_sources(sources)
+            .map(|config| config.with_fdroid_asset_bases(fdroid_asset_bases(&specs)))
             .map_err(core_err)
     }
 }
 
+fn enabled_source_urls(specs: &[FdroidSourceSpec]) -> Vec<String> {
+    specs
+        .iter()
+        .filter(|spec| spec.enabled)
+        .map(|spec| spec.url.clone())
+        .filter(|url| !url.trim().is_empty())
+        .collect()
+}
+
+/// Every base a stored F-Droid icon may be prefixed with: each configured
+/// source URL plus its mirrors, enabled or not. A stale icon written under a
+/// base that is no longer current is re-based by the core driver.
+fn fdroid_asset_bases(specs: &[FdroidSourceSpec]) -> Vec<String> {
+    specs
+        .iter()
+        .flat_map(|spec| std::iter::once(&spec.url).chain(spec.mirrors.iter()))
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .collect()
+}
+
 /// Reads the persisted `fdroid_sources` document from the core `update_prefs`
-/// table (written by [`gstore_core::channel_migration`]) into source URLs.
-fn persisted_fdroid_sources(db: &DbHandle) -> Vec<String> {    let raw = db
+/// table into source specs.
+///
+/// Accepts the new structured array of specs (`url` + `mirrors`), the legacy
+/// array of plain URL strings, and the Dart-migration array of
+/// `{id,name,repoUrl}` objects.
+fn persisted_fdroid_sources(db: &DbHandle) -> Vec<FdroidSourceSpec> {
+    let raw = db
         .reader()
         .ok()
         .and_then(|conn| gstore_core::migration::update_pref(&conn, "fdroid_sources").ok().flatten());
@@ -2642,12 +2986,88 @@ fn persisted_fdroid_sources(db: &DbHandle) -> Vec<String> {    let raw = db
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Vec::new();
     };
-    items
-        .iter()
-        .filter_map(|item| item.get("repoUrl").and_then(serde_json::Value::as_str))
-        .filter(|source| gstore_core::ports::repo::validate_repo_source(source).is_ok())
-        .map(str::to_string)
-        .collect()
+    items.iter().filter_map(fdroid_spec_from_value).collect()
+}
+
+fn fdroid_spec_from_value(value: &serde_json::Value) -> Option<FdroidSourceSpec> {
+    match value {
+        serde_json::Value::String(url) => {
+            gstore_core::ports::repo::validate_repo_source(url).ok()?;
+            Some(FdroidSourceSpec {
+                id: String::new(),
+                name: String::new(),
+                url: url.clone(),
+                mirrors: Vec::new(),
+                mirror_first: false,
+                enabled: true,
+            })
+        }
+        serde_json::Value::Object(map) => {
+            let url = map
+                .get("url")
+                .or_else(|| map.get("repoUrl"))
+                .and_then(serde_json::Value::as_str)?;
+            gstore_core::ports::repo::validate_repo_source(url).ok()?;
+            Some(FdroidSourceSpec {
+                id: map
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: map
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                url: url.to_string(),
+                mirrors: map
+                    .get("mirrors")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.iter().filter_map(mirror_url).collect())
+                    .unwrap_or_default(),
+                mirror_first: map
+                    .get("mirror_first")
+                    .and_then(serde_json::Value::as_bool)
+                    .or_else(|| map.get("useMirrors").and_then(serde_json::Value::as_bool))
+                    .unwrap_or(false),
+                enabled: map
+                    .get("enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn mirror_url(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(url) => (!url.trim().is_empty()).then(|| url.clone()),
+        serde_json::Value::Object(map) => {
+            let enabled = map
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            let url = map.get("url").and_then(serde_json::Value::as_str)?;
+            (enabled && !url.trim().is_empty()).then(|| url.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn parse_fdroid_source_spec(raw: &str) -> FdroidSourceSpec {
+    if let Ok(mut spec) = serde_json::from_str::<FdroidSourceSpec>(raw) {
+        spec.mirrors.retain(|mirror| !mirror.trim().is_empty());
+        return spec;
+    }
+    FdroidSourceSpec {
+        id: String::new(),
+        name: String::new(),
+        url: raw.to_string(),
+        mirrors: Vec::new(),
+        mirror_first: false,
+        enabled: true,
+    }
 }
 
 /// FRB-facing channel facade. The old Dart `ChannelManager` remains
@@ -2673,6 +3093,13 @@ fn default_meta(key: &str) -> Option<ChannelMeta> {
             ChannelKind::LocalDb,
             "LocalDB",
             "本地数据库渠道",
+            1,
+            true,
+        )),
+        "gstore" => Some(meta(
+            ChannelKind::GStore,
+            "GStore",
+            "GStore 本地应用库渠道",
             1,
             true,
         )),
@@ -2703,8 +3130,12 @@ impl ChannelApi {
         let script_http: Arc<dyn ScriptHttp> = Arc::new(crate::http_port::ReqwestHttpPort::new());
         let metadata: Arc<dyn MetadataPort> =
             Arc::new(CachedMetadataPort::new(HttpMetadataPort::new(http.clone())));
-        let repo: Arc<dyn RepoPort> = Arc::new(HostRepoPort::new(&data_dir));
-        Self::init_inner(data_dir, files_dir, cache_dir, http, script_http, metadata, repo)
+        let fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>> = Arc::new(RwLock::new(Vec::new()));
+        let repo: Arc<dyn RepoPort> =
+            Arc::new(HostRepoPort::new(&data_dir, Arc::clone(&fdroid_specs)));
+        Self::init_inner(
+            data_dir, files_dir, cache_dir, http, script_http, metadata, repo, fdroid_specs,
+        )
     }
 
     #[cfg(test)]
@@ -2718,7 +3149,10 @@ impl ChannelApi {
     ) -> Result<ChannelApi, String> {
         let script_http: Arc<dyn ScriptHttp> =
             Arc::new(crate::http_port::BufferedScriptHttp::new(http.clone()));
-        Self::init_inner(data_dir, files_dir, cache_dir, http, script_http, metadata, repo)
+        let fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>> = Arc::new(RwLock::new(Vec::new()));
+        Self::init_inner(
+            data_dir, files_dir, cache_dir, http, script_http, metadata, repo, fdroid_specs,
+        )
     }
 
     fn init_inner(
@@ -2729,6 +3163,7 @@ impl ChannelApi {
         script_http: Arc<dyn ScriptHttp>,
         metadata: Arc<dyn MetadataPort>,
         repo: Arc<dyn RepoPort>,
+        fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>>,
     ) -> Result<ChannelApi, String> {
         for dir in [&data_dir, &files_dir, &cache_dir] {
             std::fs::create_dir_all(dir)
@@ -2741,10 +3176,17 @@ impl ChannelApi {
         let token = secrets
             .get("core_config.github_token")
             .map_err(core_err)?;
-        let fdroid_sources = persisted_fdroid_sources(&db);
+        let persisted_specs = persisted_fdroid_sources(&db);
         let config = CoreConfig::new(None, token)
-            .and_then(|config| config.with_fdroid_sources(fdroid_sources.clone()))
+            .and_then(|config| config.with_fdroid_sources(enabled_source_urls(&persisted_specs)))
+            .map(|config| config.with_fdroid_asset_bases(fdroid_asset_bases(&persisted_specs)))
             .map_err(core_err)?;
+        {
+            let mut guard = fdroid_specs
+                .write()
+                .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?;
+            *guard = persisted_specs;
+        }
         let registry = Arc::new(ChannelRegistry::new(SqliteChannelStore::new(db.clone())));
         let pack = PackStore::new(files_path.join("channel_packs"), db.clone());
         let api = ChannelApi {
@@ -2758,7 +3200,7 @@ impl ChannelApi {
                 script_http,
                 metadata,
                 repo,
-                fdroid_sources: RwLock::new(fdroid_sources),
+                fdroid_sources: fdroid_specs,
                 script_drivers: Mutex::new(HashMap::new()),
             }),
         };
@@ -2771,7 +3213,7 @@ impl ChannelApi {
     }
 
     fn seed_builtin_records(&self) -> Result<(), String> {
-        for key in ["local_db", "github", "vivo", "fdroid"] {
+        for key in ["local_db", "gstore", "github", "vivo", "fdroid"] {
             let channel_key = ChannelKey::new(key).map_err(core_err)?;
             if self
                 .inner
@@ -2799,6 +3241,11 @@ impl ChannelApi {
         let driver: Option<Arc<dyn ChannelDriver>> = match record.kind() {
             ChannelKind::LocalDb => Some(Arc::new(
                 LocalDbDriver::new(key, meta.clone(), self.inner.db.clone())
+                    .with_metadata(self.inner.metadata.clone())
+                    .with_github(self.inner.config.clone(), self.inner.http.clone()),
+            )),
+            ChannelKind::GStore => Some(Arc::new(
+                GStoreDriver::new(key, meta.clone(), self.inner.db.clone())
                     .with_metadata(self.inner.metadata.clone())
                     .with_github(self.inner.config.clone(), self.inner.http.clone()),
             )),
@@ -2846,6 +3293,22 @@ impl ChannelApi {
         ChannelKey::new(key).map_err(core_err)
     }
 
+    /// Resolves the kind of a channel for a `channel.changed` event.
+    ///
+    /// A registered channel answers from its record. An unregistered key can only
+    /// be a script-lane pack (the same rule `driver()` uses: a `js_*` pack need
+    /// not exist in the channels-domain registry), so it reports `JsLocal`;
+    /// anything else falls back to `Custom`.
+    fn kind_of(&self, key: &ChannelKey) -> ChannelKind {
+        if let Ok(Some(record)) = self.inner.registry.get(key) {
+            return record.kind();
+        }
+        if key.as_str().starts_with("js_") {
+            return ChannelKind::JsLocal;
+        }
+        ChannelKind::Custom
+    }
+
     /// Builds the code-to-driver resolver used by the update service.
     ///
     /// The closure keeps the whole `ChannelApiInner` alive, so a facade that
@@ -2859,6 +3322,12 @@ impl ChannelApi {
             }
             inner.script_driver(&key).ok().flatten()
         })
+    }
+
+    /// Returns the unified library facade, sharing this facade's database
+    /// handle and driver resolution.
+    pub fn library(&self) -> LibraryApi {
+        LibraryApi::build(Arc::clone(&self.inner))
     }
 
     fn require_channel(&self, key: &str) -> Result<ChannelKey, String> {
@@ -2892,8 +3361,18 @@ impl ChannelApi {
     }
 
     fn driver(&self, key: &str) -> Result<Arc<dyn ChannelDriver>, String> {
-        let key = self.require_channel(key)?;
-        self.inner.registry.driver(&key).map_err(core_err)
+        let key = self.channel_key(key)?;
+        match self.inner.registry.driver(&key) {
+            Ok(driver) => Ok(driver),
+            // Unregistered: a `js_*` pack need not exist in the channels-domain
+            // registry, so resolve it through the script lane like `resolver()`.
+            // `script_driver` returns `Ok(None)` for a non-installed pack, so an
+            // unknown key still yields the original typed `not_found`.
+            Err(err) => match self.inner.script_driver(&key)? {
+                Some(driver) => Ok(driver),
+                None => Err(core_err(err)),
+            },
+        }
     }
 
     /// Lists every registered channel in deterministic key order.
@@ -2929,6 +3408,7 @@ impl ChannelApi {
         let record = gstore_core::channel::ChannelRecord::new(key.clone(), meta.clone());
         match kind {
             ChannelKind::LocalDb
+            | ChannelKind::GStore
             | ChannelKind::Github
             | ChannelKind::Vivo
             | ChannelKind::Fdroid => {
@@ -2955,27 +3435,38 @@ impl ChannelApi {
                 self.inner.registry.register(record).map_err(core_err)?;
             }
         }
-        self.record(key.as_str())
+        let entry = self.record(key.as_str())?;
+        push_channel_changed(&key, kind);
+        Ok(entry)
     }
 
     /// Removes a channel registration and its driver binding.
     pub fn unregister(&self, key: String) -> Result<(), String> {
         let key = self.require_channel(&key)?;
-        self.inner.registry.unregister(&key).map_err(core_err)
+        let kind = self.kind_of(&key);
+        self.inner.registry.unregister(&key).map_err(core_err)?;
+        push_channel_changed(&key, kind);
+        Ok(())
     }
 
     /// Enables a registered channel.
     pub fn enable(&self, key: String) -> Result<ChannelEntry, String> {
         let key = self.require_channel(&key)?;
+        let kind = self.kind_of(&key);
         self.inner.registry.enable(&key).map_err(core_err)?;
-        self.record(key.as_str())
+        let entry = self.record(key.as_str())?;
+        push_channel_changed(&key, kind);
+        Ok(entry)
     }
 
     /// Disables a registered channel without removing it.
     pub fn disable(&self, key: String) -> Result<ChannelEntry, String> {
         let key = self.require_channel(&key)?;
+        let kind = self.kind_of(&key);
         self.inner.registry.disable(&key).map_err(core_err)?;
-        self.record(key.as_str())
+        let entry = self.record(key.as_str())?;
+        push_channel_changed(&key, kind);
+        Ok(entry)
     }
 
     /// Imports a legacy flat pack from `zip_path`.
@@ -2983,11 +3474,14 @@ impl ChannelApi {
         if path.trim().is_empty() {
             return Err(invalid_arg("pack path must not be empty"));
         }
-        self.inner
+        let info = self
+            .inner
             .pack
             .import_pack(&path)
             .map(ChannelPackInfo::from)
-            .map_err(pack_err)
+            .map_err(pack_err)?;
+        push_channel_changed_str(&info.key, ChannelKind::JsLocal);
+        Ok(info)
     }
 
     /// Exports an installed pack as a flat zip at `path`; returns bytes written.
@@ -3002,11 +3496,9 @@ impl ChannelApi {
     /// Removes an installed pack (row plus version directories).
     pub fn remove_pack(&self, key: String) -> Result<bool, String> {
         let key = self.channel_key(&key)?;
-        self.inner
-            .pack
-            .remove_pack(&key)
-            .map(|()| true)
-            .map_err(pack_err)
+        self.inner.pack.remove_pack(&key).map_err(pack_err)?;
+        push_channel_changed(&key, ChannelKind::JsLocal);
+        Ok(true)
     }
 
     fn secret_key(&self, key: &ChannelKey, name: &str) -> String {
@@ -3096,6 +3588,7 @@ impl ChannelApi {
     /// Writes one env value, routing sensitive names to the secret port.
     pub fn env_set(&self, key: String, name: String, value: String) -> Result<(), String> {
         let key = self.require_channel(&key)?;
+        let kind = self.kind_of(&key);
         self.validate_env_name(&name)?;
         let mut env = self.read_plain_env(&key)?;
         if is_sensitive_key(&name) {
@@ -3113,12 +3606,14 @@ impl ChannelApi {
                 .remove(&self.secret_key(&key, &name))
                 .map_err(core_err)?;
         }
+        push_channel_changed(&key, kind);
         Ok(())
     }
 
     /// Removes one env value from both the plaintext row and the secret port.
     pub fn env_remove(&self, key: String, name: String) -> Result<bool, String> {
         let key = self.require_channel(&key)?;
+        let kind = self.kind_of(&key);
         self.validate_env_name(&name)?;
         let mut env = self.read_plain_env(&key)?;
         let plain_removed = env.remove(&name).is_some();
@@ -3130,36 +3625,54 @@ impl ChannelApi {
             .secrets
             .remove(&self.secret_key(&key, &name))
             .map_err(core_err)?;
-        Ok(plain_removed || secret_removed)
+        let removed = plain_removed || secret_removed;
+        // A no-op removal is not a mutation, so it emits nothing.
+        if removed {
+            push_channel_changed(&key, kind);
+        }
+        Ok(removed)
     }
 
     /// Runs the channel's update loop (`do_update`).
     pub fn refresh(&self, key: String) -> Result<bool, String> {
-        self.driver(&key)?
-            .do_update(None)
-            .map_err(core_err)
+        let channel_key = self.channel_key(&key)?;
+        let kind = self.kind_of(&channel_key);
+        let changed = self.driver(&key)?.do_update(None).map_err(core_err)?;
+        push_channel_changed(&channel_key, kind);
+        Ok(changed)
     }
 
     /// Replaces the active F-Droid source set and rebinds the F-Droid driver.
     ///
-    /// The Dart `FdroidRepoManager` pushes the enabled source URLs here on every
-    /// source change (the core cannot read the Dart config store). URLs are
-    /// validated before anything is stored; an invalid URL is a typed error.
+    /// The Dart `FdroidRepoManager` pushes the enabled sources here on every
+    /// source change (the core cannot read the Dart config store). Each entry is
+    /// either a JSON-encoded spec (id/name/url/mirrors/mirror_first/enabled) or a
+    /// bare URL; the full set is persisted into the core DB `update_prefs` table
+    /// under key `fdroid_sources` so mirrors survive restarts. URLs are validated
+    /// before anything is stored; an invalid URL is a typed error.
     pub fn set_fdroid_sources(&self, sources: Vec<String>) -> Result<(), String> {
-        let config = self
-            .inner
-            .config
-            .clone()
-            .with_fdroid_sources(sources)
-            .map_err(core_err)?;
-        let normalized = config.fdroid_sources().to_vec();
+        let mut specs = Vec::with_capacity(sources.len());
+        for source in sources {
+            let spec = parse_fdroid_source_spec(&source);
+            gstore_core::ports::repo::validate_repo_source(&spec.url).map_err(core_err)?;
+            specs.push(spec);
+        }
+        let json = serde_json::to_string(&specs).map_err(|error| {
+            core_err(CoreError::Serialization(format!(
+                "encode fdroid sources: {error}"
+            )))
+        })?;
+        self.inner
+            .db
+            .with_writer(|conn| gstore_core::migration::set_update_pref(conn, "fdroid_sources", &json))
+            .map_err(|error| core_err(CoreError::Io(error.0)))?;
         {
             let mut guard = self
                 .inner
                 .fdroid_sources
                 .write()
                 .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?;
-            *guard = normalized;
+            *guard = specs;
         }
         let key = ChannelKey::new("fdroid").map_err(core_err)?;
         if let Some(record) = self.inner.registry.get(&key).map_err(core_err)? {
@@ -3169,6 +3682,19 @@ impl ChannelApi {
                     .register_driver(driver)
                     .map_err(core_err)?;
             }
+        }
+        // A source identity imported before this list was known (the cutover
+        // imports `channel_db` first) can only be resolved now, and an install
+        // that already migrated never re-runs the import. Best-effort: a repair
+        // failure must never break source configuration.
+        if let Err(error) = self.inner.db.with_writer(|conn| {
+            gstore_core::channel_migration::repair_fdroid_source_identities(conn)
+                .map_err(|failure| core_db::DbError(failure.to_string()))
+        }) {
+            crate::log_bridge::push_host_log(
+                1,
+                format!("fdroid source-identity repair skipped: {error}"),
+            );
         }
         Ok(())
     }
@@ -3238,15 +3764,23 @@ impl ChannelApi {
 
     /// Adds/saves an app through the channel driver.
     pub fn add_app(&self, key: String, app: ChannelAppInfo) -> Result<(), String> {
+        let channel_key = self.channel_key(&key)?;
+        let kind = self.kind_of(&channel_key);
         let app = app.into_summary()?;
-        self.driver(&key)?.add_app(&app).map_err(core_err)
+        self.driver(&key)?.add_app(&app).map_err(core_err)?;
+        push_channel_changed(&channel_key, kind);
+        Ok(())
     }
 
     /// Removes an app from the channel.
     pub fn remove_app(&self, key: String, app_id: String) -> Result<(), String> {
+        let channel_key = self.channel_key(&key)?;
+        let kind = self.kind_of(&channel_key);
         self.driver(&key)?
             .remove_app(&app_id)
-            .map_err(core_err)
+            .map_err(core_err)?;
+        push_channel_changed(&channel_key, kind);
+        Ok(())
     }
 
     /// Searches one channel by category id.
@@ -3302,6 +3836,179 @@ impl ChannelApi {
                 })
             })
     }
+
+    /// Runs a pack's `detail.js` `versionOptions({appId, env?, currentVersion?})`.
+    ///
+    /// The current version is forwarded as the script's `version` filter (the
+    /// pack `main` dispatch reads only `appId`/`env`; the extra key is additive).
+    /// Returns `Ok(None)` when the pack answers JSON null (unimplemented /
+    /// `{ok:false}` / a JS throw); an unknown/uninstalled pack is a typed
+    /// `not_found`.
+    pub fn script_version_options(
+        &self,
+        key: String,
+        app_id: String,
+        env: Option<String>,
+        current_version: Option<String>,
+    ) -> Result<Option<ScriptVersionOptions>, String> {
+        self.with_script_detail(&key, |detail| {
+            let outcome = detail.version_options(VersionOptionsQuery {
+                app_id: &app_id,
+                env: env.as_deref(),
+                version: current_version.as_deref(),
+            })?;
+            Ok(outcome.and_then(|value| ScriptVersionOptions::from_value(&value)))
+        })
+    }
+
+    /// Runs a pack's `detail.js` `switchVersion({appId, env, version, build?})`
+    /// and returns the typed detail page.
+    ///
+    /// `build_json` is an optional JSON object (`{num, ipaName}`) selecting a
+    /// historical build; malformed JSON is a typed `invalid_argument`. Returns
+    /// `Ok(None)` when the pack answers JSON null; an unknown/uninstalled pack
+    /// is a typed `not_found`.
+    pub fn script_switch_version(
+        &self,
+        key: String,
+        app_id: String,
+        env: String,
+        version: String,
+        build_json: Option<String>,
+    ) -> Result<Option<ChannelAppDetailInfo>, String> {
+        let build = match build_json {
+            Some(raw) if !raw.trim().is_empty() => {
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    core_err(CoreError::Serialization(format!("build_json: {error}")))
+                })?;
+                Some(
+                    value
+                        .as_object()
+                        .cloned()
+                        .ok_or_else(|| invalid_arg("build_json must be a JSON object"))?,
+                )
+            }
+            _ => None,
+        };
+        self.with_script_detail(&key, |detail| {
+            let detail = detail.switch_version_detail(SwitchVersionQuery {
+                app_id: &app_id,
+                env: &env,
+                version: &version,
+                build: build.as_ref(),
+            })?;
+            Ok(detail.map(ChannelAppDetailInfo::from))
+        })
+    }
+
+    /// Runs a pack's `detail.js` `buildHistory({appId, version, env})`.
+    ///
+    /// A missing result (JSON null / no `builds` array) degrades to an empty list.
+    pub fn script_build_history(
+        &self,
+        key: String,
+        app_id: String,
+        env: String,
+        version: String,
+    ) -> Result<Vec<ScriptBuild>, String> {
+        self.with_script_detail(&key, |detail| {
+            let outcome = detail.build_history(BuildHistoryQuery {
+                app_id: &app_id,
+                env: &env,
+                version: &version,
+            })?;
+            Ok(outcome
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .and_then(|map| map.get("builds"))
+                .and_then(serde_json::Value::as_array)
+                .map(|items| items.iter().map(ScriptBuild::from_value).collect())
+                .unwrap_or_default())
+        })
+    }
+
+    /// Runs a pack's `detail.js` `detailMenu(appId)`.
+    ///
+    /// A missing/non-array result degrades to an empty list.
+    pub fn script_detail_menu(
+        &self,
+        key: String,
+        app_id: String,
+    ) -> Result<Vec<ChannelDetailAction>, String> {
+        self.with_script_detail(&key, |detail| {
+            Ok(detail
+                .detail_menu(&app_id)?
+                .into_iter()
+                .map(ChannelDetailAction::from)
+                .collect())
+        })
+    }
+
+    /// Runs one page-scoped pack `jscall` (for example `jsswitchUA`) on a fresh
+    /// per-call [`ScriptDetail`].
+    ///
+    /// Unlike the four typed detail reads, an action may drive the UI through
+    /// `host.ui.call` (e.g. `showUAPicker`). It runs on a NEW `ScriptDetail`, never
+    /// the shared entry runtime, so a parked round-trip cannot contend on the
+    /// entry's `op` guard and cannot deadlock a re-entrant dispatch. The pack drives
+    /// the UI itself; the action's own result is not surfaced.
+    pub fn script_detail_action(
+        &self,
+        key: String,
+        app_id: String,
+        jscall: String,
+    ) -> Result<(), String> {
+        let mut params = serde_json::Map::new();
+        params.insert("appId".to_string(), serde_json::Value::String(app_id));
+        self.with_script_detail(&key, |detail| detail.call_main(&jscall, &params).map(|_| ()))
+    }
+
+    /// Builds a one-shot [`ScriptDetail`] for `key`'s installed `detail.js` and
+    /// runs `run` against it, disposing the runtime before returning.
+    ///
+    /// Mirrors [`ChannelApiInner::script_driver`]'s env + host wiring but returns
+    /// the page-scoped detail dispatcher (not a [`ChannelDriver`]) and never
+    /// caches it. An unknown/uninstalled pack, or one whose pack carries no
+    /// `detail.js`, is a typed `not_found` — never `pack_not_found`.
+    fn with_script_detail<T>(
+        &self,
+        key: &str,
+        run: impl FnOnce(&ScriptDetail) -> Result<T, CoreError>,
+    ) -> Result<T, String> {
+        let key = self.channel_key(key)?;
+        let loaded = crate::script_pack::load(&self.inner.pack, &key).map_err(|_| {
+            core_err(CoreError::NotFound(format!(
+                "script pack not installed: {key}"
+            )))
+        })?;
+        let Some(detail_js) = loaded.detail_js else {
+            return Err(core_err(CoreError::NotFound(format!(
+                "script pack `{key}` has no detail.js"
+            ))));
+        };
+        let env = crate::script_env::load(&self.inner.db, &self.inner.secrets, &key)
+            .map(|snapshot| Arc::new(Mutex::new(snapshot)))
+            .unwrap_or_else(|_| Arc::new(Mutex::new(EnvMap::new())));
+        let host = Arc::new(ScriptHostImpl::new(
+            self.inner.db.clone(),
+            Arc::clone(&self.inner.script_http),
+            env,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(ConfigMap::new())),
+            DEFAULT_UI_BUDGET,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ));
+        let config =
+            ScriptDetailConfig::new(key.clone(), detail_js, host).with_pack_key(key.clone());
+        let detail = ScriptDetail::new(config).map_err(core_err)?;
+        let result = run(&detail).map_err(core_err);
+        if let Err(error) = detail.dispose() {
+            if result.is_ok() {
+                return Err(core_err(error));
+            }
+        }
+        result
+    }
 }
 
 
@@ -3310,8 +4017,14 @@ impl ChannelApi {
 // ===========================================================================
 
 use gstore_core::added::apps::{AddedApp, AddedAppsService};
+use gstore_core::aggregate::channel_app_fallback::SqliteChannelAppFallback;
+use gstore_core::aggregate::service::{
+    AggregatedApp, AggregationService, ChannelAppFallback, MetadataState,
+};
 use gstore_core::catalog::refresh::{catalog_changed_event, refresh_catalog};
+use gstore_core::catalog::repo::{CatalogRepo, RepoEntry, RepoStatus};
 use gstore_core::catalog::service::CatalogService;
+use gstore_core::library::{LibraryDriverResolver, LibraryService};
 use gstore_core::update::service::{UpdateCheckReport, UpdateService};
 
 fn validate_core_write_domain(domain: &str) -> Result<(), String> {
@@ -3355,12 +4068,78 @@ pub struct CatalogRefreshResult {
     pub events_json: String,
 }
 
+/// One catalog repository entry crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct CatalogRepoEntry {
+    pub file: String,
+    pub version: String,
+    pub sha256: String,
+    pub source: String,
+    pub kind: String,
+    pub added_at: i64,
+    pub apps: i64,
+}
+
+/// Repository snapshot crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct CatalogRepoStatus {
+    pub current_version: Option<String>,
+    pub current_file: Option<String>,
+    pub apps: i64,
+    pub categories: i64,
+    pub entries: Vec<CatalogRepoEntry>,
+}
+
+/// Result of a repository download.
+#[derive(Debug, Clone)]
+pub struct CatalogRepoDownload {
+    pub version: Option<String>,
+    pub changed: bool,
+    pub status: CatalogRepoStatus,
+}
+
+/// Result of materializing the repository into the core catalog.
+#[derive(Debug, Clone)]
+pub struct CatalogMaterializeResult {
+    pub materialized: bool,
+    pub version: Option<String>,
+    pub apps: i64,
+    pub categories: i64,
+}
+
+impl From<RepoEntry> for CatalogRepoEntry {
+    fn from(entry: RepoEntry) -> Self {
+        Self {
+            file: entry.file,
+            version: entry.version,
+            sha256: entry.sha256,
+            source: entry.source,
+            kind: entry.kind,
+            added_at: entry.added_at,
+            apps: i64::try_from(entry.apps).unwrap_or(i64::MAX),
+        }
+    }
+}
+
+impl From<RepoStatus> for CatalogRepoStatus {
+    fn from(status: RepoStatus) -> Self {
+        Self {
+            current_version: status.current_version,
+            current_file: status.current_file,
+            apps: i64::try_from(status.apps).unwrap_or(i64::MAX),
+            categories: i64::try_from(status.categories).unwrap_or(i64::MAX),
+            entries: status.entries.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 /// Read-only facade over the core local catalog.
 #[frb(opaque)]
 pub struct CatalogApi {
     db: DbHandle,
     service: CatalogService,
     http: Arc<dyn HttpPort>,
+    repo: CatalogRepo,
 }
 
 impl CatalogApi {
@@ -3376,7 +4155,9 @@ impl CatalogApi {
         let db = open_core_db(&data_dir)?;
         let service = CatalogService::new(db.clone()).map_err(core_err)?;
         let http: Arc<dyn HttpPort> = Arc::new(crate::http_port::ReqwestHttpPort::new());
-        Ok(Self { db, service, http })
+        let repo = CatalogRepo::new(std::path::Path::new(&data_dir).join("catalog_repo"))
+            .map_err(core_err)?;
+        Ok(Self { db, service, http, repo })
     }
 
     /// Lists every imported app in `rowid` order.
@@ -3450,6 +4231,7 @@ impl CatalogApi {
         let report = refresh_catalog(&self.db, self.http.as_ref(), &url).map_err(core_err)?;
         let events_json = if report.changed {
             let event = catalog_changed_event().map_err(core_err)?;
+            push_core_event(&event);
             serde_json::to_string(&event)
                 .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?
         } else {
@@ -3463,6 +4245,49 @@ impl CatalogApi {
             changed: report.changed,
             backup: report.backup,
             events_json,
+        })
+    }
+
+    /// Current catalog repository snapshot.
+    pub fn repo_status(&self) -> Result<CatalogRepoStatus, String> {
+        self.repo.status().map_err(core_err).map(Into::into)
+    }
+
+    /// Registers a validated seed database (content-addressed, idempotent).
+    pub fn repo_ensure_seed(&self, path: String) -> Result<CatalogRepoStatus, String> {
+        self.repo
+            .ensure_seed(std::path::Path::new(&path))
+            .map_err(core_err)
+            .map(Into::into)
+    }
+
+    /// Downloads and validates a remote catalog, switching `current` when newer.
+    pub fn repo_download(&self, url: String) -> Result<CatalogRepoDownload, String> {
+        let report = self
+            .repo
+            .download(self.http.as_ref(), &url)
+            .map_err(core_err)?;
+        let status = self.repo.status().map_err(core_err)?;
+        Ok(CatalogRepoDownload {
+            version: report.version,
+            changed: report.changed,
+            status: status.into(),
+        })
+    }
+
+    /// Selects a repository entry by version or file name.
+    pub fn repo_select(&self, version: String) -> Result<CatalogRepoStatus, String> {
+        self.repo.select(&version).map_err(core_err).map(Into::into)
+    }
+
+    /// Materializes the current repository database into the core catalog.
+    pub fn repo_materialize(&self) -> Result<CatalogMaterializeResult, String> {
+        let report = self.repo.materialize_if_needed(&self.db).map_err(core_err)?;
+        Ok(CatalogMaterializeResult {
+            materialized: report.materialized,
+            version: report.version,
+            apps: i64::try_from(report.apps).unwrap_or(i64::MAX),
+            categories: i64::try_from(report.categories).unwrap_or(i64::MAX),
         })
     }
 }
@@ -3662,6 +4487,323 @@ impl AddedAppsApi {
                     .map(|(key, tags)| TagGroup { key, tags })
                     .collect()
             })
+    }
+}
+
+/// One unified library read row crossing the FRB boundary.
+#[derive(Debug, Clone)]
+pub struct LibraryEntry {
+    pub added: AddedAppEntry,
+    pub app: ChannelAppInfo,
+    pub channel_code: String,
+    pub channel_kind: String,
+    pub is_from_cache: bool,
+    pub error: Option<String>,
+    pub metadata_state: String,
+}
+
+impl From<AggregatedApp> for LibraryEntry {
+    fn from(row: AggregatedApp) -> Self {
+        Self {
+            added: AddedAppEntry::from(row.added_app),
+            app: ChannelAppInfo::from_summary(row.app),
+            channel_code: row.channel_code,
+            channel_kind: row.channel.as_code().to_string(),
+            is_from_cache: row.is_from_cache,
+            error: row.error,
+            metadata_state: metadata_state_code(row.metadata_state).to_string(),
+        }
+    }
+}
+
+fn metadata_state_code(state: MetadataState) -> &'static str {
+    match state {
+        MetadataState::Resolved => "resolved",
+        MetadataState::FromChannelStore => "from_channel_store",
+        MetadataState::Unresolved => "unresolved",
+    }
+}
+
+fn summary_from_detail(detail: AppDetail) -> AppSummary {
+    AppSummary {
+        app_id: detail.app_id,
+        package_name: detail.package_name,
+        name: detail.name,
+        user: String::new(),
+        repositories: String::new(),
+        icon: detail.icon,
+        des: detail.description,
+        readme: None,
+        category: None,
+        extra: if detail.extra.is_empty() {
+            None
+        } else {
+            Some(detail.extra)
+        },
+        labels: detail.labels,
+    }
+}
+
+/// One page of the unified library read model.
+#[derive(Debug, Clone)]
+pub struct LibraryPage {
+    pub entries: Vec<LibraryEntry>,
+    pub total: i64,
+}
+
+/// Outcome of [`LibraryApi::repair_missing_metadata`].
+#[derive(Debug, Clone)]
+pub struct RepairReport {
+    pub repaired: u32,
+    pub unresolved: u32,
+}
+
+/// Writable-driver lookup for [`LibraryService`], over the facade's drivers.
+struct HostDriverResolver {
+    inner: Arc<ChannelApiInner>,
+}
+
+impl LibraryDriverResolver for HostDriverResolver {
+    fn writable_driver(&self, channel: &str) -> Option<Arc<dyn ChannelDriver>> {
+        self.inner.driver(channel)
+    }
+}
+
+/// Unified library facade: two-phase membership writes plus the
+/// driver -> `channel_apps` -> placeholder read model.
+///
+/// Shares [`ChannelApi`]'s database handle and driver resolution, so there is
+/// exactly one writer connection and no duplicate driver setup.
+#[frb(opaque)]
+pub struct LibraryApi {
+    inner: Arc<ChannelApiInner>,
+    fallback: Arc<SqliteChannelAppFallback>,
+    library: LibraryService,
+    agg: AggregationService,
+}
+
+impl LibraryApi {
+    fn build(inner: Arc<ChannelApiInner>) -> Self {
+        let db = inner.db.clone();
+        let library = LibraryService::new(
+            AddedAppsService::new(db.clone()),
+            Arc::new(HostDriverResolver {
+                inner: Arc::clone(&inner),
+            }),
+        );
+        let channels: gstore_core::aggregate::service::ChannelResolver = {
+            let inner = Arc::clone(&inner);
+            Arc::new(move |code: &str| inner.driver(code))
+        };
+        let fallback = Arc::new(SqliteChannelAppFallback::new(db.clone()));
+        let agg = AggregationService::new(db, channels)
+            .expect("aggregation service construction is infallible")
+            .with_fallback(fallback.clone());
+        Self {
+            inner,
+            fallback,
+            library,
+            agg,
+        }
+    }
+
+    /// Adds an app: channel metadata first, membership second.
+    pub fn add(
+        &self,
+        channel: String,
+        app: ChannelAppInfo,
+        sort_order: Option<i64>,
+    ) -> Result<AddedAppEntry, String> {
+        let summary = app.into_summary()?;
+        self.library
+            .add(&channel, &summary, sort_order)
+            .map_err(core_err)
+            .map(AddedAppEntry::from)
+    }
+
+    /// Adds only `added_apps` membership; never writes `channel_apps`.
+    ///
+    /// Backup restore uses this for reference-only items so a placeholder
+    /// name/icon cannot overwrite a good `channel_apps` metadata row.
+    pub fn add_membership(
+        &self,
+        channel: String,
+        app_id: String,
+        sort_order: Option<i64>,
+    ) -> Result<AddedAppEntry, String> {
+        self.library
+            .add_membership(&channel, &app_id, sort_order)
+            .map_err(core_err)
+            .map(AddedAppEntry::from)
+    }
+
+    /// Toggles membership and returns whether the app is now added.
+    pub fn toggle(&self, channel: String, app: ChannelAppInfo) -> Result<bool, String> {
+        let summary = app.into_summary()?;
+        self.library.toggle(&channel, &summary).map_err(core_err)
+    }
+
+    /// Removes membership, keeping the channel's saved metadata row.
+    pub fn remove(&self, channel: String, app_id: String) -> Result<bool, String> {
+        self.library.remove(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Returns one page of the unified read model, newest first.
+    pub fn page(&self, offset: i64, limit: i64) -> Result<LibraryPage, String> {
+        let offset = u32::try_from(offset.max(0)).unwrap_or(u32::MAX);
+        let limit = u32::try_from(limit.max(0)).unwrap_or(u32::MAX);
+        let (entries, total) = self.agg.aggregate_page(offset, limit).map_err(core_err)?;
+        Ok(LibraryPage {
+            entries: entries.into_iter().map(LibraryEntry::from).collect(),
+            total: i64::try_from(total).unwrap_or(i64::MAX),
+        })
+    }
+
+    /// Lists every membership row, newest first.
+    pub fn list(&self) -> Result<Vec<AddedAppEntry>, String> {
+        self.library
+            .list()
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(AddedAppEntry::from).collect())
+    }
+
+    /// Lists one channel's membership rows, newest first.
+    pub fn list_channel(&self, channel: String) -> Result<Vec<AddedAppEntry>, String> {
+        self.library
+            .list_channel(&channel)
+            .map_err(core_err)
+            .map(|apps| apps.into_iter().map(AddedAppEntry::from).collect())
+    }
+
+    /// Returns one membership row, if present.
+    pub fn get(&self, channel: String, app_id: String) -> Result<Option<AddedAppEntry>, String> {
+        self.library
+            .get(&channel, &app_id)
+            .map_err(core_err)
+            .map(|app| app.map(AddedAppEntry::from))
+    }
+
+    /// Whether `(channel, app_id)` is a library member.
+    pub fn is_added(&self, channel: String, app_id: String) -> Result<bool, String> {
+        self.library.is_added(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Total number of library members.
+    pub fn total_count(&self) -> Result<i64, String> {
+        self.library.total_count().map_err(core_err)
+    }
+
+    /// Number of library members in one channel.
+    pub fn count_channel(&self, channel: String) -> Result<i64, String> {
+        self.library.count_channel(&channel).map_err(core_err)
+    }
+
+    /// Sets one membership row's sort weight.
+    pub fn set_order(
+        &self,
+        channel: String,
+        app_id: String,
+        sort_order: i64,
+    ) -> Result<(), String> {
+        self.library
+            .set_order(&channel, &app_id, sort_order)
+            .map_err(core_err)
+    }
+
+    /// Deletes every membership row in one channel.
+    pub fn clear_channel(&self, channel: String) -> Result<i64, String> {
+        self.library
+            .clear_channel(&channel)
+            .map_err(core_err)
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// Deletes every membership row.
+    pub fn clear_all(&self) -> Result<i64, String> {
+        self.library
+            .clear_all()
+            .map_err(core_err)
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// Replaces all tags for one app.
+    pub fn set_tags(
+        &self,
+        channel: String,
+        app_id: String,
+        tags: Vec<String>,
+    ) -> Result<(), String> {
+        self.library
+            .set_tags(&channel, &app_id, &tags)
+            .map_err(core_err)
+    }
+
+    /// Adds one tag to an app.
+    pub fn add_tag(&self, channel: String, app_id: String, tag: String) -> Result<(), String> {
+        self.library
+            .add_tag(&channel, &app_id, &tag)
+            .map_err(core_err)
+    }
+
+    /// Removes one tag from an app.
+    pub fn remove_tag(&self, channel: String, app_id: String, tag: String) -> Result<(), String> {
+        self.library
+            .remove_tag(&channel, &app_id, &tag)
+            .map_err(core_err)
+    }
+
+    /// Returns one app's tags, earliest first.
+    pub fn tags(&self, channel: String, app_id: String) -> Result<Vec<String>, String> {
+        self.library.tags(&channel, &app_id).map_err(core_err)
+    }
+
+    /// Returns all tag buckets keyed by `"{channel}:{app_id}"`.
+    pub fn tags_index(&self) -> Result<Vec<TagGroup>, String> {
+        self.library
+            .tags_index()
+            .map_err(core_err)
+            .map(|index| {
+                index
+                    .into_iter()
+                    .map(|(key, tags)| TagGroup { key, tags })
+                    .collect()
+            })
+    }
+
+    /// Re-fetches metadata for membership rows missing a `channel_apps` row.
+    ///
+    /// Never deletes a membership row. `local_db` is skipped because its
+    /// metadata lives in the `apps` catalog, not `channel_apps`.
+    pub fn repair_missing_metadata(&self) -> Result<RepairReport, String> {
+        let rows = self.library.list().map_err(core_err)?;
+        let mut repaired = 0u32;
+        let mut unresolved = 0u32;
+        for row in rows {
+            if row.channel_id == "local_db" {
+                continue;
+            }
+            if self
+                .fallback
+                .get(&row.channel_id, &row.app_id)
+                .map_err(core_err)?
+                .is_some()
+            {
+                continue;
+            }
+            let Some(driver) = self.inner.driver(&row.channel_id) else {
+                unresolved = unresolved.saturating_add(1);
+                continue;
+            };
+            let Ok(detail) = driver.get_app_detail(&row.app_id, false) else {
+                unresolved = unresolved.saturating_add(1);
+                continue;
+            };
+            match driver.add_app(&summary_from_detail(detail)) {
+                Ok(()) => repaired = repaired.saturating_add(1),
+                Err(_) => unresolved = unresolved.saturating_add(1),
+            }
+        }
+        Ok(RepairReport { repaired, unresolved })
     }
 }
 
@@ -4578,17 +5720,23 @@ impl ScriptApi {
         pack_zip_bytes: Vec<u8>,
         expected_key: Option<String>,
     ) -> Result<ScriptPackInfo, String> {
-        self.inner.import(pack_zip_bytes, expected_key)
+        let info = self.inner.import(pack_zip_bytes, expected_key)?;
+        push_channel_changed_str(&info.key, ChannelKind::JsLocal);
+        Ok(info)
     }
 
     /// Removes an installed pack, its cached runtimes, and its channel env.
     pub fn remove(&self, key: String) -> Result<(), String> {
-        self.inner.remove(&key)
+        self.inner.remove(&key)?;
+        push_channel_changed_str(&key, ChannelKind::JsLocal);
+        Ok(())
     }
 
     /// Reloads a pack from its installed directory and rebuilds its runtimes.
     pub fn refresh(&self, key: String) -> Result<ScriptPackInfo, String> {
-        self.inner.refresh(&key)
+        let info = self.inner.refresh(&key)?;
+        push_channel_changed_str(&info.key, ChannelKind::JsLocal);
+        Ok(info)
     }
 
     /// Replaces the channel env snapshot and hot-updates live runtimes.
@@ -4597,7 +5745,9 @@ impl ScriptApi {
         key: String,
         env: std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        self.inner.set_env(&key, env)
+        self.inner.set_env(&key, env)?;
+        push_channel_changed_str(&key, ChannelKind::JsLocal);
+        Ok(())
     }
 
     /// Returns the persisted channel env snapshot for `key` as a JSON object
@@ -4626,20 +5776,22 @@ impl ScriptApi {
         key: String,
         config: std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        self.inner.set_config(&key, config)
+        self.inner.set_config(&key, config)?;
+        push_channel_changed_str(&key, ChannelKind::JsLocal);
+        Ok(())
     }
 
-    /// Runs `main(method, params)` and returns the JSON result as a string.
+    /// Internal pack-data engine — **not** a Dart-facing entry point.
     ///
-    /// Supported methods: `getAllApps`, `searchApps`, `getAppInfo`,
-    /// `checkAppUpdate`, `checkUpdate`, `doUpdate`, `getConfig` (entry script)
-    /// and `getAppDetail`, `versionOptions`, `switchVersion`, `buildHistory`,
-    /// `detailMenu`, `jsswitchVersion`, `jsBuildHistory`, `jsswitchUA` (detail
-    /// script). The string is the same JSON the Dart
-    /// runtime would receive, so callers `jsonDecode` it. `getConfig` returns
-    /// the script's `{version, proxy}` payload; parity is defined on the mapped
-    /// [`gstore_core::channel::ChannelConfig`] shape (`version` string,
-    /// `proxy` nullable), not on the raw payload types.
+    /// Runs `main(method, params)` on the pack's entry/detail runtime and
+    /// returns the raw JSON result string (the same JSON the old Dart runtime
+    /// received). The Dart data path no longer calls this: JS channel data is
+    /// read through `ChannelApi` / `RustChannelFacade` (the JS runtime authority
+    /// is `ChannelApiInner.script_drivers`, plus the per-call `ScriptDetail`).
+    /// The method is therefore kept off the FRB surface (`#[frb(ignore)]`) and
+    /// reachable only from the in-crate script-api tests.
+    #[frb(ignore)]
+    #[doc(hidden)]
     pub fn run(
         &self,
         key: String,
@@ -4671,7 +5823,9 @@ impl ScriptApi {
     /// is a typed `pack_not_found` error and an empty `app.app_id` is
     /// `invalid_argument`.
     pub fn add_app(&self, key: String, app: ChannelAppInfo) -> Result<(), String> {
-        self.inner.add_app(&key, app.into_summary()?)
+        self.inner.add_app(&key, app.into_summary()?)?;
+        push_channel_changed_str(&key, ChannelKind::JsLocal);
+        Ok(())
     }
 
     /// Releases the `detail.js` runtime bound to `(key, app_id)`.
@@ -4809,6 +5963,7 @@ mod channel_api_tests {
             readme: None,
             category: vec!["Tools".to_string()],
             extra_json: None,
+            labels: Vec::new(),
         }
     }
 
@@ -4830,7 +5985,7 @@ mod channel_api_tests {
             Arc::new(harness.repo.clone()) as Arc<dyn RepoPort>,
         )
         .expect("second init");
-        assert_eq!(second.list().unwrap().len(), 4);
+        assert_eq!(second.list().unwrap().len(), 5);
         assert_eq!(gstore_core::flags::flags(), before_flags);
         assert!(!gstore_core::flags::flags().channels);
 
@@ -4838,8 +5993,9 @@ mod channel_api_tests {
 
         // list/get
         let entries = api.list().expect("list");
-        assert_eq!(entries.len(), 4, "built-in channels: {entries:?}");
+        assert_eq!(entries.len(), 5, "built-in channels: {entries:?}");
         assert!(entries.iter().any(|entry| entry.key == "local_db"));
+        assert!(entries.iter().any(|entry| entry.key == "gstore"));
         assert!(entries.iter().any(|entry| entry.key == "github"));
         assert!(entries.iter().any(|entry| entry.key == "vivo"));
         assert!(entries.iter().any(|entry| entry.key == "fdroid"));
@@ -4862,7 +6018,7 @@ mod channel_api_tests {
         assert_eq!(registered.key, "js_contract");
         let registered_again = api.register(registration).expect("re-register");
         assert_eq!(registered_again.priority, 9);
-        assert_eq!(api.list().unwrap().len(), 5);
+        assert_eq!(api.list().unwrap().len(), 6);
 
         // enable / disable
         let disabled = api.disable("js_contract".to_string()).expect("disable");
@@ -5237,5 +6393,561 @@ async function main(method, params) {
             "registering a js_local channel binds its script driver"
         );
         drop(harness);
+    }
+
+    const SCRIPT_DETAIL_JS: &str = r#"
+function main(method, params) {
+  if (method === 'versionOptions') {
+    return { ok: true, data: {
+      title: '选择版本',
+      envs: ['sit', 'prod'],
+      versions: [
+        { version: '2.0.0', envs: ['sit'], buildCount: 3 },
+        { version: '1.0.0', envs: ['sit', 'prod'], buildCount: 5 },
+      ],
+      currentEnv: 'sit',
+      currentVersion: '1.0.0',
+      packOnly: 'keep-me',
+    } };
+  }
+  if (method === 'switchVersion') {
+    return { ok: true, data: {
+      appId: params.appId,
+      name: 'Demo',
+      icon: 'icon.png',
+      description: 'switched detail',
+      version: '1.0.0',
+      packageName: 'com.example.demo',
+      sections: ['downloads'],
+      downloads: [{ url: 'https://js.test/demo-1.0.0.apk', name: 'demo-1.0.0.apk', version: '1.0.0' }],
+      extra: { env: 'sit', version: '1.0.0' },
+    } };
+  }
+  if (method === 'buildHistory') {
+    return { ok: true, data: { builds: [
+      { num: 7, publishedAt: '2026-01-02T03:04:05Z', size: 12345, changelog: 'fix', installTimes: 9, builtBy: 'ci', ipaName: 'demo-7.apk' },
+      { num: 6, publishedAt: null, size: null, changelog: '', installTimes: null },
+    ] } };
+  }
+  if (method === 'detailMenu') {
+    return { ok: true, data: [
+      { action: '切换版本', jscall: 'jsswitchVersion', clickIsDimiss: true },
+      { action: '', jscall: 'jsBuildHistory', icon: 'history' },
+    ] };
+  }
+  return null;
+}
+"#;
+
+    fn write_detail_pack(path: &Path, detail: &str) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("entry.js", options).unwrap();
+        writer
+            .write_all(b"module.exports = function () { return {}; };")
+            .unwrap();
+        writer.start_file("detail.js", options).unwrap();
+        writer.write_all(detail.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn channel_api_script_detail_surface() {
+        let harness = harness("script_detail_surface");
+        let api = &harness.api;
+        let pack = harness.root.join("detail_demo.zip");
+        write_detail_pack(&pack, SCRIPT_DETAIL_JS);
+        let info = api
+            .import_pack(pack.to_string_lossy().into_owned())
+            .expect("import detail pack");
+        assert_eq!(info.key, "js_detail_demo");
+
+        let options = api
+            .script_version_options(
+                "js_detail_demo".to_string(),
+                "com.example.demo".to_string(),
+                None,
+                Some("1.0.0".to_string()),
+            )
+            .expect("version options")
+            .expect("version options present");
+        assert_eq!(options.title.as_deref(), Some("选择版本"));
+        assert_eq!(options.envs, vec!["sit".to_string(), "prod".to_string()]);
+        assert_eq!(options.versions.len(), 2);
+        assert_eq!(options.versions[0].version, "2.0.0");
+        assert_eq!(options.versions[0].build_count, 3);
+        assert_eq!(options.current_env.as_deref(), Some("sit"));
+        assert_eq!(options.current_version.as_deref(), Some("1.0.0"));
+        assert!(options.extra_json.contains("packOnly"), "{}", options.extra_json);
+
+        let detail = api
+            .script_switch_version(
+                "js_detail_demo".to_string(),
+                "com.example.demo".to_string(),
+                "sit".to_string(),
+                "1.0.0".to_string(),
+                Some("{\"num\":7,\"ipaName\":\"demo-7.apk\"}".to_string()),
+            )
+            .expect("switch version")
+            .expect("switch version present");
+        assert_eq!(detail.app_id, "com.example.demo");
+        assert_eq!(detail.version.as_deref(), Some("1.0.0"));
+        assert_eq!(detail.package_name.as_deref(), Some("com.example.demo"));
+        assert_eq!(detail.channel, "js_local");
+        assert_eq!(detail.downloads.len(), 1);
+        assert_eq!(detail.downloads[0].name, "demo-1.0.0.apk");
+
+        let builds = api
+            .script_build_history(
+                "js_detail_demo".to_string(),
+                "com.example.demo".to_string(),
+                "sit".to_string(),
+                "1.0.0".to_string(),
+            )
+            .expect("build history");
+        assert_eq!(builds.len(), 2);
+        assert_eq!(builds[0].num, 7);
+        assert_eq!(
+            builds[0].published_at.as_deref(),
+            Some("2026-01-02T03:04:05Z")
+        );
+        assert_eq!(builds[0].size, Some(12345));
+        assert_eq!(builds[0].install_times, Some(9));
+        assert_eq!(builds[0].changelog.as_deref(), Some("fix"));
+        assert!(builds[0].extra_json.contains("ipaName"), "{}", builds[0].extra_json);
+        assert!(builds[0].extra_json.contains("builtBy"), "{}", builds[0].extra_json);
+        assert_eq!(builds[1].num, 6);
+        assert_eq!(builds[1].published_at, None);
+        assert_eq!(builds[1].size, None);
+
+        let menu = api
+            .script_detail_menu("js_detail_demo".to_string(), "com.example.demo".to_string())
+            .expect("detail menu");
+        assert_eq!(menu.len(), 2);
+        assert_eq!(menu[0].action, "切换版本");
+        assert_eq!(menu[0].jscall, "jsswitchVersion");
+        assert_eq!(menu[0].click_is_dimiss, Some(true));
+        assert_eq!(menu[0].icon, None);
+        assert_eq!(menu[1].action, "");
+        assert_eq!(menu[1].jscall, "jsBuildHistory");
+        assert_eq!(menu[1].icon.as_deref(), Some("history"));
+        assert_eq!(menu[1].click_is_dimiss, None);
+
+        drop(harness);
+    }
+
+    #[test]
+    fn channel_api_script_unknown_pack_not_found() {
+        let harness = harness("script_unknown_pack");
+        let api = &harness.api;
+
+        let version_err = api
+            .script_version_options(
+                "js_does_not_exist".to_string(),
+                "com.example.demo".to_string(),
+                None,
+                None,
+            )
+            .expect_err("unknown pack must be typed");
+        println!("channel_api_script_unknown_pack_not_found: versionOptions error = {version_err}");
+        assert!(version_err.starts_with("not_found:"), "{version_err}");
+        assert!(!version_err.starts_with("pack_not_found:"), "{version_err}");
+
+        let switch_err = api
+            .script_switch_version(
+                "js_does_not_exist".to_string(),
+                "com.example.demo".to_string(),
+                "sit".to_string(),
+                "1.0.0".to_string(),
+                None,
+            )
+            .expect_err("unknown pack must be typed");
+        assert!(switch_err.starts_with("not_found:"), "{switch_err}");
+
+        let history_err = api
+            .script_build_history(
+                "js_does_not_exist".to_string(),
+                "com.example.demo".to_string(),
+                "sit".to_string(),
+                "1.0.0".to_string(),
+            )
+            .expect_err("unknown pack must be typed");
+        assert!(history_err.starts_with("not_found:"), "{history_err}");
+
+        let menu_err = api
+            .script_detail_menu("js_does_not_exist".to_string(), "com.example.demo".to_string())
+            .expect_err("unknown pack must be typed");
+        assert!(menu_err.starts_with("not_found:"), "{menu_err}");
+
+        drop(harness);
+    }
+
+    const SCRIPT_DETAIL_ACTION_JS: &str = r#"
+function main(method, params) {
+  if (method === 'jsAction') {
+    var res = host.ui.call('showUAPicker', {});
+    return { ok: true, data: true };
+  }
+  return null;
+}
+"#;
+
+    #[test]
+    fn channel_api_script_detail_action_runs_pack_jscall() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::script_api_test_support::clear_ui_state();
+        let harness = harness("script_detail_action");
+        let api = &harness.api;
+        let pack = harness.root.join("detail_action.zip");
+        write_detail_pack(&pack, SCRIPT_DETAIL_ACTION_JS);
+        let info = api
+            .import_pack(pack.to_string_lossy().into_owned())
+            .expect("import action pack");
+        assert_eq!(info.key, "js_detail_action");
+
+        // The responder answers the pack's `host.ui.call('showUAPicker', {})`.
+        let responder = crate::script_api_test_support::spawn_responder(
+            "showUAPicker",
+            "{}".to_string(),
+            std::time::Duration::ZERO,
+            None,
+        );
+
+        api.script_detail_action(
+            "js_detail_action".to_string(),
+            "com.example".to_string(),
+            "jsAction".to_string(),
+        )
+        .expect("script_detail_action must run the pack jscall and return Ok");
+
+        let answered = responder
+            .join()
+            .expect("responder thread")
+            .expect("the `showUAPicker` request must be emitted and answered");
+        println!(
+            "channel_api_script_detail_action_runs_pack_jscall: showUAPicker request_id = {}",
+            answered.0
+        );
+
+        // Failure path: an unknown pack is a typed `not_found`, never `pack_not_found`.
+        let err = api
+            .script_detail_action(
+                "js_does_not_exist".to_string(),
+                "com.example".to_string(),
+                "jsAction".to_string(),
+            )
+            .expect_err("unknown pack must be typed");
+        println!("channel_api_script_detail_action_runs_pack_jscall: unknown pack error = {err}");
+        assert!(err.starts_with("not_found:"), "{err}");
+        assert!(!err.starts_with("pack_not_found:"), "{err}");
+
+        drop(harness);
+    }
+
+    const SCRIPT_LANE_ENTRY: &str = r#"
+function main(method, params) {
+  if (method === 'searchApps' || method === 'getAllApps') {
+    return { ok: true, data: [{
+      appId: 'com.example.demo', name: 'Demo', packageName: 'com.example.demo',
+      version: '1.0.0', des: 'demo app',
+    }] };
+  }
+  if (method === 'getAppDetail') {
+    return { ok: true, data: { appId: params.appId, name: 'Demo', version: '1.0.0' } };
+  }
+  return null;
+}
+"#;
+
+    #[test]
+    fn channel_api_driver_resolves_unregistered_script_pack() {
+        let harness = harness("driver_unregistered_pack");
+        let api = &harness.api;
+        let pack = harness.root.join("lane.zip");
+        write_script_pack(&pack, SCRIPT_LANE_ENTRY);
+        api.import_pack(pack.to_string_lossy().into_owned())
+            .expect("import");
+
+        // No register(...) call: the pack is NOT in the channels-domain registry.
+        assert!(
+            api.get("js_lane".to_string()).is_err(),
+            "pack must be unregistered"
+        );
+
+        let hits = api
+            .search("js_lane".to_string(), "Demo".to_string(), false)
+            .expect("search resolves an unregistered js_ pack");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].app_id, "com.example.demo");
+
+        let detail = api
+            .get_app_detail(
+                "js_lane".to_string(),
+                "com.example.demo".to_string(),
+                false,
+            )
+            .expect("get_app_detail resolves an unregistered js_ pack");
+        assert_eq!(detail.app_id, "com.example.demo");
+
+        // Failure path: unknown pack -> typed not_found, never pack_not_found.
+        let err = api
+            .search("js_missing".to_string(), "x".to_string(), false)
+            .unwrap_err();
+        assert!(err.starts_with("not_found:"), "{err}");
+        assert!(!err.starts_with("pack_not_found:"), "{err}");
+
+        drop(harness);
+    }
+
+    /// Given a fresh channel registration, When it succeeds, Then exactly one
+    /// `channel.changed` event carrying the registered key and kind is on the
+    /// event ring (asserted on the wire name and the payload fields, not merely
+    /// that "some" event was pushed).
+    #[test]
+    fn channel_changed_pushed() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::event_bridge::clear_buffer_for_tests();
+        let harness = harness("emit_channel");
+        let api = &harness.api;
+
+        let entry = api
+            .register(ChannelRegistration {
+                key: "probe_channel".to_string(),
+                kind: "custom".to_string(),
+                name: "Probe".to_string(),
+                description: "emit probe".to_string(),
+                enabled: true,
+                priority: 7,
+                support_offline: false,
+                version: None,
+            })
+            .expect("register");
+        assert_eq!(entry.kind, "custom");
+
+        let (event_type, body) = crate::event_bridge::last_event_for_tests()
+            .expect("register must emit a channel.changed event");
+        assert_eq!(event_type, "channel.changed");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("event body is JSON");
+        assert_eq!(value["event"], "channel.changed");
+        assert_eq!(value["payload"]["key"], "probe_channel");
+        assert_eq!(value["payload"]["kind"], "custom");
+
+        // A no-op mutation (removing an absent env var) must not emit.
+        crate::event_bridge::clear_buffer_for_tests();
+        assert!(
+            !api.env_remove("probe_channel".to_string(), "MISSING".to_string())
+                .expect("env_remove"),
+            "removing an absent env var is a no-op"
+        );
+        assert!(
+            crate::event_bridge::last_event_for_tests().is_none(),
+            "a no-op mutation must not emit channel.changed"
+        );
+        drop(harness);
+    }
+
+    /// Given a source catalog that differs from the core, When
+    /// `CatalogApi::refresh` runs, Then it returns the sync result AND pushes a
+    /// `catalog.changed` event for the local catalog on the same event ring.
+    #[test]
+    fn catalog_changed_pushed() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let root = temp_root("emit_catalog");
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let db = open_core_db(data.to_str().unwrap()).expect("open core db");
+        let service = gstore_core::catalog::service::CatalogService::new(db.clone())
+            .expect("catalog service");
+
+        let source = root.join("source.db");
+        {
+            let conn = rusqlite::Connection::open(&source).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE apps(appId TEXT PRIMARY KEY, name TEXT NOT NULL, user TEXT, \
+                 repositories TEXT, icon TEXT, des TEXT, category TEXT); \
+                 CREATE TABLE category(id TEXT PRIMARY KEY, description TEXT NOT NULL, icon TEXT NOT NULL); \
+                 CREATE TABLE config(version TEXT PRIMARY KEY); \
+                 INSERT INTO apps VALUES ('com.alpha','Alpha','u','r','i','d','TOOLS'); \
+                 INSERT INTO category VALUES ('TOOLS','Tools','t'); \
+                 INSERT INTO config VALUES ('1.0');",
+            )
+            .unwrap();
+        }
+        let body = std::fs::read(&source).unwrap();
+        let http = FakeHttpPort::new();
+        http.push_response(gstore_core::ports::HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body,
+        });
+        let api = CatalogApi {
+            db,
+            service,
+            http: Arc::new(http),
+            repo: CatalogRepo::new(root.join("catalog_repo")).expect("catalog repo"),
+        };
+
+        crate::event_bridge::clear_buffer_for_tests();
+        let result = api
+            .refresh("https://example.invalid/catalog.db".to_string())
+            .expect("refresh");
+        assert!(result.changed, "the fixture must change the catalog");
+
+        let (event_type, body) = crate::event_bridge::last_event_for_tests()
+            .expect("refresh must emit a catalog.changed event");
+        assert_eq!(event_type, "catalog.changed");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("event body is JSON");
+        assert_eq!(value["event"], "catalog.changed");
+        assert_eq!(value["payload"]["key"], "local_db");
+        assert!(value["payload"]["app_id"].is_null());
+        assert_eq!(value["payload"]["removed"], false);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Given an installed pack, When a script-domain `add_app` write runs, Then
+    /// a `channel.changed` event for that pack key (kind `js_local`) is pushed —
+    /// the script-domain store is not a silent bypass of the event seam.
+    #[test]
+    fn script_domain_write_pushes_channel_changed() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let root = temp_root("emit_script");
+        let api = ScriptApi::init(
+            root.join("data").to_string_lossy().into_owned(),
+            root.join("files").to_string_lossy().into_owned(),
+            root.join("cache").to_string_lossy().into_owned(),
+        )
+        .expect("ScriptApi::init");
+        api.import(
+            crate::script_api_test_support::zip_with("function main(){ return null; }", None, None),
+            Some("js_evt".to_string()),
+        )
+        .expect("import pack");
+
+        crate::event_bridge::clear_buffer_for_tests();
+        api.add_app("js_evt".to_string(), app_input())
+            .expect("add_app");
+
+        let (event_type, body) = crate::event_bridge::last_event_for_tests()
+            .expect("add_app must emit a channel.changed event");
+        assert_eq!(event_type, "channel.changed");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("event body is JSON");
+        assert_eq!(value["event"], "channel.changed");
+        assert_eq!(value["payload"]["key"], "js_evt");
+        assert_eq!(value["payload"]["kind"], "js_local");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Given a `channel_apps` F-Droid row migrated before the source list was
+    /// known (legacy identity in `source_id`, repo-relative icon), When the
+    /// enabled source set is published, Then the row is healed in place so the
+    /// home icon resolves without depending on `source_id`.
+    #[test]
+    fn set_fdroid_sources_repairs_migrated_source_identity() {
+        let harness = harness("fdroid_source_repair");
+        let app_id = "com.example.migrated";
+        harness
+            .api
+            .inner
+            .db
+            .with_writer(|conn| {
+                conn.execute(
+                    "INSERT INTO channel_apps(channel_key,app_id,name,user,repositories,icon,\
+                     description,category,add_time,source_id,extra) \
+                     VALUES ('fdroid',?1,'Migrated','',?1,'icons/com.example.migrated.png',\
+                     'description','Tools',1000,'official',NULL)",
+                    [app_id],
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+                Ok(())
+            })
+            .expect("seed migrated row");
+
+        harness
+            .api
+            .set_fdroid_sources(vec![
+                r#"{"id":"official","name":"Official","url":"https://f-droid.org/repo","mirrors":[],"mirror_first":false,"enabled":true}"#
+                    .to_string(),
+            ])
+            .expect("publish fdroid sources");
+
+        let (icon, source_id): (String, Option<String>) = harness
+            .api
+            .inner
+            .db
+            .with_reader(|conn| {
+                conn.query_row(
+                    "SELECT icon, source_id FROM channel_apps \
+                     WHERE channel_key='fdroid' AND app_id=?1",
+                    [app_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))
+            })
+            .expect("read repaired row");
+
+        assert_eq!(
+            source_id.as_deref(),
+            Some("https://f-droid.org/repo"),
+            "the legacy identity key must become the configured source URL"
+        );
+        assert_eq!(
+            icon,
+            "https://f-droid.org/repo/icons/com.example.migrated.png",
+            "the stored icon must be absolute"
+        );
+
+        let _ = std::fs::remove_dir_all(&harness.root);
+    }
+
+    /// Given a stored F-Droid row whose icon still carries the prefix of a
+    /// mirror that is no longer the current source, When the source set is
+    /// published with that mirror listed, Then the home read resolves the icon
+    /// against the CURRENT source instead of leaking the stale prefix.
+    #[test]
+    fn set_fdroid_sources_rebases_a_stale_mirror_icon_on_home() {
+        let harness = harness("fdroid_icon_rebase");
+        let app_id = "com.example.stale";
+        harness
+            .api
+            .inner
+            .db
+            .with_writer(|conn| {
+                conn.execute(
+                    "INSERT INTO channel_apps(channel_key,app_id,name,user,repositories,icon,\
+                     description,category,add_time,source_id,extra) \
+                     VALUES ('fdroid',?1,'Stale','',?1,\
+                     'https://old-mirror.example/repo/icons/com.example.stale.png',\
+                     'description','Tools',1000,NULL,NULL)",
+                    [app_id],
+                )
+                .map_err(|error| gstore_core::db::DbError(error.to_string()))?;
+                Ok(())
+            })
+            .expect("seed stale-icon row");
+
+        harness
+            .api
+            .set_fdroid_sources(vec![
+                r#"{"id":"official","name":"Official","url":"https://f-droid.org/repo","mirrors":["https://old-mirror.example/repo"],"mirror_first":false,"enabled":true}"#
+                    .to_string(),
+            ])
+            .expect("publish fdroid sources");
+
+        let apps = harness
+            .api
+            .list_apps("fdroid".to_string(), false)
+            .expect("list fdroid apps");
+        assert_eq!(apps.len(), 1, "the stored row must never be dropped");
+        assert_eq!(
+            apps[0].icon,
+            "https://f-droid.org/repo/icons/com.example.stale.png",
+            "the icon must be re-based onto the current source"
+        );
+
+        let _ = std::fs::remove_dir_all(&harness.root);
     }
 }

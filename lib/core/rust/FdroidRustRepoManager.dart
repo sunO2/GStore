@@ -128,6 +128,22 @@ class FdroidRustRepoManager {
     return false;
   }
 
+  /// `sources` 中哪一项拥有已持久化的标识 [stored] → 该源的仓库地址。
+  ///
+  /// 迁移/恢复要把历史记录里的标识（`fp:<HEX>` / `url:<url>` / 源 id）落回
+  /// core 能路由的源 URL，而匹配规则只能有一份：本方法在**定义库内**委托
+  /// [identityMatches]，调用方（`FdroidRepoManager.resolveSourceUrl`）无需接触
+  /// 测试专用成员。映射不到返回 null —— 绝不猜源。
+  static String? sourceUrlForIdentity(
+    Iterable<FdroidSource> sources,
+    String stored,
+  ) {
+    for (final source in sources) {
+      if (identityMatches(source, stored)) return source.repoUrl.trim();
+    }
+    return null;
+  }
+
   /// 两个源配置是否属于**同一个逻辑仓库**（指纹优先 / 归一化地址）。
   ///
   /// 供 `FdroidRepoManager.updateSource` 判定"仓库身份是否变化"：只有逻辑身份

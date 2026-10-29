@@ -25,6 +25,7 @@
 //! `gstore_script` for other hosts, but this path does not use it.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,6 +69,10 @@ pub(crate) struct ScriptEntry {
     config: Arc<Mutex<ConfigMap>>,
     app_id: Arc<Mutex<Option<String>>>,
     op: Mutex<()>,
+    /// True while this entry's eval is parked on a `host.ui.call` round-trip.
+    /// Checked before `op` so a UI-handler re-entry fails fast instead of
+    /// deadlocking on the mutex the parked eval still holds.
+    parked: Arc<AtomicBool>,
     runtimes: Mutex<RuntimeSlots>,
     db: DbHandle,
     http: Arc<dyn ScriptHttp>,
@@ -119,6 +124,7 @@ impl ScriptEntry {
             config: Arc::new(Mutex::new(ConfigMap::new())),
             app_id: Arc::new(Mutex::new(None)),
             op: Mutex::new(()),
+            parked: Arc::new(AtomicBool::new(false)),
             runtimes: Mutex::new(RuntimeSlots::default()),
             db: deps.db,
             http: deps.http,
@@ -146,6 +152,13 @@ impl ScriptEntry {
         method: &str,
         params: &Map<String, JsonValue>,
     ) -> Result<String, String> {
+        if self.parked.load(Ordering::SeqCst) {
+            return Err(format!(
+                "{}: script entry `{}` is parked on a UI request; refusing re-entrant dispatch",
+                crate::ui_api::UI_REENTRANT,
+                self.key.as_str()
+            ));
+        }
         let _op = self
             .op
             .lock()
@@ -255,6 +268,7 @@ impl ScriptEntry {
             Arc::clone(&self.app_id),
             Arc::clone(&self.config),
             self.ui_budget,
+            Arc::clone(&self.parked),
         ));
         let runtime = ScriptRuntime::spawn(channel, ScriptOptions::new(limits), host)
             .map_err(|error| map_script(&error))?;

@@ -269,13 +269,19 @@ fn now_nanos() -> Result<u128, Error> {
 // Validation
 // ---------------------------------------------------------------------------
 
-struct SourceShape {
+pub(crate) struct SourceShape {
     has_readme: bool,
     has_extra: bool,
     has_proxy: bool,
 }
 
-fn validate_source(path: &Path, allow_empty: bool) -> Result<SourceShape, Error> {
+/// Full structural validation of a catalog source database (SQLite header,
+/// integrity, required tables/columns, non-empty apps, unique ids, and config).
+///
+/// Shared by the refresh/direct-replace path and the filesystem catalog
+/// repository so both reject exactly the same malformed sources. The returned
+/// shape records which optional columns are present.
+pub(crate) fn validate_source(path: &Path, allow_empty: bool) -> Result<SourceShape, Error> {
     validate_header(path)?;
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
         Error::InvalidArgument(format!(
@@ -324,6 +330,40 @@ fn validate_source(path: &Path, allow_empty: bool) -> Result<SourceShape, Error>
         has_extra,
         has_proxy,
     })
+}
+
+/// Reads `config.version` from a catalog source database (read-only).
+///
+/// # Errors
+/// Returns [`Error::InvalidArgument`] when the database cannot be opened or has
+/// no `version` row.
+pub(crate) fn read_catalog_version(path: &Path) -> Result<String, Error> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+        Error::InvalidArgument(format!(
+            "CORE_E_CATALOG_REPO_VERSION: {}: {e}",
+            path.display()
+        ))
+    })?;
+    conn.query_row("SELECT \"version\" FROM config LIMIT 1", [], |row| {
+        row.get(0)
+    })
+    .map_err(|e| {
+        Error::InvalidArgument(format!(
+            "CORE_E_CATALOG_REPO_VERSION: {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// Counts `apps` and `category` rows in a catalog source database (read-only).
+pub(crate) fn read_catalog_counts(path: &Path) -> Result<(usize, usize), Error> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+        Error::InvalidArgument(format!(
+            "CORE_E_CATALOG_REPO_READ: {}: {e}",
+            path.display()
+        ))
+    })?;
+    Ok((count_rows(&conn, "apps")?, count_rows(&conn, "category")?))
 }
 
 fn validate_header(path: &Path) -> Result<(), Error> {

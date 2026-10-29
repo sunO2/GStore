@@ -16,6 +16,8 @@ library;
 
 import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 
 /// Functional in-memory added-apps backend with call recording.
@@ -32,6 +34,7 @@ class FakeAddedApps implements AddedAppsBackend {
 
   int listCalls = 0;
   int tagsIndexCalls = 0;
+  int pageCalls = 0;
   int notifyCalls = 0;
   final List<(String, String, List<String>)> setTagsCalls = [];
   final List<(String, String)> tagsCalls = [];
@@ -57,6 +60,40 @@ class FakeAddedApps implements AddedAppsBackend {
       index.putIfAbsent(key, () => <String>[]).addAll(tags);
     });
     return index;
+  }
+
+  @override
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  }) async {
+    pageCalls++;
+    final rows = await list();
+    final total = rows.length;
+    if (offset >= total || limit <= 0) {
+      return (<AggregatedAppInfo>[], total);
+    }
+    final end = (offset + limit > total) ? total : offset + limit;
+    return (
+      [
+        for (final row in rows.sublist(offset, end))
+          AggregatedAppInfo(
+            addedAppInfo: row,
+            appInfo: AppSummary(
+              appId: row.appId,
+              name: row.appId,
+              user: '',
+              repositories: '',
+              icon: '',
+              des: '',
+            ),
+            channel:
+                ChannelType.fromCode(row.channelId) ?? ChannelType.custom,
+            channelCode: row.channelId,
+          ),
+      ],
+      total,
+    );
   }
 
   @override
@@ -148,6 +185,17 @@ class InMemoryAddedAppsBackend implements AddedAppsBackend {
   }
 
   @override
+  Future<void> addMembership(String channel, String appId,
+      {int? sortOrder}) async {
+    _apps.putIfAbsent(channel, () => {})[appId] = AddedAppInfo(
+      id: ++_seq,
+      channelId: channel,
+      appId: appId,
+      sortOrder: sortOrder ?? 0,
+    );
+  }
+
+  @override
   Future<bool> remove(String channel, String appId) async {
     _tags[channel]?.remove(appId);
     return _apps[channel]?.remove(appId) != null;
@@ -187,12 +235,13 @@ class InMemoryAddedAppsBackend implements AddedAppsBackend {
   }
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     if (_apps[channel]?.containsKey(appId) ?? false) {
       await remove(channel, appId);
       return false;
     }
-    await add(channel, appId);
+    await add(channel, appId, appInfo: appInfo);
     return true;
   }
 
@@ -212,6 +261,39 @@ class InMemoryAddedAppsBackend implements AddedAppsBackend {
   Future<List<AddedAppInfo>> list() async => [
         for (final byChannel in _apps.values) ...byChannel.values,
       ];
+
+  @override
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  }) async {
+    final rows = await list();
+    final total = rows.length;
+    if (offset >= total || limit <= 0) {
+      return (<AggregatedAppInfo>[], total);
+    }
+    final end = (offset + limit > total) ? total : offset + limit;
+    return (
+      [
+        for (final row in rows.sublist(offset, end))
+          AggregatedAppInfo(
+            addedAppInfo: row,
+            appInfo: AppSummary(
+              appId: row.appId,
+              name: row.appId,
+              user: '',
+              repositories: '',
+              icon: '',
+              des: '',
+            ),
+            channel:
+                ChannelType.fromCode(row.channelId) ?? ChannelType.custom,
+            channelCode: row.channelId,
+          ),
+      ],
+      total,
+    );
+  }
 
   @override
   Future<List<AddedAppInfo>> listChannel(String channel) async =>

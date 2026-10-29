@@ -96,14 +96,6 @@ class _RustEnvBackend implements ScriptApiBackend {
   }) async {}
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async =>
-      'null';
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
     final values = packs.values.toList()
       ..sort((a, b) => a.key.compareTo(b.key));

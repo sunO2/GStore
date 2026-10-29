@@ -45,6 +45,12 @@ use serde_json::Value as JsonValue;
 /// Stable code returned by [`respond`] for unknown or expired request ids.
 pub const UI_UNKNOWN_REQUEST: &str = "CORE_E_SCRIPT_UI_UNKNOWN_REQUEST";
 
+/// Stable code returned when a pack dispatch re-enters a [`ScriptEntry`] that is
+/// currently parked on a `host.ui.call` round-trip.
+///
+/// [`ScriptEntry`]: crate::script_runtime_entry::ScriptEntry
+pub const UI_REENTRANT: &str = "CORE_E_SCRIPT_UI_REENTRANT";
+
 /// UI handlers reachable through `host.ui.call` / `script.ui_request`.
 pub const UI_METHODS: [&str; 8] = [
     "showVersionPicker",

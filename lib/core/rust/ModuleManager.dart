@@ -1,5 +1,5 @@
 import 'dart:async' show unawaited, StreamController;
-import 'dart:convert' show base64Encode, jsonEncode, utf8;
+import 'dart:convert' show base64Encode, jsonDecode, jsonEncode, utf8;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -379,7 +379,7 @@ class RustModuleManager {
     if (!_eventController.isClosed) {
       _eventController.add(event);
     }
-    // 上行接入统一事件总线
+    // 上行接入统一事件总线：未知事件类型一律走通用 `rust.event`，绝不丢弃。
     AppEventBus.instance.publish(AppEvent(
       type: AppEventTypes.rustEvent,
       source: AppEventSource.rust,
@@ -390,6 +390,53 @@ class RustModuleManager {
         'data': base64Encode(event.data),
       },
     ));
+    // 已知的领域事件额外映射为类型化 AppEvent（携带 payload），供 UI 订阅路由；
+    // 与通用 `rust.event` 并存，未知类型不产生类型化事件但仍保留通用事件。
+    final typed = _typedAppEvent(event);
+    if (typed != null) {
+      AppEventBus.instance.publish(typed);
+    }
+  }
+
+  /// 把 `channel.changed` / `catalog.changed` 模块事件映射为类型化 [AppEvent]。
+  ///
+  /// 返回 `null` 表示不是已知领域事件（调用方仍发布通用 `rust.event`）。
+  /// 已知事件即使 payload 解析失败也会发布（[AppEvent.data] 为 `null`），
+  /// 保证类型化路由不因畸形载荷而丢事件。
+  AppEvent? _typedAppEvent(ModuleEvent event) {
+    final String type;
+    switch (event.eventType) {
+      case AppEventTypes.channelChanged:
+        type = AppEventTypes.channelChanged;
+      case AppEventTypes.catalogChanged:
+        type = AppEventTypes.catalogChanged;
+      default:
+        return null;
+    }
+    return AppEvent(
+      type: type,
+      source: AppEventSource.rust,
+      data: _coreEventPayload(event.data),
+    );
+  }
+
+  /// 解码 Rust `CoreEvent::to_json()` 正文并取出 `payload`。
+  ///
+  /// 正文形如 `{"event":"channel.changed","payload":{"key":...}}`（serde
+  /// `tag = "event", content = "payload"`）。非 JSON / 无 `payload` / 畸形载荷
+  /// 一律返回 `null`，绝不抛回事件循环。
+  Map<String, dynamic>? _coreEventPayload(Uint8List bytes) {
+    if (bytes.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(utf8.decode(bytes));
+      if (decoded is Map<String, dynamic>) {
+        final payload = decoded['payload'];
+        if (payload is Map<String, dynamic>) return payload;
+      }
+    } catch (_) {
+      // 畸形载荷：类型化事件仍发布（无 payload），不丢事件。
+    }
+    return null;
   }
 
   /// 应用事件下行：广播给所有已加载 Rust 模块（模块经 ABI `on_event` 订阅）

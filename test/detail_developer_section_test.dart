@@ -14,6 +14,8 @@ import 'package:gstore/page/detail/widgets.dart';
 /// - 项目主页 value 用 primary 色
 /// - 四字段（developer/projectUrl/version/channelId）全空才隐藏
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String? developerValue;
   String? projectUrlValue;
   String? versionValue;

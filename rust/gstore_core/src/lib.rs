@@ -14,6 +14,7 @@ pub mod facts;
 pub mod flags;
 pub mod install;
 pub mod inventory;
+pub mod library;
 pub mod migration;
 pub mod ports;
 pub mod rules;
@@ -22,14 +23,15 @@ pub mod update;
 pub use channel::{
     validate_channel_key, BuildHistoryQuery, ChannelCategory, ChannelConfig, ChannelDriver,
     ChannelPack, ChannelRecord, ChannelRegistry, ChannelStore, DetailAction, FdroidDriver,
-    GitHubDriver, InMemoryChannelDriver, InMemoryChannelRegistry, InMemoryChannelStore,
-    InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits, PackPolicy, PackStore,
-    ScriptChannel, ScriptChannelConfig, ScriptChannelStore, ScriptDetail, ScriptDetailConfig,
-    SqliteChannelRegistry, SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
+    GStoreDriver, GitHubDriver, InMemoryChannelDriver, InMemoryChannelRegistry,
+    InMemoryChannelStore, InstalledPack, LocalDbDriver, PackError, PackIconSource, PackLimits,
+    PackPolicy, PackStore, ScriptChannel, ScriptChannelConfig, ScriptChannelStore, ScriptDetail,
+    ScriptDetailConfig, SqliteChannelRegistry, SqliteChannelStore, SwitchVersionQuery,
+    VersionOptionsQuery, VivoDriver,
 };
 pub use dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
-    ChannelState, DetailSection,
+    ChannelState, DetailSection, Label,
 };
 pub use error::Error;
 pub use event::{CoreEvent, ScriptUiField};
@@ -45,6 +47,7 @@ pub use install::{
     INSTALL_STATUS_UNKNOWN,
 };
 pub use inventory::InventoryStore;
+pub use library::{LibraryDriverResolver, LibraryService};
 pub use ports::{CoreConfig, DownloadPort, FileSecretPort, HttpPort, MetadataPort, RepoPort};
 pub use rules::{
     RuleStore, RULES_VERSION, SIGNATURE_POLICY_OFF, SIGNATURE_POLICY_STRICT, SIGNATURE_POLICY_WARN,

@@ -55,7 +55,7 @@ core 的任何一条边都不得调用平台代码。
 | 域 | Rust 所有者（crate / API） | Dart facade（唯一入口） |
 |---|---|---|
 | `channels` | `gstore_core::channel`（注册表 + `PackStore`）；宿主 FRB `ChannelApi` | `lib/core/channel/rust_channel_facade.dart`（`RustChannelFacade`） |
-| `jsChannel` | `gstore_host::script_api`（FRB `ScriptApi`）+ `gstore_core` 脚本包存储（`script_db`） | `lib/core/script/script_api.dart`（`ScriptApi`）+ `ScriptChannelService` |
+| `jsChannel` | JS 渠道**数据入口** = 宿主 FRB `ChannelApi`（复用 `get_app_detail`，路由 `JsLocal` 到脚本 driver）；包生命周期 = `gstore_host::script_api`（FRB `ScriptApi`）+ `gstore_core` 脚本包存储（`script_db`） | 数据 = `lib/core/channel/rust_channel_facade.dart`（`RustChannelFacade`，类型化 DTO）；包生命周期 = `lib/core/script/script_api.dart`（`ScriptApi`）+ `ScriptChannelService` |
 | `catalog` | `gstore_core::catalog`；宿主 FRB `CatalogApi`（`AddedAppsApi` 同域） | `lib/core/catalog/catalog_facade.dart`（`CatalogFacade`） |
 | `update` | `gstore_core::update::UpdateService`；宿主 FRB `UpdateApi` | `lib/core/update/update_facade.dart`（`UpdateFacade`） |
 | `download` | `gstore_core` 下载端口（`download/port.rs`）；宿主 FRB `DownloadApi` → `gstore_mod_download` | `lib/core/download/download_facade.dart`（`DownloadFacade`）+ `RustDownloadService` |
@@ -93,6 +93,35 @@ Durable cutover（一次性、进程默认即终态）：
 **`gstore_core` 必须能在桌面宿主上构建**（`cargo check --manifest-path rust/gstore_core/Cargo.toml`；
 `cargo tree --manifest-path rust/gstore_core/Cargo.toml -e normal` 中不得出现 `jni`）：
 TUI / macOS / Linux 前端是一等公民，Android 只是 `gstore_host` 的一个边缘。
+
+### 0.1 JS 渠道单车道（single JS lane）
+
+JS（script-pack）渠道不再是一条平行旁路，而是并入统一渠道路径。权威规则：
+
+- **唯一数据入口**：Dart 读取 JS 渠道的全部数据都经 FRB `ChannelApi` / Dart `RustChannelFacade`
+  （类型化 DTO）。`ChannelApi.get_app_detail` 已把 `JsLocal` 路由到脚本 driver，无需新增
+  `script_get_app_detail`。
+- **JS 详情页四方法 + action 在 `ChannelApi` 上**：`script_version_options` /
+  `script_switch_version` / `script_build_history` / `script_detail_menu`，以及执行包内 `jscall`
+  的 `script_detail_action`。返回均为类型化值（`detailMenu` → `Vec<ChannelDetailAction>`；
+  `switchVersion` → 类型化 `ChannelAppDetailInfo`；`versionOptions` → `ScriptVersionOptions`；
+  `buildHistory` → `Vec<ScriptBuild>`），包特有额外键保留在类型化 `extra` 映射中。
+- **`ScriptApi` 降级为包生命周期**：`import` / `remove` / `refresh` / `list` / `env` /
+  `storedApps` / `addApp` / `releaseDetail`（另含 `getConfig`）。它的数据 `run` 已从 Dart 数据
+  路径移除，Dart 不再调用 `ScriptApi` 的 `run` 取渠道数据。`storedApps` / `addApp` 留在脚本域
+  存储，正是为了让一个 `js_*` 包无需在 channels 域登记。
+- **单一运行时缓存 + 单一转换器**：JS driver/runtime 权威是 `ChannelApiInner.script_drivers`；
+  `ScriptApiInner` 只保留包生命周期状态；Dart 侧 Rust 车道用 `appDetailFromRust` + DTO 映射，
+  `appSummaryFromScript` / `JsChannelDetailProxy` 在 Rust 车道上退役。
+- **动态标签**：Rust DTO 上新增类型化 `Label { key, label, value, icon }`（serde 名
+  `key/label/value/icon`），落在 `AppSummary.labels` / `AppDetail.labels`（`#[serde(default)]`，
+  加法式变更）；FRB 侧对应 `ChannelLabel`，Dart 侧对应 `AppLabel`。**全部 5 种渠道**
+  （js / github / vivo / fdroid / localdb）都从自身已有数据填充 labels，空即空、绝不臆造。
+- **响应式刷新事件**：core 从每处渠道/目录变更（含脚本域写）经 `event_bridge::push_event`
+  推送 `CoreEvent::ChannelChanged` / `CoreEvent::CatalogChanged`；wire 字符串的唯一来源是
+  `CoreEvent::wire_name()`。Dart 侧常量 `AppEventTypes.channelChanged = 'channel.changed'` /
+  `AppEventTypes.catalogChanged = 'catalog.changed'`，渠道/目录 UI 订阅后（防抖）重跑既有
+  loader，不新增 loading UI。
 
 ---
 

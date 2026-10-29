@@ -700,6 +700,7 @@ fn localdb_github_parity_github_list_info_search_and_canonical() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
     assert_eq!(
         driver.canonical_app_id(&canonical).unwrap(),
@@ -717,6 +718,7 @@ fn localdb_github_parity_github_list_info_search_and_canonical() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
     assert_eq!(
         driver.canonical_app_id(&no_metadata).unwrap(),
@@ -735,6 +737,7 @@ fn localdb_github_parity_github_list_info_search_and_canonical() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
     assert_eq!(
         driver.canonical_app_id(&unresolvable).unwrap(),
@@ -787,6 +790,7 @@ fn localdb_github_parity_github_add_and_remove() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
     driver.add_app(&app).unwrap();
 
@@ -980,6 +984,7 @@ fn localdb_github_parity_metadata_cache_uses_24h_clock() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
 
     assert_eq!(driver.canonical_app_id(&app).unwrap(), "com.example.cached");

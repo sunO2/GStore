@@ -86,8 +86,8 @@ void main() {
     // The row is rendered by the page (cache-path name falls back to appId).
     expect(find.text('com.added'), findsWidgets,
         reason: 'the home list must render the row sourced from the facade');
-    expect(core.listCalls, greaterThan(0),
-        reason: 'rows must come from the facade core backend');
+    expect(core.pageCalls, greaterThan(0),
+        reason: 'rows must come from LibraryApi.page');
     expect(agg.writeCalls, isEmpty,
         reason: 'the home read must not go through the legacy aggregate '
             'service (getAggregatedAppsPage)');

@@ -259,6 +259,7 @@ class AppColors {
         return vivoBrand;
       case 'localdb':
       case 'local_db':
+      case 'gstore':
         return localDbBrand;
       case 'http':
         return httpBrand;
@@ -278,6 +279,7 @@ class AppColors {
         return vivoBrandLight;
       case 'localdb':
       case 'local_db':
+      case 'gstore':
         return localDbBrandLight;
       case 'http':
         return httpBrandLight;
@@ -297,6 +299,7 @@ class AppColors {
         return vivoBrandDark;
       case 'localdb':
       case 'local_db':
+      case 'gstore':
         return localDbBrandDark;
       case 'http':
         return httpBrandDark;

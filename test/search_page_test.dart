@@ -73,6 +73,13 @@ class _FakeCatalog implements CatalogBackend {
   @override
   Future<CatalogRefreshOutcome> refresh(String url) =>
       throw UnsupportedError('not used');
+
+  // 新增的版本仓库方法本文件未使用；由 noSuchMethod 兜底（否则接口新增成员会编译失败）。
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError(
+          'unused CatalogBackend member: ${invocation.memberName}');
+
 }
 
 /// 注入 fake 目录后端后创建 ProviderContainer。

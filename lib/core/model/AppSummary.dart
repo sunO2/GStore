@@ -1,4 +1,5 @@
 import 'package:gstore/core/channel/database/channel_added_app.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart' show AppLabel;
 import 'package:gstore/db/apps/AppInfo.dart';
 
 /// 应用摘要（渠道传输模型，纯 Dart，不绑定持久化层）
@@ -15,6 +16,9 @@ class AppSummary {
   final List<String>? category;
   final Map<String, dynamic>? extra;
 
+  /// 动态展示标签（来自渠道 typed DTO 的 `labels`；空即空，不合成）。
+  final List<AppLabel> labels;
+
   const AppSummary({
     required this.appId,
     this.packageName,
@@ -26,6 +30,7 @@ class AppSummary {
     this.readme,
     this.category,
     this.extra,
+    this.labels = const [],
   });
 
   /// 从 extra 中获取指定字段的值（兼容既有调用，非法/缺失返回 null 不抛）
@@ -49,6 +54,7 @@ class AppSummary {
     String? readme,
     List<String>? category,
     Map<String, dynamic>? extra,
+    List<AppLabel>? labels,
   }) {
     return AppSummary(
       appId: appId ?? this.appId,
@@ -61,6 +67,7 @@ class AppSummary {
       readme: readme ?? this.readme,
       category: category ?? this.category,
       extra: extra ?? this.extra,
+      labels: labels ?? this.labels,
     );
   }
 

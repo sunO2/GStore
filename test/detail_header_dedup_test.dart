@@ -14,6 +14,8 @@ import 'package:gstore/page/detail/widgets.dart';
 /// - readme 以 description 开头（前缀）→ true
 /// - 完全不同 → false
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String? readmeValue;
 
   @override

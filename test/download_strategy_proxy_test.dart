@@ -28,6 +28,8 @@ class _TestStrategy extends BaseDownloadStrategy {
 
 class _FakeDetailInfo implements IDetailInfo {
   @override
+  List<AppLabel> get labels => const [];
+  @override
   String get packageName => 'com.example.app';
   @override
   String get appName => '测试应用';

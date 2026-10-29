@@ -16,7 +16,7 @@
 
 use gstore_core::channel::ScriptChannelStore;
 use gstore_core::db::DbHandle;
-use gstore_core::dto::{AppSummary, ChannelKey};
+use gstore_core::dto::{AppSummary, ChannelKey, summary_labels};
 use gstore_core::error::Error as CoreError;
 use gstore_script::{
     ChannelApp, DatabaseAppRequest, DatabaseInsertRequest, ScriptChannel, ScriptError,
@@ -339,6 +339,7 @@ fn summary_from_row(row: ChannelApp) -> AppSummary {
             .collect();
         (!items.is_empty()).then_some(items)
     });
+    let labels = summary_labels(&row.user, package_name.as_deref(), &row.repositories);
     AppSummary {
         app_id: row.app_id,
         package_name,
@@ -350,6 +351,7 @@ fn summary_from_row(row: ChannelApp) -> AppSummary {
         readme: None,
         category,
         extra,
+        labels,
     }
 }
 

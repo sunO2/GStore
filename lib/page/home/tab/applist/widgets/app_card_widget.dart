@@ -149,6 +149,8 @@ class AppCardWidget extends StatelessWidget {
     switch (type) {
       case ChannelType.localDb:
         return 'DB';
+      case ChannelType.gstore:
+        return 'GS';
       case ChannelType.github:
         return 'GH';
       case ChannelType.http:

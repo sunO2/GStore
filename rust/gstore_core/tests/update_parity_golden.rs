@@ -196,6 +196,7 @@ fn app_update(update: &InputUpdate) -> AppUpdate {
             sections: vec![DetailSection::Version, DetailSection::Downloads],
             downloads: vec![download],
             extra: Map::new(),
+            labels: Vec::new(),
         },
     }
 }

@@ -158,6 +158,7 @@ fn repo_app(package_name: &str, name: &str, icon: &str) -> RepoApp {
         apk_url: Some(format!("https://fdroid.test/repo/{package_name}_10203.apk")),
         size: Some(4096),
         categories: vec!["tools".to_string()],
+        metadata: None,
     }
 }
 
@@ -780,9 +781,16 @@ fn vivo_fdroid_parity_fdroid_search_list_detail_and_update() {
         listed[0].extra.as_ref().unwrap()["sourceId"],
         json!(ENABLED_SOURCE)
     );
-    assert!(
-        repo.calls().is_empty(),
-        "list reads channel rows and must not touch the repository"
+    // The list path now resolves every row through the repository index first
+    // (the same value the detail page shows); one probe, no download because
+    // the local index already exists.
+    assert_eq!(
+        repo.calls(),
+        vec![RepoCall::One {
+            source: ENABLED_SOURCE.to_string(),
+            package: "com.enabled".to_string(),
+        }],
+        "list resolves the icon from the local index, one probe per row"
     );
 
     // search: one exact RepoPort call, limit 50, mapped fields.
@@ -805,12 +813,19 @@ fn vivo_fdroid_parity_fdroid_search_list_detail_and_update() {
     );
     assert_eq!(
         repo.calls(),
-        vec![RepoCall::Search {
-            source: ENABLED_SOURCE.to_string(),
-            query: "Enabled".to_string(),
-            limit: 50,
-        }],
-        "disabled sources must not be searched"
+        vec![
+            RepoCall::One {
+                source: ENABLED_SOURCE.to_string(),
+                package: "com.enabled".to_string(),
+            },
+            RepoCall::Meta(ENABLED_SOURCE.to_string()),
+            RepoCall::Search {
+                source: ENABLED_SOURCE.to_string(),
+                query: "Enabled".to_string(),
+                limit: 50,
+            },
+        ],
+        "only the enabled source is queried; search ensures the local index first"
     );
 
     // detail: source comes from the channel row, then get_one_app.
@@ -906,6 +921,7 @@ fn vivo_fdroid_parity_fdroid_add_app_and_source_filtering() {
                 .into_iter()
                 .collect(),
         ),
+        labels: Vec::new(),
     };
     driver.add_app(&app).unwrap();
 
@@ -1044,12 +1060,19 @@ fn vivo_fdroid_parity_fdroid_disabled_source_is_empty_not_error_and_no_download(
     );
     assert_eq!(
         repo.calls(),
-        vec![RepoCall::Search {
-            source: DISABLED_SOURCE.to_string(),
-            query: "App".to_string(),
-            limit: 50,
-        }],
-        "only the configured source is queried"
+        vec![
+            RepoCall::One {
+                source: DISABLED_SOURCE.to_string(),
+                package: "com.disabled".to_string(),
+            },
+            RepoCall::Meta(DISABLED_SOURCE.to_string()),
+            RepoCall::Search {
+                source: DISABLED_SOURCE.to_string(),
+                query: "App".to_string(),
+                limit: 50,
+            },
+        ],
+        "only the configured source is queried; search ensures the local index first"
     );
 
     println!(

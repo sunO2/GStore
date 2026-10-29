@@ -131,6 +131,7 @@ fn update(
             sections: vec![DetailSection::Version, DetailSection::Downloads],
             downloads,
             extra: serde_json::Map::new(),
+            labels: Vec::new(),
         },
     }
 }

@@ -27,6 +27,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/core_flags.dart';
@@ -124,23 +125,6 @@ class _FakeScriptBackend implements ScriptApiBackend {
   }) async {}
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    if (method == 'getAppDetail') {
-      final payload = detail[key];
-      if (payload == null) return 'null';
-      return jsonEncode(payload);
-    }
-    if (method == 'searchApps' || method == 'getAllApps') {
-      return jsonEncode(stored[key] ?? const <Object?>[]);
-    }
-    return 'null';
-  }
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
     final values = packs.values.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
@@ -162,6 +146,57 @@ class _FakeScriptBackend implements ScriptApiBackend {
     required String key,
     required String appId,
   }) async {}
+}
+
+/// In-memory [ChannelApiBackend] (the unified `ChannelApi` seam).
+///
+/// Todo 8 rerouted `RustScriptDetailChannel`'s data reads through
+/// [RustChannelFacade]; the detail page therefore resolves through this backend
+/// instead of `ScriptApi.run`. It serves `getAppDetail` from the same
+/// [ _FakeScriptBackend.detail] map the old `run('getAppDetail')` served, and an
+/// empty `detailMenu`.
+class _FakeFacadeBackend implements ChannelApiBackend {
+  _FakeFacadeBackend(this.script);
+
+  final _FakeScriptBackend script;
+
+  @override
+  Future<rust.ChannelAppDetailInfo> getAppDetail({
+    required String key,
+    required String appId,
+    required bool forceRefresh,
+  }) async {
+    final payload = script.detail[key];
+    if (payload == null) {
+      throw const ChannelApiException(
+        'not_found',
+        '脚本未返回详情数据（脚本未实现或数据获取失败）',
+      );
+    }
+    final raw = jsonEncode(payload);
+    return rust.ChannelAppDetailInfo(
+      appId: payload['appId']?.toString() ?? appId,
+      name: payload['name']?.toString() ?? '',
+      icon: payload['icon']?.toString() ?? '',
+      description: payload['description']?.toString() ?? '',
+      channel: 'js_local',
+      sections: const [],
+      downloads: const [],
+      extraJson: raw,
+      labels: const <rust.ChannelLabel>[],
+    );
+  }
+
+  @override
+  Future<List<rust.ChannelDetailAction>> scriptDetailMenu({
+    required String key,
+    required String appId,
+  }) async =>
+      const [];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+      'unexpected facade call: ${invocation.memberName}');
 }
 
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -208,6 +243,9 @@ Future<void> _setFlag({required bool jsChannel}) async {
 
 void _installScriptService(_FakeScriptBackend backend) {
   ScriptApi.installBackend(backend);
+  // The detail page now reads through the unified facade; serve it from the same
+  // fixture maps.
+  RustChannelFacade.installBackend(_FakeFacadeBackend(backend));
   ScriptChannelService.installForTest(ScriptChannelService(
     coreDirs: () async => (
       '/tmp/gstore_lane_ui/data',
@@ -254,6 +292,7 @@ void main() {
   tearDown(() async {
     CoreFlags.resetBackend();
     ScriptApi.resetBackend();
+    RustChannelFacade.resetBackend();
     ScriptChannelService.resetForTest();
     RustScriptChannelLane.resetForTest();
     await ChannelManager.instance.disposeAll();

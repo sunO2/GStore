@@ -59,6 +59,7 @@ use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection,
+    detail_labels, label_downloads, summary_labels,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -111,9 +112,10 @@ impl StoredApp {
     }
 
     fn to_summary(&self) -> AppSummary {
+        let package_name = self.package_name();
         AppSummary {
             app_id: self.app_id.clone(),
-            package_name: self.package_name(),
+            package_name: package_name.clone(),
             name: self.name.clone(),
             user: self.user.clone(),
             repositories: self.repositories.clone(),
@@ -125,6 +127,7 @@ impl StoredApp {
                 .as_deref()
                 .map(|value| value.split(',').map(ToString::to_string).collect()),
             extra: self.extra(),
+            labels: summary_labels(&self.user, package_name.as_deref(), &self.repositories),
         }
     }
 }
@@ -241,6 +244,7 @@ impl VivoDriver {
             .filter(|value| !value.is_empty())
             .map(|value| vec![value]);
 
+        let labels = summary_labels(&developer, Some(&package_name), &package_name);
         AppSummary {
             app_id: package_name.clone(),
             package_name: Some(package_name.clone()),
@@ -252,6 +256,7 @@ impl VivoDriver {
             readme: None,
             category,
             extra: None,
+            labels,
         }
     }
 
@@ -289,6 +294,7 @@ impl VivoDriver {
             ]
             .into_iter()
             .collect();
+            let labels = summary_labels(&developer, Some(&package_name), &id);
             apps.push(AppSummary {
                 app_id,
                 package_name: (!package_name.is_empty()).then_some(package_name),
@@ -300,6 +306,7 @@ impl VivoDriver {
                 readme: None,
                 category: None,
                 extra: Some(extra),
+                labels,
             });
         }
         Ok(apps)
@@ -442,6 +449,10 @@ impl VivoDriver {
         extra.insert("readme".to_string(), Value::String(description.clone()));
         extra.insert("detailData".to_string(), Value::Object(object.clone()));
 
+        let developer = (!developer.is_empty()).then_some(developer);
+        let mut labels = detail_labels(version.as_deref(), developer.as_deref(), Some(&package_name));
+        labels.extend(label_downloads(download_count));
+
         AppDetail {
             app_id: app_id.to_string(),
             name: string_field(object, &["title_zh", "title_en", "appName", "title"])
@@ -452,13 +463,14 @@ impl VivoDriver {
                 .unwrap_or_default(),
             description,
             version,
-            developer: (!developer.is_empty()).then_some(developer),
+            developer,
             package_name: Some(package_name),
             project_url: None,
             channel: self.meta.kind,
             sections,
             downloads,
             extra,
+            labels,
         }
     }
 

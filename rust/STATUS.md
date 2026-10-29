@@ -50,6 +50,18 @@ rust/
 - ✅ 统一事件系统（双向）：Dart `AppEventBus` 收口 DB / 模块生命周期 / 配置事件源；Rust 模块
   `emit_event` 上行接入统一总线；标记 `downlink` 的事件（如 `config.changed`）经宿主 ABI
   `on_event` 下发到模块（**ABI v2**）
+- ✅ **JS 渠道单车道**：Dart 读取 JS 渠道数据统一走 FRB `ChannelApi` / `RustChannelFacade`
+  （类型化 DTO）；`ChannelApi.get_app_detail` 路由 `JsLocal` 到脚本 driver。JS 详情页四方法
+  （`script_version_options` / `script_switch_version` / `script_build_history` /
+  `script_detail_menu`）与 `script_detail_action` 均在 `ChannelApi` 上。`ScriptApi` 仅保留包
+  生命周期（import/remove/refresh/list/env/storedApps/addApp/releaseDetail），其数据 `run` 已从
+  Dart 数据路径移除。
+- ✅ **动态标签**：Rust `AppSummary` / `AppDetail` 带类型化 `Label { key, label, value, icon }`
+  （FRB `ChannelLabel`，Dart `AppLabel`）；js / github / vivo / fdroid / localdb 五种渠道均从
+  自身已有数据填充，空即空、不臆造。
+- ✅ **响应式刷新**：core 经 `event_bridge::push_event` 推 `channel.changed` / `catalog.changed`
+  （wire 名唯一来源 `CoreEvent::wire_name()`）；Dart `AppEventTypes.channelChanged` /
+  `catalogChanged` 订阅后防抖重跑既有 loader。
 
 ## 构建 / 测试
 

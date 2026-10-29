@@ -47,6 +47,9 @@ impl std::fmt::Display for ChannelKey {
 pub enum ChannelKind {
     /// Local SQLite-backed channel.
     LocalDb,
+    /// Writable channel backed by the local catalog (`channel_apps('gstore')`).
+    #[serde(rename = "gstore")]
+    GStore,
     /// GitHub API channel.
     Github,
     /// Generic HTTP API channel.
@@ -66,6 +69,7 @@ impl ChannelKind {
     pub fn from_code(code: &str) -> Result<Self, Error> {
         match code {
             "local_db" => Ok(Self::LocalDb),
+            "gstore" => Ok(Self::GStore),
             "github" => Ok(Self::Github),
             "http" => Ok(Self::Http),
             "vivo" => Ok(Self::Vivo),
@@ -82,6 +86,7 @@ impl ChannelKind {
     pub const fn as_code(self) -> &'static str {
         match self {
             Self::LocalDb => "local_db",
+            Self::GStore => "gstore",
             Self::Github => "github",
             Self::Http => "http",
             Self::Vivo => "vivo",
@@ -133,6 +138,100 @@ pub struct ChannelState {
     pub last_error: Option<String>,
 }
 
+/// One dynamic display label (`{key, label, value, icon?}`).
+///
+/// Channels populate these from data they already hold (version, developer,
+/// package name, channel, download count, ...). An absent or empty datum yields
+/// NO label, so the UI never shows a fabricated value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Label {
+    /// Stable identifier the UI uses to group/route the label.
+    pub key: String,
+    /// Human-readable label text.
+    pub label: String,
+    /// Display value.
+    pub value: String,
+    /// Optional icon name/URL.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// Builds a label from an optional, possibly-empty string.
+///
+/// Returns `None` when the value is absent or blank, so callers never emit a
+/// label for a datum they do not actually have.
+pub(crate) fn text_label(key: &str, text: &str, value: Option<&str>) -> Option<Label> {
+    let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+    Some(Label {
+        key: key.to_string(),
+        label: text.to_string(),
+        value: value.to_string(),
+        icon: None,
+    })
+}
+
+/// A `版本` label from a version string, when present.
+pub(crate) fn label_version(value: Option<&str>) -> Option<Label> {
+    text_label("version", "版本", value)
+}
+
+/// A `开发者` label from a developer/user string, when present.
+pub(crate) fn label_developer(value: Option<&str>) -> Option<Label> {
+    text_label("developer", "开发者", value)
+}
+
+/// A `包名` label from a package name, when present.
+pub(crate) fn label_package(value: Option<&str>) -> Option<Label> {
+    text_label("package", "包名", value)
+}
+
+/// A `渠道` label from a channel/repository identifier, when present.
+pub(crate) fn label_channel(value: Option<&str>) -> Option<Label> {
+    text_label("channel", "渠道", value)
+}
+
+/// A `下载量` label from a download count, when present.
+pub(crate) fn label_downloads(value: Option<i64>) -> Option<Label> {
+    Some(Label {
+        key: "downloads".to_string(),
+        label: "下载量".to_string(),
+        value: value?.to_string(),
+        icon: None,
+    })
+}
+
+/// The labels derivable from an [`AppSummary`]'s own fields.
+pub fn summary_labels(
+    user: &str,
+    package_name: Option<&str>,
+    repositories: &str,
+) -> Vec<Label> {
+    [
+        label_developer(Some(user)),
+        label_package(package_name),
+        label_channel(Some(repositories)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The labels derivable from an [`AppDetail`]'s own fields.
+pub fn detail_labels(
+    version: Option<&str>,
+    developer: Option<&str>,
+    package_name: Option<&str>,
+) -> Vec<Label> {
+    [
+        label_version(version),
+        label_developer(developer),
+        label_package(package_name),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 /// App summary (mirrors Dart `AppSummary`, which is structurally `AppInfo`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSummary {
@@ -156,6 +255,9 @@ pub struct AppSummary {
     pub category: Option<Vec<String>>,
     /// Channel-specific extension data (JSON object).
     pub extra: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Dynamic display labels derived from the app's own data.
+    #[serde(default)]
+    pub labels: Vec<Label>,
 }
 
 /// Detail-page section kinds (mirrors Dart `DetailSection`).
@@ -240,6 +342,9 @@ pub struct AppDetail {
     pub downloads: Vec<AppDownload>,
     /// Channel-specific extension data.
     pub extra: serde_json::Map<String, serde_json::Value>,
+    /// Dynamic display labels derived from the app's own data.
+    #[serde(default)]
+    pub labels: Vec<Label>,
 }
 
 /// Result of checking one app for updates (mirrors Dart `AppUpdateCheckResult`).

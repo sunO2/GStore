@@ -31,6 +31,10 @@ class _FakeFlagsBackend implements CoreFlagsBackend {
 class _RecordingBackend implements ChannelApiBackend {
   final List<String> calls = <String>[];
 
+  @override
+  Future<rust.LibraryApi> library() async =>
+      throw UnimplementedError('library() is not used by this test');
+
   static const entry = rust.ChannelEntry(
     key: 'github',
     kind: 'github',
@@ -50,6 +54,7 @@ class _RecordingBackend implements ChannelApiBackend {
     icon: 'icon.png',
     des: 'description',
     category: <String>['Tools'],
+    labels: <rust.ChannelLabel>[],
   );
 
   static const detail = rust.ChannelAppDetailInfo(
@@ -62,6 +67,7 @@ class _RecordingBackend implements ChannelApiBackend {
     sections: <String>['downloads'],
     downloads: <rust.ChannelAppDownloadInfo>[],
     extraJson: '{}',
+    labels: <rust.ChannelLabel>[],
   );
 
   static const pack = rust.ChannelPackInfo(
@@ -271,6 +277,51 @@ class _RecordingBackend implements ChannelApiBackend {
   Future<void> setFdroidSources({required List<String> sources}) async {
     calls.add('setFdroidSources:${sources.join(',')}');
   }
+
+  // Todo 2 added the four JS detail-page methods to `ChannelApiBackend`; this
+  // recording fake must implement them to stay a concrete implementation. The
+  // "delegates every method" test below does not exercise them.
+  @override
+  Future<rust.ScriptVersionOptions?> scriptVersionOptions({
+    required String key,
+    required String appId,
+    String? env,
+    String? currentVersion,
+  }) async =>
+      null;
+
+  @override
+  Future<rust.ChannelAppDetailInfo?> scriptSwitchVersion({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+    String? buildJson,
+  }) async =>
+      null;
+
+  @override
+  Future<List<rust.ScriptBuild>> scriptBuildHistory({
+    required String key,
+    required String appId,
+    required String env,
+    required String version,
+  }) async =>
+      const [];
+
+  @override
+  Future<List<rust.ChannelDetailAction>> scriptDetailMenu({
+    required String key,
+    required String appId,
+  }) async =>
+      const [];
+
+  @override
+  Future<void> scriptDetailAction({
+    required String key,
+    required String appId,
+    required String jscall,
+  }) async {}
 }
 
 void main() {

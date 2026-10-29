@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
@@ -64,8 +65,9 @@ class BackupService implements IBackupService {
   /// - 关 → 读旧 Dart 渠道库（legacy backend）。
   ///
   /// 注：core 的 `ChannelAppInfo` 不含 `addTime`/`sourceId`/`apprepo`（FRB 面未
-  /// 暴露），core 车道的导出项 `addTime` 记为 0；旧车道保持原样。此差异已在
-  /// 284 证据中记录。
+  /// 暴露），core 车道的导出项 `addTime` 记为 0；旧车道保持原样。源标识虽无
+  /// 独立字段，却随 `extraJson['sourceId']` 返回，这里必须提到同级 `sourceId`
+  /// ——它是恢复后详情/图标路由回哪个源的唯一依据。此差异已在 284 证据中记录。
   Future<List<ChannelAppBackupItem>> _readChannelBackupItems(
     String code,
   ) async {
@@ -85,6 +87,7 @@ class BackupService implements IBackupService {
                 addTime: 0,
                 channelCode: code,
                 extra: entry.extraJson,
+                sourceId: _sourceIdFromExtraJson(entry.extraJson),
               ))
           .toList();
     }
@@ -855,21 +858,35 @@ class BackupService implements IBackupService {
           backupData.channelApps.isNotEmpty) {
         appLog.info('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
         onLog?.call('导入渠道库数据（${backupData.channelApps.length} 个渠道）...');
-        try {
-          await _importChannelApps(backupData.channelApps, mode);
-          onLog?.call('渠道库导入完成');
-        } on LegacyWriteBlocked catch (blocked) {
-          // 渠道域的写标记已武装（核心拥有渠道库）：RESTORE 语义从"整体失败"
-          // 降级为"typed 部分警告"——catalog 已走核心，渠道元数据留待核心导入。
-          // 绝不写渠道库（_importChannelApps 的 guard 保持 fail-closed）。
-          final warning = CoreWriteBlockedWarning(
-            domain: blocked.domain,
-            operation: 'importData',
-            detail: 'channel restore skipped; the Rust core owns this domain',
-          );
-          result.writeWarnings.add(warning);
-          appLog.warning('BackupService: $warning');
-          onLog?.call(warning.toString(), isError: true);
+        if (CoreFlags.channels) {
+          // 核心拥有渠道域：把备份里真正带 name/icon 的 `channelApps` 段灌进
+          // core 的 `channel_apps`（只写元数据，不动 added_apps 成员关系）。
+          //
+          // 关键：`_addAllAppsToAggregator` 只能拿到聚合库的引用（v3 起 `apps`
+          // 段的 appName 就是 appId 占位），真正的元数据只在这段 `channelApps`
+          // 里。旧实现仍走 legacy Dart 渠道库并被 `LegacyWriteGuard` 拦下，于是
+          // 出现「首页恢复了、发现页不恢复」。这里改为按渠道路由到 core
+          // （js lane 走脚本域存储）。
+          final report = await _importChannelAppsToCore(backupData.channelApps);
+          onLog?.call(
+              '渠道库导入完成（元数据 ${report.restored} 条，失败 ${report.failed} 条）');
+        } else {
+          try {
+            await _importChannelApps(backupData.channelApps, mode);
+            onLog?.call('渠道库导入完成');
+          } on LegacyWriteBlocked catch (blocked) {
+            // 渠道域的写标记已武装（核心拥有渠道库）：RESTORE 语义从"整体失败"
+            // 降级为"typed 部分警告"——catalog 已走核心，渠道元数据留待核心导入。
+            // 绝不写渠道库（_importChannelApps 的 guard 保持 fail-closed）。
+            final warning = CoreWriteBlockedWarning(
+              domain: blocked.domain,
+              operation: 'importData',
+              detail: 'channel restore skipped; the Rust core owns this domain',
+            );
+            result.writeWarnings.add(warning);
+            appLog.warning('BackupService: $warning');
+            onLog?.call(warning.toString(), isError: true);
+          }
         }
       } else {
         debugPrint('BackupService: 无渠道数据需要导入（版本: ${backupData.metadata.version}, 渠道数: ${backupData.channelApps.length}）');
@@ -966,8 +983,13 @@ class BackupService implements IBackupService {
                 .add(t.tag);
           }
           for (final group in tagGroups.entries) {
-            await AddedAppsFacade.instance
-                .setTags(group.key.$1, group.key.$2, group.value);
+            // 旧备份的标签也可能挂在 `local_db` 上：同样映射到 `gstore`，
+            // 避免恢复流程写出任何 `local_db` 行。
+            await AddedAppsFacade.instance.setTags(
+              _mapChannelId(group.key.$1),
+              group.key.$2,
+              group.value,
+            );
           }
           appLog.info('BackupService: ✅ 用户标签恢复完成（${backupData.tags!.length} 个）');
           onLog?.call('用户标签恢复完成');
@@ -1145,23 +1167,327 @@ class BackupService implements IBackupService {
       // 逆序添加：核心 `add` 落 `add_time=now`，后加的排前；逆序是恢复备份
       // 顺序的 best-effort。精确 add_time 顺序由后续 Rust `add_all` 提供。
       for (final a in apps.reversed) {
-        await AddedAppsFacade.instance
-            .add(a.channelId, a.appId, sortOrder: a.sortOrder);
+        // 旧备份的渠道 id 可能仍是 `local_db`（core 接管前的本地库渠道）。
+        // `local_db` 的驱动不再接受写入，也不在首页投影里，恢复时必须落到
+        // 接管的 `gstore` 渠道，否则成员关系「恢复了但看不见」。
+        final channel = _mapChannelId(a.channelId);
+        if (_isReferenceOnlyBackupItem(a)) {
+          // v3 `apps` item: name/icon are placeholders (appName == appId).
+          // Metadata normally comes from `channelApps` via
+          // `_importChannelAppsToCore`; writing the placeholder here would
+          // downgrade a good `channel_apps` row to name=appId, icon=''.
+          //
+          // Older backups have NO `channelApps['local_db']` entry at all (the
+          // legacy `LocalDbChannel.addApp` was `unsupported`, so the export
+          // never produced one). For the mapped `gstore` channel the catalog is
+          // then the only source of real metadata: resolving it and writing via
+          // `add` restores BOTH `channel_apps('gstore')` and the membership.
+          // Other channels keep the membership-only path (no placeholder write).
+          if (channel == 'gstore') {
+            final catalog = await _catalogApp(a.appId);
+            if (catalog != null) {
+              await AddedAppsFacade.instance.add(
+                channel,
+                a.appId,
+                sortOrder: a.sortOrder,
+                appInfo: catalog,
+              );
+              if (!a.isEnabled) {
+                // Same end state as the legacy toggle (membership row removed)
+                // but without re-entering a metadata-writing add branch.
+                await AddedAppsFacade.instance.remove(channel, a.appId);
+              }
+              continue;
+            }
+          }
+          await AddedAppsFacade.instance.addMembership(
+            channel,
+            a.appId,
+            sortOrder: a.sortOrder,
+          );
+          if (!a.isEnabled) {
+            // Same end state as the legacy toggle (membership row removed) but
+            // membership-only: `toggle` canonicalizes and could fall into its
+            // metadata-writing add branch for a placeholder item.
+            await AddedAppsFacade.instance.remove(channel, a.appId);
+          }
+          continue;
+        }
+        // 备份自带 appName/iconUrl：作为 appInfo 传给 facade，由 Rust
+        // `LibraryService` 同一次调用恢复 channel_apps 元数据 + added_apps 引用，
+        // 否则「恢复了首页却没恢复发现页」。js lane 由 Rust 脚本 driver 承接。
+        //
+        // 备份里的 name 为空/等于 appId 时查目录库补真实 name/icon；查不到就
+        // 按原 summary 写入 —— 绝不因为缺元数据丢应用。
+        final summary = _withBackupSource(
+          await _withCatalogMetadata(AppSummary(
+            appId: a.appId,
+            name: a.appName.isNotEmpty ? a.appName : a.appId,
+            user: '',
+            repositories: '',
+            icon: a.iconUrl ?? '',
+            des: a.description ?? '',
+            category: _splitBackupCategory(a.category),
+          )),
+          itemSourceId: a.sourceId,
+          extra: _decodeBackupExtra(a.extra),
+        );
+        await AddedAppsFacade.instance.add(
+          channel,
+          a.appId,
+          sortOrder: a.sortOrder,
+          appInfo: summary,
+        );
         if (!a.isEnabled) {
           // 核心 `add` 恒落 is_enabled=1；禁用项必须补一次 toggle 才能还原。
-          await AddedAppsFacade.instance.toggle(a.channelId, a.appId);
+          await AddedAppsFacade.instance
+              .toggle(channel, a.appId, appInfo: summary);
         }
       }
       appLog.info('BackupService: 成功插入 ${apps.length} 个应用到聚合数据库');
 
       // 打印插入的应用列表
       for (final app in apps) {
-        debugPrint('BackupService: 已插入 - ${app.channelId}/${app.appId}');
+        debugPrint(
+            'BackupService: 已插入 - ${_mapChannelId(app.channelId)}/${app.appId}');
       }
     } catch (e) {
       appLog.error('BackupService: 插入聚合数据库失败 - $e');
       rethrow;
     }
+  }
+
+  /// A backup `apps` item with no real metadata: `fromAddedAppInfo` writes
+  /// `appName = appId` and nulls icon/description/category. Restoring such an
+  /// item must only write membership, never `channel_apps`.
+  bool _isReferenceOnlyBackupItem(BackupAppItem a) =>
+      a.appName == a.appId &&
+      (a.iconUrl == null || a.iconUrl!.isEmpty) &&
+      a.description == null &&
+      a.category == null;
+
+  /// 备份的 `category` 是逗号分隔字符串；空/缺失 → null（不合成分类）。
+  List<String>? _splitBackupCategory(String? raw) {
+    if (raw == null) return null;
+    final items = raw
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+    return items.isEmpty ? null : items;
+  }
+
+  /// 旧备份里的本地库渠道 id 仍可能是 `local_db`。
+  ///
+  /// core 接管后本地库渠道由 `gstore` 承载：`local_db` 的 `add_app` 会返回
+  /// `unsupported`（元数据被丢），成员关系也落在首页投影看不到的旧渠道。
+  /// 恢复时统一把 `local_db` 映射到 `gstore`，其余 id 原样透传。
+  static String _mapChannelId(String id) => id == 'local_db' ? 'gstore' : id;
+
+  /// 元数据兜底：备份里的 name 为空或只是 appId 占位时，用目录库补真实
+  /// name/icon/描述；目录库查不到（或查询失败）时返回原 summary。
+  ///
+  /// 调用方必须写入返回的 summary —— 缺失元数据绝不丢应用。
+  Future<AppSummary> _withCatalogMetadata(AppSummary summary) async {
+    if (summary.name.isNotEmpty && summary.name != summary.appId) {
+      return summary;
+    }
+    final catalog = await _catalogApp(summary.appId);
+    if (catalog == null) return summary;
+    return summary.copyWith(
+      packageName: catalog.packageName ?? summary.packageName,
+      name: catalog.name.isNotEmpty ? catalog.name : summary.name,
+      user: catalog.user.isNotEmpty ? catalog.user : summary.user,
+      repositories:
+          catalog.repositories.isNotEmpty ? catalog.repositories : summary.repositories,
+      icon: catalog.icon.isNotEmpty ? catalog.icon : summary.icon,
+      des: catalog.des.isNotEmpty ? catalog.des : summary.des,
+      category: catalog.category ?? summary.category,
+    );
+  }
+
+  /// 目录库查询（best-effort）：任何失败都降级为 null。
+  Future<AppSummary?> _catalogApp(String appId) async {
+    try {
+      return await CatalogFacade.instance.getApp(appId);
+    } catch (error) {
+      appLog.warning('BackupService: 目录库补元数据失败 - $appId: $error');
+      return null;
+    }
+  }
+
+  /// 把备份 `channelApps` 段的元数据写入核心 `channel_apps`（**只写元数据**）。
+  ///
+  /// 非脚本渠道走 `ChannelManager.addAppByCode`（core 拥有渠道域时即
+  /// `ChannelApi.addApp`）；脚本渠道走 `RustScriptChannelLane.addApp`。
+  /// 不写 `added_apps` —— 成员关系已由 [_addAllAppsToAggregator] 恢复，这里只
+  /// 负责让首页/发现页/详情能读到真实 name/icon。
+  Future<({int restored, int failed})> _importChannelAppsToCore(
+    Map<String, List<ChannelAppBackupItem>> channelAppsMap,
+  ) async {
+    var restored = 0;
+    var failed = 0;
+    final lane = RustScriptChannelLane.instance;
+    for (final entry in channelAppsMap.entries) {
+      // 旧备份把本地库渠道记成 `local_db`：写它只会命中不支持的旧驱动
+      // （`add_app` → unsupported），元数据被丢。统一落到 `gstore`。
+      final code = _mapChannelId(entry.key);
+      final isLane = lane.enabled && lane.packFor(code) != null;
+      for (final item in entry.value) {
+        final summary = _withBackupSource(
+          await _withCatalogMetadata(AppSummary(
+            appId: item.appId,
+            name: item.name.isNotEmpty ? item.name : item.appId,
+            user: item.user,
+            repositories: item.repositories,
+            icon: item.icon,
+            des: item.description,
+            category: _splitBackupCategory(item.category),
+            extra: _decodeBackupExtra(item.extra),
+          )),
+          itemSourceId: item.sourceId,
+          extra: _decodeBackupExtra(item.extra),
+        );
+        try {
+          if (isLane) {
+            await lane.addApp(code, summary);
+            restored++;
+            continue;
+          }
+          final result =
+              await ChannelManager.instance.addAppByCode(code, summary);
+          if (result.success) {
+            restored++;
+          } else {
+            failed++;
+            appLog.warning(
+                'BackupService: 恢复渠道元数据失败 - $code/${item.appId}: ${result.error}');
+          }
+        } catch (error) {
+          failed++;
+          appLog.error(
+              'BackupService: 恢复渠道元数据失败 - $code/${item.appId}: $error');
+        }
+      }
+    }
+    appLog.info('BackupService: 渠道元数据导入完成 - 成功 $restored，失败 $failed');
+    return (restored: restored, failed: failed);
+  }
+
+  /// 备份的 `extra` 是 JSON 字符串；非法/缺失 → null（不抛）。
+  Map<String, dynamic>? _decodeBackupExtra(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// core 的 `ChannelAppInfo` 把记录所属源放在 `extraJson['sourceId']`。
+  String? _sourceIdFromExtraJson(String? raw) {
+    final value = _decodeBackupExtra(raw)?['sourceId']?.toString().trim();
+    return (value == null || value.isEmpty) ? null : value;
+  }
+
+  /// 恢复时补齐记录所属的源，并让图标不再依赖 `source_id`。
+  ///
+  /// - `extra['sourceId']` 只在缺失时由备份项的 `sourceId` 补齐（不覆盖已有值）；
+  /// - 旧备份存的是源**标识**（`fp:<HEX>`、`url:<url>`、源 id），而 Rust 驱动
+  ///   只认同配置里的源 URL，能映射就先映射成 URL；
+  /// - 图标是仓库内相对键（`icons/<pkg>.png`）时按该源解析成绝对地址，与
+  ///   Rust `FdroidDriver::absolute_icon_url` 同语义。映射不到源时原样保留：
+  ///   绝不猜源，也绝不因此丢应用。
+  AppSummary _withBackupSource(
+    AppSummary summary, {
+    String? itemSourceId,
+    Map<String, dynamic>? extra,
+  }) {
+    final merged = <String, dynamic>{...?extra};
+    final fromExtra = merged['sourceId']?.toString().trim();
+    final identity = (fromExtra != null && fromExtra.isNotEmpty)
+        ? fromExtra
+        : itemSourceId?.trim();
+    if (identity == null || identity.isEmpty) {
+      return merged.isEmpty ? summary : summary.copyWith(extra: merged);
+    }
+    final sourceUrl = _sourceUrlForIdentity(identity);
+    merged['sourceId'] = sourceUrl ?? identity;
+    return summary.copyWith(
+      extra: merged,
+      icon: sourceUrl == null
+          ? summary.icon
+          : _absoluteIcon(summary.icon, summary.appId, sourceUrl),
+    );
+  }
+
+  /// 源标识 → 可路由的源 URL（旧标识交给 [FdroidRepoManager.resolveSourceUrl]
+  /// 按读侧 `identityMatches` 的规则核对自己配置的源）。
+  static String? _sourceUrlForIdentity(String identity) {
+    final raw = identity.trim();
+    if (raw.isEmpty) return null;
+    if (_isHttpUrl(raw)) return _trimUrl(raw);
+    if (raw.length > 4 && raw.substring(0, 4).toLowerCase() == 'url:') {
+      final inner = raw.substring(4);
+      if (_isHttpUrl(inner)) return _trimUrl(inner);
+    }
+    try {
+      final url = FdroidRepoManager.instance.resolveSourceUrl(raw);
+      return (url == null || url.isEmpty) ? null : _trimUrl(url);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _isHttpUrl(String value) =>
+      value.startsWith('http://') || value.startsWith('https://');
+
+  /// 驱动的 `normalize_source` 语义：去首尾空白 + 去掉尾部 `/`。
+  static String _trimUrl(String url) {
+    var value = url.trim();
+    while (value.endsWith('/')) {
+      value = value.substring(0, value.length - 1);
+    }
+    return value;
+  }
+
+  /// Rust `FdroidDriver::absolute_icon_url` 的等价物。
+  static String _absoluteIcon(String icon, String appId, String sourceUrl) {
+    if (icon.isEmpty) {
+      return appId.isEmpty
+          ? _trimUrl(sourceUrl)
+          : _joinRepoUrl(sourceUrl, 'icons/$appId.png');
+    }
+    return _joinRepoUrl(sourceUrl, _repoAssetPath(icon));
+  }
+
+  /// Rust `normalize_repo_asset_path`：绝对地址原样保留，否则取最后一个
+  /// `/repo/` 之后的部分并去掉前导 `/`。
+  static String _repoAssetPath(String raw) {
+    if (_isHttpUrl(raw)) return raw;
+    var value = raw;
+    final query = value.indexOf('?');
+    if (query >= 0) value = value.substring(0, query);
+    final marker = value.lastIndexOf('/repo/');
+    if (marker >= 0) value = value.substring(marker + '/repo/'.length);
+    var start = 0;
+    while (start < value.length && value.codeUnitAt(start) == 0x2F) {
+      start++;
+    }
+    return value.substring(start);
+  }
+
+  /// Rust `join_repo_url`：绝对路径原样返回，空路径返回基址。
+  static String _joinRepoUrl(String base, String path) {
+    if (_isHttpUrl(path)) return path;
+    final trimmedBase = _trimUrl(base);
+    var start = 0;
+    while (start < path.length && path.codeUnitAt(start) == 0x2F) {
+      start++;
+    }
+    final trimmedPath = path.substring(start);
+    return trimmedPath.isEmpty ? trimmedBase : '$trimmedBase/$trimmedPath';
   }
 
   /// 导入渠道数据库应用

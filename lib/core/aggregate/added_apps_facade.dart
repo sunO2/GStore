@@ -1,8 +1,11 @@
 /// Core-only facade over added apps and user tags.
 ///
-/// The legacy Dart store (`AppAddedDatabase`) was deleted, so this facade now
-/// routes exclusively to the FRB `AddedAppsApi` ([FrbAddedAppsBackend]). Reads
-/// are joined by the DB-free [AppAggregatorManager.aggregateWithMeta].
+/// Every write and read routes to the shared `rust.LibraryApi` obtained from
+/// [RustChannelFacade.library] — the same `ChannelApi` (one database handle,
+/// one driver set) the channel domain uses. The Rust `LibraryService` owns the
+/// "channel metadata first, membership second" write, and the Rust
+/// `AggregationService` owns the unified home-page read model, so Dart never
+/// performs a per-row `channel_apps` join.
 library;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -10,14 +13,21 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart' show appSummaryFromRust;
+import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/script/rust_script_lane.dart' show channelAppInfoFromSummary;
 
 /// Injectable added-apps transport seam.
 abstract class AddedAppsBackend {
   Future<void> add(String channel, String appId,
       {int? sortOrder, AppSummary? appInfo});
+
+  /// Adds only the `added_apps` membership row; never writes `channel_apps`.
+  Future<void> addMembership(String channel, String appId, {int? sortOrder});
 
   Future<bool> remove(String channel, String appId);
 
@@ -25,7 +35,7 @@ abstract class AddedAppsBackend {
 
   Future<void> setOrder(String channel, String appId, int sortOrder);
 
-  Future<bool> toggle(String channel, String appId);
+  Future<bool> toggle(String channel, String appId, {AppSummary? appInfo});
 
   Future<void> clearChannel(String channel);
 
@@ -42,6 +52,13 @@ abstract class AddedAppsBackend {
   Future<int> totalCount();
 
   Future<int> countChannel(String channel);
+
+  /// Unified library read: one page of the Rust `LibraryApi.page` model plus
+  /// the raw `added_apps` row total.
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  });
 
   Future<void> setTags(String channel, String appId, List<String> tags);
 
@@ -61,73 +78,84 @@ abstract class AddedAppsBackend {
   Future<void> notifyChanged();
 }
 
-/// Production FRB backend.
+/// Production backend over the shared `rust.LibraryApi`.
+///
+/// Every method forwards to the library facade returned by
+/// [ChannelApiBackend.library] (default: [RustChannelFacade.instance]), so the
+/// added-apps writes/reads and the channel domain share ONE `ChannelApi` (one
+/// database handle + one driver set).
 class FrbAddedAppsBackend implements AddedAppsBackend {
-  FrbAddedAppsBackend({this.dataDir, this.filesDir, this.cacheDir});
+  FrbAddedAppsBackend({
+    ChannelApiBackend? channels,
+    this.dataDir,
+    this.filesDir,
+    this.cacheDir,
+  }) : _channelsOverride = channels;
 
+  final ChannelApiBackend? _channelsOverride;
+
+  /// Legacy directory hints used only by [rename] (see [_ensureRenameApi]).
   final String? dataDir;
   final String? filesDir;
   final String? cacheDir;
 
-  rust.AddedAppsApi? _api;
-  Future<rust.AddedAppsApi>? _pending;
+  /// Legacy handle for [rename] only: `rust.LibraryApi` exposes no rename.
+  rust.AddedAppsApi? _renameApi;
+  Future<rust.AddedAppsApi>? _renamePending;
 
-  Future<rust.AddedAppsApi> _ensureApi() {
-    final existing = _api;
-    if (existing != null) return Future.value(existing);
-    return _pending ??= _create();
-  }
+  /// Resolved lazily so a test-installed `RustChannelFacade` backend is seen
+  /// even though `AddedAppsFacade` (and this backend) may be constructed first.
+  ChannelApiBackend get _channels =>
+      _channelsOverride ?? RustChannelFacade.instance.backend;
 
-  Future<rust.AddedAppsApi> _create() async {
+  Future<rust.LibraryApi> _library() => _channels.library();
+
+  Future<T> _call<T>(Future<T> Function(rust.LibraryApi api) action) async {
+    final api = await _library();
     try {
-      await RustBridge.ensureInitialized();
-      final dirs = await _resolveDirs();
-      final api = await rust.AddedAppsApi.init(
-        dataDir: dirs.$1,
-        filesDir: dirs.$2,
-        cacheDir: dirs.$3,
-      );
-      _api = api;
-      return api;
-    } finally {
-      _pending = null;
+      return await action(api);
+    } catch (error) {
+      final typed = ChannelApiException.tryParse(error);
+      if (typed != null) throw typed;
+      rethrow;
     }
-  }
-
-  Future<(String, String, String)> _resolveDirs() async {
-    if (dataDir != null && filesDir != null && cacheDir != null) {
-      return (dataDir!, filesDir!, cacheDir!);
-    }
-    final support = await getApplicationSupportDirectory();
-    final root = '${support.path}/gstore_core';
-    return ('$root/data', '$root/files', '$root/cache');
-  }
-
-  Future<T> _call<T>(Future<T> Function(rust.AddedAppsApi api) action) async {
-    final api = await _ensureApi();
-    return action(api);
   }
 
   @override
   Future<void> add(String channel, String appId,
           {int? sortOrder, AppSummary? appInfo}) =>
-      _call((api) => api.add(
-            channel: channel,
-            appId: appId,
-            sortOrder: sortOrder,
-          ));
+      _call((api) async {
+        await api.add(
+          channel: channel,
+          app: _channelAppInfo(appId, appInfo),
+          sortOrder: sortOrder,
+        );
+      });
+
+  @override
+  Future<void> addMembership(String channel, String appId,
+          {int? sortOrder}) =>
+      _call((api) async {
+        await api.addMembership(
+          channel: channel,
+          appId: appId,
+          sortOrder: sortOrder,
+        );
+      });
 
   @override
   Future<bool> remove(String channel, String appId) =>
       _call((api) => api.remove(channel: channel, appId: appId));
 
   @override
-  Future<void> rename(String channel, String oldAppId, String newAppId) =>
-      _call((api) => api.rename(
-            channel: channel,
-            oldAppId: oldAppId,
-            newAppId: newAppId,
-          ));
+  Future<void> rename(String channel, String oldAppId, String newAppId) async {
+    final api = await _ensureRenameApi();
+    await api.rename(
+      channel: channel,
+      oldAppId: oldAppId,
+      newAppId: newAppId,
+    );
+  }
 
   @override
   Future<void> setOrder(String channel, String appId, int sortOrder) =>
@@ -138,8 +166,11 @@ class FrbAddedAppsBackend implements AddedAppsBackend {
           ));
 
   @override
-  Future<bool> toggle(String channel, String appId) =>
-      _call((api) => api.toggle(channel: channel, appId: appId));
+  Future<bool> toggle(String channel, String appId, {AppSummary? appInfo}) =>
+      _call((api) => api.toggle(
+            channel: channel,
+            app: _channelAppInfo(appId, appInfo),
+          ));
 
   @override
   Future<void> clearChannel(String channel) =>
@@ -177,6 +208,19 @@ class FrbAddedAppsBackend implements AddedAppsBackend {
       )).then((value) => value.toInt());
 
   @override
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  }) =>
+      _call((api) async {
+        final page = await api.page(offset: offset, limit: limit);
+        final apps = page.entries
+            .map(aggregatedAppFromLibraryEntry)
+            .toList(growable: false);
+        return (apps, page.total.toInt());
+      });
+
+  @override
   Future<void> setTags(String channel, String appId, List<String> tags) =>
       _call((api) => api.setTags(channel: channel, appId: appId, tags: tags));
 
@@ -209,6 +253,74 @@ class FrbAddedAppsBackend implements AddedAppsBackend {
 
   List<AddedAppInfo> _mapApps(List<rust.AddedAppEntry> entries) =>
       entries.map(addedAppFromRust).toList(growable: false);
+
+  /// Lazily opens the legacy added-apps API, used ONLY by [rename] (the
+  /// `LibraryApi` surface has no rename). Never touched by add/toggle/page.
+  Future<rust.AddedAppsApi> _ensureRenameApi() {
+    final existing = _renameApi;
+    if (existing != null) return Future.value(existing);
+    return _renamePending ??= _createRenameApi();
+  }
+
+  Future<rust.AddedAppsApi> _createRenameApi() async {
+    try {
+      await RustBridge.ensureInitialized();
+      final dirs = await _resolveDirs();
+      final api = await rust.AddedAppsApi.init(
+        dataDir: dirs.$1,
+        filesDir: dirs.$2,
+        cacheDir: dirs.$3,
+      );
+      _renameApi = api;
+      return api;
+    } finally {
+      _renamePending = null;
+    }
+  }
+
+  Future<(String, String, String)> _resolveDirs() async {
+    if (dataDir != null && filesDir != null && cacheDir != null) {
+      return (dataDir!, filesDir!, cacheDir!);
+    }
+    final support = await getApplicationSupportDirectory();
+    final root = '${support.path}/gstore_core';
+    return ('$root/data', '$root/files', '$root/cache');
+  }
+}
+
+/// Builds the `rust.ChannelAppInfo` written by the Rust library service.
+///
+/// When the caller has no real metadata (legacy call sites), a placeholder
+/// carrying the app id is used; callers that know the name/icon must pass it so
+/// the Rust `channel_apps` row is complete.
+rust.ChannelAppInfo _channelAppInfo(String appId, AppSummary? appInfo) {
+  if (appInfo != null) return channelAppInfoFromSummary(appInfo);
+  return rust.ChannelAppInfo(
+    appId: appId,
+    name: appId,
+    user: '',
+    repositories: '',
+    icon: '',
+    des: '',
+    category: const <String>[],
+    labels: const <rust.ChannelLabel>[],
+  );
+}
+
+/// Maps one `LibraryEntry` from `LibraryApi.page` to the home-list model.
+AggregatedAppInfo aggregatedAppFromLibraryEntry(rust.LibraryEntry entry) {
+  final channel = ChannelType.fromCode(entry.channelKind) ??
+      ChannelType.fromCode(entry.channelCode) ??
+      ChannelType.custom;
+  return AggregatedAppInfo(
+    addedAppInfo: addedAppFromRust(entry.added),
+    appInfo: appSummaryFromRust(entry.app),
+    channel: channel,
+    channelCode: entry.channelCode,
+    isFromCache: entry.isFromCache,
+    error: entry.error,
+    metadataState: entry.metadataState,
+  );
 }
 
 /// Maps one FRB entry to the existing Dart `AddedAppInfo` model.
@@ -246,6 +358,11 @@ class AddedAppsFacade {
       (await _backend())
           .add(channel, appId, sortOrder: sortOrder, appInfo: appInfo);
 
+  /// Restores only membership: never writes `channel_apps` metadata.
+  Future<void> addMembership(String channel, String appId,
+          {int? sortOrder}) async =>
+      (await _backend()).addMembership(channel, appId, sortOrder: sortOrder);
+
   Future<bool> remove(String channel, String appId) async =>
       (await _backend()).remove(channel, appId);
 
@@ -255,8 +372,9 @@ class AddedAppsFacade {
   Future<void> setOrder(String channel, String appId, int sortOrder) async =>
       (await _backend()).setOrder(channel, appId, sortOrder);
 
-  Future<bool> toggle(String channel, String appId) async =>
-      (await _backend()).toggle(channel, appId);
+  Future<bool> toggle(String channel, String appId,
+          {AppSummary? appInfo}) async =>
+      (await _backend()).toggle(channel, appId, appInfo: appInfo);
 
   Future<void> clearChannel(String channel) async =>
       (await _backend()).clearChannel(channel);
@@ -279,36 +397,24 @@ class AddedAppsFacade {
   Future<int> countChannel(String channel) async =>
       (await _backend()).countChannel(channel);
 
-  /// Aggregated read: rows and tags come from the core backend; the metadata
-  /// join is delegated to the (pure) [AppAggregatorManager.aggregateWithMeta],
-  /// which reads no catalog DB and never calls back into this facade — so it
-  /// cannot recurse.
+  /// Unified home read: one page of the Rust `LibraryApi.page` model.
+  ///
+  /// The Rust `AggregationService` resolves each membership row
+  /// (driver → `channel_apps` → placeholder), merges tags/categories and
+  /// reports the provenance as `metadataState`. `total` stays the raw
+  /// `added_apps` row count and `offset`/`limit` keep the raw-row semantics, so
+  /// paging/scroll behaviour is unchanged.
   Future<(List<AggregatedAppInfo>, int)> getAggregatedAppsPage({
     required int offset,
     required int limit,
-  }) async {
-    final backend = await _backend();
-    final rows = await backend.list();
-    final tags = await backend.tagsIndex();
-    final total = rows.length;
-    if (offset >= total || limit <= 0) {
-      return (<AggregatedAppInfo>[], total);
-    }
-    final end = (offset + limit > total) ? total : offset + limit;
-    final apps = await AppAggregatorManager.instance.aggregateWithMeta(
-      rows.sublist(offset, end),
-      tagsIndex: tags,
-    );
-    return (apps, total);
-  }
+  }) async =>
+      (await _backend()).page(offset: offset, limit: limit);
 
-  /// Flag-routed full aggregated read (no slicing); see
-  /// [getAggregatedAppsPage] for the recursion argument.
-  Future<List<AggregatedAppInfo>> getAggregatedApps() async {    final backend = await _backend();
-    final rows = await backend.list();
-    final tags = await backend.tagsIndex();
-    return AppAggregatorManager.instance
-        .aggregateWithMeta(rows, tagsIndex: tags);
+  /// Full unified read (no slicing).
+  Future<List<AggregatedAppInfo>> getAggregatedApps() async {
+    final (apps, _) =
+        await (await _backend()).page(offset: 0, limit: 0x7fffffff);
+    return apps;
   }
 
   Future<void> setTags(String channel, String appId, List<String> tags) async =>

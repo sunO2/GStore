@@ -480,19 +480,33 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
   }
 
-  /// 把启用的源地址推送给 Rust core 的 F-Droid 驱动。
+  /// 把启用的源（含镜像配置）推送给 Rust core 的 F-Droid 驱动。
   ///
   /// core 无法读取 Dart 配置存储（SharedPreferences），因此每次源变化后由本类
   /// 主动推送；best-effort，失败只记日志，绝不影响本地源配置。
+  ///
+  /// FRB 边界仍为 `setFdroidSources(sources: List<String>)`：每个源编码成一个
+  /// JSON 字符串（url + 启用的镜像 + mirror_first），core 侧解析后持久化并使用
+  /// 镜像下载索引；裸 URL 字符串仍兼容。
   Future<void> _pushSourcesToCore() async {
     try {
-      final urls = _sources
+      final payloads = _sources
           .where((source) => source.enabled)
-          .map((source) => source.repoUrl)
-          .where((url) => url.trim().isNotEmpty)
+          .where((source) => source.repoUrl.trim().isNotEmpty)
+          .map((source) => jsonEncode({
+                'id': source.id,
+                'name': source.name,
+                'url': source.repoUrl,
+                'mirrors': [
+                  for (final m in source.mirrors)
+                    if (m.enabled) m.url,
+                ],
+                'mirror_first': source.useMirrors,
+                'enabled': true,
+              }))
           .toList();
-      await RustChannelFacade.instance.setFdroidSources(sources: urls);
-      appLog.info('FdroidRepoManager: 已推送 ${urls.length} 个启用源到 Rust core');
+      await RustChannelFacade.instance.setFdroidSources(sources: payloads);
+      appLog.info('FdroidRepoManager: 已推送 ${payloads.length} 个启用源（含镜像）到 Rust core');
     } catch (e) {
       appLog.warning('FdroidRepoManager: 推送源到 Rust core 失败（不影响本地源） - $e');
     }
@@ -793,6 +807,19 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   /// 搜索应用
   Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50}) =>
       searchAppsAcross(keyword, limit: limit);
+
+  /// 记录里的源标识 → 该源现在可路由的仓库地址。
+  ///
+  /// 历史记录存的是逻辑身份（`fp:<HEX>` / `url:<url>`）或源 id，而 core 驱动
+  /// 只认同已配置的源 URL。能映射就返回 URL，映射不到返回 null —— 绝不猜源。
+  String? resolveSourceUrl(String? stored) {
+    final raw = stored?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    final candidates = _sources.any((source) => source.id == 'official')
+        ? _sources
+        : <FdroidSource>[..._sources, FdroidSource.official];
+    return rust.FdroidRustRepoManager.sourceUrlForIdentity(candidates, raw);
+  }
 
   /// 精确查询应用（通过 packageName）
   ///

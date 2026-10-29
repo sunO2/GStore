@@ -27,6 +27,7 @@ fn app(app_id: &str) -> AppSummary {
         readme: None,
         category: Some(vec!["Tools".to_string()]),
         extra: None,
+        labels: Vec::new(),
     }
 }
 

@@ -367,6 +367,7 @@ fn app_update(app_id: &str, package: &str) -> AppUpdate {
             sections: vec![DetailSection::Version, DetailSection::Downloads],
             downloads: vec![download],
             extra: serde_json::Map::new(),
+            labels: Vec::new(),
         },
     }
 }

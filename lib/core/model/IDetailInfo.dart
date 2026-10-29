@@ -62,6 +62,12 @@ abstract class IDetailInfo {
   /// 存储渠道特有的额外信息
   Map<String, dynamic> get extra;
 
+  /// 动态展示标签（渠道 typed DTO 的 `labels`；空即空，不合成）。
+  ///
+  /// 默认空：legacy 渠道代理与测试替身没有 typed labels，保持为空；
+  /// 由 `AppDetailInfoView` / `_ProgressiveDetailInfo` 覆写为真实数据。
+  List<AppLabel> get labels => const [];
+
   /// 获取README/详情文本
   String? get readme;
 

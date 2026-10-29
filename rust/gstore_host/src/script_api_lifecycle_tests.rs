@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gstore_core::dto::AppSummary;
 use gstore_core::ports::{HttpOptions, HttpResponse};
 use serde_json::Value;
 
@@ -761,4 +762,91 @@ fn script_api_list_skips_a_pack_whose_version_dir_is_missing() {
     assert_eq!(list.len(), 1, "{list:?}");
     assert_eq!(list[0].key, "js_keep");
     println!("PASS | list          | a broken pack is skipped, the healthy pack is listed");
+}
+
+/// The demoted `ScriptApi` surface: pack lifecycle + `env` + `config` only.
+///
+/// The JS **data** engine (`ScriptApi::run`) is `#[frb(ignore)]`d, so the
+/// generated Dart binding has no `run` and the Dart data path reads JS channel
+/// data through `ChannelApi` / `RustChannelFacade`. This test proves the
+/// retained surface still round-trips and that `run` is off the FRB
+/// (Dart-facing) wire while remaining a crate-internal `ScriptApiInner` method.
+#[test]
+fn script_api_lifecycle_only() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let harness = fast_harness("lifecycle-only");
+
+    let entry = "function main(method){ return method === 'getAllApps' ? \
+                 { ok: true, data: [] } : null; }";
+    let info = harness
+        .api
+        .import(
+            zip_with(entry, None, Some(r#"{"name":"LifeOnly"}"#)),
+            Some("js_life_only".to_string()),
+        )
+        .expect("import");
+    assert_eq!(info.key, "js_life_only");
+
+    let list = harness.api.list().expect("list");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].key, "js_life_only");
+
+    // storedApps / addApp: the retained script-domain store.
+    assert_eq!(
+        harness.api.stored_apps("js_life_only").expect("stored"),
+        "[]"
+    );
+    harness
+        .api
+        .add_app(
+            "js_life_only",
+            AppSummary {
+                app_id: "com.example.life".to_string(),
+                package_name: Some("com.example.life.pkg".to_string()),
+                name: "LifeOnly".to_string(),
+                user: "team".to_string(),
+                repositories: "repo".to_string(),
+                icon: "icon".to_string(),
+                des: "desc".to_string(),
+                readme: None,
+                category: Some(vec!["Tools".to_string()]),
+                extra: None,
+                labels: Vec::new(),
+            },
+        )
+        .expect("add_app");
+    let stored = harness.api.stored_apps("js_life_only").expect("stored");
+    assert!(stored.contains("com.example.life"), "{stored}");
+
+    // env: the retained channel-scoped snapshot.
+    let mut env = HashMap::new();
+    env.insert("FOO".to_string(), "bar".to_string());
+    harness.api.set_env("js_life_only", env).expect("set_env");
+    let env_json: Value =
+        serde_json::from_str(&harness.api.env("js_life_only").expect("env")).expect("env json");
+    assert_eq!(env_json["FOO"], "bar");
+
+    // config: the retained hot-update snapshot.
+    let mut config = HashMap::new();
+    config.insert("k".to_string(), "\"v\"".to_string());
+    harness
+        .api
+        .set_config("js_life_only", config)
+        .expect("set_config");
+
+    // refresh + remove: lifecycle.
+    assert_eq!(
+        harness.api.refresh("js_life_only").expect("refresh").key,
+        "js_life_only"
+    );
+    harness.api.remove("js_life_only").expect("remove");
+    assert!(harness.api.list().expect("list").is_empty());
+
+    // `run` is off the FRB (Dart-facing) surface: the generated wire has no
+    // `ScriptApi_run` binding. It survives only as a crate-internal engine.
+    assert!(
+        !include_str!("frb_generated.rs").contains("ScriptApi_run"),
+        "ScriptApi::run must be off the FRB (Dart-facing) surface"
+    );
+    let _internal_engine = crate::script_api::ScriptApiInner::run;
 }

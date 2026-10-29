@@ -24,6 +24,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -86,7 +87,10 @@ const CHANNEL_META = { name: 'vivo 渠道', description: 'import fixture' };
 function main(method, params) {
   params = params || {};
   if (method === 'getAllApps') {
-    return { ok: true, data: 'imported:' + (params.token || '') };
+    return { ok: true, data: [{ appId: 'imported', name: 'vivo' }] };
+  }
+  if (method === 'searchApps') {
+    return { ok: true, data: [{ appId: 'imported:' + (params.keyword || ''), name: 'vivo' }] };
   }
   return null;
 }
@@ -169,13 +173,14 @@ void main() {
         // settings list / discovery grid can see it without a restart.
         expect(RustScriptChannelLane.instance.codes, contains('js_vivo'));
 
-        // And the installed pack is actually usable through the Rust runtime.
-        final raw = await ScriptApi.instance.run(
+        // And the installed pack is actually usable through the unified channel
+        // entry (`ChannelApi` / `RustChannelFacade`), not `ScriptApi.run`.
+        final apps = await RustChannelFacade.instance.search(
           key: 'js_vivo',
-          method: 'getAllApps',
-          paramsJson: '{"token":"e2e"}',
+          keyword: 'e2e',
+          forceRefresh: false,
         );
-        expect(jsonDecode(raw), 'imported:e2e');
+        expect(apps.single.appId, 'imported:e2e');
       },
       skip: skipReason,
     );
@@ -200,12 +205,12 @@ void main() {
         final lane = RustScriptChannelLane.instance;
         expect(lane.codes, contains('js_vivo'),
             reason: 'a malformed meta.json must not hide the imported channel');
-        final raw = await ScriptApi.instance.run(
+        final apps = await RustChannelFacade.instance.search(
           key: 'js_vivo',
-          method: 'getAllApps',
-          paramsJson: '{"token":"badmeta"}',
+          keyword: 'badmeta',
+          forceRefresh: false,
         );
-        expect(jsonDecode(raw), 'imported:badmeta');
+        expect(apps.single.appId, 'imported:badmeta');
       },
       skip: skipReason,
     );
@@ -305,14 +310,6 @@ class _RecordingScriptApi implements ScriptApiBackend {
     required String key,
     required Map<String, String> config,
   }) async {}
-
-  @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async =>
-      'null';
 
   @override
   Future<List<rust_pack.ScriptPackInfo>> list() async =>

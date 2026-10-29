@@ -1,14 +1,25 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:gstore/compent/app_label_chips.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart' show AppLabel;
 
 class AppItemWidget extends StatelessWidget {
   final String? appName;
   final String? appIcon;
   final GestureTapCallback? onTap;
 
-  const AppItemWidget({super.key, this.appName, this.appIcon, this.onTap});
+  /// 动态标签（来自渠道 typed DTO；有界，空即不渲染）。
+  final List<AppLabel> labels;
+
+  const AppItemWidget({
+    super.key,
+    this.appName,
+    this.appIcon,
+    this.onTap,
+    this.labels = const [],
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -63,7 +74,12 @@ class AppItemWidget extends StatelessWidget {
                 style: const TextStyle(
                   fontWeight: AppTypography.weightExtraBold,
                 ),
-              ))
+              )),
+          // 动态标签（来自渠道 typed DTO；有界，空即不渲染）
+          if (labels.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            AppLabelChips(labels: labels),
+          ],
         ],
       ),
     );

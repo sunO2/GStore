@@ -2,7 +2,21 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 
-/// 脚本渠道详情代理：包装脚本 getAppDetail 返回的原始 Map，实现 [IDetailInfo]
+/// 脚本渠道详情代理：包装脚本 getAppDetail 返回的原始 Map，实现 [IDetailInfo]。
+///
+/// **它不是 JS 通道的数据转换器（Todo 5）。** Rust 通道上 app/detail 的唯一数据转换
+/// 是「typed DTO 投影」：`catalog_facade.dart` 的 `appSummaryFromRust` /
+/// `appDetailFromRust`，以及 `rust_script_detail_mapping.dart` 的 `detailToMap`
+/// （FRB `ChannelAppDetailInfo` → 本代理消费的 Map）。本类只做页面渲染层的
+/// `Map → IDetailInfo` 适配，且仍被 JS 通道渲染路径引用：
+/// - `lib/page/detail/logic.dart` 的 `refreshDetail` / `updateDetail`（JS detail channel
+///   经 `callbacks.refreshDetail` 推入 typed 投影后的 Map）；
+/// - `lib/core/script/script_ui_handler_registry.dart` 的 `updateDownloadList`；
+/// - `lib/page/detail/detail_ui_mixins.dart` 的历史构建下载（解析 switchVersion 的
+///   `downloads`）。
+///
+/// 故保留（删除会破坏 JS 详情页渲染）。旧的 `appSummaryFromScript`
+/// （`lib/core/channel/impl/js_script_utils.dart`）是已退役的重复转换器，已删除。
 class JsChannelDetailProxy extends ChannelDetailProxy {
   JsChannelDetailProxy(super.data);
 

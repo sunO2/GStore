@@ -55,10 +55,6 @@ class _FakeScriptBackend implements ScriptApiBackend {
   final Map<String, rust_pack.ScriptPackInfo> packs = {};
   final Map<String, List<Map<String, Object?>>> stored = {};
 
-  /// Script entry-point results (`searchApps`/`getAllApps`), camelCase shape.
-  final Map<String, List<Map<String, Object?>>> scriptResults = {};
-  final List<String> runCalls = [];
-
   /// Script-domain insert records (the lane save path).
   final List<String> addAppKeys = [];
   rust.ChannelAppInfo? lastAddedApp;
@@ -127,19 +123,6 @@ class _FakeScriptBackend implements ScriptApiBackend {
     required String key,
     required Map<String, String> config,
   }) async {}
-
-  @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    runCalls.add('$key:$method');
-    if (method == 'searchApps' || method == 'getAllApps') {
-      return jsonEncode(scriptResults[key] ?? const <Object?>[]);
-    }
-    return 'null';
-  }
 
   @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
@@ -312,6 +295,28 @@ class _FakeEnumChannel extends IChannel {
 class _FakeChannelApiBackend implements ChannelApiBackend {
   final List<String> addAppKeys = [];
 
+  /// The unified channel search path (Todo 3): the lane reads `searchApps`
+  /// through `RustChannelFacade.search`.
+  final Map<String, List<rust.ChannelAppInfo>> searchResults = {};
+  final List<String> searchCalls = [];
+
+  @override
+  Future<List<rust.ChannelAppInfo>> search({
+    required String key,
+    required String keyword,
+    required bool forceRefresh,
+  }) async {
+    searchCalls.add('$key:$keyword');
+    return searchResults[key] ?? const [];
+  }
+
+  @override
+  Future<List<rust.ChannelAppInfo>> listApps({
+    required String key,
+    required bool forceRefresh,
+  }) async =>
+      const [];
+
   @override
   Future<void> addApp({
     required String key,
@@ -324,6 +329,19 @@ class _FakeChannelApiBackend implements ChannelApiBackend {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
       'unused facade method: ${invocation.memberName}');
 }
+
+/// One `rust.ChannelAppInfo` as `ChannelApi.search` would emit it.
+rust.ChannelAppInfo _channelAppInfo(String appId, String name) =>
+    rust.ChannelAppInfo(
+      appId: appId,
+      name: name,
+      user: '',
+      repositories: '',
+      icon: '',
+      des: 'desc',
+      category: const <String>[],
+      labels: const <rust.ChannelLabel>[],
+    );
 
 /// Minimal aggregate seam: records `getAddedAppsIndex` reads and returns a
 /// mutable [index] so a test can prove `_updateAddedAppsIndex` ran after a save.
@@ -439,9 +457,6 @@ void main() {
     backend.stored['js_probe'] = [
       _storedRow(appId: 'com.probe', name: 'Probe App'),
     ];
-    backend.scriptResults['js_probe'] = [
-      {'appId': 'com.probe', 'name': 'Probe App', 'des': 'desc'},
-    ];
     return 'js_probe';
   }
 
@@ -486,19 +501,24 @@ void main() {
       );
     });
 
-    test('(b) selecting the lane code searches through the lane (ScriptApi.run)',
+    test('(b) selecting the lane code searches through the lane (ChannelApi)',
         () async {
       final backend = _FakeScriptBackend();
       final code = await importLanePack(backend);
+
+      // The unified channel path serves the lane search (Todo 3).
+      final channelBackend = _FakeChannelApiBackend()
+        ..searchResults[code] = [_channelAppInfo('com.probe', 'Probe App')];
+      RustChannelFacade.installBackend(channelBackend);
 
       final (container, notifier) = makeContainer();
       addTearDown(container.dispose);
 
       final apps = await notifier.searchChannelApps(code, 'probe');
       expect(apps.map((a) => a.appId), contains('com.probe'),
-          reason: 'the picker search must run the Rust-lane script search');
-      expect(backend.runCalls, contains('$code:searchApps'),
-          reason: 'the lane search must go through ScriptApi.run(searchApps)');
+          reason: 'the picker search must run the Rust-lane channel search');
+      expect(channelBackend.searchCalls, contains('$code:probe'),
+          reason: 'the lane search must go through ChannelApi.search');
     });
 
     test('save (a) saving a search result into a lane code calls the '

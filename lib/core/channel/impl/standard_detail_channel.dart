@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
@@ -85,6 +84,16 @@ class StandardDetailChannel implements IDetailChannel {
     state.errorMessage = '';
 
     try {
+      // core 拥有 channel 域后，门面可用的渠道（github/vivo/fdroid）从 Rust core
+      // 一次性取详情：Dart 渠道库是切轨前的冻结副本、且其读辅助（_buildStoredAppInfo
+      // / _loadChannelApps）被 LegacyWriteGuard 拦截 → 走 Dart 会拿不到数据。
+      // 门面不提供 Dart 的 fetchStatistics/fetchDownloads/fetchReadme 分块接口，
+      // 故门面渠道统一走一次性 getAppDetailByCode（sections/downloads/extra 一次注入）。
+      if (ChannelManager.instance.facadeEligible(channelCode)) {
+        await _loadDetailFromFacade(state);
+        return;
+      }
+
       // 非分块渠道（Vivo/Fdroid/Http 等）：回退旧流程 getAppDetail 一次性完整注入。
       // 截图/下载/更新日志/权限/评分等区块仅旧流程提供，分块改造不得使其丢失。
       if (!channel.supportsProgressiveLoading) {
@@ -191,6 +200,26 @@ class StandardDetailChannel implements IDetailChannel {
 
     // 详情加载后，使用详情中的 packageName 检测安装状态
     await _checkInstalledState(state, result.data?.packageName.trim());
+  }
+
+  /// core 门面路径：一次性从 Rust core 取详情并注入。
+  ///
+  /// 经 [ChannelManager.getAppDetailByCode]（flag on 走 Rust `ChannelApi`），
+  /// 返回的 [IDetailInfo] 已含 sections/downloads/extra。失败抛错，由外层
+  /// [load] 的 catch 写入 `errorMessage`（页面显示错误态，不再静默白屏）。
+  Future<void> _loadDetailFromFacade(DetailState state) async {
+    final result = await ChannelManager.instance.getAppDetailByCode(
+      channelCode,
+      request.appId,
+      forceRefresh: false,
+    );
+    if (!result.success || result.data == null) {
+      throw Exception(result.error ?? 'Failed to load app detail');
+    }
+    final detail = result.data!;
+    state.detailInfo = detail;
+    state.downloads = detail.downloads;
+    await _checkInstalledState(state, detail.packageName.trim());
   }
 
   /// 基于基础信息（AppSummary）+ 请求参数构造渐进组装的基础详情。
@@ -534,6 +563,9 @@ class _ProgressiveDetailInfo implements IDetailInfo {
 
   @override
   Map<String, dynamic> get extra => inner.extra;
+
+  @override
+  List<AppLabel> get labels => inner.labels;
 
   @override
   String? get readme => inner.readme;

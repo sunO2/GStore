@@ -474,6 +474,7 @@ fn js_channel_store_write_marks_core_writes_once() {
         readme: None,
         category: None,
         extra: None,
+        labels: Vec::new(),
     };
 
     assert!(

@@ -14,6 +14,8 @@ import 'package:gstore/page/detail/widgets.dart';
 /// - loading: false（默认）非空下载 → 列表项 + 计数徽标，无加载指示
 /// - loading: false 空下载 → 空态文案
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   List<DownloadInfo> downloadsValue = const [];
 
   @override

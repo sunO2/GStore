@@ -115,6 +115,7 @@ class _ChannelBadge extends StatelessWidget {
     final color = AppColors.getChannelBrandColor(channel.name);
     final label = switch (channel) {
       ChannelType.localDb => 'DB',
+      ChannelType.gstore => 'GS',
       ChannelType.github => 'GH',
       ChannelType.http => 'API',
       ChannelType.vivo => 'vivo',

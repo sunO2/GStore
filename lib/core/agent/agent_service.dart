@@ -18,6 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
+import 'package:gstore/core/agent/js_channel_method_runner.dart';
 import 'package:gstore/core/agent/openai_reasoning_model.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/think_parser.dart';
@@ -2631,15 +2632,18 @@ class AgentService {
 
       // 解析渠道：优先枚举渠道 type.code，其次动态脚本渠道 channelKey（js_xxx）。
       // 脚本渠道不在 ChannelType 枚举内，必须用 _resolveChannel 才能解析。
+      final manager = ChannelManager.instance;
       final channelInst = _resolveChannel(channel);
-      if (channelInst == null) {
+      if (channelInst == null && !manager.facadeEligible(channel)) {
         return '未知渠道: $channel（支持: github/fdroid/vivo/http/local_db，及自定义脚本渠道 js_xxx）';
       }
 
       // 方式2：通过渠道详情获取真实下载地址
       // vivo 渠道需使用 vivoId 查询详情
       var detailAppId = appId;
-      final isVivo = channelInst.info.type == ChannelType.vivo;
+      final isVivo =
+          (channelInst?.info.type ?? ChannelType.fromCode(channel)) ==
+              ChannelType.vivo;
       if (isVivo && vivoId != null && vivoId.isNotEmpty) {
         detailAppId = vivoId;
       } else if (isVivo) {
@@ -2650,7 +2654,8 @@ class AgentService {
         }
       }
 
-      final detailResult = await channelInst.getAppDetail(detailAppId, forceRefresh: true);
+      final detailResult =
+          await manager.getAppDetailByCode(channel, detailAppId, forceRefresh: true);
       if (!detailResult.success || detailResult.data == null) {
         return '获取 $name 的下载信息失败: ${detailResult.error ?? '未知错误'}';
       }
@@ -2855,27 +2860,27 @@ class AgentService {
   /// 执行脚本渠道（js_xxx）的自定义方法——Agent 渠道包 JS 执行能力。
   ///
   /// [channel] 脚本渠道 channelKey（如 js_pingan）；
-  /// [method] 脚本 main 分发的函数名（如 getConfig/versionOptions/自定义方法）；
-  /// [params] 透传给脚本的参数 map。
-  /// 依赖 Rust `ScriptApi.run` 入口；脚本未实现/失败 → 返回提示降级。
+  /// [method] 统一通道分发的函数名（如 getConfig/versionOptions/switchVersion）；
+  /// [params] 透传的参数 map。
+  /// 数据读取经统一入口 `ChannelApi`/`RustChannelFacade`；未暴露的方法 → 提示降级。
   Future<String> _runJsChannel(String channel, String method, dynamic params) async {
     if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
     if (method.isEmpty) return '执行脚本渠道方法需要 method';
 
-    // Dart `JsChannel` 已随纯 Rust 清理删除：脚本渠道一律落到 Rust `ScriptApi.run`
-    // （flag off 时 `ScriptApi` 抛 ScriptApiDisabledException，由
-    // `_runScriptLaneChannel` 捕获降级为提示字符串）。
+    // 脚本渠道数据一律走统一通道入口（`ChannelApi`/`RustChannelFacade`），
+    // 不再经 `ScriptApi.run`（已从 Dart 面契约移除）。
     if (!channel.startsWith('js_')) {
       return '渠道 $channel 不是脚本渠道（js_xxx），无法执行脚本方法';
     }
     return _runScriptLaneChannel(channel, method, params);
   }
 
-  /// Runs one method through the Rust script lane (`ScriptApi.run`).
+  /// Runs one script-channel method through the unified channel entry.
   ///
   /// The pack must be installed (startup load or the settings import action);
-  /// `ScriptApi.run` returns the raw JSON the Dart runtime would have received,
-  /// so the value is surfaced verbatim, matching the legacy string contract.
+  /// the data reads go through [RustChannelFacade] (`ChannelApi`) — the single
+  /// JS data entry — never a raw `ScriptApi.run`. A method the unified entry
+  /// does not expose returns a hint so the agent falls back to the preset tools.
   Future<String> _runScriptLaneChannel(
     String channel,
     String method,
@@ -2891,13 +2896,18 @@ class AgentService {
           ? params.map((k, v) => MapEntry(k.toString(), v))
           : const <String, dynamic>{};
       _updateToolStep('执行脚本方法 $method…');
-      final raw = await ScriptApi.instance.run(
-        key: channel,
+      final result = await runScriptChannelMethod(
+        channel: channel,
         method: method,
-        paramsJson: jsonEncode(args),
+        args: args,
       );
+      if (result == null) {
+        return '脚本渠道 $channel 不支持方法 $method（统一通道仅暴露 getAllApps/'
+            'searchApps/getAppInfo/getAppDetail/getConfig/versionOptions/'
+            'switchVersion/buildHistory/detailMenu/checkUpdate）';
+      }
       _updateToolStep('脚本方法 $method 已返回');
-      return '脚本 $channel.$method 返回：\n$raw';
+      return '脚本 $channel.$method 返回：\n${jsonEncode(result)}';
     } catch (e) {
       return '执行脚本方法失败: $e';
     }
@@ -2986,9 +2996,11 @@ class AgentService {
             return '添加应用需要 appId 和 channel';
           }
           final manager = ChannelManager.instance;
-          final channelInst = manager.getChannelByCode(channel);
-          if (channelInst == null) return '渠道 $channel 不可用';
-          final result = await channelInst.getAppInfo(appId);
+          if (manager.getChannelByCode(channel) == null &&
+              !manager.facadeEligible(channel)) {
+            return '渠道 $channel 不可用';
+          }
+          final result = await manager.getAppInfoByCode(channel, appId);
           if (!result.success || result.data == null) {
             return '获取应用信息失败: ${result.error ?? '未知错误'}';
           }
@@ -3040,13 +3052,16 @@ class AgentService {
     try {
       final manager = ChannelManager.instance;
       final inst = _resolveChannel(channel);
-      if (inst == null) return '未知渠道: $channel';
+      if (inst == null && !manager.facadeEligible(channel)) {
+        return '未知渠道: $channel';
+      }
       final channelLabel =
           ChannelType.fromCode(channel)?.description ?? '脚本渠道 $channel';
 
       switch (action) {
         case 'list':
-          final result = await inst.getAllApps(forceRefresh: true);
+          final result =
+              await manager.getAllAppsByCode(channel, forceRefresh: true);
           if (!result.success || result.data == null) {
             return '获取渠道应用失败: ${result.error ?? '未知错误'}';
           }
@@ -3069,14 +3084,14 @@ class AgentService {
             icon: '',
             des: '',
           );
-          final r = await inst.addApp(appInfo);
+          final r = await manager.addAppByCode(channel, appInfo);
           return r.success
               ? '已添加 ${name.isEmpty ? appId : name} 到$channelLabel渠道'
               : '添加失败: ${r.error ?? '未知错误'}';
 
         case 'remove':
           if (appId.isEmpty) return '移除渠道应用需要 appId';
-          final r = await inst.removeApp(appId);
+          final r = await manager.removeAppByCode(channel, appId);
           return r.success
               ? '已从$channelLabel渠道移除 $appId'
               : '移除失败: ${r.error ?? '未知错误'}';
@@ -3095,23 +3110,28 @@ class AgentService {
     try {
       final manager = ChannelManager.instance;
       final inst = channel.isNotEmpty ? _resolveChannel(channel) : null;
-      if (inst == null) {
-        // 未指定渠道，尝试从所有渠道获取
+      final facadeEligible =
+          channel.isNotEmpty && manager.facadeEligible(channel);
+      if (inst == null && !facadeEligible) {
+        // 未指定渠道，尝试从所有渠道获取（门面可用渠道走 core）。
         for (final ch in ChannelType.values) {
           final c = manager.getChannel(ch);
           if (c == null) continue;
-          final r = await c.getAppInfo(appId);
+          final r = await manager.getAppInfo(appId, from: ch);
           if (r.success && r.data != null) {
             return _formatAppInfo(r.data!, ch);
           }
         }
         return '未找到应用 $appId';
       }
-      final r = await inst.getAppInfo(appId, forceRefresh: true);
+      final r =
+          await manager.getAppInfoByCode(channel, appId, forceRefresh: true);
       if (!r.success || r.data == null) {
         return '获取应用信息失败: ${r.error ?? '未知错误'}';
       }
-      final type = inst.info.type;
+      final type = ChannelType.fromCode(channel) ??
+          inst?.info.type ??
+          ChannelType.custom;
       return _formatAppInfo(r.data!, type);
     } catch (e) {
       return '获取应用详情失败: $e';

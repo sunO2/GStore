@@ -52,6 +52,8 @@ mod script_api_parity_tests;
 mod script_api_app_insert_tests;
 #[cfg(test)]
 mod script_api_real_pack_tests;
+#[cfg(test)]
+mod script_api_reentrancy_tests;
 
 /// 单进程测试共享 `jni_bridge::TUN_FD` 等全局态，相关用例须串行执行。
 #[cfg(test)]

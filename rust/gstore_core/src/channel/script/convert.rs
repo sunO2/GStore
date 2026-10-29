@@ -13,6 +13,7 @@ use serde_json::{Map, Value as JsonValue};
 
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, DetailSection,
+    detail_labels, label_downloads, summary_labels,
 };
 use crate::error::Error;
 
@@ -56,12 +57,16 @@ pub(crate) fn summary(
         })
         .filter(|value| !value.is_empty());
 
+    let user = text(map, "user").unwrap_or_else(|| channel.as_str().to_owned());
+    let repositories = text(map, "repositories").unwrap_or_else(|| channel.as_str().to_owned());
+    let labels = summary_labels(&user, package_name.as_deref(), &repositories);
+
     Ok(Some(AppSummary {
         app_id,
         package_name,
         name,
-        user: text(map, "user").unwrap_or_else(|| channel.as_str().to_owned()),
-        repositories: text(map, "repositories").unwrap_or_else(|| channel.as_str().to_owned()),
+        user,
+        repositories,
         icon: text(map, "icon").unwrap_or_default(),
         des: text(map, "des")
             .or_else(|| text(map, "description"))
@@ -69,6 +74,7 @@ pub(crate) fn summary(
         readme: text(map, "readme"),
         category: categories(map.get("category")),
         extra,
+        labels,
     }))
 }
 
@@ -85,6 +91,11 @@ pub(crate) fn detail(value: &JsonValue) -> Result<AppDetail, Error> {
             Some(app_id.clone())
         }
     });
+    let version = text(map, "version");
+    let developer = text(map, "developer").or_else(|| text(map, "user"));
+    let mut labels = detail_labels(version.as_deref(), developer.as_deref(), package_name.as_deref());
+    labels.extend(label_downloads(map.get("downloadCount").and_then(integer)));
+
     Ok(AppDetail {
         app_id,
         name: text(map, "name").unwrap_or_default(),
@@ -92,14 +103,15 @@ pub(crate) fn detail(value: &JsonValue) -> Result<AppDetail, Error> {
         description: text(map, "description")
             .or_else(|| text(map, "des"))
             .unwrap_or_default(),
-        version: text(map, "version"),
-        developer: text(map, "developer").or_else(|| text(map, "user")),
+        version,
+        developer,
         package_name,
         project_url: text(map, "projectUrl"),
         channel: ChannelKind::JsLocal,
         sections: sections(map.get("sections")),
         downloads: downloads(map.get("downloads")),
         extra: map.clone(),
+        labels,
     })
 }
 
@@ -145,6 +157,7 @@ pub(crate) fn update_from_summary(app: &AppSummary) -> AppUpdate {
     if let Some(readme) = &app.readme {
         extra.insert("readme".to_string(), JsonValue::String(readme.clone()));
     }
+    let labels = detail_labels(None, Some(&app.user), Some(&package_name));
     let detail = AppDetail {
         app_id: app.app_id.clone(),
         name: app.name.clone(),
@@ -158,6 +171,7 @@ pub(crate) fn update_from_summary(app: &AppSummary) -> AppUpdate {
         sections: Vec::new(),
         downloads: Vec::new(),
         extra,
+        labels,
     };
     AppUpdate {
         app_id: app.app_id.clone(),

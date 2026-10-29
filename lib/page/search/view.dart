@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:gstore/compent/app_label_chips.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
@@ -134,11 +135,25 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                             style: Theme.of(context).textTheme.titleSmall,
                           ),
                         ),
-                        subtitle: Text(
-                          app.des,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall,
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              app.des,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            // 动态标签（来自渠道 typed DTO；有界，空即不渲染）
+                            if (app.labels.isNotEmpty) ...[
+                              const SizedBox(height: AppSpacing.xs),
+                              AppLabelChips(
+                                labels: app.labels,
+                                alignment: MainAxisAlignment.start,
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     );

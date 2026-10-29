@@ -26,7 +26,8 @@ use super::github_releases::GitHubReleases;
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
-    AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection,
+    AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
+    DetailSection, detail_labels, summary_labels,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -109,7 +110,7 @@ impl LocalDbDriver {
 
     /// Fetches metadata for a GitHub-backed row, or `None` when the row has no
     /// owner/repo or no metadata port is attached.
-    fn metadata_for(&self, app: &AppSummary) -> Result<Option<PackageMetadata>, Error> {
+    pub(crate) fn metadata_for(&self, app: &AppSummary) -> Result<Option<PackageMetadata>, Error> {
         if app.user.is_empty() || app.repositories.is_empty() {
             return Ok(None);
         }
@@ -140,7 +141,7 @@ impl LocalDbDriver {
     /// Dart wraps `GithubRestClient.releases` in a try/catch and treats any
     /// failure as an empty download list, so a channel error here degrades to
     /// `(vec![], None)` instead of failing the whole detail.
-    fn github_release(&self, app: &AppSummary) -> (Vec<AppDownload>, Option<String>) {
+    pub(crate) fn github_release(&self, app: &AppSummary) -> (Vec<AppDownload>, Option<String>) {
         if app.user.is_empty() || app.repositories.is_empty() {
             return (Vec::new(), None);
         }
@@ -179,10 +180,10 @@ impl LocalDbDriver {
     }
 }
 
-const APP_COLUMNS: &str =
+pub(crate) const APP_COLUMNS: &str =
     "SELECT appId,name,user,repositories,icon,des,readme,category,extra FROM apps";
 
-fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
+pub(crate) fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
     let app_id: String = row.get(0)?;
     let name: String = row.get(1)?;
     let user: Option<String> = row.get(2)?;
@@ -204,12 +205,16 @@ fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
 
+    let user = user.unwrap_or_default();
+    let repositories = repositories.unwrap_or_default();
+    let labels = summary_labels(&user, package_name.as_deref(), &repositories);
+
     Ok(AppSummary {
         app_id,
         package_name,
         name,
-        user: user.unwrap_or_default(),
-        repositories: repositories.unwrap_or_default(),
+        user,
+        repositories,
         icon: icon.unwrap_or_default(),
         des: des.unwrap_or_default(),
         readme: readme.filter(|value| !value.is_empty()),
@@ -221,6 +226,7 @@ fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
                 .unwrap_or_default(),
         ),
         extra,
+        labels,
     })
 }
 
@@ -233,7 +239,7 @@ fn valid_package_name(value: Option<&str>) -> Option<String> {
 }
 
 /// Applies already-fetched metadata to a summary (`LocalDbChannel._applyMetadataOverride`).
-fn apply_metadata_values(
+pub(crate) fn apply_metadata_values(
     app: AppSummary,
     metadata: &PackageMetadata,
     keep_existing_package_name: bool,
@@ -258,11 +264,78 @@ fn apply_metadata_values(
     } else {
         None
     };
+    let labels = summary_labels(&app.user, package_name.as_deref(), &app.repositories);
     AppSummary {
         package_name,
         name: display_name,
         icon,
+        labels,
         ..app
+    }
+}
+
+/// Everything a catalog-backed summary needs beyond itself to become a detail.
+///
+/// Shared by [`LocalDbDriver`] and the catalog fallback of the GStore channel so
+/// both produce byte-identical detail bodies for the same row.
+pub(crate) struct CatalogDetailSource<'a> {
+    /// Channel kind stamped onto the detail.
+    pub kind: ChannelKind,
+    /// Already-fetched metadata override, if any.
+    pub metadata: Option<&'a PackageMetadata>,
+    /// GitHub release downloads for the row.
+    pub downloads: Vec<AppDownload>,
+    /// Latest GitHub release version, when it resolved.
+    pub release_version: Option<String>,
+}
+
+pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>) -> AppDetail {
+    let version_name = source.metadata.and_then(|value| value.version_name.clone());
+    let app = match source.metadata {
+        Some(metadata) => apply_metadata_values(app, metadata, true),
+        None => app,
+    };
+
+    // Dart `_fetchReadmeInternal` with no GitHub client falls back to the row
+    // README and then to `des`.
+    let readme = app
+        .readme
+        .clone()
+        .or_else(|| (!app.des.is_empty()).then(|| app.des.clone()));
+    // Dart `LocalDbChannel.getAppDetail`: `metadataVersionName ?? latestVersion`.
+    let version = version_name.or(source.release_version);
+
+    let mut sections = Vec::new();
+    if !source.downloads.is_empty() {
+        sections.push(DetailSection::Version);
+    }
+    sections.push(DetailSection::Downloads);
+    if readme.as_deref().is_some_and(|value| !value.is_empty()) {
+        sections.push(DetailSection::Readme);
+    }
+    let developer = (!app.user.is_empty()).then(|| app.user.clone());
+    let project_url = (!app.user.is_empty() && !app.repositories.is_empty())
+        .then(|| format!("https://github.com/{}/{}", app.user, app.repositories));
+    let labels = detail_labels(
+        version.as_deref(),
+        developer.as_deref(),
+        app.package_name.as_deref(),
+    );
+
+    AppDetail {
+        app_id: app.app_id.clone(),
+        name: app.name.clone(),
+        icon: app.icon.clone(),
+        description: app.des.clone(),
+        version,
+        developer,
+        package_name: app.package_name.clone(),
+        project_url,
+        channel: source.kind,
+        sections,
+        downloads: source.downloads,
+        extra: app.extra.unwrap_or_default(),
+        labels,
     }
 }
 
@@ -308,50 +381,16 @@ impl ChannelDriver for LocalDbDriver {
             .load_app(app_id)?
             .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))?;
         let metadata = self.metadata_for(&app)?;
-        let version_name = metadata
-            .as_ref()
-            .and_then(|value| value.version_name.clone());
-        let app = match metadata {
-            Some(metadata) => apply_metadata_values(app, &metadata, true),
-            None => app,
-        };
-
-        // Dart `_fetchReadmeInternal` with no GitHub client falls back to the
-        // row README and then to `des`.
-        let readme = app
-            .readme
-            .clone()
-            .or_else(|| (!app.des.is_empty()).then(|| app.des.clone()));
         let (downloads, release_version) = self.github_release(&app);
-        // Dart `LocalDbChannel.getAppDetail`: `metadataVersionName ?? latestVersion`.
-        let version = version_name.or(release_version);
-
-        let mut sections = Vec::new();
-        if !downloads.is_empty() {
-            sections.push(DetailSection::Version);
-        }
-        sections.push(DetailSection::Downloads);
-        if readme.as_deref().is_some_and(|value| !value.is_empty()) {
-            sections.push(DetailSection::Readme);
-        }
-        let developer = (!app.user.is_empty()).then(|| app.user.clone());
-        let project_url = (!app.user.is_empty() && !app.repositories.is_empty())
-            .then(|| format!("https://github.com/{}/{}", app.user, app.repositories));
-
-        Ok(AppDetail {
-            app_id: app.app_id.clone(),
-            name: app.name.clone(),
-            icon: app.icon.clone(),
-            description: app.des.clone(),
-            version,
-            developer,
-            package_name: app.package_name.clone(),
-            project_url,
-            channel: self.meta.kind,
-            sections,
-            downloads,
-            extra: app.extra.unwrap_or_default(),
-        })
+        Ok(build_app_detail(
+            app,
+            CatalogDetailSource {
+                kind: self.meta.kind,
+                metadata: metadata.as_ref(),
+                downloads,
+                release_version,
+            },
+        ))
     }
 
     fn supports_progressive_loading(&self) -> Result<bool, Error> {

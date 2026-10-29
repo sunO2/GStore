@@ -78,14 +78,6 @@ class _RecordingScriptApiBackend implements ScriptApiBackend {
   }) async {}
 
   @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async =>
-      '{"ok":true,"data":null}';
-
-  @override
   Future<List<rust_pack.ScriptPackInfo>> list() async =>
       const <rust_pack.ScriptPackInfo>[];
 

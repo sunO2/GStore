@@ -405,7 +405,7 @@ fn schema_contract_required_tables_and_shape() {
         })
         .unwrap();
     println!("schema_migrations rows = {migration_rows}");
-    assert_eq!(migration_rows, 4);
+    assert_eq!(migration_rows, 5);
 }
 
 #[test]
@@ -568,8 +568,8 @@ fn schema_contract_docs_sql_matches_migrated_schema() {
     let docs_version: i64 = docs
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(migrated_version, 4);
-    assert_eq!(docs_version, 4);
+    assert_eq!(migrated_version, 5);
+    assert_eq!(docs_version, 5);
     println!("schema dumps match ({} bytes)", migrated_dump.len());
 }
 
@@ -603,7 +603,7 @@ fn schema_contract_reopen_does_not_reapply_or_alter_schema() {
     };
 
     assert_eq!(count1, count2, "reopening must not re-apply migrations");
-    assert_eq!(count1, 4);
+    assert_eq!(count1, 5);
     assert_eq!(dump1, dump2, "reopening must not alter the schema");
 
     // Readers are separate read-only connections; the single writer stays guarded.

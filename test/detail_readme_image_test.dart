@@ -49,6 +49,8 @@ final Uint8List kSvgBytes = utf8.encode(
 
 /// 通过公开入口 [ReadmeSection] 驱动私有 [_ReadmeImage]。
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String? readmeValue;
 
   @override

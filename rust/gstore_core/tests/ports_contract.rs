@@ -47,6 +47,7 @@ fn repo_app(package_name: &str, name: &str) -> RepoApp {
         apk_url: Some(format!("https://example.test/{package_name}.apk")),
         size: Some(42),
         categories: vec!["tools".to_string()],
+        metadata: None,
     }
 }
 

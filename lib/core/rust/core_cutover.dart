@@ -108,6 +108,7 @@ class CutoverResult {
     this.resynced = const <CutoverDomain>[],
     this.rows = const <CutoverDomain, int>{},
     this.imported = const <CutoverDomain, int>{},
+    this.backfilledChannelApps = false,
   });
 
   /// `false` when the marker already existed: nothing snapshotted, nothing
@@ -129,8 +130,14 @@ class CutoverResult {
   /// Rows imported per resynced domain.
   final Map<CutoverDomain, int> imported;
 
+  /// Whether the marker-present repair re-ran [resyncChannels] once to restore a
+  /// missing `channel_apps` projection. Always `false` when [ran] is true (the
+  /// full cutover already imported the channels).
+  final bool backfilledChannelApps;
+
   @override
   String toString() => 'CutoverResult(ran: $ran, snapshot: $snapshotPath, '
+      'backfilledChannelApps: $backfilledChannelApps, '
       'resynced: ${resynced.map((d) => d.name).join(' -> ')}, '
       'imported: ${imported.map((d, v) => MapEntry(d.name, v))})';
 }
@@ -148,6 +155,23 @@ abstract class CoreCutoverBackend {
   Future<CutoverStepResult> resyncCatalog();
 
   Future<CutoverStepResult> resyncUpdate();
+}
+
+/// Optional backend capability: detect a missing `channel_apps` projection so a
+/// marker-present launch can repair it.
+///
+/// Kept off [CoreCutoverBackend] so backends that do not model a legacy channel
+/// store (and every existing test fake) stay a strict no-op on the marker path.
+/// Only a backend that implements this interface can trigger the repair.
+abstract class ChannelBackfillProbe {
+  /// Whether a marker-present launch must re-run
+  /// [CoreCutoverBackend.resyncChannels] to restore missing channel metadata.
+  ///
+  /// True only when genuine legacy `channel_added_app` rows exist and the core
+  /// `channel_apps` projection is missing them (the fingerprint of a build whose
+  /// "add to home" only wrote `added_apps`). Once every legacy row is projected
+  /// this returns false, so the repair never repeats.
+  Future<bool> channelBackfillNeeded();
 }
 
 /// One-time durable cutover orchestrator.
@@ -197,9 +221,20 @@ class CoreCutover {
 
     // Stale state short-circuit: a real marker file wins over everything.
     if (marker.existsSync()) {
-      final skipped = CutoverResult(ran: false, markerPath: marker.path);
+      // Marker-safe repair: the marker certifies the catalog/js/update cutover,
+      // but a build whose "add to home" only wrote `added_apps` could have
+      // skipped the channel metadata. If the legacy channel store still has rows
+      // the core `channel_apps` projection is missing, run the idempotent
+      // `resyncChannels` exactly once. Never rewrites (or deletes) the marker.
+      final backfilled = await _backfillChannelProjection(backend);
+      final skipped = CutoverResult(
+        ran: false,
+        markerPath: marker.path,
+        backfilledChannelApps: backfilled,
+      );
       lastResult = skipped;
-      debugPrint('[CoreCutover] marker present, skipping: ${marker.path}');
+      debugPrint('[CoreCutover] marker present, skipping: ${marker.path}'
+          '${backfilled ? ' (channel projection backfilled)' : ''}');
       return skipped;
     }
 
@@ -258,6 +293,54 @@ class CoreCutover {
     lastResult = result;
     debugPrint('[CoreCutover] completed: $result');
     return result;
+  }
+
+  /// Marker-present repair: restore a missing channel projection.
+  ///
+  /// Runs the already-idempotent [CoreCutoverBackend.resyncChannels] exactly once
+  /// when the backend implements [ChannelBackfillProbe] and reports that the
+  /// legacy channel store still holds rows the core `channel_apps` projection is
+  /// missing. Re-checks afterwards so a successful repair is observable and a
+  /// still-empty projection is logged, but never loops. Marker-safe: no marker
+  /// write/delete here, and a failure is non-fatal (the app still starts,
+  /// degraded).
+  static Future<bool> _backfillChannelProjection(
+    CoreCutoverBackend backend,
+  ) async {
+    if (backend is! ChannelBackfillProbe) return false;
+    // Cast is the only way to address the optional interface: it is unrelated
+    // to `CoreCutoverBackend`, so Dart does not promote the parameter to it.
+    final probe = backend as ChannelBackfillProbe;
+
+    final bool needed;
+    try {
+      needed = await probe.channelBackfillNeeded();
+    } catch (error) {
+      debugPrint('[CoreCutover] channel backfill probe failed: $error');
+      return false;
+    }
+    if (!needed) return false;
+
+    try {
+      final result = await backend.resyncChannels();
+      debugPrint('[CoreCutover] channel projection backfilled: $result');
+    } catch (error) {
+      debugPrint('[CoreCutover] channel backfill import failed: $error');
+      return false;
+    }
+
+    // Re-check: a repair that did populate the projection now reports "not
+    // needed". Still-needed means the import could not complete; log, do not
+    // retry in this launch (bounded, marker-safe).
+    try {
+      if (await probe.channelBackfillNeeded()) {
+        debugPrint(
+            '[CoreCutover] channel backfill did not populate the projection');
+      }
+    } catch (error) {
+      debugPrint('[CoreCutover] channel backfill re-check failed: $error');
+    }
+    return true;
   }
 
   /// The one pre-closeout snapshot.

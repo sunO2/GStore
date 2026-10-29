@@ -26,6 +26,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -86,10 +87,10 @@ const CHANNEL_META = { name: 'sendmsg fixture', description: 'deterministic' };
 function main(method, params) {
   params = params || {};
   if (method === 'getAllApps') {
-    return { ok: true, data: 'send:' + (params.token || '') };
+    return { ok: true, data: [{ appId: 'all', name: 'sendmsg' }] };
   }
   if (method === 'searchApps') {
-    return { ok: true, data: [] };
+    return { ok: true, data: [{ appId: 'send:' + (params.keyword || ''), name: 'sendmsg' }] };
   }
   return null;
 }
@@ -157,16 +158,6 @@ class _RecordingScriptApiBackend implements ScriptApiBackend {
     required Map<String, String> config,
   }) async =>
       calls.add('setConfig:$key');
-
-  @override
-  Future<String> run({
-    required String key,
-    required String method,
-    required String paramsJson,
-  }) async {
-    calls.add('run:$key:$method');
-    return '{"ok":true,"data":null}';
-  }
 
   @override
   Future<List<rust_pack.ScriptPackInfo>> list() async {
@@ -257,7 +248,7 @@ void main() {
     });
 
     test(
-      'loadAndRegister imports stored packs into the real Rust lane and run returns the script value',
+      'loadAndRegister imports stored packs into the real Rust lane and the unified channel search returns the script value',
       () async {
         final loaded = await ChannelLoader(directory: channelDir).loadAndRegister();
         expect(loaded.map((p) => p.key).toSet(), <String>{'js_example', 'js_sendmsg'},
@@ -269,23 +260,24 @@ void main() {
         expect(packs.firstWhere((p) => p.key == 'js_sendmsg').name,
             'sendmsg fixture');
 
-        final raw = await ScriptApi.instance.run(
+        // The pack's data now runs through the unified channel entry
+        // (`ChannelApi` / `RustChannelFacade`), not `ScriptApi.run`; the search
+        // keyword is composed into the appId by the real runtime.
+        final apps = await RustChannelFacade.instance.search(
           key: 'js_sendmsg',
-          method: 'getAllApps',
-          paramsJson: '{"token":"real-9"}',
+          keyword: 'real-9',
+          forceRefresh: false,
         );
-        // ScriptApi.run returns the unwrapped `data` value the Dart runtime
-        // would have received (same contract as `JsChannel._callMain`).
-        expect(jsonDecode(raw), 'send:real-9');
+        expect(apps.single.appId, 'send:real-9');
 
         // The shipped example asset runs through the same real runtime (its
         // empty-keyword search short-circuits before any network call).
-        final example = await ScriptApi.instance.run(
+        final exampleApps = await RustChannelFacade.instance.search(
           key: 'js_example',
-          method: 'searchApps',
-          paramsJson: '{"keyword":""}',
+          keyword: '',
+          forceRefresh: false,
         );
-        expect(jsonDecode(example), isEmpty);
+        expect(exampleApps, isEmpty);
       },
       skip: skipReason,
     );
@@ -302,12 +294,12 @@ void main() {
         expect(second.map((p) => p.key).toList(),
             first.map((p) => p.key).toList());
 
-        final raw = await ScriptApi.instance.run(
+        final apps = await RustChannelFacade.instance.search(
           key: 'js_sendmsg',
-          method: 'getAllApps',
-          paramsJson: '{"token":"again"}',
+          keyword: 'again',
+          forceRefresh: false,
         );
-        expect(jsonDecode(raw), 'send:again');
+        expect(apps.single.appId, 'send:again');
       },
       skip: skipReason,
     );

@@ -234,22 +234,33 @@ impl ChannelDriver for ScriptChannel {
         store::remove(self.store_slot(), &self.key, app_id)
     }
 
+    /// Script packs have no category model; the gap is explicit so callers
+    /// cannot mistake an empty `Ok(vec![])` for "channel has no categories".
     fn search_by_category(
         &self,
         _category_id: &str,
         _force_refresh: bool,
     ) -> Result<Vec<AppSummary>, Error> {
-        Ok(Vec::new())
+        Err(Error::Unsupported(
+            "channel does not support search_by_category".to_string(),
+        ))
     }
 
+    /// Script packs have no category model; see [`Self::search_by_category`].
     fn get_all_categories(&self, _force_refresh: bool) -> Result<Vec<ChannelCategory>, Error> {
-        Ok(Vec::new())
+        Err(Error::Unsupported(
+            "channel does not support get_all_categories".to_string(),
+        ))
     }
 
+    /// Deliberate no-op: a script channel owns no cache of its own — reads are
+    /// store-backed and `refresh` re-runs the pack, so there is nothing to drop.
     fn clear_cache(&self) -> Result<(), Error> {
         Ok(())
     }
 
+    /// Deliberate no-op: a script channel keeps no cache, so its size is always
+    /// zero; see [`Self::clear_cache`].
     fn get_cache_size(&self) -> Result<u64, Error> {
         Ok(0)
     }

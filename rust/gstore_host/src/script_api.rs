@@ -1,6 +1,15 @@
-//! `ScriptApi`: import/list/refresh local JS packs and execute their `main`.
+//! `ScriptApi`: import/list/refresh local JS packs (pack lifecycle) and, for
+//! the in-crate tests only, execute their `main`.
 //!
 //! # Runtime model
+//!
+//! The Dart-facing `ScriptApi` is a pack-lifecycle facade (import/remove/
+//! refresh/list/env/storedApps/addApp/releaseDetail); the JS **data** path does
+//! not use it — Dart reads JS channel data through `ChannelApi` /
+//! `RustChannelFacade`, whose JS runtime authority is
+//! `ChannelApiInner.script_drivers` (+ the per-call `ScriptDetail`). The
+//! [`ScriptApiInner::run`] data engine below is `#[frb(ignore)]`d at the FRB
+//! boundary and is reached only by the in-crate script-api tests.
 //!
 //! `ScriptApi` is the FRB-facing facade over a [`PackStore`] and a small cache of
 //! per-channel runtimes. An installed pack contributes up to two QuickJS
@@ -287,7 +296,15 @@ impl ScriptApiInner {
         Ok(())
     }
 
-    /// Runs `main(method, params)` and returns the raw JSON result as a string.
+    /// Internal pack-data engine: runs `main(method, params)` and returns the
+    /// raw JSON result as a string.
+    ///
+    /// Not a Dart-facing entry point — the FRB `ScriptApi::run` is
+    /// `#[frb(ignore)]`d, and the Dart data path reads JS channel data through
+    /// `ChannelApi` / `RustChannelFacade`. `ScriptApiInner` retains only
+    /// pack-lifecycle / `env` / `config` state; the JS runtime authority is
+    /// `ChannelApiInner.script_drivers` (+ the per-call `ScriptDetail`). This
+    /// engine stays reachable only from the in-crate script-api tests.
     pub(crate) fn run(&self, key: &str, method: &str, params_json: &str) -> Result<String, String> {
         let key = self.channel_key(key)?;
         let params = parse_params(params_json)?;

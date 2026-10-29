@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:gstore/compent/app_label_chips.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
@@ -8,6 +9,7 @@ import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 
+import 'gstore_browse_page.dart';
 import 'logic.dart';
 import 'state.dart';
 
@@ -94,6 +96,13 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
       ),
       title: const Text('发现'),
       actions: [
+        // GStore 目录浏览入口（本地 catalog，可加入 GStore 渠道）
+        TextButton.icon(
+          onPressed: () => _openGStoreBrowse(context),
+          icon: const Icon(TablerIcons.database, size: AppTypography.iconMD),
+          label: const Text('GStore'),
+        ),
+
         // 添加应用按钮
         IconButton(
           tooltip: '添加应用',
@@ -147,6 +156,15 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
             ],
           ),
       ],
+    );
+  }
+
+  /// 打开 GStore 目录浏览页（顶部入口）
+  void _openGStoreBrowse(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => GStoreBrowsePage(discovery: logic),
+      ),
     );
   }
 
@@ -556,6 +574,12 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                           ),
                         ),
                       ),
+
+                      // 动态标签（来自渠道 typed DTO；有界，空即不渲染）
+                      if (app.labels.isNotEmpty) ...[
+                        const SizedBox(height: AppSpacing.xs),
+                        AppLabelChips(labels: app.labels),
+                      ],
                     ],
                   ),
                 ),
@@ -674,6 +698,8 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
         return '本地';
+      case ChannelType.gstore:
+        return 'GStore';
       case ChannelType.github:
         return 'GitHub';
       case ChannelType.http:

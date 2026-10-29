@@ -31,7 +31,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::channel::PackStore;
+use crate::channel::{rebase_icon, PackStore};
 use crate::dto::ChannelKey;
 use crate::migration::MIGRATION_DOC_VERSION;
 use crate::ports::config::CoreConfig;
@@ -291,6 +291,7 @@ impl<'a> ChannelMigrator<'a> {
         let tx = self.conn.unchecked_transaction().map_err(|error| {
             ChannelMigrationError::Write(format!("begin channel_apps import: {error}"))
         })?;
+        let sources = configured_sources(self.conn);
         let mut imported = 0usize;
         loop {
             let row = match rows.next() {
@@ -321,6 +322,14 @@ impl<'a> ChannelMigrator<'a> {
                     "channel_added_app row has an empty appId/channelCode".to_string(),
                 ));
             }
+            let (source_id, icon) = normalize_fdroid_row(
+                &channel_key,
+                &app_id,
+                icon,
+                source_id,
+                extra.as_deref(),
+                &sources,
+            );
 
             tx.execute(
                 "INSERT INTO channel_apps(
@@ -528,6 +537,7 @@ impl<'a> ChannelMigrator<'a> {
             .map_err(|error| {
                 ChannelMigrationError::Write(format!("persist fdroid_sources: {error}"))
             })?;
+        repair_fdroid_source_identities(self.conn)?;
         match &last_source_id {
             Some(value) => {
                 self.conn
@@ -713,6 +723,282 @@ impl<'a> ChannelMigrator<'a> {
         }
         Ok(backup_path)
     }
+}
+
+/// One configured F-Droid source as persisted in the `update_prefs` row
+/// `fdroid_sources` (by [`ChannelMigrator::import_fdroid_sources`] and by the
+/// bridge's `set_fdroid_sources`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfiguredSource {
+    id: String,
+    url: String,
+    fingerprint: String,
+    mirrors: Vec<String>,
+}
+
+impl ConfiguredSource {
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let url = object
+            .get("repoUrl")
+            .or_else(|| object.get("url"))
+            .and_then(Value::as_str)?
+            .trim();
+        (!url.is_empty()).then(|| Self {
+            id: object
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            url: url.to_string(),
+            fingerprint: object
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .map(hex_key)
+                .unwrap_or_default(),
+            mirrors: object
+                .get("mirrors")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(mirror_url).collect())
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Every URL prefix an icon written by this source may carry.
+    fn asset_bases(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.url.as_str())
+            .chain(self.mirrors.iter().map(String::as_str))
+    }
+
+    /// The legacy identity forms the Dart read side accepts
+    /// (`FdroidRustRepoManager.identityMatches`): the storage id, a raw
+    /// fingerprint, `fp:<HEX>`, `url:<url>`, and a bare URL.
+    fn matches(&self, stored: &str) -> bool {
+        if !self.id.is_empty() && stored == self.id {
+            return true;
+        }
+        let stored_url = strip_prefix_ci(stored, "url:").unwrap_or(stored);
+        if is_http_url(stored_url) && same_url(stored_url, &self.url) {
+            return true;
+        }
+        let stored_hex = strip_prefix_ci(stored, "fp:").unwrap_or(stored);
+        !self.fingerprint.is_empty() && hex_key(stored_hex) == self.fingerprint
+    }
+}
+
+/// Sources currently persisted in the core database, in config order.
+fn configured_sources(conn: &Connection) -> Vec<ConfiguredSource> {
+    let Ok(Some(raw)) = crate::migration::update_pref(conn, "fdroid_sources") else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Array(items)) => items
+            .iter()
+            .filter_map(ConfiguredSource::from_value)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Maps a legacy source identity to the configured source URL the driver's
+/// `active_sources()` compares against.
+fn source_url_for_identity(stored: &str, sources: &[ConfiguredSource]) -> Option<String> {
+    let key = stored.trim();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(source) = sources.iter().find(|source| source.matches(key)) {
+        return Some(normalize_source_url(&source.url));
+    }
+    let bare = strip_prefix_ci(key, "url:").unwrap_or(key);
+    is_http_url(bare).then(|| normalize_source_url(bare))
+}
+
+/// Same shape as the driver's `normalize_source`, so a rewritten `source_id`
+/// compares equal to an `active_sources()` entry.
+fn normalize_source_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+fn is_http_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
+}
+
+fn hex_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != ':')
+        .flat_map(char::to_uppercase)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn mirror_url(value: &Value) -> Option<String> {
+    match value {
+        Value::String(url) => {
+            let url = url.trim();
+            (!url.is_empty()).then(|| url.to_string())
+        }
+        Value::Object(map) => {
+            let enabled = map
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let url = map.get("url").and_then(Value::as_str)?.trim();
+            (enabled && !url.is_empty()).then(|| url.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Same normalization as the Dart `FdroidRustRepoManager.normalizeRepoUrl`.
+fn normalized_url_key(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    match trimmed.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+            format!(
+                "{}://{}/{}",
+                scheme.to_ascii_lowercase(),
+                authority.to_ascii_lowercase(),
+                path
+            )
+        }
+        None => trimmed.to_string(),
+    }
+}
+
+fn same_url(left: &str, right: &str) -> bool {
+    normalized_url_key(left) == normalized_url_key(right)
+}
+
+fn extra_source_id(extra: Option<&str>) -> Option<String> {
+    serde_json::from_str::<Value>(extra?).ok()?.as_object()?.get("sourceId")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+/// Rewrites one legacy F-Droid row so the record no longer depends on a source
+/// *identity* the driver cannot match.
+///
+/// When the stored identity resolves to a URL, the column becomes that URL and
+/// the icon is re-based onto it through [`rebase_icon`]: a repo-relative key is
+/// written absolute, an absolute icon still carrying a known source/mirror
+/// prefix loses that prefix, and an unknown-host (third-party CDN) icon is kept
+/// verbatim. An unresolvable identity is left verbatim: the row is never
+/// dropped and no source is guessed.
+fn normalize_fdroid_row(
+    channel_key: &str,
+    app_id: &str,
+    icon: String,
+    source_id: Option<String>,
+    extra: Option<&str>,
+    sources: &[ConfiguredSource],
+) -> (Option<String>, String) {
+    if channel_key != "fdroid" {
+        return (source_id, icon);
+    }
+    let legacy = source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| extra_source_id(extra));
+    let Some(source_url) = legacy
+        .as_deref()
+        .and_then(|stored| source_url_for_identity(stored, sources))
+    else {
+        return (source_id, icon);
+    };
+    let bases: Vec<String> = std::iter::once(source_url.clone())
+        .chain(
+            sources
+                .iter()
+                .flat_map(|source| source.asset_bases())
+                .map(ToString::to_string),
+        )
+        .collect();
+    let icon = rebase_icon(&icon, app_id, &source_url, &bases);
+    (Some(source_url), icon)
+}
+
+/// Repairs `channel_apps` F-Droid rows already imported before the sources
+/// were known (the handoff imports `channel_db` first).
+fn repair_fdroid_rows(
+    conn: &Connection,
+    sources: &[ConfiguredSource],
+) -> Result<usize, ChannelMigrationError> {
+    let rows = {
+        let mut statement = conn
+            .prepare(
+                "SELECT app_id, icon, source_id, extra FROM channel_apps \
+                 WHERE channel_key='fdroid'",
+            )
+            .map_err(|error| {
+                ChannelMigrationError::Write(format!("prepare fdroid rows: {error}"))
+            })?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| ChannelMigrationError::Write(format!("query fdroid rows: {error}")))?;
+        mapped.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            ChannelMigrationError::Write(format!("read fdroid row: {error}"))
+        })?
+    };
+    let mut repaired = 0usize;
+    for (app_id, icon, source_id, extra) in rows {
+        let (next_source, next_icon) = normalize_fdroid_row(
+            "fdroid",
+            &app_id,
+            icon.clone(),
+            source_id.clone(),
+            extra.as_deref(),
+            sources,
+        );
+        if next_source == source_id && next_icon == icon {
+            continue;
+        }
+        conn.execute(
+            "UPDATE channel_apps SET icon=?1, source_id=?2 \
+             WHERE channel_key='fdroid' AND app_id=?3",
+            rusqlite::params![next_icon, next_source, app_id],
+        )
+        .map_err(|error| {
+            ChannelMigrationError::Write(format!("repair fdroid row {app_id}: {error}"))
+        })?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+/// Heals legacy F-Droid rows in `channel_apps` against the sources persisted in
+/// this database.
+///
+/// The handoff imports `channel_db` before `fdroid_sources`, and an install that
+/// already migrated can never re-run it — so the repair must also be callable
+/// after the source list is (re)published. Idempotent: only changed rows are
+/// written.
+pub fn repair_fdroid_source_identities(
+    conn: &Connection,
+) -> Result<usize, ChannelMigrationError> {
+    repair_fdroid_rows(conn, &configured_sources(conn))
 }
 
 fn utc_stamp() -> (u64, u32) {

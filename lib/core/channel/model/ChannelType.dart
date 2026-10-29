@@ -1,7 +1,10 @@
 /// 渠道类型枚举
 enum ChannelType {
-  /// 本地数据库渠道
+  /// 本地数据库渠道（内部目录数据源；不进入发现页渠道列表）
   localDb('local_db', '本地数据库', 1),
+
+  /// GStore 本地应用库渠道（可写；数据源为本地 catalog）
+  gstore('gstore', 'GStore', 1),
 
   /// GitHub API 渠道
   github('github', 'GitHub API', 2),

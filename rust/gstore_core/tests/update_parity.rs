@@ -137,6 +137,7 @@ fn update(
             sections: vec![DetailSection::Version, DetailSection::Downloads],
             downloads,
             extra: serde_json::Map::new(),
+            labels: Vec::new(),
         },
     }
 }
@@ -1466,6 +1467,7 @@ fn fdroid_repo_app() -> RepoApp {
         apk_url: Some("/repo/com.example.alpha_2.0.0.apk".to_string()),
         size: Some(4096),
         categories: vec!["Tools".to_string()],
+        metadata: None,
     }
 }
 

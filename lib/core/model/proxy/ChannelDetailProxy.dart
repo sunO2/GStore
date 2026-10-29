@@ -19,6 +19,10 @@ abstract class ChannelDetailProxy implements IDetailInfo {
   @override
   Map<String, dynamic> get extra => _data;
 
+  /// legacy 渠道代理的原始数据里没有 typed labels —— 空即空，不合成。
+  @override
+  List<AppLabel> get labels => const [];
+
   @override
   bool get isValid => packageName.isNotEmpty && appName.isNotEmpty;
 

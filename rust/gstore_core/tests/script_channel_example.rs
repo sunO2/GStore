@@ -100,14 +100,17 @@ fn script_channel_example_meta_and_all_dispatched_methods() {
         channel.get_config(false).unwrap_err().message(),
         "脚本未返回配置数据（脚本未实现或数据获取失败）"
     );
-    assert!(channel
-        .get_all_categories(true)
-        .expect("categories")
-        .is_empty());
-    assert!(channel
-        .search_by_category("tools", true)
-        .expect("category search")
-        .is_empty());
+    assert_eq!(
+        channel.get_all_categories(true).unwrap_err().code(),
+        "unsupported"
+    );
+    assert_eq!(
+        channel
+            .search_by_category("tools", true)
+            .unwrap_err()
+            .code(),
+        "unsupported"
+    );
     channel.add_app(&all[0]).expect("add_app persists");
     channel
         .remove_app("org.example.dolphin")
@@ -202,4 +205,34 @@ fn script_channel_example_rejects_pack_key_mismatch() {
             .with_pack_key(key("js.other")),
     );
     assert!(matches!(result, Err(Error::InvalidArgument(message)) if message.contains("pack key")));
+}
+
+#[test]
+fn script_channel_unsupported_is_typed() {
+    let channel = ScriptChannel::new(ScriptChannelConfig::new(
+        key("js.example"),
+        EXAMPLE_JS,
+        fake_host(),
+    ))
+    .expect("example.js channel constructs");
+
+    let search = channel
+        .search_by_category("tools", true)
+        .expect_err("search_by_category is unsupported");
+    assert_eq!(search.code(), "unsupported");
+    assert_eq!(
+        search.message(),
+        "channel does not support search_by_category"
+    );
+
+    let categories = channel
+        .get_all_categories(true)
+        .expect_err("get_all_categories is unsupported");
+    assert_eq!(categories.code(), "unsupported");
+    assert_eq!(
+        categories.message(),
+        "channel does not support get_all_categories"
+    );
+
+    channel.dispose().expect("dispose");
 }

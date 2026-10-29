@@ -114,16 +114,32 @@ fn parity_search_apps_falls_back_to_filtered_get_all_apps() {
     );
 }
 
+const UNSUPPORTED_SEARCH_BY_CATEGORY: &str = "err:channel does not support search_by_category";
+const UNSUPPORTED_GET_ALL_CATEGORIES: &str = "err:channel does not support get_all_categories";
+
 #[test]
-fn parity_empty_collections_are_success_not_unsupported() {
+fn parity_category_methods_are_typed_unsupported_not_empty() {
     for (label, state) in STATES {
         let categories = run("searchByCategory", state, true, false);
-        report("searchByCategory", label, "", &categories);
-        assert_eq!(categories.calls, 0);
+        report(
+            "searchByCategory",
+            label,
+            UNSUPPORTED_SEARCH_BY_CATEGORY,
+            &categories,
+        );
+        assert_eq!(
+            categories.calls, 0,
+            "category methods must never call the script"
+        );
 
         let all = run("getAllCategories", state, true, false);
-        report("getAllCategories", label, "0", &all);
-        assert_eq!(all.calls, 0);
+        report(
+            "getAllCategories",
+            label,
+            UNSUPPORTED_GET_ALL_CATEGORIES,
+            &all,
+        );
+        assert_eq!(all.calls, 0, "category methods must never call the script");
     }
 }
 

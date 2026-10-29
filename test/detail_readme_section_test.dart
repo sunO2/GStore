@@ -46,6 +46,8 @@ final Uint8List kPngBytes = Uint8List.fromList(const [
 /// - 仅有截图无正文时仍渲染截图
 /// - 点击截图弹出全屏预览（InteractiveViewer + 页码）
 class _FakeDetailInfo implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   String? readmeValue;
   List<ScreenshotInfo>? screenshotsValue;
 

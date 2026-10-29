@@ -18,7 +18,7 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 }
 
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
-pub const CORE_SCHEMA_VERSION: i32 = 4;
+pub const CORE_SCHEMA_VERSION: i32 = 5;
 
 /// Name of the refinery ledger table.
 pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";
@@ -203,6 +203,23 @@ pub fn update_pref(conn: &rusqlite::Connection, key: &str) -> Result<Option<Stri
     )
     .optional()
     .map_err(|e| DbError(format!("read update_pref {key}: {e}")))
+}
+
+/// Upserts the `update_prefs` value for `key`.
+pub fn set_update_pref(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO update_prefs(key, value, imported_at) \
+         VALUES (?1, ?2, strftime('%s','now')) \
+         ON CONFLICT(key) DO UPDATE SET \
+             value = excluded.value, imported_at = excluded.imported_at",
+        rusqlite::params![key, value],
+    )
+    .map_err(|e| DbError(format!("write update_pref {key}: {e}")))?;
+    Ok(())
 }
 
 /// Marker recording the first core write for a domain.

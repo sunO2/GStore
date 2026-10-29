@@ -52,6 +52,7 @@ fn sample_detail() -> AppDetail {
         sections: vec![DetailSection::Version, DetailSection::Downloads],
         downloads: vec![sample_download()],
         extra,
+        labels: Vec::new(),
     }
 }
 
@@ -67,6 +68,7 @@ fn sample_summary() -> AppSummary {
         readme: Some("# Demo".to_string()),
         category: Some(vec!["tools".to_string()]),
         extra: None,
+        labels: Vec::new(),
     }
 }
 

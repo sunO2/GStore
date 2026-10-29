@@ -83,6 +83,7 @@ fn summary(
         category: (!categories.is_empty())
             .then(|| categories.iter().map(|value| (*value).to_string()).collect()),
         extra: None,
+        labels: Vec::new(),
     }
 }
 

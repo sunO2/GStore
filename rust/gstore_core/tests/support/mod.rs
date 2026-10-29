@@ -179,6 +179,7 @@ pub fn sample_app(app_id: &str, name: &str) -> AppSummary {
         readme: Some(format!("# {name}")),
         category: Some(vec!["tools".to_owned()]),
         extra: None,
+        labels: Vec::new(),
     }
 }
 

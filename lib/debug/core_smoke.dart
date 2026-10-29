@@ -157,6 +157,7 @@ function main(method, params) {
       icon: '',
       des: 'smoke fixture',
       category: <String>['Tools'],
+      labels: <rust.ChannelLabel>[],
     );
     await api.addApp(key: channelKey, app: app);
     appLog.info('CoreSmoke: app added', data: {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/event/live_refresh.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/router/app_router.dart';
@@ -19,6 +20,9 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   StreamSubscription? _userSub;
   StreamSubscription? _badgeSub;
   Timer? _searchDebounce;
+
+  /// 渠道/目录变化（Rust 上行）的防抖订阅：一串事件只重跑一次加载。
+  LiveRefreshSubscription? _liveRefresh;
 
   // 搜索框控制（随 Notifier 生命周期）
   final FocusNode searchFocusNode = FocusNode();
@@ -43,6 +47,9 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   @override
   ApplistState build() {
     ref.onDispose(_dispose);
+    // 渠道/目录变化（Rust 上行 channel.changed / catalog.changed）→ 防抖重跑
+    // 首屏加载（复用 [loadAggregatedApps] 的既有 loading 态，无新 loading UI）。
+    _liveRefresh = LiveRefreshSubscription(onRefresh: _onLiveRefresh);
     // 首帧初始化（onReady 语义）：UI 镜像订阅 + 聚合数据订阅
     Future.microtask(() {
       if (_disposed) return;
@@ -52,9 +59,17 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     return const ApplistState();
   }
 
+  /// 渠道/目录变化 → 防抖后重跑聚合加载（复用既有 loading 态）。
+  void _onLiveRefresh() {
+    if (_disposed) return;
+    unawaited(loadAggregatedApps());
+  }
+
   void _dispose() {
     _disposed = true;
     _searchDebounce?.cancel();
+    _liveRefresh?.dispose();
+    _liveRefresh = null;
     _appsSubscription?.cancel();
     _updateSub?.cancel();
     _userSub?.cancel();

@@ -14,6 +14,10 @@ pub struct CoreConfig {
     proxy_url: Option<String>,
     github_token: Option<String>,
     fdroid_sources: Vec<String>,
+    /// Every base URL whose prefix an F-Droid icon may carry: the configured
+    /// source URLs plus their mirrors. A stored absolute icon written under
+    /// one of these bases is re-based onto the row's current source.
+    fdroid_asset_bases: Vec<String>,
 }
 
 
@@ -43,6 +47,7 @@ impl CoreConfig {
             proxy_url,
             github_token,
             fdroid_sources: Vec::new(),
+            fdroid_asset_bases: Vec::new(),
         })
     }
 
@@ -64,6 +69,22 @@ impl CoreConfig {
         Ok(self)
     }
 
+    /// Sets the base URLs (configured sources plus mirrors) a stored F-Droid
+    /// icon may be prefixed with.
+    ///
+    /// Entries are trimmed and de-duplicated; an empty entry is ignored so a
+    /// caller can pass a mixed source/mirror list without pre-filtering.
+    pub fn with_fdroid_asset_bases(mut self, bases: Vec<String>) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        self.fdroid_asset_bases = bases
+            .into_iter()
+            .map(|base| base.trim().trim_end_matches('/').to_string())
+            .filter(|base| !base.is_empty())
+            .filter(|base| seen.insert(base.clone()))
+            .collect();
+        self
+    }
+
     /// Configured proxy URL, if any.
     pub fn proxy_url(&self) -> Option<&str> {
         self.proxy_url.as_deref()
@@ -83,6 +104,11 @@ impl CoreConfig {
     pub fn fdroid_sources(&self) -> &[String] {
         &self.fdroid_sources
     }
+
+    /// Configured F-Droid icon bases: source URLs plus mirrors.
+    pub fn fdroid_asset_bases(&self) -> &[String] {
+        &self.fdroid_asset_bases
+    }
 }
 
 impl std::fmt::Debug for CoreConfig {
@@ -93,6 +119,7 @@ impl std::fmt::Debug for CoreConfig {
             .field("proxy_url", &proxy)
             .field("github_token", &token)
             .field("fdroid_sources", &self.fdroid_sources)
+            .field("fdroid_asset_bases", &self.fdroid_asset_bases)
             .finish()
     }
 }

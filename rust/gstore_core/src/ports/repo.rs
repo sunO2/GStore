@@ -49,6 +49,10 @@ pub struct RepoApp {
     pub size: Option<i64>,
     /// Category ids.
     pub categories: Vec<String>,
+    /// Raw F-Droid v2 `metadata` JSON (localized name/summary/description,
+    /// screenshots, author, source code, website, license, ...). `None` when the
+    /// repository module has no raw row for the app.
+    pub metadata: Option<String>,
 }
 
 /// Commands the F-Droid driver needs from the repository module.

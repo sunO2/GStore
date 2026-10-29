@@ -308,4 +308,4 @@ CREATE TABLE IF NOT EXISTS outbox(
     updated_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;

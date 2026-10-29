@@ -29,6 +29,7 @@ use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection,
+    detail_labels, summary_labels,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -93,9 +94,10 @@ impl StoredApp {
     }
 
     fn to_summary(&self) -> AppSummary {
+        let package_name = self.package_name();
         AppSummary {
             app_id: self.app_id.clone(),
-            package_name: self.package_name(),
+            package_name: package_name.clone(),
             name: self.name.clone(),
             user: self.user.clone(),
             repositories: self.repositories.clone(),
@@ -108,6 +110,7 @@ impl StoredApp {
                 .as_deref()
                 .map(|value| value.split(',').map(ToString::to_string).collect()),
             extra: self.extra(),
+            labels: summary_labels(&self.user, package_name.as_deref(), &self.repositories),
         }
     }
 }
@@ -276,6 +279,7 @@ impl ChannelDriver for GitHubDriver {
             readme: None,
             category: None,
             extra: None,
+            labels: summary_labels(user, None, repo),
         };
         self.apply_metadata_for_info(app)
     }
@@ -302,19 +306,42 @@ impl ChannelDriver for GitHubDriver {
             sections.push(DetailSection::Readme);
         }
 
+        // `AppDetail` has no readme/statistics fields; the shared Dart detail view
+        // reads `extra["readme"]` and `extra["apiData"]`, so emit both here.
+        let mut extra = info.extra.clone().unwrap_or_default();
+        if let Some(readme_text) = readme.as_deref().filter(|value| !value.is_empty()) {
+            extra.insert("readme".to_string(), Value::String(readme_text.to_string()));
+        }
+        let mut api_data = Map::new();
+        for key in ["stargazers_count", "watchers_count", "forks_count"] {
+            if let Some(value) = repo.get(key) {
+                api_data.insert(key.to_string(), value.clone());
+            }
+        }
+        if !api_data.is_empty() {
+            extra.insert("apiData".to_string(), Value::Object(api_data));
+        }
+
+        let developer = (!info.user.is_empty()).then(|| info.user.clone());
+        let labels = detail_labels(
+            version.as_deref(),
+            developer.as_deref(),
+            info.package_name.as_deref(),
+        );
         Ok(AppDetail {
             app_id: info.app_id.clone(),
             name: info.name.clone(),
             icon: info.icon.clone(),
             description: info.des.clone(),
             version,
-            developer: (!info.user.is_empty()).then(|| info.user.clone()),
+            developer,
             package_name: info.package_name.clone(),
             project_url: optional_string(repo, "html_url", status, &url)?,
             channel: self.meta.kind,
             sections,
             downloads,
-            extra: info.extra.unwrap_or_default(),
+            extra,
+            labels,
         })
     }
 
@@ -517,6 +544,7 @@ impl ChannelDriver for GitHubDriver {
                 .next_back()
                 .unwrap_or_default()
                 .to_string();
+            let labels = summary_labels(&user, None, &repositories);
             apps.push(AppSummary {
                 app_id: full_name.clone(),
                 package_name: None,
@@ -529,6 +557,7 @@ impl ChannelDriver for GitHubDriver {
                 readme: None,
                 category: None,
                 extra: None,
+                labels,
             });
         }
         Ok(apps)
@@ -609,10 +638,12 @@ fn apply_metadata(
     } else {
         None
     };
+    let labels = summary_labels(&app.user, package_name.as_deref(), &app.repositories);
     AppSummary {
         package_name,
         name,
         icon,
+        labels,
         ..app
     }
 }

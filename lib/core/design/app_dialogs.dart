@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/material.dart' as m show showDialog;
 
@@ -532,6 +533,72 @@ class AppDialogs {
     if (navigator != null) {
       navigator.pop();
     }
+  }
+
+  /// 显示不可取消的进度对话框（长任务：迁移 / 恢复）。
+  ///
+  /// [progress] 由调用方驱动：`message` 为当前步骤文案，`done`/`total` 为进度；
+  /// `total <= 0` 时进度条为不确定态（转圈横条）。关闭统一走
+  /// [dismissLoading]（与 Loading 共用一个 pop 通道）。
+  ///
+  /// 与 [showLoading] 相同：navigator 未挂载时静默跳过。
+  static void showProgress({
+    required ValueListenable<({int done, int total, String message})> progress,
+  }) {
+    final navigator = appNavigatorKey.currentState;
+    if (navigator == null) {
+      return;
+    }
+    m.showDialog<void>(
+      context: navigator.context,
+      barrierDismissible: false,
+      builder: (_) => _buildProgressDialog(progress),
+    );
+  }
+
+  /// 构建进度对话框（主题令牌；不可取消）。
+  static Widget _buildProgressDialog(
+    ValueListenable<({int done, int total, String message})> progress,
+  ) {
+    return Dialog(
+      elevation: 0,
+      backgroundColor: _colorScheme.dialogSurface,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppRadius.allXL,
+        side: _themeBorderSide(color: _colorScheme.borderLight),
+      ),
+      child: Padding(
+        padding: AppSpacing.allXXL,
+        child: ValueListenableBuilder<({int done, int total, String message})>(
+          valueListenable: progress,
+          builder: (context, value, _) {
+            final total = value.total;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  value.message,
+                  style: _textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                ClipRRect(
+                  borderRadius: AppRadius.allSM,
+                  child: LinearProgressIndicator(
+                    value: total > 0 ? value.done / total : null,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  '${value.done}/$total',
+                  style: _textTheme.bodySmall,
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
   }
 
   /// 构建加载对话框

@@ -87,28 +87,19 @@ impl<B: RepoBridge> ModuleRepoPort<B> {
         })
     }
 
-    fn module_search(&self, query: &str, limit: usize) -> Result<Vec<ModuleApp>, Error> {
-        let limit = i32::try_from(limit)
-            .map_err(|_| Error::InvalidArgument("repo search limit is too large".to_string()))?;
-        let mut payload = query.as_bytes().to_vec();
-        payload.push(0);
-        payload.extend_from_slice(&limit.to_le_bytes());
-        let bytes = self.call("search_apps", &payload)?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            Error::Serialization(format!(
-                "repo module search_apps returned malformed JSON: {error}"
-            ))
-        })
-    }
-}
-
-impl<B: RepoBridge> RepoPort for ModuleRepoPort<B> {
-    fn download_repo(&self, source: &str) -> Result<RepoMeta, Error> {
+    /// Downloads/refreshes the repository index, forwarding `mirrors` and
+    /// `mirror_first` to the module's `download_repo`.
+    pub fn download_repo_with_mirrors(
+        &self,
+        source: &str,
+        mirrors: &[String],
+        mirror_first: bool,
+    ) -> Result<RepoMeta, Error> {
         gstore_core::ports::repo::validate_repo_source(source)?;
         let payload = serde_json::to_vec(&serde_json::json!({
             "url": source,
-            "mirrors": [],
-            "mirror_first": false
+            "mirrors": mirrors,
+            "mirror_first": mirror_first
         }))
         .map_err(|error| Error::Serialization(format!("repo download payload: {error}")))?;
         let bytes = self.call("download_repo", &payload)?;
@@ -130,6 +121,26 @@ impl<B: RepoBridge> RepoPort for ModuleRepoPort<B> {
             timestamp: None,
             app_count: u64::try_from(result.total_apps).unwrap_or(0),
         })
+    }
+
+    fn module_search(&self, query: &str, limit: usize) -> Result<Vec<ModuleApp>, Error> {
+        let limit = i32::try_from(limit)
+            .map_err(|_| Error::InvalidArgument("repo search limit is too large".to_string()))?;
+        let mut payload = query.as_bytes().to_vec();
+        payload.push(0);
+        payload.extend_from_slice(&limit.to_le_bytes());
+        let bytes = self.call("search_apps", &payload)?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Serialization(format!(
+                "repo module search_apps returned malformed JSON: {error}"
+            ))
+        })
+    }
+}
+
+impl<B: RepoBridge> RepoPort for ModuleRepoPort<B> {
+    fn download_repo(&self, source: &str) -> Result<RepoMeta, Error> {
+        self.download_repo_with_mirrors(source, &[], false)
     }
 
     fn get_app_count(&self, source: &str) -> Result<u64, Error> {
@@ -251,6 +262,8 @@ struct ModuleApp {
     categories: Vec<String>,
     #[serde(default)]
     versions: Option<String>,
+    #[serde(default)]
+    metadata: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -276,6 +289,7 @@ impl ModuleApp {
             apk_url,
             size: latest.size,
             categories: self.categories.clone(),
+            metadata: self.metadata.clone(),
         })
     }
 }

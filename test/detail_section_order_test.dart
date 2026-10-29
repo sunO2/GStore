@@ -31,6 +31,8 @@ import 'package:http/testing.dart';
 /// 直接预注册 DetailLogic 并注入构造的 detail（绕过 loadDetail 的时序竞争，
 /// 精准构造"sections 含 readme 不含 downloads"场景）。
 class _FakeSectionOrderDetail implements IDetailInfo {
+  @override
+  List<AppLabel> get labels => const [];
   List<DetailSection> sectionsValue = const [];
   List<DownloadInfo> downloadsValue = const [];
   String? readmeValue;

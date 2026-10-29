@@ -65,7 +65,8 @@ class _RecordingCoreBackend implements AddedAppsBackend {
   }
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     calls.add('toggle:$channel:$appId');
     toggled.add((channel: channel, appId: appId));
     return true;

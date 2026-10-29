@@ -430,6 +430,15 @@ class _AppInfoSectionState extends State<AppInfoSection> {
   Widget build(BuildContext context) {
     final info = widget.info;
     final extra = info.extra;
+
+    // 动态标签优先：渠道 typed DTO 的 `labels`（version/developer/package/
+    // channel/downloads…）是信息区的**数据源**，按列表顺序逐条渲染（icon 可选）。
+    // labels 为空（legacy 渠道代理 / 测试替身）时回落到固定键推导，保持既有行为。
+    // 统计 chips 仍由 StatTag 工厂提供，故 StatTag 不再是信息区内容的唯一来源。
+    final labels = info.labels;
+    final hasLabels = labels.isNotEmpty;
+
+    // —— 固定键兜底（仅 labels 为空时使用）——
     // 模型字段优先，extra 兜底（e59d0c4 回归修复：GitHub/LocalDb 渐进路径
     // 的 extra 为纯存储 map，不含 version/packageName/channelId 镜像）
     final version = (info.version?.isNotEmpty == true)
@@ -447,7 +456,8 @@ class _AppInfoSectionState extends State<AppInfoSection> {
       tags = info.statistics?.buildStatTags() ?? const [];
     }
 
-    final hasBasicRows = packageName.isNotEmpty ||
+    final hasBasicRows = hasLabels ||
+        packageName.isNotEmpty ||
         version != null ||
         developer != null ||
         channelId.isNotEmpty;
@@ -479,30 +489,40 @@ class _AppInfoSectionState extends State<AppInfoSection> {
             )
           : null,
       children: [
-        if (packageName.isNotEmpty)
-          _InfoRow(
-            icon: TablerIcons.package,
-            label: '包名',
-            value: packageName,
-          ),
-        if (version != null)
-          _InfoRow(
-            icon: TablerIcons.tag,
-            label: '当前版本',
-            value: version,
-          ),
-        if (developer != null)
-          _InfoRow(
-            icon: TablerIcons.user,
-            label: '开发者',
-            value: developer,
-          ),
-        if (channelId.isNotEmpty)
-          _InfoRow(
-            icon: TablerIcons.building_store,
-            label: '渠道',
-            value: channelId,
-          ),
+        // 动态标签（列表顺序）优先；labels 为空时回落到固定键基础行
+        if (hasLabels)
+          for (final label in labels)
+            _InfoRow(
+              icon: _labelIcon(label.icon),
+              label: label.label,
+              value: label.value,
+            )
+        else ...[
+          if (packageName.isNotEmpty)
+            _InfoRow(
+              icon: TablerIcons.package,
+              label: '包名',
+              value: packageName,
+            ),
+          if (version != null)
+            _InfoRow(
+              icon: TablerIcons.tag,
+              label: '当前版本',
+              value: version,
+            ),
+          if (developer != null)
+            _InfoRow(
+              icon: TablerIcons.user,
+              label: '开发者',
+              value: developer,
+            ),
+          if (channelId.isNotEmpty)
+            _InfoRow(
+              icon: TablerIcons.building_store,
+              label: '渠道',
+              value: channelId,
+            ),
+        ],
         // 展开区：AnimatedSize 平滑展开/收起（展开内容保持原列表语义，收起时
         // 仅占零高度占位，宽度撑满保证仅高度方向动画）
         AnimatedSize(
@@ -1544,15 +1564,44 @@ class _DownloadItem extends StatelessWidget {
 
   }
 
-/// 开发者信息行：[xs icon + onSurfaceVariant label + onSurface value]
+/// 动态标签图标名（`AppLabel.icon`）→ IconData。
+///
+/// 未知或 null → null（`_InfoRow` 不渲染图标）。名称集与下载项 `_iconFromName`
+/// 保持一致的语义；不引入新图标名，仅做安全映射。
+IconData? _labelIcon(String? name) {
+  switch (name) {
+    case 'tag':
+    case 'label':
+      return TablerIcons.tag;
+    case 'user':
+      return TablerIcons.user;
+    case 'package':
+      return TablerIcons.package;
+    case 'store':
+    case 'building_store':
+      return TablerIcons.building_store;
+    case 'download':
+    case 'cloud_download':
+      return TablerIcons.cloud_download;
+    case 'link':
+      return TablerIcons.link;
+    default:
+      return null;
+  }
+}
+
+/// 信息行：[可选 xs icon + onSurfaceVariant label + onSurface value]
+///
+/// `icon` 可选：动态标签（`AppLabel.icon`）为 null / 未识别时不渲染图标，
+/// label 直接顶格（仍保留 label/value 间距），既有固定键调用方传 icon 行为不变。
 class _InfoRow extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
   final String label;
   final String value;
   final Color? valueColor;
 
   const _InfoRow({
-    required this.icon,
+    this.icon,
     required this.label,
     required this.value,
     this.valueColor,
@@ -1561,14 +1610,17 @@ class _InfoRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final icon = this.icon;
     return Padding(
       padding: AppSpacing.onlyBottomSM,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon,
-              size: AppTypography.iconXS, color: colorScheme.onSurfaceVariant),
-          const SizedBox(width: AppSpacing.sm),
+          if (icon != null) ...[
+            Icon(icon,
+                size: AppTypography.iconXS, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: AppSpacing.sm),
+          ],
           Text(
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(

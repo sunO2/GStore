@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:gstore/core/channel/impl/js_script_utils.dart';
+import 'package:gstore/core/catalog/catalog_facade.dart' show appSummaryFromRust;
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
@@ -106,20 +107,41 @@ class RustScriptChannelLane {
 
   /// Runs the pack's search entry point and maps the result to [AppSummary].
   ///
-  /// Mirrors `JsChannel.searchApps` for the Rust lane: it executes the script's
-  /// `searchApps` (via [ScriptApi.run], the same entry the Dart lane calls) and,
-  /// when the pack does not implement it, executes `getAllApps` and filters the
-  /// result locally. It never filters the saved `channel_apps` rows, so a freshly
-  /// imported pack (no saved rows yet) is still searchable. While the flag is off
-  /// this returns an empty list.
+  /// Reads the unified channel path — `RustChannelFacade.search` (the same
+  /// `ChannelApi.search` every other channel uses), mapping the typed
+  /// `rust.ChannelAppInfo` result to [AppSummary] via [appSummaryFromRust].
+  /// When the pack does not implement `searchApps` (the driver answers nothing,
+  /// or raises), it falls back to `getAllApps` + a local name/des/appId filter —
+  /// the same semantics as Dart `JsChannel.searchApps`. It never filters the
+  /// saved `channel_apps` rows, so a freshly imported pack (no saved rows yet)
+  /// is still searchable. While the flag is off this returns an empty list.
   Future<List<AppSummary>> searchApps(String code, String keyword) async {
     if (!enabled) return const [];
-    final searched = await _runAppList(code, 'searchApps', {'keyword': keyword});
-    if (searched != null) return searched;
+    final facade = RustChannelFacade.instance;
+    List<AppSummary>? searched;
+    try {
+      final results = await facade.search(
+        key: code,
+        keyword: keyword,
+        forceRefresh: false,
+      );
+      searched = results.map(appSummaryFromRust).toList(growable: false);
+    } catch (_) {
+      // The driver raised (e.g. the pack does not implement `searchApps`):
+      // fall through to the `getAllApps` fallback below.
+      searched = null;
+    }
+    if (searched != null && searched.isNotEmpty) return searched;
     // Script未实现 searchApps → 降级：跑 getAllApps 取全量后本地过滤
     // （与 JsChannel.searchApps 同一语义）。
-    final all = await _runAppList(code, 'getAllApps', const {});
-    if (all == null) return const [];
+    final List<AppSummary> all;
+    try {
+      final results =
+          await facade.getAllApps(key: code, forceRefresh: false);
+      all = results.map(appSummaryFromRust).toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
     final kw = keyword.toLowerCase();
     return all
         .where((app) =>
@@ -127,29 +149,6 @@ class RustScriptChannelLane {
             app.des.toLowerCase().contains(kw) ||
             app.appId.toLowerCase().contains(kw))
         .toList();
-  }
-
-  /// Runs [method] and maps a JSON-array result to [AppSummary]; returns null
-  /// when the script returned no array (unimplemented / failed), mirroring
-  /// `JsChannel._appsFromScript`'s "null = not implemented" contract.
-  Future<List<AppSummary>?> _runAppList(
-    String code,
-    String method,
-    Map<String, Object?> params,
-  ) async {
-    final raw = await _api.run(
-      key: code,
-      method: method,
-      paramsJson: jsonEncode(params),
-    );
-    final Object? decoded = jsonDecode(raw);
-    if (decoded is! List) return null;
-    final apps = <AppSummary>[];
-    for (final item in decoded) {
-      final app = appSummaryFromScript(item, channelKey: code);
-      if (app != null) apps.add(app);
-    }
-    return apps;
   }
 
   /// Returns the saved apps for [code] mapped to [AppSummary].
@@ -234,8 +233,9 @@ class RustScriptChannelLane {
 
 /// Maps [AppSummary] to the FRB `rust.ChannelAppInfo`, mirroring Rust
 /// `ChannelAppInfo::from_summary`: `category` defaults to an empty list, `extra`
-/// is encoded as a JSON object string (null stays null), and the rest pass
-/// through verbatim — no field is invented.
+/// is encoded as a JSON object string (null stays null), `labels` passes through
+/// field-for-field (empty stays empty), and the rest pass through verbatim — no
+/// field is invented.
 rust.ChannelAppInfo channelAppInfoFromSummary(AppSummary app) =>
     rust.ChannelAppInfo(
       appId: app.appId,
@@ -248,4 +248,12 @@ rust.ChannelAppInfo channelAppInfoFromSummary(AppSummary app) =>
       readme: app.readme,
       category: app.category ?? const <String>[],
       extraJson: app.extra == null ? null : jsonEncode(app.extra),
+      labels: app.labels
+          .map((label) => rust.ChannelLabel(
+                key: label.key,
+                label: label.label,
+                value: label.value,
+                icon: label.icon,
+              ))
+          .toList(growable: false),
     );

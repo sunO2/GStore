@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
-import 'package:gstore/core/model/proxy/JsChannelDetailProxy.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
+import 'package:gstore/core/script/rust_script_detail_mapping.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/page/detail/state.dart';
 
@@ -13,20 +15,20 @@ import 'package:gstore/page/detail/state.dart';
 ///
 /// While `CoreFlags.jsChannel` is on there is no Dart `JsChannel`, so
 /// `DetailLogic` cannot resolve `js_*` through `ChannelManager`. This channel
-/// resolves the pack through [ScriptApi] instead: `getAppDetail` runs in the
-/// Rust runtime and its JSON result is rendered through the same
-/// [JsChannelDetailProxy] the Dart lane used, so the page loads its apps/detail
-/// instead of a silent blank.
+/// resolves the pack through the unified channel entry instead: every data read
+/// (`getAppDetail` and the four detail-page methods) goes through
+/// [RustChannelFacade] — the typed FRB `ChannelApi` surface — and the typed
+/// results are adapted to the `Map<String, dynamic>` shape the page's
+/// `JsChannelDetailProxy` already consumes, so the page renders identically.
 ///
 /// A script that returns no detail is **not** a hard failure: the Rust host
 /// collapses an unimplemented `getAppDetail` (undefined), a `{ok:false}` reply
-/// and a JS throw into the bare JSON `null`, so [ScriptApi.run] succeeds and
-/// returns `"null"`. That null reply keeps the prefill already rendered
-/// (appId/name/icon/description/packageName + empty `downloads`/`sections`) and
-/// logs a non-fatal signal — the page shows the request's basic info instead of
-/// a full-page error. Only a real exception (e.g. pack-not-found, a typed FRB
-/// failure, or malformed JSON) sets a typed `errorMessage` on the bound state
-/// (the page shows the retryable error body) — never `SizedBox.shrink()`.
+/// and a JS throw into the typed `not_found` error, so [load] keeps the prefill
+/// already rendered (appId/name/icon/description/packageName + empty
+/// `downloads`/`sections`) and logs a non-fatal signal — the page shows the
+/// request's basic info instead of a full-page error. Only a non-`not_found`
+/// failure sets a typed `errorMessage` on the bound state (the page shows the
+/// retryable error body) — never `SizedBox.shrink()`.
 class RustScriptDetailChannel implements IDetailChannel {
   RustScriptDetailChannel({
     required this.appId,
@@ -43,7 +45,7 @@ class RustScriptDetailChannel implements IDetailChannel {
   @override
   bool get drivesOwnDownloads => false;
 
-  /// Pack channel key (`js_<stem>`), the Rust `ScriptApi` lookup key.
+  /// Pack channel key (`js_<stem>`), the Rust `ChannelApi` lookup key.
   final String channelKey;
 
   /// Request parameters (prefill + package-name fallback).
@@ -51,19 +53,37 @@ class RustScriptDetailChannel implements IDetailChannel {
 
   final ScriptApi? _apiOverride;
 
+  /// [ScriptApi] is retained **only** for [dispose]'s `releaseDetail`.
+  ///
+  /// The unified data path (below) goes through [RustChannelFacade]; the
+  /// facade's Rust methods construct and dispose a one-shot `ScriptDetail` per
+  /// call, so there is no Dart-side cached runtime to release. `releaseDetail`
+  /// is kept because it is harmless (an unknown `(key, app_id)` is a no-op) and
+  /// drops any runtime the legacy `ScriptApi` lane may still hold for this page.
   ScriptApi get _api => _apiOverride ?? ScriptApi.instance;
+
+  /// Typed channel entry (FRB `ChannelApi`). Resolved per call so tests can
+  /// install a fake backend with [RustChannelFacade.installBackend].
+  RustChannelFacade get _facade => RustChannelFacade.instance;
 
   DetailState? _boundState;
   DetailCallbacks? _boundCallbacks;
 
-  /// 当前版本（本通道自持）。pack 的 `getAppDetail`/`switchVersion` 只在其内部
-  /// 记录 `_currentVersion`（`scripts/channels/src/pingan/detail.js` :643 / :754），
-  /// 而顶层 `versionOptions` 不回传该 pack 的当前版本：pack 的
-  /// `main('versionOptions')`（:1042）不带 `_currentVersion` 调 `getVersionOptions`，
-  /// 后者缺省回退到最新版本（:696 `currentVersion || versions[0].version`）。
-  /// Rust 通道因避开 parked-eval 死锁（见 [_runAction]）而不跑 pack 的
-  /// `jsBuildHistory`，故必须自持当前版本供 `_openBuildHistory` 使用，否则切换
-  /// 版本后历史构建列表仍按入口/最新版本取。
+  /// 当前版本（本通道自持，Todo 9 证据门后保留）。
+  ///
+  /// pack 的 `getAppDetail`/`switchVersion` 只在其**内部**记录 `_currentVersion`
+  /// （`scripts/channels/src/pingan/detail.js` :643 / :754），而顶层 `versionOptions`
+  /// 不回传该 pack 的当前版本：pack 的 `main('versionOptions')`（:1042）只转发
+  /// `appId`/`env` 调 `getVersionOptions`（丢 `params.currentVersion`），后者缺省
+  /// 回退到最新版本（:696 `currentVersion || versions[0].version`）。证据见
+  /// `test/detail_version_switch_history_test.dart`：传入 `currentVersion` 后顶层
+  /// 结果仍回传最新版本 → 选择器会预选错位。
+  ///
+  /// Rust 通道因避开 parked-eval 死锁（见 [_dispatchAction]）而不跑 pack 的
+  /// `jsBuildHistory`，故必须自持当前版本供：
+  /// 1. `_openVersionPicker` 覆盖选择器预选值（pack 不回传，见上）；
+  /// 2. `_openBuildHistory` 取当前版本，否则切换版本后历史构建列表仍按
+  ///    入口/最新版本取。
   String? _currentVersion;
 
   /// 当前环境（同上，来自 detail 的 `extra.env` / `switchVersion` 的 env 参数）。
@@ -92,34 +112,34 @@ class RustScriptDetailChannel implements IDetailChannel {
       state.readmeLoading = true;
       state.statisticsLoading = true;
 
-      final raw = await _api.run(
-        key: channelKey,
-        method: 'getAppDetail',
-        paramsJson: jsonEncode({'appId': appId}),
-      );
-      final Object? decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        await callbacks.refreshDetail(
-          detailData: Map<String, dynamic>.from(decoded),
+      try {
+        final detail = await _facade.getAppDetail(
+          key: channelKey,
+          appId: appId,
+          forceRefresh: false,
         );
+        final map = detailToMap(detail);
+        await callbacks.refreshDetail(detailData: map);
         // 记录 pack 的当前版本/环境（pack `getAppDetail` :642-643 设
         // `detail.version`/内部 `_currentVersion`；:539 设 `_currentEnv` =
         // `cred.env`，后者经 buildDetailFromGroup 落进 detail 的 `extra.env`）。
-        _currentVersion = decoded['version']?.toString();
-        _currentEnv = ((decoded['extra'] as Map?)?['env'])?.toString();
-      } else {
-        // Null / non-object reply = "the script has no detail for this app".
-        // The Rust host folds undefined (no `getAppDetail` case), `{ok:false}`
-        // and a JS throw into the bare JSON `null`, so this is NOT a failure:
-        // keep the prefill already rendered (the page shows the basic info,
-        // never a full-page error) and emit a non-fatal signal only.
+        _currentVersion = detail.version;
+        _currentEnv = (map['extra'] as Map?)?['env']?.toString();
+      } on ChannelApiException catch (error) {
+        // "The script has no detail for this app". The Rust host folds
+        // undefined (no `getAppDetail` case), `{ok:false}` and a JS throw into
+        // the typed `not_found`, so this is NOT a failure: keep the prefill
+        // already rendered (the page shows the basic info, never a full-page
+        // error) and emit a non-fatal signal only. A non-`not_found` typed
+        // failure propagates to the outer catch and sets `errorMessage`.
+        if (error.code != 'not_found') rethrow;
         debugPrint(
           '[RustScriptDetailChannel] no detail from $channelKey for $appId '
-          '(script returned $raw); keeping the prefill',
+          '($error); keeping the prefill',
         );
       }
       // The "更多" menu is independent of `getAppDetail`: refresh it on both the
-      // Map and the null reply so the page keeps its custom actions.
+      // typed-detail and the no-detail reply so the page keeps its custom actions.
       await _refreshActions();
     } catch (e) {
       state.errorMessage = '详情加载失败: $e';
@@ -163,32 +183,19 @@ class RustScriptDetailChannel implements IDetailChannel {
 
   /// 脚本 detailMenu → [DetailAction] 列表缓存（[getActions] 消费）。
   ///
-  /// onTap 经 [_runAction] 分派：`jsswitchVersion`/`jsBuildHistory` 走顶层
-  /// [versionOptions]/[buildHistory] + [DetailCallbacks]（避开 parked eval 死锁，
-  /// 见 [_runAction]），其余动作（如 `jsswitchUA`）仍由脚本 jscall 驱动。
+  /// onTap 经 [_dispatchAction] 分派：`jsswitchVersion`/`jsBuildHistory` 走顶层
+  /// `ChannelApi` detail 方法（[versionOptions]/[buildHistory]），其余动作（如
+  /// `jsswitchUA`）经 [_facade.scriptDetailAction] 在「每次新建的 ScriptDetail」上
+  /// 运行 pack jscall（不共享入口 `op` → 无 deadlock）。
   /// 本方法自身绝不抛出：detailMenu 失败只清空 [getActions] 并记日志，
   /// 绝不让菜单失败污染 `errorMessage` / 白屏（详情页内容仍照常渲染）。
   Future<void> _refreshActions() async {
     try {
-      final raw = await _api.run(
+      final menu = await _facade.scriptDetailMenu(
         key: channelKey,
-        method: 'detailMenu',
-        paramsJson: jsonEncode({'appId': appId}),
+        appId: appId,
       );
-      final Object? decoded = jsonDecode(raw);
-      if (decoded is! List) {
-        _actions = const [];
-        return;
-      }
-      _actions = decoded.map((e) {
-        final entry = e is Map ? e : const <Object?, Object?>{};
-        final label = entry['action']?.toString() ?? '';
-        final jscall = entry['jscall']?.toString() ?? '';
-        return DetailAction(
-          label: label.isEmpty ? (jscall.isEmpty ? '未知动作' : jscall) : label,
-          onTap: () => _runAction(jscall),
-        );
-      }).toList();
+      _actions = [for (final action in menu) _toAction(action)];
     } catch (e) {
       debugPrint(
         '[RustScriptDetailChannel] detailMenu failed for $channelKey/$appId: $e',
@@ -197,26 +204,33 @@ class RustScriptDetailChannel implements IDetailChannel {
     }
   }
 
-  /// Dispatches a detailMenu action WITHOUT parking the Rust eval.
+  /// 一个 typed [rust.ChannelDetailAction] → [DetailAction]（label + onTap）。
+  DetailAction _toAction(rust.ChannelDetailAction action) {
+    final jscall = action.jscall;
+    final label = action.action.isNotEmpty
+        ? action.action
+        : (jscall.isEmpty ? '未知动作' : jscall);
+    return DetailAction(label: label, onTap: () => _dispatchAction(jscall));
+  }
+
+  /// Routes a detailMenu action to its handler.
   ///
-  /// Running the pack's own `jsswitchVersion`/`jsBuildHistory` jscall would hold
+  /// `jsswitchVersion`/`jsBuildHistory` are served by the TOP-LEVEL
+  /// [versionOptions]/[buildHistory] (facade `ChannelApi` detail methods) + the
+  /// bound [DetailCallbacks]: running the pack's own jscall would hold
   /// `ScriptEntry::run`'s `op` mutex for the whole eval
   /// (`rust/gstore_host/src/script_runtime_entry.rs`) while the pack's
   /// synchronous `host.ui.call('showVersionPicker'/'showBuildHistory')`
   /// (`rust/gstore_host/src/ui_api.rs::request` → `rx.recv_timeout`) parks that
-  /// eval. The Flutter handler (`detail_ui_mixins.dart`
-  /// `showVersionPicker`/`showBuildHistory`) then calls back into the script via
-  /// `versionOptions`/`switchVersion` → `ScriptApi.run` → `ScriptEntry::run` →
-  /// `op.lock()` → DEADLOCK on the mutex held by the parked outer eval.
+  /// eval; the Flutter handler (`detail_ui_mixins.dart`) then re-enters via
+  /// `versionOptions`/`switchVersion` — which the Todo 7 guard rejects with the
+  /// typed `CORE_E_SCRIPT_UI_REENTRANT` while the entry is parked.
   ///
-  /// So the two parking actions are re-dispatched to the TOP-LEVEL script
-  /// methods ([versionOptions]/[buildHistory]) + the bound [DetailCallbacks]
-  /// (whose `dc.*` calls are then top-level — no parked eval, no nested `run`).
-  ///
-  /// Every other action (e.g. `jsswitchUA`) keeps the pack-driven path: its
-  /// handlers (`showUAPicker`/`refreshDetail`) only touch Flutter state, so
-  /// running the pack eval never parks the script in a re-entrant call.
-  Future<void> _runAction(String jscall) async {
+  /// Every other action (e.g. `jsswitchUA`) runs the pack's own jscall through
+  /// [_facade.scriptDetailAction], which executes on a FRESH per-call
+  /// `ScriptDetail` (never the shared entry runtime), so a parked UI round-trip
+  /// cannot contend on the entry `op` guard and cannot deadlock.
+  Future<void> _dispatchAction(String jscall) async {
     switch (jscall) {
       case 'jsswitchVersion':
         await _openVersionPicker();
@@ -225,10 +239,10 @@ class RustScriptDetailChannel implements IDetailChannel {
         await _openBuildHistory();
         break;
       default:
-        await _api.run(
+        await _facade.scriptDetailAction(
           key: channelKey,
-          method: jscall,
-          paramsJson: jsonEncode({'appId': appId}),
+          appId: appId,
+          jscall: jscall,
         );
     }
   }
@@ -237,12 +251,18 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// 弹选择器。选择后的 `switchVersion`/`refreshDetail` 与 `onEnvChanged`/
   /// `onBuildHistory` 回调均由 mixin 顶层发起（无 parked eval → 无嵌套 `run`）。
   ///
-  /// 传入跟踪到的 `_currentVersion` 作 `currentVersion`，使选择器预选中当前版本
-  /// （pack 的 `getVersionOptions` 缺省恒回退最新版本，不传则预选错位）。
+  /// 用自持的 `_currentVersion` 覆盖选择器预选值：pack 的顶层 `versionOptions`
+  /// 不回传当前版本（`main('versionOptions')` :1042 只转发 appId/env；
+  /// `getVersionOptions` 缺省回退最新版本 :696），故传 `currentVersion` 给
+  /// `versionOptions` 无效果，必须在此显式覆盖，否则选择器预选错位到最新版本。
   Future<void> _openVersionPicker() async {
     final options =
         await versionOptions(appId, currentVersion: _currentVersion);
     if (options == null) return;
+    final currentVersion = _currentVersion;
+    if (currentVersion != null && currentVersion.isNotEmpty) {
+      options['currentVersion'] = currentVersion;
+    }
     await _boundCallbacks?.showVersionPicker(options: options, appId: appId);
   }
 
@@ -283,23 +303,21 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// `env`/`currentVersion` 为空时省略该键（pingan 侧会误判）。脚本未实现/失败
   /// → null。
   ///
-  /// `currentVersion` 供选择器预选中当前版本（pack `getVersionOptions` 第三参
-  /// 缺省回退最新版本）；它是本类扩展的可选参数，不改变 [IDetailChannel] 契约。
+  /// `currentVersion` 是"选择器应预选的当前版本"提示：pack 顶层 `versionOptions`
+  /// 不回传它（见 [_currentVersion]），故 [_openVersionPicker] 会用自持值覆盖
+  /// 结果；此处仍原样转发给 facade（对支持回传的 pack 是增量、无害）。它是本类
+  /// 扩展的可选参数，不改变 [IDetailChannel] 契约。
   @override
   Future<Map<String, dynamic>?> versionOptions(String appId,
       {String? env, String? currentVersion}) async {
-    final raw = await _api.run(
+    final options = await _facade.scriptVersionOptions(
       key: channelKey,
-      method: 'versionOptions',
-      paramsJson: jsonEncode({
-        'appId': appId,
-        if (env != null) 'env': env,
-        if (currentVersion != null) 'currentVersion': currentVersion,
-      }),
+      appId: appId,
+      env: env,
+      currentVersion: currentVersion,
     );
-    final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) return null;
-    return Map<String, dynamic>.from(decoded);
+    if (options == null) return null;
+    return versionOptionsToMap(options);
   }
 
   /// 切换版本/环境（脚本 detail.js 的 `switchVersion`）→ 解码后的详情 Map；
@@ -311,46 +329,39 @@ class RustScriptDetailChannel implements IDetailChannel {
     required String version,
     Map<String, dynamic>? build,
   }) async {
-    final raw = await _api.run(
+    final detail = await _facade.scriptSwitchVersion(
       key: channelKey,
-      method: 'switchVersion',
-      paramsJson: jsonEncode({
-        'appId': appId,
-        'env': env,
-        'version': version,
-        if (build != null) 'build': build,
-      }),
+      appId: appId,
+      env: env,
+      version: version,
+      buildJson: build == null ? null : jsonEncode(build),
     );
-    final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) return null;
+    if (detail == null) return null;
     // pack `switchVersion` :753-754 设其内部 `_currentEnv`/`_currentVersion`（env
     // 参数覆盖凭证默认 env）。返回的 detail 顶层未带 `version`（版本在
     // `extra.version`，由 buildDetailFromGroup 落），故回退到传入的 `version` 参数。
-    _currentVersion = decoded['version']?.toString() ?? version;
+    _currentVersion = detail.version ?? version;
     _currentEnv = env;
-    return Map<String, dynamic>.from(decoded);
+    return detailToMap(detail);
   }
 
-  /// 指定版本历史构建（脚本 detail.js 的 `buildHistory`）→ 解码后的 Map；
-  /// 脚本未实现/失败 → null。
+  /// 指定版本历史构建（脚本 detail.js 的 `buildHistory`）→ `{builds: [...]}`；
+  /// 脚本未实现/无构建 → 空 `builds` 列表。
   @override
   Future<Map<String, dynamic>?> buildHistory({
     required String appId,
     required String version,
     required String env,
   }) async {
-    final raw = await _api.run(
+    final builds = await _facade.scriptBuildHistory(
       key: channelKey,
-      method: 'buildHistory',
-      paramsJson: jsonEncode({
-        'appId': appId,
-        'version': version,
-        'env': env,
-      }),
+      appId: appId,
+      env: env,
+      version: version,
     );
-    final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) return null;
-    return Map<String, dynamic>.from(decoded);
+    return <String, dynamic>{
+      'builds': [for (final build in builds) buildToMap(build)],
+    };
   }
 
   /// The host replaces the detail's downloads directly; no channel-side cache.
@@ -363,3 +374,4 @@ class RustScriptDetailChannel implements IDetailChannel {
     await _api.releaseDetail(key: channelKey, appId: appId);
   }
 }
+

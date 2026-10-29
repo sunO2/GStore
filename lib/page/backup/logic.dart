@@ -406,26 +406,25 @@ class BackupLogic extends ChangeNotifier {
     try {
       _update(_state.copyWith(isImporting: true));
 
-      // 显示进度对话框
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => PopScope(
-          canPop: false,
-          child: const Center(
-            child: AppLoading(size: AppLoadingSize.medium),
-          ),
-        ),
+      // 恢复期间显示不可取消的进度框（总数为未知 → 不确定态进度条）。
+      // 日志仍由备份服务的 onLog 面板流式输出，二者互不影响。
+      final progress = ValueNotifier<({int done, int total, String message})>(
+        (done: 0, total: 0, message: '正在恢复备份…'),
       );
+      AppDialogs.showProgress(progress: progress);
 
       // 使用 state 中的恢复模式
-      final result = await backup.importFromFile(
-        filePath,
-        mode: _convertRestoreMode(_state.restoreMode),
-        restoreAppConfig: _state.restoreAppConfig,
-      );
-
-      Navigator.pop(context); // 关闭进度对话框
+      final BackupImportResult result;
+      try {
+        result = await backup.importFromFile(
+          filePath,
+          mode: _convertRestoreMode(_state.restoreMode),
+          restoreAppConfig: _state.restoreAppConfig,
+        );
+      } finally {
+        AppDialogs.dismissLoading(); // 关闭进度对话框
+        progress.dispose();
+      }
 
       if (result.success) {
         _update(_state.copyWith(isImporting: false));
@@ -451,9 +450,6 @@ class BackupLogic extends ChangeNotifier {
       }
     } catch (e) {
       _update(_state.copyWith(isImporting: false));
-
-      // 确保关闭对话框
-      Navigator.of(context, rootNavigator: true).pop();
 
       AppDialogs.showError('导入失败: $e', title: '导入失败');
     }

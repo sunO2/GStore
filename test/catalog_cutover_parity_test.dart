@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -19,8 +20,6 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'support/added_apps_read_seams.dart';
 
 /// Flags backend that only toggles `catalog` (the B4 gate).
 class _FakeFlagsBackend implements CoreFlagsBackend {
@@ -115,6 +114,13 @@ class _RecordingCatalog implements CatalogBackend {
     calls.add('$label.refresh');
     return const CatalogRefreshOutcome(changed: false, eventsJson: 'null');
   }
+
+  // 新增的版本仓库方法本文件未使用；由 noSuchMethod 兜底（否则接口新增成员会编译失败）。
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError(
+          'unused CatalogBackend member: ${invocation.memberName}');
+
 }
 
 class _RecordingAddedApps implements AddedAppsBackend {
@@ -122,6 +128,12 @@ class _RecordingAddedApps implements AddedAppsBackend {
 
   final String label;
   final List<String> calls = <String>[];
+
+  @override
+  Future<void> addMembership(String channel, String appId,
+      {int? sortOrder}) async {
+    calls.add('$label.addMembership:$channel:$appId');
+  }
 
   @override
   Future<List<AddedAppInfo>> list() async {
@@ -148,6 +160,13 @@ class _RecordingAddedApps implements AddedAppsBackend {
   }
 
   @override
+  Future<(List<AggregatedAppInfo>, int)> page({
+    required int offset,
+    required int limit,
+  }) =>
+      throw UnimplementedError('page not used by this test');
+
+  @override
   Future<void> notifyChanged() async => calls.add('$label.notifyChanged');
 
   @override
@@ -170,7 +189,8 @@ class _RecordingAddedApps implements AddedAppsBackend {
       calls.add('$label.setOrder');
 
   @override
-  Future<bool> toggle(String channel, String appId) async {
+  Future<bool> toggle(String channel, String appId,
+      {AppSummary? appInfo}) async {
     calls.add('$label.toggle');
     return false;
   }
@@ -422,8 +442,9 @@ void main() {
     expect(fileResult.writeWarnings.single.code, 'CORE_E_WRITE_BLOCKED');
     expect(fileLogs.any((log) => log.text.contains('恢复完成')), isTrue,
         reason: 'the file-path restore must complete, not abort');
-    expect(core.calls, contains('core.add'),
-        reason: 'the catalog portion must restore through the core backend');
+    expect(core.calls, contains('core.addMembership:github:owner/beta'),
+        reason: 'the catalog portion must restore through the core backend '
+            '(reference-only item -> membership only)');
     expect(File(p.join(channelsDir.path, evilName)).existsSync(), isFalse,
         reason: '_restoreChannelPackages must fail closed on a channel block');
 
