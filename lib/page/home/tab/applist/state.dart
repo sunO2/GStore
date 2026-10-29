@@ -27,8 +27,11 @@ class ApplistState {
   /// 数据库版本
   final String version;
 
-  /// 是否正在加载
+  /// 是否正在加载（仅在列表为空时的首屏/全屏加载置位）
   final bool isLoading;
+
+  /// 是否正在静默刷新（列表已有内容时置位：保留旧列表，只在顶部显示细进度）
+  final bool isRefreshing;
 
   /// 是否正在分页加载更多（滚动到底加载下一页时置位，与首屏 isLoading 区分）
   final bool isLoadingMore;
@@ -63,6 +66,7 @@ class ApplistState {
     this.searchKeyword = '',
     this.version = '',
     this.isLoading = false,
+    this.isRefreshing = false,
     this.isLoadingMore = false,
     this.totalCount = 0,
     this.errorMessage = '',
@@ -80,6 +84,7 @@ class ApplistState {
     String? searchKeyword,
     String? version,
     bool? isLoading,
+    bool? isRefreshing,
     bool? isLoadingMore,
     int? totalCount,
     String? errorMessage,
@@ -96,6 +101,7 @@ class ApplistState {
       searchKeyword: searchKeyword ?? this.searchKeyword,
       version: version ?? this.version,
       isLoading: isLoading ?? this.isLoading,
+      isRefreshing: isRefreshing ?? this.isRefreshing,
       isLoadingMore: isLoadingMore ?? this.isLoadingMore,
       totalCount: totalCount ?? this.totalCount,
       errorMessage: errorMessage ?? this.errorMessage,

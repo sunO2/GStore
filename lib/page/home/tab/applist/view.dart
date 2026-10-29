@@ -274,8 +274,8 @@ class _ApplistBody extends ConsumerWidget {
     ApplistState state,
     ApplistNotifier logic,
   ) {
-    // 加载状态
-    if (state.isLoading) {
+    // 加载状态（仅列表为空时的首屏加载；已有列表时绝不白屏）
+    if (state.isLoading && state.apps.isEmpty) {
       return const LoadingState();
     }
 
@@ -335,13 +335,23 @@ class _ApplistBody extends ConsumerWidget {
     // 应用列表
     final isSearching = state.searchKeyword.isNotEmpty;
     return RefreshIndicator(
-      onRefresh: logic.loadAggregatedApps,
+      // 下拉刷新走静默刷新：不置 isLoading，保留旧列表
+      onRefresh: logic.refreshSilently,
       child: CustomScrollView(
         controller: ref.read(applistProvider.notifier).scrollController,
         slivers: [
-          // 分类筛选 Chips + 排序
+          // 分类筛选 Chips + 排序（静默刷新时顶部显示 3px 细进度）
           SliverToBoxAdapter(
-            child: _CategoryFilterBar(state: state, logic: logic),
+            child: Column(
+              children: [
+                if (state.isRefreshing)
+                  LinearProgressIndicator(
+                    minHeight: 3,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                _CategoryFilterBar(state: state, logic: logic),
+              ],
+            ),
           ),
 
           // 搜索时只显示搜索结果，隐藏分区

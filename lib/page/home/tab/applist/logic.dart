@@ -40,6 +40,18 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   /// 原始已加载偏移（addedApps 索引游标，与返回条数解耦）
   int _loadedOffset = 0;
 
+  /// 聚合加载重入守卫：一次加载在飞行中时，后续调用立即返回，
+  /// 绝不产生第二次 facade/Rust 调用（LiveRefresh/下拉/应用变化可能同时触发）。
+  bool _loading = false;
+
+  /// 分页加载更多在飞行中时收到的刷新请求：合并为一次延迟刷新。
+  ///
+  /// 刷新成功分支会用 page 0 整体替换 [ApplistState.apps]，若在 loadMore
+  /// 追加页面期间直接执行，会丢掉刚追加的行并把 [_loadedOffset] 回退，
+  /// 之后 [_ensureSearchedAllLoaded] 会重复追加同一页。故此处只登记，
+  /// 待 loadMore 的 finally 提交完追加后再静默重跑一次。
+  bool _pendingRefresh = false;
+
   /// 聚合服务（经模块注册表取；aggregate 模块下线返回 null → 页面降级空态）
   IAggregateService? get _aggregator =>
       ModuleManager.instance.get<IAggregateService>();
@@ -59,10 +71,10 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     return const ApplistState();
   }
 
-  /// 渠道/目录变化 → 防抖后重跑聚合加载（复用既有 loading 态）。
+  /// 渠道/目录变化 → 防抖后静默刷新（保留旧列表，只更新数据）。
   void _onLiveRefresh() {
     if (_disposed) return;
-    unawaited(loadAggregatedApps());
+    unawaited(refreshSilently());
   }
 
   void _dispose() {
@@ -166,11 +178,42 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     return result;
   }
 
-  /// 加载聚合应用（首页/下拉刷新：只取第一页，滚动到底再加载更多）
-  Future<void> loadAggregatedApps() async {
+  /// 加载聚合应用（首页/重试：列表为空时进入全屏 loading，否则转静默刷新）
+  Future<void> loadAggregatedApps() => _loadAggregatedPage(silent: false);
+
+  /// 静默刷新（下拉刷新 / LiveRefresh 用）：绝不置 [ApplistState.isLoading]，
+  /// 屏幕上的旧列表保持不动，只在顶部显示细进度。
+  Future<void> refreshSilently() => _loadAggregatedPage(silent: true);
+
+  /// 首屏加载的实现（重入受守卫，成功分支才推进分页游标）。
+  Future<void> _loadAggregatedPage({required bool silent}) async {
+    if (_loading) {
+      // 已有加载在飞行中：直接返回，不发第二次 facade/Rust 调用。
+      appLog.info('ApplistNotifier: ⏭️ 聚合加载进行中，跳过本次重复请求');
+      return;
+    }
+    if (state.isLoadingMore) {
+      // 分页追加在飞行中：此时刷新会用 page 0 覆盖 state.apps 并回退分页游标，
+      // 造成已追加行丢失 / 同页重复。合并为一次延迟刷新，等 loadMore 提交后
+      // 在它的 finally 里静默重跑（见 _pendingRefresh）。
+      _pendingRefresh = true;
+      appLog.info('ApplistNotifier: ⏭️ 分页加载进行中，合并本次刷新');
+      return;
+    }
+    _loading = true;
+    // 只有「列表为空」的首屏加载才允许全屏 loading，避免刷新时白屏。
+    final blocking = !silent && state.apps.isEmpty;
+    final stopwatch = Stopwatch()..start();
     appLog.info('ApplistNotifier: ========== 开始加载聚合应用 ==========');
-    state = state.copyWith(isLoading: true, errorMessage: '');
-    _loadedOffset = 0; // 重置分页游标
+    if (silent) {
+      state = state.copyWith(isRefreshing: true, errorMessage: '');
+    } else {
+      state = state.copyWith(
+        isLoading: blocking,
+        isRefreshing: !blocking,
+        errorMessage: '',
+      );
+    }
 
     try {
       debugPrint('ApplistNotifier: 调用 getAggregatedAppsPage(0, $_pageSize)');
@@ -183,13 +226,21 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
         limit: _pageSize,
       );
       if (_disposed) return;
-      appLog.info('ApplistNotifier: ✅ 获取到 ${apps.length} 个聚合应用（共 $total）');
+      stopwatch.stop();
+      // 首页各渠道的行数分布（冷启动基线用，不做任何额外 RPC）。
+      final channelRows = <String, int>{};
+      for (final app in apps) {
+        channelRows[app.channelCode] = (channelRows[app.channelCode] ?? 0) + 1;
+      }
+      appLog.info('ApplistNotifier: ✅ 获取到 ${apps.length} 个聚合应用'
+          '（共 $total, elapsedMs=${stopwatch.elapsedMilliseconds}, '
+          'channels=$channelRows）');
 
-      // 首页已按页大小消费 addedApps（与返回条数解耦）
+      state = state.copyWith(apps: apps, totalCount: total);
+      // 分页游标只在成功分支推进：失败刷新不得污染分页。
       _loadedOffset = total >= _pageSize ? _pageSize : total;
       // 重新应用当前筛选（分类/搜索/排序）——不能直接显示全部，
       // 否则下拉刷新后 filteredApps 变为全部而 selectedCategory 仍选中旧分类（状态/显示不一致）
-      state = state.copyWith(apps: apps, totalCount: total);
       _buildCategories();
       _applyFilter();
 
@@ -197,12 +248,14 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     } catch (e, stackTrace) {
       appLog.error('ApplistNotifier: ❌ 加载聚合应用失败 - $e');
       debugPrint('ApplistNotifier: 堆栈跟踪: $stackTrace');
-      if (!_disposed) {
+      // 静默刷新失败且已有列表：保留旧列表（不把整页切成错误态）。
+      if (!_disposed && (state.apps.isEmpty || !silent)) {
         state = state.copyWith(errorMessage: '加载失败: $e');
       }
     } finally {
+      _loading = false;
       if (!_disposed) {
-        state = state.copyWith(isLoading: false);
+        state = state.copyWith(isLoading: false, isRefreshing: false);
       }
     }
     appLog.info('ApplistNotifier: ========== 加载聚合应用完成 ==========');
@@ -210,8 +263,9 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
   /// 滚动到底部时加载更多（追加到 apps，再重新应用筛选）
   Future<void> loadMoreApps() async {
-    // 首屏加载或已在上拉加载中 → 跳过（防重入）
-    if (state.isLoading || state.isLoadingMore) return;
+    // 首屏加载、已在上拉加载中、或静默刷新在飞行中 → 跳过（防重入/防覆盖）
+    // 静默刷新期间追加分页会被其成功分支的 page 0 整体替换所吞掉，故直接拒绝。
+    if (state.isLoading || state.isLoadingMore || state.isRefreshing) return;
     // 已全部加载 → 跳过
     if (_loadedOffset >= state.totalCount) return;
 
@@ -249,6 +303,11 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     } finally {
       if (!_disposed) {
         state = state.copyWith(isLoadingMore: false);
+        if (_pendingRefresh) {
+          _pendingRefresh = false;
+          // 追加已提交到 state，安全重跑一次被合并的静默刷新。
+          unawaited(_loadAggregatedPage(silent: true));
+        }
       }
     }
   }

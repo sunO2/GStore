@@ -67,6 +67,13 @@ class _CountingApplist extends ApplistNotifier {
   Future<void> loadAggregatedApps() async {
     loads++;
   }
+
+  // Live events now route through refreshSilently() (silent, no full-screen
+  // spinner); count it against the same counter so a re-run is still observed.
+  @override
+  Future<void> refreshSilently() async {
+    loads++;
+  }
 }
 
 class _CountingDiscovery extends DiscoveryNotifier {
