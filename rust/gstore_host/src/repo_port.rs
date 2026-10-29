@@ -10,7 +10,8 @@
 //! | `search_apps` | `search_apps` | `keyword NUL limit(i32 LE)` |
 //! | `get_repo_meta` | `get_repo_meta` + `get_app_count` | empty |
 //! | `clear_apps` | `clear_apps` | empty |
-//! | `get_one_app` | `search_apps` (exact match) | `package NUL 50(i32 LE)` |
+//! | `get_one_app` | `get_app_by_package` | `package` (falls back to `search_apps` (exact match) on [`Error::Unsupported`]) |
+//! | `get_app_icons` | `get_app_icons` | newline-joined package names |
 //!
 //! The module owns the SQLite handle, so [`RepoPort::db_path`] returns the path
 //! supplied when the module instance was created. Module status codes are
@@ -136,6 +137,22 @@ impl<B: RepoBridge> ModuleRepoPort<B> {
             ))
         })
     }
+
+    fn get_app_icons_per_app(
+        &self,
+        source: &str,
+        package_names: &[String],
+    ) -> Result<Vec<(String, String)>, Error> {
+        let mut icons = Vec::with_capacity(package_names.len());
+        for package_name in package_names {
+            if let Some(app) = self.get_one_app(source, package_name)? {
+                if let Some(icon) = app.icon.filter(|icon| !icon.is_empty()) {
+                    icons.push((package_name.clone(), icon));
+                }
+            }
+        }
+        Ok(icons)
+    }
 }
 
 impl<B: RepoBridge> RepoPort for ModuleRepoPort<B> {
@@ -227,11 +244,50 @@ impl<B: RepoBridge> RepoPort for ModuleRepoPort<B> {
                 "package name must not be empty".to_string(),
             ));
         }
-        let apps = self.module_search(package_name, 50)?;
-        apps.iter()
-            .find(|app| app.package_name == package_name)
-            .map(|app| app.to_repo_app(source))
-            .transpose()
+        match self.call_json("get_app_by_package", package_name.as_bytes()) {
+            Ok(Value::Null) => Ok(None),
+            Ok(value) => {
+                let app: ModuleApp = serde_json::from_value(value).map_err(|error| {
+                    Error::Serialization(format!(
+                        "repo module get_app_by_package returned malformed JSON: {error}"
+                    ))
+                })?;
+                Ok(Some(app.to_repo_app(source)?))
+            }
+            Err(Error::Unsupported(_)) => {
+                let apps = self.module_search(package_name, 50)?;
+                apps.iter()
+                    .find(|app| app.package_name == package_name)
+                    .map(|app| app.to_repo_app(source))
+                    .transpose()
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn get_app_icons(
+        &self,
+        source: &str,
+        package_names: &[String],
+    ) -> Result<Vec<(String, String)>, Error> {
+        gstore_core::ports::repo::validate_repo_source(source)?;
+        let payload = package_names.join("\n");
+        match self.call_json("get_app_icons", payload.as_bytes()) {
+            Ok(value) => {
+                let icons: Vec<(String, String)> =
+                    serde_json::from_value(value).map_err(|error| {
+                        Error::Serialization(format!(
+                            "repo module get_app_icons returned malformed JSON: {error}"
+                        ))
+                    })?;
+                Ok(icons
+                    .into_iter()
+                    .filter(|(package_name, icon)| !package_name.is_empty() && !icon.is_empty())
+                    .collect())
+            }
+            Err(Error::Unsupported(_)) => self.get_app_icons_per_app(source, package_names),
+            Err(error) => Err(error),
+        }
     }
 
     fn db_path(&self) -> &Path {
@@ -394,34 +450,67 @@ fn map_module_error(error: ModuleError) -> Error {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
-    struct StaticBridge {
+    const SOURCE: &str = "https://f-droid.org/repo";
+
+    #[derive(Default)]
+    struct StaticBridgeState {
         responses: Mutex<VecDeque<(String, Vec<u8>)>>,
+        calls: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    #[derive(Clone)]
+    struct StaticBridge {
+        state: Arc<StaticBridgeState>,
     }
 
     impl StaticBridge {
         fn new(responses: Vec<(&str, Value)>) -> Self {
+            let state = StaticBridgeState::default();
+            state.responses.lock().unwrap().extend(
+                responses
+                    .into_iter()
+                    .map(|(method, value)| (method.to_string(), value.to_string().into_bytes())),
+            );
             Self {
-                responses: Mutex::new(
-                    responses
-                        .into_iter()
-                        .map(|(method, value)| (method.to_string(), value.to_string().into_bytes()))
-                        .collect(),
-                ),
+                state: Arc::new(state),
             }
+        }
+
+        fn calls(&self) -> Vec<(String, Vec<u8>)> {
+            self.state.calls.lock().unwrap().clone()
+        }
+
+        fn call_count(&self) -> usize {
+            self.state.calls.lock().unwrap().len()
         }
     }
 
     impl RepoBridge for StaticBridge {
-        fn call(&self, method: &str, _payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
-            let mut responses = self.responses.lock().unwrap();
+        fn call(&self, method: &str, payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+            self.state
+                .calls
+                .lock()
+                .unwrap()
+                .push((method.to_string(), payload.to_vec()));
+            let mut responses = self.state.responses.lock().unwrap();
             let position = responses
                 .iter()
                 .position(|(expected, _)| expected == method)
                 .ok_or_else(|| ModuleError::method_not_found(method))?;
             Ok(responses.remove(position).unwrap().1)
         }
+    }
+
+    fn module_app(package_name: &str, icon: &str) -> Value {
+        serde_json::json!({
+            "package_name": package_name,
+            "name": "Exact App",
+            "summary": "summary",
+            "icon": icon,
+            "categories": ["tools"],
+        })
     }
 
     #[test]
@@ -520,5 +609,180 @@ mod tests {
             let error = map_module_error(ModuleError::new(status, "CODE", "message"));
             assert_eq!(error.code(), expected, "status {status:?}");
         }
+    }
+
+    #[test]
+    fn get_one_app_returns_none_when_module_reports_no_row() {
+        let bridge = StaticBridge::new(vec![("get_app_by_package", Value::Null)]);
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        assert_eq!(
+            port.get_one_app(SOURCE, "com.example.missing").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn get_one_app_maps_exact_module_row() {
+        let bridge = StaticBridge::new(vec![(
+            "get_app_by_package",
+            module_app("com.example.app", "icons/com.example.app.png"),
+        )]);
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        let app = port
+            .get_one_app(SOURCE, "com.example.app")
+            .unwrap()
+            .expect("exact row");
+        assert_eq!(app.package_name, "com.example.app");
+        assert_eq!(
+            app.icon.as_deref(),
+            Some("icons/com.example.app.png")
+        );
+    }
+
+    #[test]
+    fn get_one_app_falls_back_to_search_on_method_not_found() {
+        let bridge = StaticBridge::new(vec![(
+            "search_apps",
+            serde_json::json!([
+                module_app("com.example.other", "icons/other.png"),
+                module_app("com.example.app", "icons/com.example.app.png"),
+            ]),
+        )]);
+        let observer = bridge.clone();
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        let app = port
+            .get_one_app(SOURCE, "com.example.app")
+            .unwrap()
+            .expect("fallback exact row");
+        assert_eq!(app.package_name, "com.example.app");
+        assert_eq!(
+            app.icon.as_deref(),
+            Some("icons/com.example.app.png")
+        );
+        let methods: Vec<String> = observer
+            .calls()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect();
+        assert_eq!(methods, vec!["get_app_by_package", "search_apps"]);
+    }
+
+    #[test]
+    fn get_one_app_fallback_returns_none_when_search_misses() {
+        let bridge = StaticBridge::new(vec![("search_apps", serde_json::json!([]))]);
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        assert_eq!(
+            port.get_one_app(SOURCE, "com.example.missing").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn get_app_icons_makes_one_module_call_for_twenty_packages() {
+        let package_names: Vec<String> = (0..20)
+            .map(|index| format!("org.example.app{index}"))
+            .collect();
+        let expected: Vec<(String, String)> = package_names
+            .iter()
+            .map(|package_name| {
+                (
+                    package_name.clone(),
+                    format!("icons/{package_name}.png"),
+                )
+            })
+            .collect();
+        let bridge = StaticBridge::new(vec![("get_app_icons", serde_json::json!(expected))]);
+        let observer = bridge.clone();
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        let icons = port.get_app_icons(SOURCE, &package_names).unwrap();
+
+        assert_eq!(icons, expected);
+        assert_eq!(observer.call_count(), 1);
+        let calls = observer.calls();
+        assert_eq!(calls[0].0, "get_app_icons");
+        assert_eq!(calls[0].1, package_names.join("\n").into_bytes());
+        assert!(
+            port.get_app_icons(SOURCE, &package_names).is_err(),
+            "response queue is drained, so a second batch call must fail"
+        );
+    }
+
+    #[test]
+    fn get_app_icons_falls_back_per_app_when_module_lacks_the_method() {
+        let bridge = StaticBridge::new(vec![
+            (
+                "get_app_by_package",
+                module_app("org.example.a", "icons/a.png"),
+            ),
+            (
+                "get_app_by_package",
+                module_app("org.example.b", "icons/b.png"),
+            ),
+            ("get_app_by_package", Value::Null),
+        ]);
+        let observer = bridge.clone();
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        let requested = vec![
+            "org.example.a".to_string(),
+            "org.example.b".to_string(),
+            "org.example.missing".to_string(),
+        ];
+        let icons = port.get_app_icons(SOURCE, &requested).unwrap();
+
+        assert_eq!(
+            icons,
+            vec![
+                ("org.example.a".to_string(), "icons/a.png".to_string()),
+                ("org.example.b".to_string(), "icons/b.png".to_string()),
+            ]
+        );
+        let methods: Vec<String> = observer
+            .calls()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect();
+        assert_eq!(
+            methods,
+            vec![
+                "get_app_icons",
+                "get_app_by_package",
+                "get_app_by_package",
+                "get_app_by_package",
+            ]
+        );
+    }
+
+    #[test]
+    fn get_app_icons_fallback_uses_search_on_even_older_module() {
+        let bridge = StaticBridge::new(vec![(
+            "search_apps",
+            serde_json::json!([module_app("org.example.a", "icons/a.png")]),
+        )]);
+        let observer = bridge.clone();
+        let port = ModuleRepoPort::new(bridge, "/data/repo.db");
+
+        let icons = port
+            .get_app_icons(SOURCE, &["org.example.a".to_string()])
+            .unwrap();
+
+        assert_eq!(
+            icons,
+            vec![("org.example.a".to_string(), "icons/a.png".to_string())]
+        );
+        let methods: Vec<String> = observer
+            .calls()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect();
+        assert_eq!(
+            methods,
+            vec!["get_app_icons", "get_app_by_package", "search_apps"]
+        );
     }
 }

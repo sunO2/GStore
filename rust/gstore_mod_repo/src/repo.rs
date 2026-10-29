@@ -324,6 +324,139 @@ fn rewrite_versions_assets(base: &str, versions: &str) -> String {
     serde_json::to_string(&v).unwrap_or_else(|_| versions.to_string())
 }
 
+/// `apps` 表固定 13 列投影（顺序与 [AppInfo] 字段一一对应；搜索/主键查/批量取共用）
+const APP_SELECT_COLUMNS: &str = "package_name, name, summary, icon, license, author_name, \
+     source_code, web_site, categories, added, last_updated, metadata, versions";
+
+/// 两步搜索的第一步：只在覆盖索引 `idx_apps_search` 上取主键。
+///
+/// `?1` 是**未转义**的 `%keyword%` —— 必须保持 `%` / `_` 的 LIKE 通配语义
+/// （不换 FTS5 MATCH、不 COLLATE NOCASE）。
+const SEARCH_KEYS_SQL: &str = "SELECT package_name FROM apps \
+     WHERE name LIKE ?1 OR summary LIKE ?1 OR package_name LIKE ?1 \
+     ORDER BY name ASC, package_name ASC LIMIT ?2";
+
+/// 批量图标查询每块的包名数（远低于 SQLite 变量上限）
+const APP_ICON_CHUNK_SIZE: usize = 500;
+
+/// `#[cfg(test)]` 专用：`get_app_icons` 实际执行的查询块数（不含生产开销）
+#[cfg(test)]
+static ICON_QUERY_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// 行 → [AppInfo] 的**唯一**映射（13 列顺序必须与 [APP_SELECT_COLUMNS] 一致）
+fn app_from_row(row: &rusqlite::Row<'_>) -> SqliteResult<AppInfo> {
+    Ok(AppInfo {
+        package_name: row.get(0)?,
+        name: row.get(1)?,
+        summary: row.get(2)?,
+        icon: row.get(3)?,
+        license: row.get(4)?,
+        author_name: row.get(5)?,
+        source_code: row.get(6)?,
+        web_site: row.get(7)?,
+        categories: row
+            .get::<_, String>(8)?
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect(),
+        added: row.get(9)?,
+        last_updated: row.get(10)?,
+        metadata: row.get(11)?,
+        versions: row.get(12)?,
+    })
+}
+
+/// 主键精确查语句（走 `sqlite_autoindex_apps_1`）
+fn app_by_package_sql() -> String {
+    format!("SELECT {APP_SELECT_COLUMNS} FROM apps WHERE package_name = ?1")
+}
+
+/// 按主键批量取 13 列的语句（占位符数量 = 包名数量）
+fn apps_by_packages_sql(n: usize) -> String {
+    let placeholders = std::iter::repeat("?")
+        .take(n)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("SELECT {APP_SELECT_COLUMNS} FROM apps WHERE package_name IN ({placeholders})")
+}
+
+/// 批量图标语句（只取主键 + 图标两列）
+fn icons_by_packages_sql(n: usize) -> String {
+    let placeholders = std::iter::repeat("?")
+        .take(n)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("SELECT package_name, icon FROM apps WHERE package_name IN ({placeholders})")
+}
+
+/// 单块图标查询；`#[cfg(test)]` 下计数，生产路径不增加任何行为
+fn query_icons_chunk(
+    conn: &Connection,
+    chunk: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    #[cfg(test)]
+    ICON_QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    let sql = icons_by_packages_sql(chunk.len());
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| format!("Query failed: {}", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (package_name, icon) =
+            row.map_err(|e| format!("Failed to collect results: {}", e))?;
+        // 只返回图标非空的行（空串与 NULL 都视为没有图标）
+        if let Some(icon) = icon {
+            if !icon.is_empty() {
+                out.push((package_name, icon));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 按 `package_names` 的顺序返回 13 列（`IN (...)` 本身无序 → 用 map 重排）
+///
+/// 按 [APP_ICON_CHUNK_SIZE] 分块执行：`IN (?...)` 每个包名占一个变量，模块直调可能传
+/// `limit: 100000`（见 `FdroidRustRepoManager.dart`），单条语句会撞 SQLite 的变量上限。
+/// 分块不改变结果集合，重排仍按输入顺序（= 第一步的 key order）。
+fn select_apps_by_packages(
+    conn: &Connection,
+    package_names: &[String],
+) -> Result<Vec<AppInfo>, String> {
+    if package_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut by_package: std::collections::HashMap<String, AppInfo> =
+        std::collections::HashMap::with_capacity(package_names.len());
+    for chunk in package_names.chunks(APP_ICON_CHUNK_SIZE) {
+        let sql = apps_by_packages_sql(chunk.len());
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), app_from_row)
+            .map_err(|e| format!("Query failed: {}", e))?;
+        for row in rows {
+            let app = row.map_err(|e| format!("Failed to collect results: {}", e))?;
+            by_package.insert(app.package_name.clone(), app);
+        }
+    }
+    // 缺失的行（两步之间被并发删除）直接跳过，不破坏其余顺序
+    Ok(package_names
+        .iter()
+        .filter_map(|package_name| by_package.remove(package_name))
+        .collect())
+}
+
 impl RepoManager {
     /// 创建新的管理器
     pub fn new(db_path: &str) -> Result<Self, String> {
@@ -376,6 +509,14 @@ impl RepoManager {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_apps_name ON apps(name)",
+            [],
+        )?;
+
+        // 搜索覆盖索引：第一步 `SELECT package_name` 只读本索引（不碰 metadata/versions 大 JSON），
+        // 且 name 是首列 → `ORDER BY name` 免排序、LIMIT 可提前终止。
+        // 保留 idx_apps_name：历史路径/其它查询仍可能用到。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_apps_search ON apps(name, package_name, summary)",
             [],
         )?;
 
@@ -1035,7 +1176,30 @@ impl RepoManager {
         String::new()
     }
 
-    /// 搜索应用
+    /// 出口统一绝对化：icon / metadata 资源 / versions 里的 APK 文件名 → 绝对地址
+    ///
+    /// 在**读取时**解析而非写库时，因为镜像偏好会变（基址 = resolved_url，随下载更新）。
+    fn absolutize_apps(&self, apps: &mut [AppInfo], base: &str) {
+        if base.is_empty() {
+            return;
+        }
+        for a in apps.iter_mut() {
+            if !a.icon.is_empty() {
+                a.icon = join_repo_url(base, &normalize_asset_path(&a.icon));
+            }
+            if let Some(meta) = a.metadata.clone() {
+                a.metadata = Some(rewrite_metadata_assets(base, &meta));
+            }
+            if let Some(vs) = a.versions.clone() {
+                a.versions = Some(rewrite_versions_assets(base, &vs));
+            }
+        }
+    }
+
+    /// 搜索应用（两步查询）
+    ///
+    /// ① 只在覆盖索引上取 `package_name`（不读大 JSON），② 按主键取 13 列并按①的顺序重排。
+    /// 集合与顺序与旧的单查询实现一致（新增 `package_name` 作为同名 tie-break）。
     pub fn search_apps(&self, keyword: &str, limit: i32) -> Result<Vec<AppInfo>, String> {
         // ★ 必须在**锁外**取资源基址：asset_base() 内部同样会 self.db.lock()，
         //   而 std::sync::Mutex 不可重入 —— 持锁调用会**自死锁**
@@ -1046,63 +1210,101 @@ impl RepoManager {
             .map_err(|e| format!("Failed to lock database: {}", e))?;
 
         let pattern = format!("%{}%", keyword);
+        // 防御性钳制：负数 limit 交给 SQLite 会被当作"无限制"，这里显式归零保持既有语义
+        let limit = limit.max(0);
 
-        let mut stmt = conn.prepare(
-            "SELECT package_name, name, summary, icon, license, author_name,
-                    source_code, web_site, categories, added, last_updated,
-                    metadata, versions
-             FROM apps
-             WHERE name LIKE ?1 OR summary LIKE ?1 OR package_name LIKE ?1
-             ORDER BY name ASC
-             LIMIT ?2"
-        ).map_err(|e| format!("Failed to prepare query: {}", e))?;
+        // ① 覆盖索引取主键（LIKE 语义不变：?1 未转义）
+        let package_names: Vec<String> = {
+            let mut stmt = conn
+                .prepare(SEARCH_KEYS_SQL)
+                .map_err(|e| format!("Failed to prepare query: {}", e))?;
+            let rows = stmt
+                .query_map(rusqlite::params![&pattern, limit], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| format!("Query failed: {}", e))?;
+            rows.collect::<SqliteResult<Vec<_>>>()
+                .map_err(|e| format!("Failed to collect results: {}", e))?
+        };
 
-        let mut apps = stmt
-            .query_map(
-                [&pattern, &limit.to_string()],
-                |row| -> SqliteResult<AppInfo> {
-                    Ok(AppInfo {
-                        package_name: row.get(0)?,
-                        name: row.get(1)?,
-                        summary: row.get(2)?,
-                        icon: row.get(3)?,
-                        license: row.get(4)?,
-                        author_name: row.get(5)?,
-                        source_code: row.get(6)?,
-                        web_site: row.get(7)?,
-                        categories: row.get::<_, String>(8)?
-                            .split(',')
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .collect(),
-                        added: row.get(9)?,
-                        last_updated: row.get(10)?,
-                        metadata: row.get(11)?,
-                        versions: row.get(12)?,
-                    })
-                },
-            )
-            .map_err(|e| format!("Query failed: {}", e))?
-            .collect::<SqliteResult<Vec<_>>>()
-            .map_err(|e| format!("Failed to collect results: {}", e))?;
+        // ② 按主键取 13 列，并按①的顺序重排
+        let mut apps = select_apps_by_packages(&conn, &package_names)?;
 
-        // ★ 出口统一处理：icon / metadata 资源 / versions 里的 APK 文件名 → 绝对地址
-        //   在**读取时**解析而非写库时，因为镜像偏好会变（基址=resolved_url，随下载更新）
-        if !base.is_empty() {
-            for a in apps.iter_mut() {
-                if !a.icon.is_empty() {
-                    a.icon = join_repo_url(&base, &normalize_asset_path(&a.icon));
-                }
-                if let Some(meta) = a.metadata.clone() {
-                    a.metadata = Some(rewrite_metadata_assets(&base, &meta));
-                }
-                if let Some(vs) = a.versions.clone() {
-                    a.versions = Some(rewrite_versions_assets(&base, &vs));
-                }
+        self.absolutize_apps(&mut apps, &base);
+
+        Ok(apps)
+    }
+
+    /// 主键精确查（`package_name` 是 TEXT PRIMARY KEY → `sqlite_autoindex_apps_1`）
+    ///
+    /// 替代「模糊搜索 + LIMIT 50 后 find」：那种路径在命中行被截断时会**静默返回 None**。
+    pub fn get_app_by_package(&self, package_name: &str) -> Result<Option<AppInfo>, String> {
+        // 同样：资源基址必须在锁外取（Mutex 不可重入）
+        let base = self.asset_base();
+
+        let conn = self.db.lock()
+            .map_err(|e| format!("Failed to lock database: {}", e))?;
+
+        let sql = app_by_package_sql();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let mut rows = stmt
+            .query_map(rusqlite::params![package_name], app_from_row)
+            .map_err(|e| format!("Query failed: {}", e))?;
+        let found = match rows.next() {
+            Some(row) => Some(row.map_err(|e| format!("Failed to read app: {}", e))?),
+            None => None,
+        };
+        drop(rows);
+        drop(stmt);
+
+        let mut apps: Vec<AppInfo> = found.into_iter().collect();
+        self.absolutize_apps(&mut apps, &base);
+
+        Ok(apps.pop())
+    }
+
+    /// 批量图标查询（首页每页一次）：按 500 个包名分块，只返回 icon 非空的行，
+    /// 输出顺序与 `package_names` 输入顺序一致（`IN (...)` 本身无序）。
+    ///
+    /// ★ 出口绝对化必须与 [Self::get_app_by_package] / [Self::search_apps] 用**同一个基址**
+    /// （= `resolved_url`，即镜像优先后真正可达的地址），否则"首页图标 ≡ 详情页图标"不成立：
+    /// 首页会指向不可达的主源，详情页却指向镜像。
+    pub fn get_app_icons(&self, package_names: &[String]) -> Result<Vec<(String, String)>, String> {
+        if package_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 必须在**锁外**取资源基址：asset_base() 内部同样会 self.db.lock()，
+        // std::sync::Mutex 不可重入 —— 持锁调用会自死锁。
+        let base = self.asset_base();
+
+        let conn = self.db.lock()
+            .map_err(|e| format!("Failed to lock database: {}", e))?;
+
+        let mut found: std::collections::HashMap<String, String> =
+            std::collections::HashMap::with_capacity(package_names.len());
+        for chunk in package_names.chunks(APP_ICON_CHUNK_SIZE) {
+            for (package_name, icon) in query_icons_chunk(&conn, chunk)? {
+                found.insert(package_name, icon);
             }
         }
 
-        Ok(apps)
+        Ok(package_names
+            .iter()
+            .filter_map(|package_name| {
+                found.get(package_name).map(|icon| {
+                    // 与 [Self::absolutize_apps] 的 icon 分支逐字节一致；无基址时保留原值
+                    let icon = if base.is_empty() {
+                        icon.clone()
+                    } else {
+                        join_repo_url(&base, &normalize_asset_path(icon))
+                    };
+                    (package_name.clone(), icon)
+                })
+            })
+            .collect())
     }
 
     /// 清空所有应用数据
@@ -1843,6 +2045,351 @@ mod repo_meta_tests {
             v["screenshots"]["phone"]["en-US"],
             "https://mirror/fdroid/repo/com.x/en-US/a.png"
         );
+    }
+
+    // ── Todo 2/3/7/8/15 守卫测试 ────────────────────────────────
+
+    /// 解析 `EXPLAIN QUERY PLAN` 的 detail 列（第 3 列）
+    fn explain_plan(mgr: &RepoManager, sql: &str) -> Vec<String> {
+        let conn = mgr.db.lock().unwrap();
+        let mut stmt = conn.prepare(sql).unwrap();
+        // EXPLAIN 不执行语句，但占位符仍要绑定（统一绑 0，避免参数个数不匹配）
+        let params: Vec<i64> = vec![0; stmt.parameter_count()];
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap();
+        rows.collect::<SqliteResult<Vec<_>>>().unwrap()
+    }
+
+    /// 确定性夹具（唯一 name；带 metadata/versions 大 JSON，逼近真实行宽）
+    fn parity_fixture(i: usize) -> AppInfo {
+        let (name, summary, package_name) = match i % 5 {
+            0 => (
+                format!("微信读书 {i:04}"),
+                format!("微信 阅读器 {i}"),
+                format!("com.example.wechat{i:04}"),
+            ),
+            1 => (
+                format!("Bitwarden Vault {i:04}"),
+                format!("bitwarden password manager {i}%"),
+                format!("com.x8bit.bitwarden{i:04}"),
+            ),
+            2 => (
+                format!("F_Droid Tool {i:04}"),
+                format!("100% offline _ tool {i}"),
+                format!("org.fdroid.tool{i:04}"),
+            ),
+            3 => (
+                format!("通讯录助手 {i:04}"),
+                format!("联系人 微信 备份 {i}"),
+                format!("org.example.contacts{i:04}"),
+            ),
+            _ => (
+                format!("Plain App {i:04}"),
+                format!("plain summary {i}"),
+                format!("org.example.app{i:04}"),
+            ),
+        };
+        AppInfo {
+            package_name,
+            name,
+            summary,
+            icon: format!("/icons/{i}.png"),
+            license: Some("GPL-3.0".into()),
+            author_name: Some("Author".into()),
+            source_code: Some("https://example.com/src".into()),
+            web_site: None,
+            categories: vec!["Tools".into(), "Utility".into()],
+            added: Some(1_700_000_000),
+            last_updated: Some(1_700_000_100),
+            metadata: Some(format!(
+                r#"{{"name":{{"en-US":"App {i}"}},"icon":{{"en-US":{{"name":"/icons/{i}.png"}}}}}}"#
+            )),
+            versions: Some(format!(
+                r#"{{"1000":{{"file":{{"name":"app_{i}.apk","size":9}}}}}}"#
+            )),
+        }
+    }
+
+    /// **旧实现副本**（本改动前 HEAD 的 search_apps：单查询 `ORDER BY name ASC LIMIT ?2` + 出口绝对化）
+    fn search_apps_legacy(
+        mgr: &RepoManager,
+        keyword: &str,
+        limit: i32,
+    ) -> Result<Vec<AppInfo>, String> {
+        let base = mgr.asset_base();
+        let conn = mgr
+            .db
+            .lock()
+            .map_err(|e| format!("Failed to lock database: {}", e))?;
+        let pattern = format!("%{}%", keyword);
+        let sql = format!(
+            "SELECT {} FROM apps \
+             WHERE name LIKE ?1 OR summary LIKE ?1 OR package_name LIKE ?1 \
+             ORDER BY name ASC LIMIT ?2",
+            super::APP_SELECT_COLUMNS
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let mut apps = stmt
+            .query_map(rusqlite::params![&pattern, limit], super::app_from_row)
+            .map_err(|e| format!("Query failed: {}", e))?
+            .collect::<SqliteResult<Vec<_>>>()
+            .map_err(|e| format!("Failed to collect results: {}", e))?;
+        if !base.is_empty() {
+            for a in apps.iter_mut() {
+                if !a.icon.is_empty() {
+                    a.icon = super::join_repo_url(&base, &super::normalize_asset_path(&a.icon));
+                }
+                if let Some(meta) = a.metadata.clone() {
+                    a.metadata = Some(super::rewrite_metadata_assets(&base, &meta));
+                }
+                if let Some(vs) = a.versions.clone() {
+                    a.versions = Some(super::rewrite_versions_assets(&base, &vs));
+                }
+            }
+        }
+        Ok(apps)
+    }
+
+    fn assert_search_parity(mgr: &RepoManager, keyword: &str, limit: i32) {
+        let new_rows = mgr.search_apps(keyword, limit).unwrap();
+        let old_rows = search_apps_legacy(mgr, keyword, limit).unwrap();
+        let keys = |rows: &[AppInfo]| -> Vec<(String, String, String)> {
+            rows.iter()
+                .map(|a| (a.package_name.clone(), a.name.clone(), a.icon.clone()))
+                .collect()
+        };
+        assert_eq!(
+            keys(&new_rows),
+            keys(&old_rows),
+            "keyword={keyword:?} limit={limit}: 结果集合与顺序必须一致"
+        );
+    }
+
+    #[test]
+    fn get_app_by_package_uses_autoindex() {
+        let mgr = fresh_manager("pkg_lookup");
+        let fixture = parity_fixture(1);
+        mgr.save_apps(&[fixture.clone()]).unwrap();
+
+        let plan =
+            explain_plan(&mgr, &format!("EXPLAIN QUERY PLAN {}", super::app_by_package_sql()))
+                .join("\n");
+        assert!(plan.contains("SEARCH apps"), "必须按主键 SEARCH: {plan}");
+        assert!(plan.contains("USING INDEX"), "必须走主键索引: {plan}");
+        assert!(!plan.contains("SCAN apps"), "不得全表扫描: {plan}");
+        println!("get_app_by_package plan: {plan}");
+
+        let hit = mgr.get_app_by_package(&fixture.package_name).unwrap();
+        assert_eq!(hit.map(|a| a.name), Some(fixture.name));
+        assert!(mgr.get_app_by_package("com.example.missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_app_icons_batches_over_500() {
+        let mgr = fresh_manager("icons_batch");
+        let mut fixture = Vec::with_capacity(1200);
+        let mut expected: Vec<(String, String)> = Vec::new();
+        for i in 0..1200 {
+            let mut app = parity_fixture(i);
+            if i % 3 == 1 {
+                app.icon = String::new();
+            } else {
+                app.icon = format!("/icons/{i}.png");
+                expected.push((app.package_name.clone(), app.icon.clone()));
+            }
+            fixture.push(app);
+        }
+        assert_eq!(mgr.save_apps(&fixture).unwrap(), 1200);
+
+        let names: Vec<String> = fixture.iter().map(|a| a.package_name.clone()).collect();
+        super::ICON_QUERY_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let got = mgr.get_app_icons(&names).unwrap();
+        let queries = super::ICON_QUERY_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(queries, 3, "1200 个包名必须切成 3 次查询");
+        assert_eq!(got, expected, "只返回图标非空的行，且顺序 = 输入顺序");
+    }
+
+    /// 首页图标与详情页图标必须用**同一个基址**（= resolved_url / 镜像），否则镜像优先后
+    /// 首页指向不可达主源、详情页指向镜像 —— 用户可见的回归（首页图标 ≡ 详情页图标不成立）。
+    #[test]
+    fn get_app_icons_uses_the_same_asset_base_as_get_app_by_package() {
+        let mgr = fresh_manager("icons_asset_base");
+        let pkg = "com.example.mirrored";
+        // 配置源是主站（https://f-droid.org/repo），但实际下载落到镜像 → resolved_url 记录镜像
+        mgr.save_repo_meta(&RepoMeta::default(), "https://mirror.example/repo", true)
+            .unwrap();
+        mgr.save_apps(&[AppInfo {
+            package_name: pkg.into(),
+            name: "Mirrored".into(),
+            summary: String::new(),
+            icon: "/icons/x.png".into(),
+            license: None,
+            author_name: None,
+            source_code: None,
+            web_site: None,
+            categories: vec![],
+            added: None,
+            last_updated: None,
+            metadata: None,
+            versions: None,
+        }])
+        .unwrap();
+
+        let icons = mgr.get_app_icons(&[pkg.to_string()]).unwrap();
+        assert_eq!(
+            icons,
+            vec![(
+                pkg.to_string(),
+                "https://mirror.example/repo/icons/x.png".to_string()
+            )],
+            "首页图标必须用镜像基址绝对化"
+        );
+        let detail = mgr.get_app_by_package(pkg).unwrap().unwrap();
+        assert_eq!(
+            icons[0].1, detail.icon,
+            "首页图标必须与详情页图标逐字节一致"
+        );
+    }
+
+    #[test]
+    fn search_uses_covering_index_and_pk_lookup() {
+        let mgr = fresh_manager("search_plan");
+        mgr.save_apps(&[parity_fixture(0), parity_fixture(1)])
+            .unwrap();
+
+        let step_a = explain_plan(
+            &mgr,
+            &format!("EXPLAIN QUERY PLAN {}", super::SEARCH_KEYS_SQL),
+        )
+        .join("\n");
+        assert!(
+            step_a.contains("COVERING INDEX"),
+            "step(a) 必须走覆盖索引: {step_a}"
+        );
+
+        let step_b = explain_plan(
+            &mgr,
+            &format!("EXPLAIN QUERY PLAN {}", super::apps_by_packages_sql(2)),
+        )
+        .join("\n");
+        assert!(step_b.contains("SEARCH apps"), "step(b) 必须按主键 SEARCH: {step_b}");
+        assert!(step_b.contains("USING INDEX"), "step(b) 必须用主键索引: {step_b}");
+
+        println!("step(a) plan: {step_a}");
+        println!("step(b) plan: {step_b}");
+    }
+
+    #[test]
+    fn search_parity() {
+        let mgr = fresh_manager("search_parity");
+        let fixture: Vec<AppInfo> = (0..4000).map(parity_fixture).collect();
+        assert_eq!(mgr.save_apps(&fixture).unwrap(), 4000);
+
+        // 五类关键字：`%` 通配、`_` 通配、混合大小写 ASCII、2 字中文、包名子串
+        let keywords = ["%", "_", "bitWARDen", "微信", "example.app00"];
+        for keyword in keywords {
+            assert_search_parity(&mgr, keyword, 50);
+            assert_search_parity(&mgr, keyword, 100_000);
+            assert!(
+                !mgr.search_apps(keyword, 50).unwrap().is_empty(),
+                "关键字 {keyword:?} 未命中任何行，夹具不具代表性"
+            );
+        }
+    }
+
+    /// 模块直调可传 `limit: 100000`：step(b) 必须按 [super::APP_ICON_CHUNK_SIZE] 分块，
+    /// 否则超长 `IN (?...)` 会撞 SQLite 变量上限而让整个搜索硬失败。
+    #[test]
+    fn search_apps_chunks_the_pk_fetch_over_500() {
+        let mgr = fresh_manager("search_chunk");
+        let fixture: Vec<AppInfo> = (0..1200).map(parity_fixture).collect();
+        assert_eq!(mgr.save_apps(&fixture).unwrap(), 1200);
+
+        let got = mgr.search_apps("%", 100_000).unwrap();
+        assert_eq!(got.len(), 1200, "1200 行必须全部返回（分块不得丢行）");
+
+        let mut seen = std::collections::HashSet::new();
+        for app in &got {
+            assert!(
+                seen.insert(app.package_name.clone()),
+                "重复行: {}",
+                app.package_name
+            );
+        }
+        assert_eq!(seen.len(), 1200, "每个 package_name 恰好出现一次");
+
+        // 顺序仍为 name ASC, package_name ASC（夹具 name 唯一 → 与排序后完全一致）
+        let mut expected: Vec<(String, String)> = fixture
+            .iter()
+            .map(|a| (a.name.clone(), a.package_name.clone()))
+            .collect();
+        expected.sort();
+        let got_keys: Vec<(String, String)> = got
+            .iter()
+            .map(|a| (a.name.clone(), a.package_name.clone()))
+            .collect();
+        assert_eq!(got_keys, expected);
+    }
+
+    /// 同名 tie-break：新实现以 `package_name ASC` 作**确定性**次序；旧实现仅 `name ASC`，
+    /// 同名行的相对顺序依赖索引扫描，不具备可移植保证。故本用例断言：
+    /// - 新实现按 `package_name ASC` 稳定排列（可重复、可依赖）；
+    /// - 结果**集合**与旧实现一致 —— 顺序在同名 tie 上允许不同，这是**有意为之**的确定性
+    ///   tie-break，而现有 `search_parity` 只在 name 唯一的夹具上比较，对 tie 是空的守卫。
+    #[test]
+    fn search_parity_with_duplicate_names() {
+        let mgr = fresh_manager("search_dup_names");
+        let fixture: Vec<AppInfo> = (0..8)
+            .map(|i| {
+                let mut app = parity_fixture(i);
+                app.name = "Dup App".into();
+                app.summary = format!("duplicate name fixture {i}");
+                app.package_name = format!("com.example.dup{i:03}");
+                app
+            })
+            .collect();
+        assert_eq!(mgr.save_apps(&fixture).unwrap(), 8);
+
+        let new_rows = mgr.search_apps("Dup App", 100).unwrap();
+        let new_names: Vec<String> = new_rows.iter().map(|a| a.package_name.clone()).collect();
+        let mut sorted = new_names.clone();
+        sorted.sort();
+        assert_eq!(new_names, sorted, "同名行必须按 package_name ASC 稳定排列");
+        assert_eq!(new_names.len(), 8);
+
+        // 集合必须与旧实现一致（同名 tie 上顺序可不同）
+        let old_rows = search_apps_legacy(&mgr, "Dup App", 100).unwrap();
+        let mut old_names: Vec<String> =
+            old_rows.iter().map(|a| a.package_name.clone()).collect();
+        old_names.sort();
+        assert_eq!(new_names, old_names, "结果集合必须与旧实现一致");
+    }
+
+    #[test]
+    #[ignore = "release-only 计时基准：cargo test --release -p gstore_mod_repo --lib -- --ignored --nocapture"]
+    fn search_apps_timing_bench() {
+        let mgr = fresh_manager("search_bench");
+        let fixture: Vec<AppInfo> = (0..4000).map(parity_fixture).collect();
+        mgr.save_apps(&fixture).unwrap();
+
+        let t_new = std::time::Instant::now();
+        let new_len = mgr.search_apps("%", 100_000).unwrap().len();
+        let new_ms = t_new.elapsed().as_millis();
+
+        let t_old = std::time::Instant::now();
+        let old_len = search_apps_legacy(&mgr, "%", 100_000).unwrap().len();
+        let old_ms = t_old.elapsed().as_millis();
+
+        println!(
+            "search_apps 4000 rows: new={new_ms}ms ({new_len} rows) legacy={old_ms}ms ({old_len} rows)"
+        );
+        assert_eq!(new_len, old_len);
     }
 
     #[test]
