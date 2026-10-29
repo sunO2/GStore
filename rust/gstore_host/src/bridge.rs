@@ -2099,7 +2099,7 @@ mod core_api_tests {
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use gstore_core::channel::{
@@ -2787,17 +2787,27 @@ impl HostRepoPort {
     }
 
     fn mirrors_for(&self, source: &str) -> (Vec<String>, bool) {
-        self.fdroid_specs
-            .read()
-            .ok()
-            .and_then(|specs| {
-                specs
-                    .iter()
-                    .find(|spec| spec_matches_source(spec, source))
-                    .map(|spec| (spec.mirrors.clone(), spec.mirror_first))
-            })
-            .unwrap_or_default()
+        mirrors_from(&self.fdroid_specs, source)
     }
+}
+
+/// The mirrors registered for `source` plus the mirror-first flag — the
+/// candidate list a download walks.
+///
+/// Takes the source lock rather than `&self` so the idempotency test can probe
+/// a second handle's view of the set through the exact function
+/// [`HostRepoPort::mirrors_for`] uses.
+fn mirrors_from(specs: &RwLock<Vec<FdroidSourceSpec>>, source: &str) -> (Vec<String>, bool) {
+    specs
+        .read()
+        .ok()
+        .and_then(|specs| {
+            specs
+                .iter()
+                .find(|spec| spec_matches_source(spec, source))
+                .map(|spec| (spec.mirrors.clone(), spec.mirror_first))
+        })
+        .unwrap_or_default()
 }
 
 fn normalize_fdroid_source(source: &str) -> String {
@@ -2852,6 +2862,14 @@ impl RepoPort for HostRepoPort {
         package_name: &str,
     ) -> Result<Option<gstore_core::ports::RepoApp>, CoreError> {
         self.with_port(|port| port.get_one_app(source, package_name))
+    }
+
+    fn get_app_icons(
+        &self,
+        source: &str,
+        package_names: &[String],
+    ) -> Result<Vec<(String, String)>, CoreError> {
+        self.with_port(|port| port.get_app_icons(source, package_names))
     }
 
     fn db_path(&self) -> &Path {
@@ -3116,11 +3134,36 @@ fn default_meta(key: &str) -> Option<ChannelMeta> {
     }
 }
 
+/// Process-wide [`ChannelApiInner`] cache keyed by the three init directories.
+///
+/// `UpdateApi::init` calls [`ChannelApi::init`] again on the same directories;
+/// without this cache that opened a second core `DbHandle` and a second
+/// [`HostRepoPort`] against the same `repo.db`, i.e. two repo module instances.
+/// Sharing one inner means a source/mirror update pushed through any handle
+/// reaches the driver and the download path used by all of them.
+type InnerCache = Mutex<HashMap<(String, String, String), Arc<ChannelApiInner>>>;
+
+fn inner_cache() -> &'static InnerCache {
+    static INNERS: OnceLock<InnerCache> = OnceLock::new();
+    INNERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only: drops every cached inner so tests start from a cold cache.
+#[cfg(test)]
+pub(crate) fn reset_global_inners() {
+    inner_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+}
+
 impl ChannelApi {
     /// Initializes the facade with the same directory shape as `CoreApi`.
     ///
-    /// Safe to call more than once against the same directories: registry rows
-    /// and drivers are re-registered idempotently. No feature flag is armed.
+    /// Safe to call more than once against the same directories: the first call
+    /// caches the [`ChannelApiInner`] process-wide and later calls return that
+    /// same inner, so the core DB handle, repo port and driver set are never
+    /// duplicated. No feature flag is armed.
     pub fn init(
         data_dir: String,
         files_dir: String,
@@ -3150,12 +3193,44 @@ impl ChannelApi {
         let script_http: Arc<dyn ScriptHttp> =
             Arc::new(crate::http_port::BufferedScriptHttp::new(http.clone()));
         let fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>> = Arc::new(RwLock::new(Vec::new()));
-        Self::init_inner(
+        Self::build_inner(
             data_dir, files_dir, cache_dir, http, script_http, metadata, repo, fdroid_specs,
         )
     }
 
+    /// Returns the process-wide inner for these directories, building and
+    /// caching it on the first call.
+    ///
+    /// The cache lock is held across the build so two concurrent callers cannot
+    /// each open their own `DbHandle`/`HostRepoPort` for the same dirs.
     fn init_inner(
+        data_dir: String,
+        files_dir: String,
+        cache_dir: String,
+        http: Arc<dyn HttpPort>,
+        script_http: Arc<dyn ScriptHttp>,
+        metadata: Arc<dyn MetadataPort>,
+        repo: Arc<dyn RepoPort>,
+        fdroid_specs: Arc<RwLock<Vec<FdroidSourceSpec>>>,
+    ) -> Result<ChannelApi, String> {
+        let key = (data_dir.clone(), files_dir.clone(), cache_dir.clone());
+        let mut inners = inner_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(inner) = inners.get(&key) {
+            return Ok(ChannelApi {
+                inner: Arc::clone(inner),
+            });
+        }
+        let api = Self::build_inner(
+            data_dir, files_dir, cache_dir, http, script_http, metadata, repo, fdroid_specs,
+        )?;
+        inners.insert(key, Arc::clone(&api.inner));
+        Ok(api)
+    }
+
+    /// Builds a fresh inner from the given ports, bypassing [`inner_cache`].
+    fn build_inner(
         data_dir: String,
         files_dir: String,
         cache_dir: String,
@@ -6949,5 +7024,93 @@ function main(method, params) {
         );
 
         let _ = std::fs::remove_dir_all(&harness.root);
+    }
+
+    /// Given two `ChannelApi::init` handles on the same directories, When the
+    /// first handle publishes an F-Droid source with mirrors, Then the second
+    /// handle's download candidates contain those mirrors — both handles share
+    /// one inner, one `HostRepoPort` and one `DbHandle` (defect D-B).
+    #[test]
+    fn two_inits_share_fdroid_sources() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_global_inners();
+        let root = temp_root("two_inits_share_sources");
+        let data = root.join("data").to_string_lossy().into_owned();
+        let files = root.join("files").to_string_lossy().into_owned();
+        let cache = root.join("cache").to_string_lossy().into_owned();
+
+        let first =
+            ChannelApi::init(data.clone(), files.clone(), cache.clone()).expect("first init");
+        let second = ChannelApi::init(data, files, cache).expect("second init");
+
+        assert!(
+            Arc::ptr_eq(&first.inner, &second.inner),
+            "a repeated init on the same dirs must reuse the cached inner"
+        );
+        assert!(
+            Arc::ptr_eq(&first.inner.repo, &second.inner.repo),
+            "both handles must share one RepoPort, so only one HostRepoPort is created"
+        );
+        assert_eq!(
+            first.inner.repo.db_path(),
+            second.inner.repo.db_path(),
+            "both handles must point at the same repo.db"
+        );
+
+        let source = "https://f-droid.org/repo";
+        let mirror = "https://mirror.example/repo";
+        first
+            .set_fdroid_sources(vec![
+                r#"{"id":"official","name":"Official","url":"https://f-droid.org/repo","mirrors":["https://mirror.example/repo"],"mirror_first":true,"enabled":true}"#
+                    .to_string(),
+            ])
+            .expect("publish fdroid sources");
+
+        // Probed on the SECOND handle's source set — the same lock instance its
+        // HostRepoPort::mirrors_for reads to build the download candidate list.
+        let (mirrors, mirror_first) = mirrors_from(&second.inner.fdroid_sources, source);
+        assert_eq!(
+            mirrors,
+            vec![mirror.to_string()],
+            "mirrors set through handle A must reach handle B's download candidates"
+        );
+        assert!(mirror_first, "the shared spec must keep mirror_first");
+        assert_eq!(
+            mirrors_from(&second.inner.fdroid_sources, mirror),
+            (vec![mirror.to_string()], true),
+            "a mirror URL must resolve to the same spec on handle B"
+        );
+
+        reset_global_inners();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Given a `HostRepoPort` whose repo.db cannot be opened, When a batched
+    /// icon read runs over an empty package list, Then it fails inside
+    /// `with_port` rather than returning the trait default's empty `Ok` — the
+    /// override delegates to `ModuleRepoPort::get_app_icons` on the same port
+    /// seam as `get_one_app`. The one-RPC-per-page proof is
+    /// `repo_port::tests::get_app_icons_makes_one_module_call_for_twenty_packages`.
+    #[test]
+    fn host_repo_port_get_app_icons_delegates_through_with_port() {
+        let root = temp_root("host_repo_port_icons");
+        let blocked = root.join("not_a_dir");
+        std::fs::write(&blocked, b"").unwrap();
+        let specs: Arc<RwLock<Vec<FdroidSourceSpec>>> = Arc::new(RwLock::new(Vec::new()));
+        let port = HostRepoPort::new(&blocked, Arc::clone(&specs));
+        let source = "https://f-droid.org/repo";
+
+        let batch_error = port
+            .get_app_icons(source, &[])
+            .expect_err("the batched read must build the port, not short-circuit to Ok");
+        let single_error = port
+            .get_one_app(source, "org.example.app0")
+            .expect_err("the per-app read must fail on the same unusable repo.db");
+        assert_eq!(
+            batch_error, single_error,
+            "both reads must fail at the same port-build step"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
