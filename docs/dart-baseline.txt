@@ -1,0 +1,61 @@
+# Dart/Flutter static-analysis baseline (PRE-CHANGE)
+# Plan: .omo/plans/gstore-cold-start-home-loading.md  (final-wave gates F4/F5)
+# Captured before any Dart source change. No file under lib/, test/, or pubspec.yaml was modified.
+
+commit: e429be121cdecf7db8fda610b4e6bbcc4a644661
+branch: (main worktree)
+date_utc: 2026-10-29
+command: flutter analyze lib/
+exit_code: 1
+raw_log: /tmp/b1-analyze.log
+
+summary_line: 668 issues found. (ran in 7.2s)
+
+# Machine-exact per-severity counts (each is a line in the analyzer output)
+error_count: 0
+warning_count: 81
+info_count: 587
+total_issues: 668
+# 0 + 81 + 587 = 668, matches the analyzer summary line exactly.
+
+# Issue-code breakdown (count  code)
+    154  unnecessary_import
+     97  prefer_const_constructors
+     89  annotate_overrides
+     69  file_names
+     55  deprecated_member_use
+     50  constant_identifier_names
+     17  unused_import
+     17  non_constant_identifier_names
+     17  invalid_use_of_visible_for_testing_member
+     10  avoid_print
+      9  dead_null_aware_expression
+      7  use_super_parameters
+      7  unnecessary_brace_in_string_interps
+      6  use_build_context_synchronously
+      6  unused_local_variable
+      6  unused_element_parameter
+      6  unnecessary_non_null_assertion
+      5  prefer_const_declarations
+      4  prefer_const_literals_to_create_immutables
+      3  unused_field
+      3  unused_element
+      3  unnecessary_type_check
+      3  unnecessary_cast
+      3  invalid_use_of_protected_member
+      3  depend_on_referenced_packages
+      3  curly_braces_in_flow_control_structures
+      2  unnecessary_to_list_in_spreads
+      2  unnecessary_string_escapes
+      2  unnecessary_null_comparison
+      2  prefer_initializing_formals
+      2  prefer_final_fields
+      2  invalid_null_aware_operator
+      1  unnecessary_string_interpolations
+      1  prefer_conditional_assignment
+      1  override_on_non_overriding_member
+      1  hash_and_equals
+
+notes:
+- No analyzer ERRORS at baseline. Exit code is 1 because warnings/infos are present.
+- Generated files (*.g.dart) contribute unused_element_parameter warnings; do not hand-edit.

@@ -1,0 +1,96 @@
+RUST TEST BASELINE (PRE-CHANGE) — gstore_host
+Plan: .omo/plans/gstore-cold-start-home-loading.md (final-wave gates F1/F2)
+
+worktree: /home/hezhihu89/develop/flutter/project/GStore-baseline (detached, pristine at HEAD)
+commit: e429be121cdecf7db8fda610b4e6bbcc4a644661 (e429be12 feat(channel): move library and catalog ownership into the Rust core)
+captured: 2026-10-29
+machine: 16 cores, ~2.6 GB free RAM at run time; cargo limited to 4 jobs
+
+COMMAND ACTUALLY RUN
+  cd /home/hezhihu89/develop/flutter/project/GStore-baseline/rust/gstore_host
+  CARGO_BUILD_JOBS=4 cargo test -j 4 2>&1 | tee /tmp/b0-host.log
+
+  NOTE ON THE COMMAND: the plan's `cd rust && cargo test -p gstore_host` cannot work in this
+  repo. rust/Cargo.toml's only workspace member is gstore_script; gstore_host is under
+  `exclude`, so `cargo test -p gstore_host` fails with
+    error: package ID specification `gstore_host` did not match any packages
+  Tested from the crate directory instead (same as rust/build_all.sh does for builds).
+
+ATTEMPT 1 (cold worktree target dir, module .so files NOT built) — /tmp/b0-host-attempt1.log
+  command: CARGO_BUILD_JOBS=4 cargo test -j 4
+  totals:  test result: FAILED. 134 passed; 17 failed; 0 ignored; 0 measured; 0 filtered out; finished in 41.50s
+  failures (17):
+    bridge::channel_api_tests::channel_changed_pushed
+    dl_adapter::analyzer_tests::dlopen_analyzer_module_handshake_and_call
+    dl_adapter::analyzer_tests::module_domain_error_preserves_status_and_code
+    dl_adapter::analyzer_tests::module_manager_loads_analyzer_from_so
+    dl_adapter::repo_tests::broadcast_event_to_repo_module
+    dl_adapter::repo_tests::module_manager_loads_repo_module_from_so
+    dl_adapter::repo_tests::repo_module_handshake_state_and_lifecycle
+    dl_adapter::tests::dlopen_qr_module_full_roundtrip
+    dl_adapter::tests::module_manager_load_from_so_and_call
+    jni_bridge::tests::clear_is_idempotent
+    jni_bridge::tests::jni_guard_catches_panic_and_logs
+    jni_bridge::tests::protect_without_service_is_noop_success
+    jni_bridge::tests::tun_fd_roundtrip_and_clear
+    tun_bridge::tests::engine_restart_keeps_tunnel_and_resumes_events
+    tun_bridge::tests::non_release_event_is_ignored
+    tun_bridge::tests::pending_fd_is_flushed_when_proxy_mounts_later
+    tun_bridge::tests::release_event_clears_matching_cached_fd
+
+EXTRA MODULE BUILD REQUIRED (as instructed by the procedure)
+  Attempt 1 was not a link error but a runtime dlopen abort — the tests panic with
+    "module .so not built: .../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so
+     — 先运行 rust/build_all.sh 构建模块 ..."
+  The log names three module crates: gstore_mod_analyzer, gstore_mod_repo, gstore_mod_qr.
+  Built them inside the pristine worktree (no source changes, only build artifacts):
+    (cd rust/gstore_mod_repo     && CARGO_BUILD_JOBS=4 cargo build -j 4)  -> ok, 23.08s
+    (cd rust/gstore_mod_analyzer && CARGO_BUILD_JOBS=4 cargo build -j 4)  -> ok, 20.01s
+    (cd rust/gstore_mod_qr       && CARGO_BUILD_JOBS=4 cargo build -j 4)  -> ok, 23.71s
+  Resulting .so files:
+    gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so (45517184 bytes)
+    gstore_mod_qr/target/debug/libgstore_mod_qr.so             (26586480 bytes)
+    gstore_mod_repo/target/debug/libgstore_mod_repo.so         (71077824 bytes)
+
+ATTEMPT 2 (after the three module .so builds) — /tmp/b0-host.log  <= BASELINE OF RECORD
+  command: CARGO_BUILD_JOBS=4 cargo test -j 4
+  totals:  test result: FAILED. 142 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.44s
+
+FAILING TESTS (attempt 2, one per line)
+  bridge::channel_api_tests::channel_changed_pushed
+  jni_bridge::tests::clear_is_idempotent
+  jni_bridge::tests::jni_guard_catches_panic_and_logs
+  jni_bridge::tests::protect_without_service_is_noop_success
+  jni_bridge::tests::tun_fd_roundtrip_and_clear
+  tun_bridge::tests::engine_restart_keeps_tunnel_and_resumes_events
+  tun_bridge::tests::non_release_event_is_ignored
+  tun_bridge::tests::pending_fd_is_flushed_when_proxy_mounts_later
+  tun_bridge::tests::release_event_clears_matching_cached_fd
+
+IGNORED COUNTS
+  ignored = 0 (measured = 0) in both attempts.
+
+ROOT-CAUSE CHARACTERIZATION OF THE 9 FAILURES (all are test-isolation artifacts, not logic regressions)
+  1. bridge.rs:6744 — "a no-op mutation must not emit channel.changed"
+     Appears only in the parallel full-suite run; passes alone:
+       cargo test -j 4 --lib -- bridge::channel_api_tests::channel_changed_pushed  => 1 passed
+  2. The 8 jni_bridge/tun_bridge failures all panic with `PoisonError { .. }` at
+     jni_bridge.rs:748/761/770/780 and tun_bridge.rs:345/363/375/400 — i.e. a shared global
+     mutex was already poisoned by the earlier panicking bridge test in the same process.
+     Run in isolation: `cargo test -j 4 --lib -- jni_bridge::tests:: tun_bridge::tests::`
+       => test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 138 filtered out
+  3. Whole lib suite serialized:
+       CARGO_BUILD_JOBS=4 cargo test -j 4 --lib -- --test-threads=1
+       => test result: ok. 151 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.24s
+  => Pre-change baseline genuinely has ZERO deterministic host failures. The 9 reported failures
+     are ordering/parallelism artifacts of the `--lib` binary; the serial run of the same 151
+     tests is green. Any post-change run should compare against
+     `151 passed; 0 failed` (serial) or `--lib` in-isolation, not the parallel count.
+
+BUILD-STATE NOTE
+  The only build-state dependency was missing module `.so` files in the cold worktree
+  (dl_adapter::* tests, 8 of the 17 attempt-1 failures). After
+  `cargo build -p gstore_mod_repo|gstore_mod_analyzer|gstore_mod_qr` (crate-dir form as above),
+  those 8 passed. Any later baseline re-run in this same worktree reuses the built .so files;
+  a brand-new worktree would need the same three module builds (or `rust/build_all.sh`,
+  which also builds gstore_contract/gstore_script/gstore_core/gstore_host).

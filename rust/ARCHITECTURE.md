@@ -952,3 +952,33 @@ P1 实施中通过 3 组实验确认的 flutter_rust_bridge 2.11.1 行为（`rus
 | 验证 | ✅ `dart analyze` 0 error；Rust 相关测试全通过；`flutter build apk --release --target-platform android-arm64` 成功（66.7MB） |
 
 **遗留**：72 个既有测试失败与本次改动无关（`libsqlite3.so` 测试环境缺失，sqflite_ffi 问题）；`dart analyze` 的 769 条 info/warning 为既有代码质量债。
+
+---
+
+## 附录 D：首页聚合与 repo 搜索的读路径约定（2026-10-30）
+
+冷启动首页优化（`.omo/plans/gstore-cold-start-home-loading.md`）引入的**长期约束**：
+改聚合首页、`repo.db` 搜索或模块初始化时必须遵守。
+
+- **聚合首页：每渠道每页 ≤1 次索引探测 + 1 次批量图标。** `aggregate_slice` 先按
+  `channel_id` 聚齐本页 app_id，对每个渠道解析一次 driver、调一次
+  `ChannelDriver::prefetch_icons`（→ `IconMap = BTreeMap<String, String>`），循环内改用
+  `get_app_info_with(&app_id, &icons)`。首页路径**不得**按行回 repo；不在预取 map 里的行
+  **仍逐行**走既有 `stored_icon`（含 `get_repo_meta` 一次索引探测），故预算只对命中行成立。
+  **不做 driver 字段级图标缓存** —— driver 长期存活，字段缓存永不失效 → 索引刷新后图标陈旧。
+- **`search_apps` 是两步查询。** ① 只扫覆盖索引
+  `SCAN apps USING COVERING INDEX idx_apps_search(name, package_name, summary)` 取
+  `package_name` 键（`ORDER BY name ASC, package_name ASC LIMIT ?2`：不读 `metadata`/
+  `versions` 大 JSON、免排序、`LIMIT` 可提前终止）；② 按主键 500 键一批 `IN (...)` 取整行
+  并按①顺序重排。`?1` 仍是**未转义**的 `%kw%`：不引入 FTS/MATCH、不加 `COLLATE NOCASE`、
+  不做通配符转义（`%` / `_` 仍是通配符）。
+- **确定性 tie-break。** ① 的 `name ASC, package_name ASC` 对同名应用给出确定性顺序，与
+  改动前 `name ASC` + rowid 顺序**有意不同**（`search_parity_with_duplicate_names` 锁定）。
+- **图标 base 一致性。** `get_app_icons` 用 `asset_base()`（= `resolved_url`，实际使用的镜像）
+  绝对化 icon key，且必须在**取 DB 锁之前**算好（`asset_base` 需要同一把锁，锁不可重入）；
+  这是 `mirror_first` 下首页图标与详情页图标逐字节一致的保证。
+- **`ChannelApi::init` 进程级 inner 缓存。** 键为原始 `(data_dir, files_dir, cache_dir)` 字符串，
+  永不淘汰；在持缓存锁时构建 → 并发 init 不会建出两个 `HostRepoPort` / 两套 repo 模块；
+  `init_with_ports`（cfg(test)）绕过。注意：同一物理目录若传入不同字符串键会建出第二个 inner。
+- **`repo.db` journal。** `journal_mode=WAL` 是 best-effort（失败只记日志、不致命），
+  `busy_timeout=5000ms`。

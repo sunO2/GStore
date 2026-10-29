@@ -1,0 +1,94 @@
+# Flutter test baseline (PRE-CHANGE)
+# Plan: .omo/plans/gstore-cold-start-home-loading.md  (final-wave gates F4/F5)
+# Captured before any Dart source change. No file under lib/, test/, or pubspec.yaml was modified.
+
+commit: e429be121cdecf7db8fda610b4e6bbcc4a644661
+branch: (main worktree)
+date_utc: 2026-10-29
+command: flutter test
+exit_code: 1
+raw_log: /tmp/b1-test.log
+
+summary_line: 03:31 +4673 ~10 -51: Some tests failed.
+
+test_files_run: 455
+total_tests: 4734
+passed: 4673
+skipped: 10
+failed: 51
+
+# NOTE on test_files_run: the plain `flutter test` compact reporter only prints the
+# path of a subset of files in its status lines (303 distinct paths appeared in
+# /tmp/b1-test.log). An authoritative suite enumeration was done with the same tree
+# using a read-only run (`flutter test --reporter=json --concurrency=4`,
+# raw: /tmp/b2-test.json): it reported 455 suites, 4734 non-hidden tests and the
+# IDENTICAL 51 failures (34 "failure" + 17 "error"). No source was changed.
+
+# ---------------------------------------------------------------------------
+# Failing tests (51) — one per line.
+# Format: test/<file>: <exact reporter test name>
+# ---------------------------------------------------------------------------
+test/app_image_loader_test.dart: loading /home/hezhihu89/develop/flutter/project/GStore/test/app_image_loader_test.dart
+test/backup_js_channel_test.dart: 通过 JS 渠道添加的应用（聚合 + 渠道库）进备份
+test/module_downloader_test.dart: applies proxy prefix only after original host validation
+test/module_downloader_test.dart: deduplicates concurrent fetches of the same URL
+test/module_downloader_test.dart: downloadToFile writes caller tmp and cleans up on failure
+test/module_downloader_test.dart: empty proxy requests the validated original URL directly
+test/module_downloader_test.dart: rejects a response exceeding maxBytes
+test/module_downloader_test.dart: retries transient 403 a bounded number of times then fails
+test/module_downloader_test.dart: times out and fails after a bounded number of attempts
+test/module_downloader_test.dart: validates each redirect hop against the allowlist
+test/module_manifest_bundled_fallback_test.dart: 代理仅作用于清单正文 GET 未注入 proxyProvider：正文直连原始 github URL
+test/module_manifest_bundled_fallback_test.dart: 代理仅作用于清单正文 GET 注入 proxyProvider：正文经代理，返回 URL 仍是原始 github URL
+test/module_manifest_bundled_fallback_test.dart: 随包 v2 清单兜底（解析链） 网络可用：网络清单胜出，随包清单未被采用
+test/module_manifest_bundled_fallback_test.dart: 随包清单哈希固定与 ABI 下限 min_host_abi 高于随包下限：locateModuleAsset 返回 null
+test/module_manifest_bundled_fallback_test.dart: 随包清单哈希固定与 ABI 下限 资产名因版本不同：不固定，采用所选清单哈希
+test/module_release_resolver_test.dart: 200 fixture resolves the module browser_download_url for the ABI
+test/module_release_resolver_test.dart: 304 reuses the cached manifest without re-downloading the body
+test/module_release_resolver_test.dart: 403 after a valid fetch falls back to the cached manifest
+test/module_release_resolver_test.dart: 404 manifest asset invalidates and re-resolves exactly once
+test/module_release_resolver_test.dart: TTL expires triggers refetch while fresh cache stays offline
+test/module_release_resolver_test.dart: it_tools.json parses into contentHash/asset/size
+test/module_release_resolver_test.dart: manifest request is unproxied and uses default cert validation
+test/module_release_resolver_test.dart: proxy applies only to the manifest body and never leaks into the result
+test/module_release_resolver_test.dart: re-resolved asset also 404 returns null without further retries
+test/module_release_resolver_test.dart: resolves the asset matching the injected ABI
+test/request_debug_sender_test.dart: DebugSender cancellation a null token keeps the existing success shape unchanged
+test/request_debug_sender_test.dart: DebugSender cancellation aborts an in-flight request with a structured cancelled result
+test/request_debug_sender_test.dart: DebugSender connection failure returns a structured error, never throws
+test/request_debug_sender_test.dart: DebugSender cookie jar can be shared explicitly across senders
+test/request_debug_sender_test.dart: DebugSender per-request network options default strict certificate rejects a self-signed HTTPS server
+test/request_debug_sender_test.dart: DebugSender per-request network options skipTlsVerify:true accepts a self-signed HTTPS server, only for that request
+test/request_debug_sender_test.dart: DebugSender per-request network options useCookies:false sends no jar cookie and does not record Set-Cookie
+test/request_debug_sender_test.dart: DebugSender query merge (override) an override may expand to multiple values for the same key
+test/request_debug_sender_test.dart: DebugSender query merge (override) keeps URL-only query keys when there is no override
+test/request_debug_sender_test.dart: DebugSender query merge (override) overrides a duplicate query key from the URL
+test/request_debug_sender_test.dart: DebugSender query merge (override) placeholder URL with no active env returns a response, never throws
+test/request_debug_sender_test.dart: DebugSender query merge (override) preserves a valueless query key
+test/request_debug_sender_test.dart: DebugSender redirect policy is honoured
+test/request_debug_sender_test.dart: DebugSender rejects a response Set-Cookie whose Domain is an unrelated host
+test/request_debug_sender_test.dart: DebugSender sends method / enabled headers / query / body to the server
+test/request_debug_sender_test.dart: DebugSender stores Set-Cookie in the jar and re-sends it on the next request
+test/request_debug_sender_test.dart: DebugSender stores multiple Set-Cookie headers (Expires with comma intact)
+test/request_debug_sender_test.dart: DebugSender timeout returns a structured error and does not hang
+test/request_debug_sender_test.dart: DefaultRequestDebugFacade end-to-end query merge records the merged query on the server (no duplicate)
+test/snapshot_store_test.dart: 删除单条与按应用清空
+test/snapshot_store_test.dart: 备注与载荷版本随记录保存
+test/snapshot_store_test.dart: 按应用隔离，且按时间倒序返回
+test/snapshot_store_test.dart: 插入后能按应用读回，且载荷完整往返
+test/snapshot_store_test.dart: 载荷以 gzip 落库，且历史明文行仍可读（向后兼容）
+test/update_prefs_migration_test.dart: real native core (setUpAll)
+test/update_prefs_migration_test.dart: real native core (tearDownAll)
+
+# ---------------------------------------------------------------------------
+# Failure-cause classification (environmental, NOT Dart source regressions).
+# Observed root causes in this baseline run:
+#   - libsqlite3.so missing on host      -> snapshot_store_test (5), backup_js_channel_test (1)
+#   - libgstore_host.so missing on host  -> update_prefs_migration_test (2, setUpAll/tearDownAll)
+#   - local HTTP/proxy/TLS fixtures       -> request_debug_sender_test (19),
+#                                            module_downloader_test (8),
+#                                            module_release_resolver_test (10),
+#                                            module_manifest_bundled_fallback_test (5)
+#   - test-harness load failure           -> app_image_loader_test (1; "There is no current invoker")
+# These 51 failures are the PRE-CHANGE baseline; post-change runs must not regress
+# beyond this set (F4/F5 compare against exactly these names).

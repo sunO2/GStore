@@ -1,0 +1,87 @@
+F3 — gstore_mod_repo release test suite + search_apps query-plan benchmark
+==========================================================================
+
+commit          : e429be121cdecf7db8fda610b4e6bbcc4a644661
+date            : 2026-10-30T00:26:38+08:00
+host            : Linux 5.15.0-73-generic, 16 cores, 64176 MB RAM (55958 MB in use, ~3.9 GB free)
+toolchain       : cargo 1.92.0 (344c4567c 2025-10-21) / rustc 1.92.0 (ded5c06cf 2025-12-08)
+crate           : rust/gstore_mod_repo  (EXCLUDED from the rust/ workspace → `cd` into the crate; `cargo test -p` from rust/ cannot select it)
+
+All commands were run with `-j 4` / CARGO_BUILD_JOBS=4 (RAM-tight machine). Logs kept in /tmp.
+
+------------------------------------------------------------------
+1) Full release lib suite
+------------------------------------------------------------------
+$ cd rust/gstore_mod_repo && CARGO_BUILD_JOBS=4 cargo test -j 4 --release --lib 2>&1 | tee /tmp/f3.log
+
+  test result: ok. 59 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.01s
+
+  The single ignored test is the release-only timing bench:
+  test repo::repo_meta_tests::search_apps_timing_bench ... ignored, release-only 计时基准：cargo test --release -p gstore_mod_repo --lib -- --ignored --nocapture
+
+------------------------------------------------------------------
+2) Ignored timing bench (verbatim output)
+------------------------------------------------------------------
+$ cd rust/gstore_mod_repo && CARGO_BUILD_JOBS=4 cargo test -j 4 --release --lib -- --ignored --nocapture 2>&1 | tee /tmp/f3-ignored.log
+
+  running 1 test
+  search_apps 4000 rows: new=16ms (4000 rows) legacy=8ms (4000 rows)
+  test repo::repo_meta_tests::search_apps_timing_bench ... ok
+
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 59 filtered out; finished in 0.28s
+
+------------------------------------------------------------------
+3) Targeted guard tests + EXPLAIN QUERY PLAN output
+------------------------------------------------------------------
+$ cd rust/gstore_mod_repo && CARGO_BUILD_JOBS=4 cargo test -j 4 --release --lib -- \
+    search_parity two_step_search_uses_covering_index get_app_by_package_uses_autoindex \
+    get_app_icons_batches_over_500 --nocapture 2>&1 | tee /tmp/f3-targeted.log
+
+  running 3 tests
+  get_app_by_package plan: SEARCH apps USING INDEX sqlite_autoindex_apps_1 (package_name=?)
+  test repo::repo_meta_tests::get_app_by_package_uses_autoindex ... ok
+  test repo::repo_meta_tests::get_app_icons_batches_over_500 ... ok
+  test repo::repo_meta_tests::search_parity ... ok
+
+  test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.48s
+
+  NOTE: the filter `two_step_search_uses_covering_index` matches nothing — the test is actually named
+  `search_uses_covering_index_and_pk_lookup`. It was run explicitly (same shell, same profile):
+
+$ cd rust/gstore_mod_repo && CARGO_BUILD_JOBS=4 cargo test -j 4 --release --lib -- \
+    search_uses_covering_index_and_pk_lookup --nocapture 2>&1 | tee /tmp/f3-targeted-covering.log
+
+  running 1 test
+  step(a) plan: SCAN apps USING COVERING INDEX idx_apps_search
+  step(b) plan: SEARCH apps USING INDEX sqlite_autoindex_apps_1 (package_name=?)
+  test repo::repo_meta_tests::search_uses_covering_index_and_pk_lookup ... ok
+
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 59 filtered out; finished in 0.19s
+
+  Verbatim EXPLAIN QUERY PLAN lines:
+    get_app_by_package plan: SEARCH apps USING INDEX sqlite_autoindex_apps_1 (package_name=?)
+    step(a) plan: SCAN apps USING COVERING INDEX idx_apps_search
+    step(b) plan: SEARCH apps USING INDEX sqlite_autoindex_apps_1 (package_name=?)
+
+------------------------------------------------------------------
+4) F3 verdict
+------------------------------------------------------------------
+PASS
+
+(a) release lib suite: 59 passed / 0 failed / 1 ignored  → 0 failures. OK
+(b) ignored timing bench runs and prints numbers (`new=16ms (4000 rows) legacy=8ms (4000 rows)`). OK
+(c) targeted tests all green:
+      - step (a) plan contains `COVERING INDEX` (SCAN apps USING COVERING INDEX idx_apps_search) — step 1 of the
+        two-step search never touches the large metadata/versions column blob.
+      - step (b) plan contains `SEARCH apps` + `USING INDEX` (sqlite_autoindex_apps_1, package_name=?) — PK lookup.
+      - get_app_by_package plan contains `SEARCH apps` + `USING INDEX` (same autoindex) and no `SCAN apps` — PK lookup.
+    OK
+
+------------------------------------------------------------------
+5) Caveat — this is NOT a wall-clock gate
+------------------------------------------------------------------
+The benchmark is release-mode with a warm page cache: it measures query-engine cost only, and `new` (16ms) is in
+fact SLOWER than `legacy` (8ms) in that regime because the two-step path issues two statements. The real cold-start
+win comes from step (a) being a COVERING INDEX scan that never reads the `metadata`/`versions` JSON blobs, so the
+44s cold I/O amplification disappears; that is an I/O effect warm-cache timing cannot reproduce. Therefore the
+benchmark is NOT a wall-clock gate for the cold-start scenario — the gate is the query-plan shape asserted above.

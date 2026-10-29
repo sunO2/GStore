@@ -1,0 +1,49 @@
+RUST TEST BASELINE (PRE-CHANGE) — gstore_core
+Plan: .omo/plans/gstore-cold-start-home-loading.md (final-wave gates F1/F2)
+
+worktree: /home/hezhihu89/develop/flutter/project/GStore-baseline (detached, pristine at HEAD)
+commit: e429be121cdecf7db8fda610b4e6bbcc4a644661 (e429be12 feat(channel): move library and catalog ownership into the Rust core)
+captured: 2026-10-29
+machine: 16 cores, ~2.6 GB free RAM at run time; cargo limited to 4 jobs
+
+COMMAND ACTUALLY RUN
+  cd /home/hezhihu89/develop/flutter/project/GStore-baseline/rust/gstore_core
+  CARGO_BUILD_JOBS=4 cargo test -j 4 2>&1 | tee /tmp/b0-core.log
+
+  NOTE ON THE COMMAND: the plan's `cd rust && cargo test -p gstore_core` cannot work in this
+  repo. rust/Cargo.toml declares a workspace whose only member is gstore_script and lists
+  gstore_core/gstore_host/gstore_mod_* under `exclude` (mixed panic=abort vs panic=unwind
+  policy cannot live in one workspace). `cargo test -p gstore_core` therefore fails with:
+    error: package ID specification `gstore_core` did not match any packages
+  Each crate is tested from its own crate directory instead (equivalent to what
+  rust/build_all.sh does for builds).
+
+PRIMARY RUN — FINAL TOTALS LINE
+  test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.74s
+  (target: tests/catalog_query_parity.rs; cargo then aborted with
+   `error: test failed, to rerun pass --test catalog_query_parity`,
+   so the remaining 33 integration targets never ran in this invocation)
+
+SUPPLEMENTAL FULL-SUITE RUN (same worktree, no source changes)
+  CARGO_BUILD_JOBS=4 cargo test -j 4 --no-fail-fast 2>&1 | tee /tmp/b0-core-nff.log
+  aggregate over 47 test targets: 319 passed; 1 failed; 0 ignored; 0 measured
+  (all 47 targets' own `test result:` lines summed; 46 targets ok, 1 target failed)
+
+FAILING TESTS (full-suite run, one per line)
+  catalog_query_perf_10k
+
+  Failing target: tests/catalog_query_parity.rs
+  Failing target totals line: test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.65s
+  Panic: tests/catalog_query_parity.rs:514:5 — `list_page p95 59.455253ms exceeded 50ms`
+         (p50=50.133746ms p95=59.455253ms for list_page(0,50); search("app") p50=5.599959ms p95=5.88675ms)
+  Isolation check: `cargo test -j 4 --test catalog_query_parity catalog_query_perf_10k`
+         still FAILS alone: `list_page p95 51.872075ms exceeded 50ms`
+  => genuine performance-threshold failure on this machine (debug build, low free RAM),
+     not a parallel-load artifact; margin is narrow (51.9-59.5 ms vs 50 ms budget).
+
+IGNORED COUNTS
+  ignored = 0 in every target of both runs (measured = 0, filtered out varies per target).
+
+BUILD-STATE NOTE
+  No missing-module / `.so` problems in gstore_core; the first build of the worktree target dir
+  was cold (full dependency compile) and the tests then ran. No module crate build was needed.
