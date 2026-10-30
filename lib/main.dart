@@ -378,7 +378,28 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     FlutterForegroundTask.initCommunicationPort();
     bootMark('fg-task-port');
 
-    // LogManager 惰性单例（appLog 首次访问即创建，用于拦截日志）
+    // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
+    // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
+    // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
+    // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
+    // false，旧路径（flags 全 false）继续权威，启动不崩溃。
+    //
+    // 清单推送不在这条关键路径上：原先的 `await CoreBootstrap.start();` 会同步
+    // 等待 list-installed（真机 ≈314ms），而首页列表并不需要清单；现在只等事实 +
+    // catalog，清单在后台推送（完成后再刷新更新状态），列表可提前 ~300ms 加载。
+    await CoreBootstrap.start(includeInventory: false);
+    bootMark('inventory-kickoff');
+
+    // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
+    // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
+    //（_initModuleManager 预置禁用）需要按持久化开关读配置。
+    await ConfigInitializer.initialize();
+    bootMark('config-init');
+    await registerService();
+    bootMark('register-service');
+
+    // 版本号只喂一行启动日志，故移出 registerService 之前的关键路径（平台通道
+    // 往返真机 ≈62ms）；bootMark 标签保持不变，计时表仍可比。
     final appVersion = await AppVersionService.versionName() ?? 'unknown';
     bootMark('app-version');
     appLog.info('应用启动', data: {
@@ -394,21 +415,18 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
       appLog.debug(message);
     };
 
-    // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
-    // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
-    // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
-    // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
-    // false，旧路径（flags 全 false）继续权威，启动不崩溃。
-    await CoreBootstrap.start();
-    bootMark('core-bootstrap');
-
-    // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
-    // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
-    //（_initModuleManager 预置禁用）需要按持久化开关读配置。
-    await ConfigInitializer.initialize();
-    bootMark('config-init');
-    await registerService();
-    bootMark('register-service');
+    // 延迟清单落地后刷新更新状态，保证更新角标/更新页读到真实清单。放在
+    // StartupGate.complete() 之前启动（不 await），故不拖慢首屏放行。
+    unawaited(() async {
+      try {
+        await CoreBootstrap.inventoryDone; // 清单 + 切流推送完成
+        await UpdateFacade.instance.ensureChecked(); // 现在有清单了，刷新更新状态
+      } catch (error) {
+        appLog.error('启动后更新检测失败（非致命）', data: {
+          'error': error.toString(),
+        });
+      }
+    }());
   } catch (error, stackTrace) {
     appLog.error('首帧后启动装配失败（功能降级，UI 继续可用）', data: {
       'error': error.toString(),

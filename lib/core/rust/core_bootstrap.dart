@@ -121,6 +121,7 @@ class CoreBootstrap {
 
   static bool _ready = false;
   static Future<void>? _pending;
+  static Future<void>? _inventoryDone;
   static int _lastSeq = 0;
 
   static CoreBootstrapBackend? _backendOverride;
@@ -134,12 +135,22 @@ class CoreBootstrap {
   /// Whether the facts + inventory push completed successfully.
   static bool get ready => _ready;
 
+  /// completes when the deferred inventory push + cutover finished; null when it
+  /// ran inline.
+  static Future<void>? get inventoryDone => _inventoryDone;
+
   /// Runs the bootstrap once. Never throws.
-  static Future<void> start() {
+  ///
+  /// [includeInventory] defaults to `true`, which keeps the original behaviour:
+  /// the installed-app inventory push and the durable cutover are awaited
+  /// inline, so the returned future completes only after them. `main()` passes
+  /// `false` to keep the ~314 ms `list-installed` round trip off the startup
+  /// critical path; the deferred job is then exposed via [inventoryDone].
+  static Future<void> start({bool includeInventory = true}) {
     if (_ready) return Future<void>.value();
     final pending = _pending;
     if (pending != null) return pending;
-    final future = _run();
+    final future = _run(includeInventory: includeInventory);
     _pending = future;
     return future;
   }
@@ -170,6 +181,7 @@ class CoreBootstrap {
   static void reset() {
     _ready = false;
     _pending = null;
+    _inventoryDone = null;
     _lastSeq = 0;
     _backendOverride = null;
     _probeOverride = null;
@@ -180,26 +192,17 @@ class CoreBootstrap {
     _legacyDirOverride = null;
   }
 
-  static Future<void> _run() async {
-    // 分段计时（只加日志，不改顺序/逻辑）：把 ~700ms 的自举拆成可归因的步骤，
-    // 便于下一次优化按数据下刀。
-    Future<T> timed<T>(String step, Future<T> Function() run) async {
-      final sw = Stopwatch()..start();
-      try {
-        return await run();
-      } finally {
-        appLog.info(
-          '⏱️ core-bootstrap: $step elapsedMs=${sw.elapsedMilliseconds}',
-        );
-      }
-    }
+  static Future<void> _run({required bool includeInventory}) async {
+    // 关键路径计时：critical-done 给出「界面可用」时刻，便于把 inventory
+    // 移出关键路径后的收益与真机表对上。
+    final criticalSw = Stopwatch()..start();
 
     try {
-      final dirs = await timed('dirs', _resolveDirs);
+      final dirs = await _timed('dirs', _resolveDirs);
       final backend = _backendOverride ?? FrbCoreBootstrapBackend();
       final probe = _probeOverride ?? ChannelCorePlatformProbe();
 
-      await timed(
+      await _timed(
         'backend-init',
         () => backend.init(
           dataDir: dirs.$1,
@@ -213,34 +216,112 @@ class CoreBootstrap {
       // the legacy paths stay in charge, exactly like every other bootstrap
       // failure (see the catch below).
       try {
-        await timed('flags', CoreFlags.refresh);
+        await _timed('flags', CoreFlags.refresh);
       } catch (error) {
         debugPrint('[CoreBootstrap] 读取特性开关失败（保持镜像原值）: $error');
       }
 
-      final device = await timed('device-info', probe.deviceInfo);
-      final apps = await timed('list-installed', probe.listInstalled);
+      final device = await _timed('device-info', probe.deviceInfo);
       final capturedAt = _nowMillis();
 
-      await timed(
-        'push-facts',
-        () => backend.pushPlatformFacts(
-          _buildFacts(dirs: dirs, device: device, capturedAt: capturedAt),
+      final facts = _buildFacts(
+        dirs: dirs,
+        device: device,
+        capturedAt: capturedAt,
+      );
+      final factsSw = Stopwatch()..start();
+      await backend.pushPlatformFacts(facts);
+      appLog.info(
+        '⏱️ core-bootstrap: push-facts elapsedMs=${factsSw.elapsedMilliseconds}',
+      );
+
+      // 随包 catalog seed：写 `<files_dir>/catalog_seed.db`，交给 Rust 校验 +
+      // 内容寻址去重（repoEnsureSeed），并按需物化进 core catalog
+      // （repoMaterialize）。失败在 ensure 内部已捕获，永不阻塞启动。
+      //
+      // 与 cutover 相同的测试约定：注入的 bootstrap backend 是测试 seam，
+      // 只有生产 backend 才真正跑 seed 自举。
+      //
+      // 它在关键路径上：catalog 是 update/install 的前置，且只有 ~8ms。
+      if (_backendOverride == null) {
+        await _timed(
+          'catalog-seed',
+          () => CatalogSeedBootstrap.ensure(filesDir: dirs.$2),
+        );
+      }
+
+      // 到这里事实 + 目录已就位，界面所需的一切都齐了。清单推送（真机
+      // list-installed ≈314ms）只在更新/清单页需要，故默认仍同步执行，
+      // 而 `main()` 传 false 把它推迟到关键路径之后。
+      _ready = true;
+      appLog.info(
+        '⏱️ core-bootstrap: critical-done elapsedMs=${criticalSw.elapsedMilliseconds}',
+      );
+
+      if (includeInventory) {
+        await _pushInventoryAndCutover(
+          dirs: dirs,
+          backend: backend,
+          probe: probe,
+        );
+      } else {
+        _inventoryDone = _pushInventoryAndCutover(
+          dirs: dirs,
+          backend: backend,
+          probe: probe,
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');
+      if (kDebugMode) {
+        debugPrint('[CoreBootstrap] stack: $stackTrace');
+      }
+    } finally {
+      _pending = null;
+    }
+  }
+
+  /// 一步分段计时：把自举拆成可归因的步骤（只加日志，不改顺序/逻辑）。
+  static Future<T> _timed<T>(String step, Future<T> Function() run) async {
+    final sw = Stopwatch()..start();
+    try {
+      return await run();
+    } finally {
+      appLog.info(
+        '⏱️ core-bootstrap: $step elapsedMs=${sw.elapsedMilliseconds}',
+      );
+    }
+  }
+
+  /// 清单推送 + 一次性切流（可同步执行，也可作为关键路径之后的延迟任务）。
+  ///
+  /// 永不抛出：走到这里时 [ready] 早已为 true，把失败降级成日志才不会撤销一次
+  /// 成功的自举；切流标记未写入，下次启动会重试。
+  static Future<void> _pushInventoryAndCutover({
+    required (String, String, String) dirs,
+    required CoreBootstrapBackend backend,
+    required CorePlatformProbe probe,
+  }) async {
+    try {
+      final apps = await _timed('list-installed', probe.listInstalled);
+      final capturedAt = _nowMillis();
+
+      // push-inventory 单独计时（不用 _timed 包裹，保持「先把快照推给内核」
+      // 这一行在源码里直白可读）。
+      final inventorySw = Stopwatch()..start();
+      await backend.pushInventory(
+        rust.InventorySnapshotDto(
+          sourceId: kCoreSourceId,
+          seq: _nextSeq(capturedAt),
+          capturedAt: capturedAt,
+          apps: <rust.InstalledAppDto>[
+            for (final app in apps)
+              if (_installedApp(app) case final dto?) dto,
+          ],
         ),
       );
-      await timed(
-        'push-inventory',
-        () => backend.pushInventory(
-          rust.InventorySnapshotDto(
-            sourceId: kCoreSourceId,
-            seq: _nextSeq(capturedAt),
-            capturedAt: capturedAt,
-            apps: <rust.InstalledAppDto>[
-              for (final app in apps)
-                if (_installedApp(app) case final dto?) dto,
-            ],
-          ),
-        ),
+      appLog.info(
+        '⏱️ core-bootstrap: push-inventory elapsedMs=${inventorySw.elapsedMilliseconds}',
       );
 
       // Durable one-time closeout, after facts + inventory so the `update`
@@ -250,7 +331,7 @@ class CoreBootstrap {
       // An injected bootstrap backend is a test seam; the production cutover is
       // only armed with the production backend unless a cutover seam is passed
       // explicitly (same convention as `UpdateFacade`'s `_frbInjected`).
-      await timed('cutover', () async {
+      await _timed('cutover', () async {
         final cutover = _cutoverOverride ??
             (_backendOverride == null
                 ? FrbCoreCutoverBackend(
@@ -276,28 +357,11 @@ class CoreBootstrap {
           }
         }
       });
-
-      // 随包 catalog seed：写 `<files_dir>/catalog_seed.db`，交给 Rust 校验 +
-      // 内容寻址去重（repoEnsureSeed），并按需物化进 core catalog
-      // （repoMaterialize）。失败在 ensure 内部已捕获，永不阻塞启动。
-      //
-      // 与 cutover 相同的测试约定：注入的 bootstrap backend 是测试 seam，
-      // 只有生产 backend 才真正跑 seed 自举。
-      if (_backendOverride == null) {
-        await timed(
-          'catalog-seed',
-          () => CatalogSeedBootstrap.ensure(filesDir: dirs.$2),
-        );
-      }
-
-      _ready = true;
     } catch (error, stackTrace) {
-      debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');
+      debugPrint('[CoreBootstrap] 清单推送/切流失败（非致命，下次启动重试）: $error');
       if (kDebugMode) {
         debugPrint('[CoreBootstrap] stack: $stackTrace');
       }
-    } finally {
-      _pending = null;
     }
   }
 
