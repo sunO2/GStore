@@ -8,8 +8,10 @@
 //! * `searchApps` → FTS5 `"word"*` first, then `LIKE %word%` appended without
 //!   duplicates (`lib/db/apps/AppInfoDao.dart` `search`).
 //! * `searchByCategory` → `category LIKE %id%` (substring, not equality).
-//! * `getAppInfo` / `getAppDetail` → metadata package/app-name/icon override,
-//!   with `keepExistingPackageName` false for info and true for detail.
+//! * `getAppInfo` → the stored row as a local snapshot, with no metadata call
+//!   (the list/info path is offline).
+//! * `getAppDetail` → metadata package/app-name/icon override with
+//!   `keepExistingPackageName: true`, plus the latest GitHub release.
 //!
 //! The driver is read-only. Dart `addApp`/`removeApp` explicitly return a
 //! failure ("本地数据库渠道不支持…"), and `doUpdate` delegates to the global
@@ -118,22 +120,6 @@ impl LocalDbDriver {
             return Ok(None);
         };
         metadata_port.fetch(&app.user, &app.repositories)
-    }
-
-    /// Mirrors Dart `_applyMetadataOverride` (`LocalDbChannel.dart:92-126`).
-    fn apply_metadata(
-        &self,
-        app: AppSummary,
-        keep_existing_package_name: bool,
-    ) -> Result<AppSummary, Error> {
-        let Some(metadata) = self.metadata_for(&app)? else {
-            return Ok(app);
-        };
-        Ok(apply_metadata_values(
-            app,
-            &metadata,
-            keep_existing_package_name,
-        ))
     }
 
     /// Queries the latest GitHub release for a GitHub-backed row.
@@ -369,11 +355,15 @@ impl ChannelDriver for LocalDbDriver {
         self.query_apps(&format!("{APP_COLUMNS} ORDER BY rowid"), None)
     }
 
+    /// Returns the stored row as a local snapshot.
+    ///
+    /// The list/info path is deliberately offline: it never calls
+    /// [`LocalDbDriver::metadata_for`] or [`apply_metadata_values`]. Metadata is
+    /// refreshed only on the detail page ([`LocalDbDriver::get_app_detail`]), so
+    /// a catalog page costs one local query per row and no network.
     fn get_app_info(&self, app_id: &str, _force_refresh: bool) -> Result<AppSummary, Error> {
-        let app = self
-            .load_app(app_id)?
-            .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))?;
-        self.apply_metadata(app, false)
+        self.load_app(app_id)?
+            .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))
     }
 
     fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
@@ -533,5 +523,126 @@ impl ChannelDriver for LocalDbDriver {
     fn dispose(&self) -> Result<(), Error> {
         self.initialized.store(false, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::ports::FakeMetadataPort;
+
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gstore_core_localdb_{tag}_{}_{}",
+                std::process::id(),
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const APP_ID: &str = "com.example.snapshot";
+
+    fn channel_meta() -> ChannelMeta {
+        ChannelMeta {
+            kind: ChannelKind::LocalDb,
+            name: "LocalDB".to_string(),
+            description: "LocalDb channel".to_string(),
+            enabled: true,
+            priority: 10,
+            support_offline: true,
+            last_update_time: None,
+            version: Some("1".to_string()),
+        }
+    }
+
+    /// Seeds one catalog row with a non-empty `user`/`repositories`, so the old
+    /// info path would have called [`LocalDbDriver::metadata_for`] and fetched.
+    fn seeded_driver() -> (TempDir, LocalDbDriver, FakeMetadataPort) {
+        let dir = TempDir::new("snapshot");
+        let db = DbHandle::open(dir.path()).unwrap();
+        db.with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO apps(appId,name,user,repositories,icon,des,readme,category,extra) \
+                 VALUES (?1,'Stored Snapshot','acme','snap','https://icons.test/stored.png',\
+                 'stored description','# Stored','TOOLS','{\"packageName\":\"com.example.stored\"}')",
+                rusqlite::params![APP_ID],
+            )
+            .map_err(|error| crate::db::DbError(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+        let metadata = FakeMetadataPort::new();
+        metadata.set(
+            "acme",
+            "snap",
+            Some(PackageMetadata {
+                package_name: Some("com.example.meta".to_string()),
+                app_name: Some("Metadata Name".to_string()),
+                icon_url: Some("https://icons.test/meta.png".to_string()),
+                version_name: Some("9.9.9".to_string()),
+            }),
+        );
+        let driver = LocalDbDriver::new(ChannelKey::new("local_db").unwrap(), channel_meta(), db)
+            .with_metadata(Arc::new(metadata.clone()));
+        (dir, driver, metadata)
+    }
+
+    #[test]
+    fn get_app_info_makes_no_metadata_call() {
+        let (_dir, driver, metadata) = seeded_driver();
+
+        let info = driver.get_app_info(APP_ID, false).unwrap();
+
+        assert_eq!(
+            metadata.fetch_count(),
+            0,
+            "the info/list path must never fetch metadata"
+        );
+        assert_eq!(info.app_id, APP_ID);
+        assert_eq!(info.name, "Stored Snapshot");
+        assert_eq!(info.icon, "https://icons.test/stored.png");
+        assert_eq!(info.package_name.as_deref(), Some("com.example.stored"));
+        assert_eq!(info.des, "stored description");
+    }
+
+    #[test]
+    fn get_app_detail_still_fetches_metadata() {
+        let (_dir, driver, metadata) = seeded_driver();
+
+        let detail = driver.get_app_detail(APP_ID, false).unwrap();
+
+        assert_eq!(
+            metadata.fetch_count(),
+            1,
+            "the detail page refreshes metadata exactly once"
+        );
+        assert_eq!(detail.name, "Metadata Name");
+        assert_eq!(detail.icon, "https://icons.test/meta.png");
+        assert_eq!(detail.version.as_deref(), Some("9.9.9"));
+        assert_eq!(detail.package_name.as_deref(), Some("com.example.meta"));
     }
 }

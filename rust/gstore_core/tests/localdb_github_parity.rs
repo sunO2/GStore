@@ -23,10 +23,11 @@
 //!   `Accept: application/vnd.github+json`, `User-Agent: GStore-App/1.0`).
 //! * GitHub add semantics: `GitHubChannel.dart:316-373`.
 //! * GitHub error mapping statuses: Todo 10 contract in the wave plan.
-//! * Intentional divergence — the list/info read path no longer applies metadata
-//!   to a stored row (Dart's `GitHubChannel.getAppInfo` re-fetched
-//!   `MetadataRepository.fetchInfo` per call); the row is now a snapshot refreshed
-//!   only when the detail page opens (`get_app_detail` writes name/icon/extra back).
+//! * Intentional divergence — the list/info read path never applies metadata:
+//!   GitHub's `getAppInfo` no longer re-fetches `MetadataRepository.fetchInfo`
+//!   per call, and LocalDb/GStore's `getAppInfo` no longer calls the metadata
+//!   port, so a stored row is a snapshot refreshed only when the detail page
+//!   opens (`get_app_detail`; GitHub also writes name/icon/extra back).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -473,16 +474,21 @@ fn localdb_github_parity_localdb_metadata_override_and_writes_unsupported() {
     );
     let driver = local_driver(db.clone(), Some(Arc::new(fake.clone())));
 
-    // `LocalDbChannel._applyMetadataOverride(..., keepExistingPackageName: false)`
-    // replaces package/name/icon while preserving appId and extra.
+    // Info/list is a local snapshot: the metadata override is applied only by
+    // `getAppDetail`, so `get_app_info` keeps the row's own name/icon/package.
     let info = driver.get_app_info("com.example.alpha", false).unwrap();
-    assert_eq!(info.package_name.as_deref(), Some("com.example.alpha.meta"));
-    assert_eq!(info.name, "Alpha Meta");
-    assert_eq!(info.icon, "https://icons.test/meta.png");
+    assert_eq!(info.package_name.as_deref(), Some("com.example.alpha.real"));
+    assert_eq!(info.name, "Alpha Tool");
+    assert_eq!(info.icon, "https://icons.test/alpha.png");
     assert_eq!(info.app_id, "com.example.alpha");
     assert_eq!(
         info.extra.as_ref().and_then(|m| m.get("stars")),
         Some(&json!(5))
+    );
+    assert_eq!(
+        fake.fetch_count(),
+        0,
+        "get_app_info must not fetch metadata on the local DB channel"
     );
 
     // `keepExistingPackageName: true` keeps the row package when metadata is
@@ -501,6 +507,11 @@ fn localdb_github_parity_localdb_metadata_override_and_writes_unsupported() {
     assert_eq!(gamma.name, "Gamma Meta");
     // gamma's row package comes from extra.packageName, which is empty -> None.
     assert_eq!(gamma.package_name, None);
+    assert_eq!(
+        fake.fetch_count(),
+        1,
+        "the detail path refreshes metadata; the info call above did not"
+    );
 
     // Dart explicitly rejects manual add/remove on the local DB channel; the
     // read-only Rust driver makes that contract typed Unsupported.
@@ -526,7 +537,7 @@ fn localdb_github_parity_localdb_metadata_override_and_writes_unsupported() {
     let fts_hits = driver.search_apps("Meta", false).unwrap();
     assert!(
         fts_hits.is_empty(),
-        "metadata override affects getAppInfo/detail, not list/search rows"
+        "metadata overrides never leak into list/search rows"
     );
 
     println!("localdb metadata info={info:?} gamma_detail={gamma:?}");
