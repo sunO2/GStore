@@ -3,10 +3,15 @@ package com.suno2.gstore
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
 import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,7 +25,11 @@ import org.json.JSONObject
  *
  * The handler is registered from `configureFlutterEngine`, so it runs on the
  * platform (main) thread; no blocking work is started here — the perf reads are
- * the same cheap `readJson` statics the Rust bridges used.
+ * the same cheap `readJson` statics the Rust bridges used. The one exception is
+ * `listInstalled`, which enumerates every installed package with signatures
+ * (~1.5 s on low-end devices, measured as `core-bootstrap: list-installed
+ * elapsedMs=1568`) and is therefore dispatched to the single background thread
+ * below, replying on the main thread.
  *
  * Inventory is re-read from `PackageManager` on every call (no cache), so the
  * old package-change broadcast invalidation hook was dropped together with
@@ -33,6 +42,20 @@ object PlatformChannel {
 
     private const val TAG = "PlatformChannel"
     private const val EMPTY_COMPONENTS = """{"components":[],"permission_states":[]}"""
+
+    /**
+     * 平台通道的后台执行器：只跑重活（全机包枚举），结果回主线程再 result。
+     *
+     * 原因：`getInstalledPackages(GET_SIGNING_CERTIFICATES)` 在主线程执行实测
+     * 约 1.5s（core-bootstrap list-installed elapsedMs=1568），会卡住首帧后的 UI。
+     * 单线程即可——这些请求本来就串行，也避免并发抢 PackageManager 锁。
+     */
+    private val ioExecutor: ExecutorService by lazy {
+        Executors.newSingleThreadExecutor { r ->
+            Thread(r, "gstore-platform-io").apply { isDaemon = true }
+        }
+    }
+    private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
     @Volatile
     private var appContext: Context? = null
@@ -47,7 +70,20 @@ object PlatformChannel {
         MethodChannel(messenger, CHANNEL).setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
-                    "listInstalled" -> result.success(listInstalledJson())
+                    "listInstalled" -> {
+                        // getInstalledPackages(+签名) 在低端机可达 1.5s，必须离开主线程，
+                        // 否则首帧后的 UI 会卡住。结果统一回主线程 result。
+                        ioExecutor.execute {
+                            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                            val payload = try {
+                                listInstalledJson()
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "listInstalled 失败: ${e.message}")
+                                errorJson("CORE_E_PLATFORM_FAILED", e as? Exception ?: RuntimeException(e))
+                            }
+                            mainHandler.post { result.success(payload) }
+                        }
+                    }
                     "getInstalled" -> result.success(getInstalledJson(argument(call)))
                     "getSourceDir" -> result.success(getSourceDir(argument(call)))
                     "getSignatures" -> result.success(getSignaturesJson(argument(call)))
