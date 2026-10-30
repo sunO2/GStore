@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/boot/startup_gate.dart';
 import 'package:gstore/core/event/live_refresh.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -68,7 +69,12 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
       _subscribeUiMirrors();
       _init();
     });
-    return const ApplistState();
+    // 首帧先显示既有 LoadingState，而不是误导性的「还没有添加任何应用」空态。
+    // 装配仍在首帧后进行时（StartupGate 启用且未就绪）保持 loading；
+    // 测试中门默认关闭，行为与拆分前一致。
+    return ApplistState(
+      isLoading: StartupGate.isEnabled && !StartupGate.isReady,
+    );
   }
 
   /// 渠道/目录变化 → 防抖后静默刷新（保留旧列表，只更新数据）。
@@ -124,8 +130,15 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     }
   }
 
-  /// 首次初始化：订阅聚合数据源并加载。
+  /// 首次初始化：等待启动装配完成，再订阅聚合数据源并加载。
+  ///
+  /// 模块（含 aggregate 服务）由 `registerService()` 注册，而首帧优先改造后
+  /// `registerService()` 在首帧之后才执行 —— 若不等待 [StartupGate]，这里会
+  /// 读到尚未注册的聚合服务并误判为「模块未启用」。门未启用（测试）或已完成
+  /// 时 `wait()` 立即返回，零开销。
   Future<void> _init() async {
+    await StartupGate.wait();
+    if (_disposed) return;
     final aggregator = _aggregator;
     if (aggregator == null) {
       // 聚合模块未启用：不订阅、不加载（页面空态）

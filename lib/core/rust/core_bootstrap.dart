@@ -20,6 +20,7 @@ import 'package:flutter/foundation.dart'
     show ValueNotifier, debugPrint, kDebugMode, visibleForTesting;
 
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/logger/LogManager.dart' show appLog;
 import 'package:gstore/core/catalog/catalog_seed_bootstrap.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/migration/cutover_paths.dart';
@@ -180,15 +181,31 @@ class CoreBootstrap {
   }
 
   static Future<void> _run() async {
+    // 分段计时（只加日志，不改顺序/逻辑）：把 ~700ms 的自举拆成可归因的步骤，
+    // 便于下一次优化按数据下刀。
+    Future<T> timed<T>(String step, Future<T> Function() run) async {
+      final sw = Stopwatch()..start();
+      try {
+        return await run();
+      } finally {
+        appLog.info(
+          '⏱️ core-bootstrap: $step elapsedMs=${sw.elapsedMilliseconds}',
+        );
+      }
+    }
+
     try {
-      final dirs = await _resolveDirs();
+      final dirs = await timed('dirs', _resolveDirs);
       final backend = _backendOverride ?? FrbCoreBootstrapBackend();
       final probe = _probeOverride ?? ChannelCorePlatformProbe();
 
-      await backend.init(
-        dataDir: dirs.$1,
-        filesDir: dirs.$2,
-        cacheDir: dirs.$3,
+      await timed(
+        'backend-init',
+        () => backend.init(
+          dataDir: dirs.$1,
+          filesDir: dirs.$2,
+          cacheDir: dirs.$3,
+        ),
       );
 
       // Pull the Rust-owned flag snapshot before any consumer reads it. A flag
@@ -196,27 +213,33 @@ class CoreBootstrap {
       // the legacy paths stay in charge, exactly like every other bootstrap
       // failure (see the catch below).
       try {
-        await CoreFlags.refresh();
+        await timed('flags', CoreFlags.refresh);
       } catch (error) {
         debugPrint('[CoreBootstrap] 读取特性开关失败（保持镜像原值）: $error');
       }
 
-      final device = await probe.deviceInfo();
-      final apps = await probe.listInstalled();
+      final device = await timed('device-info', probe.deviceInfo);
+      final apps = await timed('list-installed', probe.listInstalled);
       final capturedAt = _nowMillis();
 
-      await backend.pushPlatformFacts(
-        _buildFacts(dirs: dirs, device: device, capturedAt: capturedAt),
+      await timed(
+        'push-facts',
+        () => backend.pushPlatformFacts(
+          _buildFacts(dirs: dirs, device: device, capturedAt: capturedAt),
+        ),
       );
-      await backend.pushInventory(
-        rust.InventorySnapshotDto(
-          sourceId: kCoreSourceId,
-          seq: _nextSeq(capturedAt),
-          capturedAt: capturedAt,
-          apps: <rust.InstalledAppDto>[
-            for (final app in apps)
-              if (_installedApp(app) case final dto?) dto,
-          ],
+      await timed(
+        'push-inventory',
+        () => backend.pushInventory(
+          rust.InventorySnapshotDto(
+            sourceId: kCoreSourceId,
+            seq: _nextSeq(capturedAt),
+            capturedAt: capturedAt,
+            apps: <rust.InstalledAppDto>[
+              for (final app in apps)
+                if (_installedApp(app) case final dto?) dto,
+            ],
+          ),
         ),
       );
 
@@ -227,30 +250,32 @@ class CoreBootstrap {
       // An injected bootstrap backend is a test seam; the production cutover is
       // only armed with the production backend unless a cutover seam is passed
       // explicitly (same convention as `UpdateFacade`'s `_frbInjected`).
-      final cutover = _cutoverOverride ??
-          (_backendOverride == null
-              ? FrbCoreCutoverBackend(
-                  paths: await CutoverPaths.resolve(
-                    dirs: dirs,
-                    legacyRoot: _legacyDirOverride,
-                  ),
-                  dataDir: dirs.$1,
-                  cacheDir: dirs.$3,
-                )
-              : null);
-      if (cutover != null) {
-        try {
-          final result = await CoreCutover.run(
-            filesDir: dirs.$2,
-            backend: cutover,
-            nowMillis: _nowMillis,
-          );
-          debugPrint('[CoreBootstrap] 一次性切流: $result');
-        } catch (error) {
-          // Never fatal: the marker was not written, so the next launch retries.
-          debugPrint('[CoreBootstrap] 一次性切流失败（下次启动重试）: $error');
+      await timed('cutover', () async {
+        final cutover = _cutoverOverride ??
+            (_backendOverride == null
+                ? FrbCoreCutoverBackend(
+                    paths: await CutoverPaths.resolve(
+                      dirs: dirs,
+                      legacyRoot: _legacyDirOverride,
+                    ),
+                    dataDir: dirs.$1,
+                    cacheDir: dirs.$3,
+                  )
+                : null);
+        if (cutover != null) {
+          try {
+            final result = await CoreCutover.run(
+              filesDir: dirs.$2,
+              backend: cutover,
+              nowMillis: _nowMillis,
+            );
+            debugPrint('[CoreBootstrap] 一次性切流: $result');
+          } catch (error) {
+            // Never fatal: the marker was not written, so the next launch retries.
+            debugPrint('[CoreBootstrap] 一次性切流失败（下次启动重试）: $error');
+          }
         }
-      }
+      });
 
       // 随包 catalog seed：写 `<files_dir>/catalog_seed.db`，交给 Rust 校验 +
       // 内容寻址去重（repoEnsureSeed），并按需物化进 core catalog
@@ -259,7 +284,10 @@ class CoreBootstrap {
       // 与 cutover 相同的测试约定：注入的 bootstrap backend 是测试 seam，
       // 只有生产 backend 才真正跑 seed 自举。
       if (_backendOverride == null) {
-        await CatalogSeedBootstrap.ensure(filesDir: dirs.$2);
+        await timed(
+          'catalog-seed',
+          () => CatalogSeedBootstrap.ensure(filesDir: dirs.$2),
+        );
       }
 
       _ready = true;

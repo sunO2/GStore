@@ -12,8 +12,10 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/compent/module_install_banner.dart';
+import 'package:gstore/core/boot/startup_gate.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
@@ -291,74 +293,141 @@ Future<void> _initModuleManager(Stopwatch sw) async {
 }
 
 main() async {
+  final bootSw = Stopwatch()..start();
+  void bootMark(String node) =>
+      appLog.info('⏱️ boot: $node elapsedMs=${bootSw.elapsedMilliseconds}');
+  bootMark('main-enter');
+
   WidgetsFlutterBinding.ensureInitialized();
+  bootMark('binding-ready');
 
-  // 高刷新率（120Hz 等）：请求设备显示支持的最高 fps（见 _applyHighestRefreshRate）。
-  // 放在启动最前：越早生效，首帧即可跑在高刷；失败静默，绝不影响启动。
-  await _applyHighestRefreshRate();
-
-  // 调试专用核心冒烟（F3 真机 QA）：仅当构建带
-  // `--dart-define=GSTORE_CORE_SMOKE=true` 且 kDebugMode 时执行，正常启动
-  // 完全惰性（enabled 为编译期 false）。失败时记录日志后重新抛出，避免
-  // "看起来成功" 的静默降级。
-  if (CoreSmoke.enabled) {
-    try {
-      await CoreSmoke.run();
-    } on Object catch (error, stackTrace) {
-      appLog.error('CoreSmoke: 启动失败', data: {
-        'error': error.toString(),
-        'stack': stackTrace.toString(),
-      });
-      rethrow;
-    }
-  }
-
-  // 初始化前台任务通信端口（后台 isolate 保活）
-  FlutterForegroundTask.initCommunicationPort();
-
-  // LogManager 惰性单例（appLog 首次访问即创建，用于拦截日志）
-  final appVersion = await AppVersionService.versionName() ?? 'unknown';
-  appLog.info('应用启动', data: {
-    'version': appVersion,
-  });
-
-  // 重定向 debugPrint 到 appLog（这样所有 debugPrint 都会进入日志查看器）
-  // 默认映射为 debug 级别；重要流程/错误请使用 appLog.info / appLog.error
-  // 过滤 flutter_gen_ai_chat_ui 库的内部调试噪音（消息流/滚动/状态机）
-  debugPrint = (String? message, {int? wrapWidth}) {
-    if (message == null) return;
-    if (_isChatUiNoise(message)) return;
-    appLog.debug(message);
-  };
-
-  // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
-  // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
-  // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
-  // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
-  // false，旧路径（flags 全 false）继续权威，启动不崩溃。
-  await CoreBootstrap.start();
-
-  // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
-  // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
-  //（_initModuleManager 预置禁用）需要按持久化开关读配置。
-  await ConfigInitializer.initialize();
-  await registerService();
-
-  // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：**默认 OFF**，仅当用户
-  // 显式开启性能监控（持久化 `perf.history.enabled`）时启动；未开启时**不启动、
-  // 也不实例化 Rust perf 模块**（详见 _startBatteryHistoryRecorderIfEnabled）。
-  // best-effort：读取配置失败按关闭处理，绝不阻塞或崩溃启动。
-  await _startBatteryHistoryRecorderIfEnabled();
+  // 首帧优先：昂贵的启动装配（高刷 / 核心自举 / 配置 / 模块注册）整体挪到
+  // runApp 之后（见 [_bootAfterFirstFrame]），使第一帧就是真实页面骨架
+  //（chrome + 列表 loading），而不是装配期间的纯白窗口。
+  // 单元测试从不调用 main()，故门默认关闭，测试行为与拆分前完全一致。
+  StartupGate.enable();
 
   // 系统"管理空间"入口（ManageSpaceActivity）：Android 系统设置 →
   // 应用 → GStore → 存储 → 管理空间。中转 Activity 会复用 MainActivity
   // 并置位一次性请求标记，此处消费（冷启动）并交由 _ManageSpaceRouter
   // 在首帧后跳转缓存管理页（返回键回首页）；后台恢复场景由 Router 监听处理。
+  // 实测 0ms，保留在 runApp 之前以维持既有语义（首帧即可知道要不要跳转）。
   _ManageSpaceRouterState.coldHit = await _consumeManageSpaceEntry();
+  bootMark('manage-space');
 
-  // ProviderScope：Riverpod 根容器（已迁移页面使用 ConsumerWidget/Notifier）
-  runApp(ProviderScope(
-    child: DynamicColorBuilder(builder: (light, dark) {
+  // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：**默认 OFF**，仅当用户
+  // 显式开启性能监控（持久化 `perf.history.enabled`）时启动；未开启时**不启动、
+  // 也不实例化 Rust perf 模块**（详见 _startBatteryHistoryRecorderIfEnabled）。
+  // best-effort：读取配置失败按关闭处理，绝不阻塞或崩溃启动。实测 0ms。
+  //
+  // 门控需要持久化开关（ConfigStore）；今天它在 ConfigInitializer 之后执行，
+  // 首帧优先改造后 config-init 挪到首帧后，故此处先做一次轻量存储初始化
+  //（幂等，config-init 再调用为空操作），保持「用户开启后冷启动仍能恢复采样」
+  // 的既有语义。实测 <2ms。
+  await ConfigStore.instance.initialize();
+  await _startBatteryHistoryRecorderIfEnabled();
+  bootMark('battery-history');
+
+  // ProviderScope：Riverpod 根容器（已迁移页面使用 ConsumerWidget/Notifier）。
+  // 树结构不变，整体移入 [_AppRoot] 只是为了让 runApp 更早被调用。
+  runApp(const ProviderScope(child: _AppRoot()));
+  bootMark('run-app-called');
+  WidgetsBinding.instance.addPostFrameCallback((_) => bootMark('first-frame'));
+
+  // 首帧后的启动装配：不阻塞首帧，完成后经 [StartupGate] 放行首屏列表加载。
+  unawaited(_bootAfterFirstFrame(bootSw));
+
+  // 需要 navigator 已挂载的一次性迁移（进度框只能在 runApp 之后显示）：
+  // `local_db → gstore` 遗留数据迁移。非致命、幂等，失败不影响启动。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(CoreBootstrap.runDeferredMigrations());
+  });
+}
+
+/// 首帧之后执行原本位于 `runApp` 之前的昂贵启动装配。
+///
+/// 顺序与拆分前保持一致：高刷 → 前台任务端口 / 版本 / debugPrint 重定向 →
+/// 核心自举 → 配置初始化 → 模块注册。失败只记录日志；`finally` 无论如何都
+/// 放行 [StartupGate]，保证 UI 不会永久停在 loading。
+Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
+  void bootMark(String node) =>
+      appLog.info('⏱️ boot: $node elapsedMs=${bootSw.elapsedMilliseconds}');
+  try {
+    // 高刷新率（120Hz 等）：请求设备显示支持的最高 fps（见 _applyHighestRefreshRate）。
+    // 失败静默，绝不影响启动。
+    await _applyHighestRefreshRate();
+    bootMark('refresh-rate');
+
+    // 调试专用核心冒烟（F3 真机 QA）：仅当构建带
+    // `--dart-define=GSTORE_CORE_SMOKE=true` 且 kDebugMode 时执行，正常启动
+    // 完全惰性（enabled 为编译期 false）。失败时记录日志后重新抛出，避免
+    // "看起来成功" 的静默降级。
+    if (CoreSmoke.enabled) {
+      try {
+        await CoreSmoke.run();
+      } on Object catch (error, stackTrace) {
+        appLog.error('CoreSmoke: 启动失败', data: {
+          'error': error.toString(),
+          'stack': stackTrace.toString(),
+        });
+        rethrow;
+      }
+    }
+
+    // 初始化前台任务通信端口（后台 isolate 保活）
+    FlutterForegroundTask.initCommunicationPort();
+    bootMark('fg-task-port');
+
+    // LogManager 惰性单例（appLog 首次访问即创建，用于拦截日志）
+    final appVersion = await AppVersionService.versionName() ?? 'unknown';
+    bootMark('app-version');
+    appLog.info('应用启动', data: {
+      'version': appVersion,
+    });
+
+    // 重定向 debugPrint 到 appLog（这样所有 debugPrint 都会进入日志查看器）
+    // 默认映射为 debug 级别；重要流程/错误请使用 appLog.info / appLog.error
+    // 过滤 flutter_gen_ai_chat_ui 库的内部调试噪音（消息流/滚动/状态机）
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message == null) return;
+      if (_isChatUiNoise(message)) return;
+      appLog.debug(message);
+    };
+
+    // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
+    // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
+    // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
+    // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
+    // false，旧路径（flags 全 false）继续权威，启动不崩溃。
+    await CoreBootstrap.start();
+    bootMark('core-bootstrap');
+
+    // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
+    // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
+    //（_initModuleManager 预置禁用）需要按持久化开关读配置。
+    await ConfigInitializer.initialize();
+    bootMark('config-init');
+    await registerService();
+    bootMark('register-service');
+  } catch (error, stackTrace) {
+    appLog.error('首帧后启动装配失败（功能降级，UI 继续可用）', data: {
+      'error': error.toString(),
+      'stack': stackTrace.toString(),
+    });
+  } finally {
+    // 无论成功失败都放行首屏列表加载：UI 绝不永久停在 loading。
+    StartupGate.complete();
+    bootMark('startup-ready');
+  }
+}
+
+/// 应用根 widget：与拆分前 `runApp` 内联的树逐字一致。
+class _AppRoot extends StatelessWidget {
+  const _AppRoot();
+
+  @override
+  Widget build(BuildContext context) {
+    return DynamicColorBuilder(builder: (light, dark) {
       return Consumer(builder: (context, ref, _) {
         // 主题状态由 Riverpod 权威管理（themeProvider 常驻，不随 theme 模块
         // 上下线而失效——模块开关只影响 IThemeService 服务绑定/agent 工具）
@@ -394,14 +463,8 @@ main() async {
           ),
         );
       });
-    }),
-  ));
-
-  // 需要 navigator 已挂载的一次性迁移（进度框只能在 runApp 之后显示）：
-  // `local_db → gstore` 遗留数据迁移。非致命、幂等，失败不影响启动。
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(CoreBootstrap.runDeferredMigrations());
-  });
+    });
+  }
 }
 
 /// 消费"管理空间"入口请求。
