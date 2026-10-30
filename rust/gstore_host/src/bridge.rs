@@ -4673,7 +4673,10 @@ impl LibraryApi {
         let fallback = Arc::new(SqliteChannelAppFallback::new(db.clone()));
         let agg = AggregationService::new(db, channels)
             .expect("aggregation service construction is infallible")
-            .with_fallback(fallback.clone());
+            .with_fallback(fallback.clone())
+            .with_trace(Arc::new(|line: &str| {
+                crate::log_bridge::push_host_log(1, line.to_string());
+            }));
         Self {
             inner,
             fallback,

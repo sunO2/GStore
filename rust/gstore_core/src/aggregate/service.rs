@@ -43,6 +43,13 @@ pub type ChannelResolver = std::sync::Arc<
     dyn Fn(&str) -> Option<std::sync::Arc<dyn crate::channel::ChannelDriver>> + Send + Sync,
 >;
 
+/// Read-only trace sink used for cold-start attribution.
+///
+/// The core crate has no logging facility of its own, so the host injects one
+/// through [`AggregationService::with_trace`]. Each argument is one complete,
+/// grep-stable line; an untraced service never calls it.
+pub type TraceFn = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Resolves a `(channel_key, app_id)` pair from the `channel_apps` projection.
 ///
 /// This is the second step of the unified read order (driver → channel store →
@@ -128,6 +135,7 @@ pub struct AggregationService {
     added: AddedAppsService,
     channels: ChannelResolver,
     fallback: Option<std::sync::Arc<dyn ChannelAppFallback>>,
+    trace: Option<TraceFn>,
 }
 
 impl AggregationService {
@@ -141,6 +149,7 @@ impl AggregationService {
             db,
             channels,
             fallback: None,
+            trace: None,
         })
     }
 
@@ -154,6 +163,25 @@ impl AggregationService {
     pub fn with_fallback(mut self, fallback: std::sync::Arc<dyn ChannelAppFallback>) -> Self {
         self.fallback = Some(fallback);
         self
+    }
+
+    /// Injects a read-only trace sink for cold-start attribution.
+    ///
+    /// The service emits page and per-row lines describing how each row was
+    /// resolved; without a sink it stays completely silent. Behaviour, order,
+    /// fields, and errors are unchanged.
+    #[must_use]
+    pub fn with_trace(mut self, trace: TraceFn) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    /// Emits one trace line through the injected sink, or does nothing when no
+    /// sink was installed. The line is formatted only when a sink exists.
+    fn emit_trace(&self, line: impl FnOnce() -> String) {
+        if let Some(trace) = &self.trace {
+            trace(&line());
+        }
     }
 
     /// Aggregates every added app without dedup, preserving `add_time DESC`
@@ -227,6 +255,13 @@ impl AggregationService {
     }
 
     fn aggregate_slice(&self, added: &[AddedApp]) -> Result<Vec<AggregatedApp>, Error> {
+        let page_start = std::time::Instant::now();
+        self.emit_trace(|| {
+            format!(
+                "aggregate page begin rows={} variant=offline-list-2026-10-30",
+                added.len()
+            )
+        });
         let tags = self.added.tags_index()?;
         let categories = self.category_descriptions();
 
@@ -255,6 +290,7 @@ impl AggregationService {
         let mut results = Vec::with_capacity(added.len());
 
         for row in added {
+            let row_start = std::time::Instant::now();
             let Some((driver, icons)) = channels.get(&row.channel_id) else {
                 continue;
             };
@@ -269,7 +305,7 @@ impl AggregationService {
                 app.category = Some(merged);
             }
 
-            results.push(AggregatedApp {
+            let entry = AggregatedApp {
                 added_app: row.clone(),
                 app,
                 channel: resolved.channel,
@@ -277,8 +313,27 @@ impl AggregationService {
                 is_from_cache: resolved.is_from_cache,
                 error: resolved.error,
                 metadata_state: resolved.metadata_state,
+            };
+            let state = trace_state(&entry);
+            let err = u8::from(entry.error.is_some());
+            let elapsed_ms = row_start.elapsed().as_millis();
+            self.emit_trace(|| {
+                format!(
+                    "aggregate row channel={} app_id={} state={} err={} elapsed_ms={}",
+                    entry.channel_code, entry.added_app.app_id, state, err, elapsed_ms
+                )
             });
+            results.push(entry);
         }
+
+        let elapsed_ms = page_start.elapsed().as_millis();
+        self.emit_trace(|| {
+            format!(
+                "aggregate page done rows={} elapsed_ms={}",
+                added.len(),
+                elapsed_ms
+            )
+        });
 
         Ok(results)
     }
@@ -554,6 +609,24 @@ pub fn dedup_channels_and_packages(apps: Vec<AggregatedApp>) -> Vec<AggregatedAp
         .collect()
 }
 
+/// Maps a resolved row to the trace `state=` token.
+///
+/// The mapping is exhaustive over [`MetadataState`]:
+///
+/// * `Resolved` → `cache`: the owning driver answered, and drivers serve their
+///   local repository cache.
+/// * `FromChannelStore` → `store`: the `channel_apps` projection answered.
+/// * `Unresolved` → `unresolved`: a stored-reference placeholder answered;
+///   `is_from_cache` is true for exactly these rows, and `error` may carry the
+///   driver failure that triggered the placeholder.
+fn trace_state(app: &AggregatedApp) -> &'static str {
+    match app.metadata_state {
+        MetadataState::Resolved => "cache",
+        MetadataState::FromChannelStore => "store",
+        MetadataState::Unresolved => "unresolved",
+    }
+}
+
 fn channel_kind_for_code(code: &str) -> ChannelKind {
     ChannelKind::from_code(code).unwrap_or_else(|_| {
         if code.starts_with("js") {
@@ -619,7 +692,7 @@ fn compare_recent(left: &AggregatedApp, right: &AggregatedApp) -> std::cmp::Orde
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::channel::{ChannelDriver, FdroidDriver};
@@ -867,6 +940,163 @@ mod tests {
             repo_a.batch_calls() + repo_b.batch_calls(),
             2,
             "two channels must produce two prefetches, not one per row"
+        );
+    }
+
+    struct MapFallback {
+        rows: std::collections::BTreeMap<String, AppSummary>,
+    }
+
+    impl ChannelAppFallback for MapFallback {
+        fn get(&self, channel_key: &str, app_id: &str) -> Result<Option<AppSummary>, Error> {
+            Ok(self
+                .rows
+                .get(&format!("{channel_key}:{app_id}"))
+                .cloned())
+        }
+    }
+
+    fn fallback_summary(app_id: &str) -> AppSummary {
+        AppSummary {
+            app_id: app_id.to_string(),
+            package_name: None,
+            name: format!("Stored {app_id}"),
+            user: String::new(),
+            repositories: String::new(),
+            icon: String::new(),
+            des: "stored summary".to_string(),
+            readme: None,
+            category: None,
+            extra: None,
+            labels: Vec::new(),
+        }
+    }
+
+    fn mixed_trace_fixture(
+        tag: &str,
+    ) -> (TempDir, DbHandle, AggregationService, Arc<Mutex<Vec<String>>>) {
+        let dir = TempDir::new(tag);
+        let db = DbHandle::open(&dir.0).unwrap();
+        let hit = "com.example.hit".to_string();
+        seed_added(&db, "fdroid", std::slice::from_ref(&hit));
+        seed_added(&db, "fdroid_b", &["com.example.fallback".to_string()]);
+        seed_added(&db, "fdroid_c", &["com.example.placeholder".to_string()]);
+
+        let repo = seeded_repo(
+            SOURCE_A,
+            std::slice::from_ref(&hit),
+            "/tmp/gstore_core_aggregate_trace.db",
+        );
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            "fdroid".to_string(),
+            driver(&db, repo, SOURCE_A, "fdroid"),
+        );
+        let fallback = Arc::new(MapFallback {
+            rows: std::collections::BTreeMap::from([(
+                "fdroid_b:com.example.fallback".to_string(),
+                fallback_summary("com.example.fallback"),
+            )]),
+        });
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let collector = Arc::clone(&lines);
+        let service = AggregationService::new(db.clone(), resolver(drivers))
+            .unwrap()
+            .with_fallback(fallback)
+            .with_trace(Arc::new(move |line: &str| {
+                collector.lock().unwrap().push(line.to_string());
+            }));
+        (dir, db, service, lines)
+    }
+
+    #[test]
+    fn aggregate_slice_traces_every_row() {
+        let (_dir, _db, service, lines) = mixed_trace_fixture("trace_rows");
+
+        let apps = service.aggregate_all().unwrap();
+        assert_eq!(apps.len(), 3, "fixture must resolve all three rows");
+
+        let lines = lines.lock().unwrap().clone();
+        let begins: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("aggregate page begin "))
+            .collect();
+        assert_eq!(begins.len(), 1, "exactly one page begin line");
+        assert_eq!(
+            begins[0],
+            "aggregate page begin rows=3 variant=offline-list-2026-10-30"
+        );
+
+        let rows: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("aggregate row channel="))
+            .collect();
+        assert_eq!(rows.len(), 3, "exactly one row line per aggregated row");
+
+        let row = |app_id: &str| {
+            rows.iter()
+                .find(|line| line.contains(&format!(" app_id={app_id} ")))
+                .unwrap_or_else(|| panic!("missing trace row for {app_id}: {lines:?}"))
+        };
+        assert!(
+            row("com.example.hit").starts_with(
+                "aggregate row channel=fdroid app_id=com.example.hit state=cache err=0 elapsed_ms="
+            ),
+            "driver hit row must trace as cache: {}",
+            row("com.example.hit")
+        );
+        assert!(
+            row("com.example.fallback").starts_with(
+                "aggregate row channel=fdroid_b app_id=com.example.fallback state=store err=0 elapsed_ms="
+            ),
+            "channel-store row must trace as store: {}",
+            row("com.example.fallback")
+        );
+        assert!(
+            row("com.example.placeholder").starts_with(
+                "aggregate row channel=fdroid_c app_id=com.example.placeholder state=unresolved err=0 elapsed_ms="
+            ),
+            "placeholder row must trace as unresolved: {}",
+            row("com.example.placeholder")
+        );
+
+        let done: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("aggregate page done "))
+            .collect();
+        assert_eq!(done.len(), 1, "exactly one page done line");
+        assert!(
+            done[0].starts_with("aggregate page done rows=3 elapsed_ms="),
+            "page done must carry row count and elapsed time: {}",
+            done[0]
+        );
+    }
+
+    #[test]
+    fn aggregate_slice_is_silent_without_trace_sink() {
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let dir = TempDir::new("trace_default_silent");
+        let db = DbHandle::open(&dir.0).unwrap();
+        let hit = "com.example.silent".to_string();
+        seed_added(&db, "fdroid", std::slice::from_ref(&hit));
+        let repo = seeded_repo(
+            SOURCE_A,
+            std::slice::from_ref(&hit),
+            "/tmp/gstore_core_aggregate_silent.db",
+        );
+        let mut drivers = std::collections::HashMap::new();
+        drivers.insert(
+            "fdroid".to_string(),
+            driver(&db, repo, SOURCE_A, "fdroid"),
+        );
+        let service = AggregationService::new(db, resolver(drivers)).unwrap();
+
+        let apps = service.aggregate_all().unwrap();
+
+        assert_eq!(apps.len(), 1);
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "no sink is attached, so nothing may be collected"
         );
     }
 }
