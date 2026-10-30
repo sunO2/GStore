@@ -388,7 +388,6 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     // 等待 list-installed（真机 ≈314ms），而首页列表并不需要清单；现在只等事实 +
     // catalog，清单在后台推送（完成后再刷新更新状态），列表可提前 ~300ms 加载。
     await CoreBootstrap.start(includeInventory: false);
-    bootMark('inventory-kickoff');
 
     // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
     // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
@@ -414,19 +413,6 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
       if (_isChatUiNoise(message)) return;
       appLog.debug(message);
     };
-
-    // 延迟清单落地后刷新更新状态，保证更新角标/更新页读到真实清单。放在
-    // StartupGate.complete() 之前启动（不 await），故不拖慢首屏放行。
-    unawaited(() async {
-      try {
-        await CoreBootstrap.inventoryDone; // 清单 + 切流推送完成
-        await UpdateFacade.instance.ensureChecked(); // 现在有清单了，刷新更新状态
-      } catch (error) {
-        appLog.error('启动后更新检测失败（非致命）', data: {
-          'error': error.toString(),
-        });
-      }
-    }());
   } catch (error, stackTrace) {
     appLog.error('首帧后启动装配失败（功能降级，UI 继续可用）', data: {
       'error': error.toString(),
@@ -436,6 +422,21 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     // 无论成功失败都放行首屏列表加载：UI 绝不永久停在 loading。
     StartupGate.complete();
     bootMark('startup-ready');
+
+    // 清单推送必须在首屏可用之后：PackageManager 枚举（~320ms）会与模块初始化
+    // 争用平台线程（实测把 registerService 131ms 拖到 472ms）。延时让它落在
+    // 首屏渲染之后，完成后刷新更新状态。
+    Future<void>.delayed(const Duration(milliseconds: 1200), () async {
+      try {
+        await CoreBootstrap.startInventory();
+        await UpdateFacade.instance.ensureChecked();
+      } catch (error) {
+        appLog.error('启动后清单推送/更新检测失败（非致命）', data: {
+          'error': error.toString(),
+        });
+      }
+    });
+    bootMark('inventory-kickoff');
   }
 }
 

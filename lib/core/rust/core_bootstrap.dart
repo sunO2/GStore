@@ -124,6 +124,10 @@ class CoreBootstrap {
   static Future<void>? _inventoryDone;
   static int _lastSeq = 0;
 
+  static (String, String, String)? _inventoryDirs;
+  static CoreBootstrapBackend? _inventoryBackend;
+  static CorePlatformProbe? _inventoryProbe;
+
   static CoreBootstrapBackend? _backendOverride;
   static CorePlatformProbe? _probeOverride;
   static CoreCutoverBackend? _cutoverOverride;
@@ -145,13 +149,33 @@ class CoreBootstrap {
   /// the installed-app inventory push and the durable cutover are awaited
   /// inline, so the returned future completes only after them. `main()` passes
   /// `false` to keep the ~314 ms `list-installed` round trip off the startup
-  /// critical path; the deferred job is then exposed via [inventoryDone].
+  /// critical path; the deferred job is then cached and must be kicked via
+  /// [startInventory] once the first frame is usable (never concurrently with
+  /// `registerService()`).
   static Future<void> start({bool includeInventory = true}) {
     if (_ready) return Future<void>.value();
     final pending = _pending;
     if (pending != null) return pending;
     final future = _run(includeInventory: includeInventory);
     _pending = future;
+    return future;
+  }
+
+  /// 首屏可用之后再推送已安装清单（PackageManager 枚举会与模块初始化抢平台线程，
+  /// 故不能与 `registerService()` 并发）。幂等：多次调用返回同一个 future。
+  static Future<void> startInventory() {
+    final done = _inventoryDone;
+    if (done != null) return done;
+    if (!_ready) {
+      appLog.debug('[CoreBootstrap] 核心自举未完成，跳过清单推送（无清单可推）');
+      return Future<void>.value();
+    }
+    final future = _pushInventoryAndCutover(
+      dirs: _inventoryDirs!,
+      backend: _inventoryBackend!,
+      probe: _inventoryProbe!,
+    );
+    _inventoryDone = future;
     return future;
   }
 
@@ -182,6 +206,9 @@ class CoreBootstrap {
     _ready = false;
     _pending = null;
     _inventoryDone = null;
+    _inventoryDirs = null;
+    _inventoryBackend = null;
+    _inventoryProbe = null;
     _lastSeq = 0;
     _backendOverride = null;
     _probeOverride = null;
@@ -265,11 +292,9 @@ class CoreBootstrap {
           probe: probe,
         );
       } else {
-        _inventoryDone = _pushInventoryAndCutover(
-          dirs: dirs,
-          backend: backend,
-          probe: probe,
-        );
+        _inventoryDirs = dirs;
+        _inventoryBackend = backend;
+        _inventoryProbe = probe;
       }
     } catch (error, stackTrace) {
       debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');
