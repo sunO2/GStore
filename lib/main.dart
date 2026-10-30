@@ -14,6 +14,9 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:gstore/compent/module_install_banner.dart';
 import 'package:gstore/core/boot/startup_gate.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/download/download_pending_hint.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
+import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
@@ -422,6 +425,17 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     // 无论成功失败都放行首屏列表加载：UI 绝不永久停在 loading。
     StartupGate.complete();
     bootMark('startup-ready');
+
+    // 冷启动不加载下载模块；只有上次可能还有未完成任务时才在后台把它拉起来（恢复下载）。
+    unawaited(() async {
+      try {
+        if (await DownloadPendingHint.hasPending()) {
+          DownloadTaskWatcher.instance.start(RustDownloadService.instance);
+        }
+      } catch (error) {
+        appLog.error('下载未完成提示检查失败（非致命）', data: {'error': error.toString()});
+      }
+    }());
 
     // 清单推送必须在首屏可用之后：PackageManager 枚举（~320ms）会与模块初始化
     // 争用平台线程（实测把 registerService 131ms 拖到 472ms）。延时让它落在

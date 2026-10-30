@@ -41,7 +41,6 @@ import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'interfaces/service_interfaces.dart';
-import '../download/download_task_watcher.dart';
 
 /// 核心业务模块注册器
 ///
@@ -121,9 +120,12 @@ class DownloadModule extends AppModule {
     // 没有 Dart 回落——模块不可用时由服务抛出
     // DownloadModuleUnavailableException（CORE_E_DOWNLOAD_MODULE_UNAVAILABLE）。
     context.bindService?.call(IDownloadService, RustDownloadService.instance);
-    // 只绑定一次：DownloadTaskWatcher.start 对同一实现重入为空操作，因此不会二次
-    // 订阅、不会清空"已发开始通知"标记。通知与自动安装对内核任务全局生效。
-    DownloadTaskWatcher.instance.start(RustDownloadService.instance);
+    // 不在此处启动全局下载监听（watcher）：它在 onRegister 里 `watchAll()` 会走
+    // `_ensureCoreReady()`（挂载模块 + `importLegacyOnce`），让冷启动白白 dlopen
+    // 原生模块并建核心 DB。watcher 改为**惰性启动**——首次入队
+    // （`RustDownloadService._downloadViaCore`）、打开下载页
+    // （`DownloadManagerNotifier.build`）或启动时命中未完成提示
+    // （`main.dart` 的 `DownloadPendingHint` 检查）时才绑定。
   }
 
   @override

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/download/download_pending_hint.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -78,15 +79,19 @@ class DownloadTaskWatcher {
       case DownloadStatusEnum.downloading:
         if (_started.add(id)) {
           notif.onDownloadStart(id, title, task.fileName);
+          // 进入进行中/排队：写下廉价提示，冷启动据此决定是否后台拉起模块。
+          unawaited(_markPending());
         }
         // 服务内部已做 500ms 节流
         notif.onDownloadProgress(
             id, title, task.fileName, task.received, task.total);
       case DownloadStatusEnum.paused:
-        break;
+        // 暂停也意味着有未完成任务（可能因重启而停在 paused）。
+        unawaited(_markPending());
       case DownloadStatusEnum.completed:
         notif.onDownloadComplete(id);
         _started.remove(id);
+        unawaited(_clearPendingIfIdle());
         // 自动安装只认任务自己持久化的标记（跨重启也有效）。
         // Wave 6B 起 install 域由核心独占：这里永远走核心安装，没有旧路径分支。
         if (task.installAfterDownload) {
@@ -95,9 +100,33 @@ class DownloadTaskWatcher {
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
         _started.remove(id);
+        unawaited(_clearPendingIfIdle());
       case DownloadStatusEnum.cancelled:
         notif.onDownloadCancel(id);
         _started.remove(id);
+        unawaited(_clearPendingIfIdle());
+    }
+  }
+
+  /// 写下「可能有未完成任务」提示；best-effort，绝不把异常抛进事件流。
+  Future<void> _markPending() async {
+    try {
+      await DownloadPendingHint.mark();
+    } catch (error) {
+      debugPrint('DownloadTaskWatcher: 记录未完成提示失败（非致命） - $error');
+    }
+  }
+
+  /// 仅当没有其它已跟踪任务仍活跃时清除提示（best-effort）。
+  ///
+  /// `_started` 保留着所有进行中/排队任务的 id（暂停的同理会留在其中），
+  /// 终态任务会先被移除，因此这里为空即可安全清除。
+  Future<void> _clearPendingIfIdle() async {
+    if (_started.isNotEmpty) return;
+    try {
+      await DownloadPendingHint.clear();
+    } catch (error) {
+      debugPrint('DownloadTaskWatcher: 清除未完成提示失败（非致命） - $error');
     }
   }
 

@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
@@ -107,6 +109,9 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   @override
   DownloadPageState build() {
+    // 打开下载页也是「该把全局 watcher 拉起来」的触发点：它会经 watchAll()
+    // 装配通知与自动安装，而不必在冷启动的模块注册阶段就加载下载内核。
+    DownloadTaskWatcher.instance.start(RustDownloadService.instance);
     ref.onDispose(() {
       _reloadTimer?.cancel();
       _watchSub?.cancel();

@@ -6,9 +6,11 @@ import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/download_push_stream.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/download/DownloadEventSource.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
@@ -55,14 +57,15 @@ class RustDownloadService implements IDownloadService {
   /// binds [IDownloadService] to this Rust-only service with no Dart fallback,
   /// but the host `HostDownloadPort` resolves the native module by name
   /// (`module_id_by_name("download")`) and returns
-  /// `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` when it was never mounted. Mirroring
-  /// the qr/repo consumers ([ModuleBootstrap.acquire]), we mount it on first use.
+  /// `CORE_E_DOWNLOAD_MODULE_UNAVAILABLE` when it was never mounted.
   ///
-  /// [acquire] (not bare `ensureOnly`) is deliberate: `ensureOnly` leaves the
-  /// observable phase at `downloading` (it publishes no terminal state), which
-  /// the app-wide `ModuleInstallBanner` would render forever. `acquire` drives
-  /// `initializing → ready`, so the banner clears. It never awaits a path the
-  /// ensure itself needs, so it cannot deadlock.
+  /// Here we only **mount** the module ([ModuleBootstrap.ensureMounted]) because
+  /// the host (`HostDownloadPort::with_port`) creates the single instance with the
+  /// core-owned directories (`files/gstore_core/data/gstore_mods/download`).
+  /// Acquiring a Dart-side instance would duplicate it: two data dirs → two DBs,
+  /// each running its own restart recovery, with tasks invisible across the two
+  /// lanes. `ensureMounted` (rather than bare `ensureOnly`) still publishes the
+  /// terminal `ready` so the app-wide `ModuleInstallBanner` clears.
   Future<void> _mountModuleThenImportLegacy() async {
     await _ensureDownloadModule();
     try {
@@ -76,11 +79,15 @@ class RustDownloadService implements IDownloadService {
 
   /// Mounts the Rust `download` module or throws the typed unavailability error.
   ///
-  /// A genuinely failed acquire surfaces [DownloadModuleUnavailableException]
+  /// A genuinely failed mount (ensure reports `false` or throws
+  /// [ModuleInstallFailedException]) surfaces [DownloadModuleUnavailableException]
   /// (`CORE_E_DOWNLOAD_MODULE_UNAVAILABLE`); there is **no** Dart fallback.
   Future<void> _ensureDownloadModule() async {
     try {
-      await ModuleBootstrap.instance.acquire(moduleName);
+      final mounted = await ModuleBootstrap.instance.ensureMounted(moduleName);
+      if (!mounted) {
+        throw DownloadModuleUnavailableException();
+      }
     } on ModuleInstallFailedException catch (error) {
       throw DownloadModuleUnavailableException(error);
     }
@@ -184,6 +191,14 @@ class RustDownloadService implements IDownloadService {
     if (forceDownload) {
       final restarted = await _restartForDest(core.destPath);
       if (restarted != null) return restarted;
+    }
+
+    // 首次真实入队即绑定全局 watcher（通知 + 自动安装）；同一实现重复调用为空操作。
+    // 冷启动不再于模块注册时启动它，这里就是「真的有下载了」的第一个触发点。
+    // 仅在下载服务已由模块注册表绑定时启动：未注册模块的裸服务（测试/工具）不需要
+    // 通知与自动安装，避免平白多出一条全局 watchAll 订阅。
+    if (ModuleManager.instance.get<IDownloadService>() != null) {
+      DownloadTaskWatcher.instance.start(this);
     }
 
     final id = await DownloadFacade.instance.start(

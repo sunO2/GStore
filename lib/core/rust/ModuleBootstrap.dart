@@ -462,6 +462,27 @@ class ModuleBootstrap {
     return outcome.ok;
   }
 
+  /// 仅确保模块已挂载（安装 + 加载 + 注册），**不创建 Dart 侧实例**，并发布终态 ready。
+  ///
+  /// 供「实例由宿主（Rust core）自己创建」的模块使用（当前是 download：
+  /// `HostDownloadPort::with_port` 会用 core 目录 `files/gstore_core/data/gstore_mods/download`
+  /// 建唯一实例）。若这里也 `acquire`，同一模块会产生两个实例、两个 DB，
+  /// 各自跑一遍重启恢复，任务在两条链路之间不可见。
+  ///
+  /// `ensureOnly` 在没有缓存实例时按契约不发布终态，会让安装横幅永远停在
+  /// downloading；这里补发 ready，保持横幅语义不变。
+  Future<bool> ensureMounted(String module, {ModuleInstallPolicy? policy}) async {
+    final ok = await ensureOnly(module, policy: policy);
+    if (ok) {
+      _emit(ModuleBootstrapState(
+        module: module,
+        phase: ModuleBootstrapPhase.ready,
+        progress: 1.0,
+      ));
+    }
+    return ok;
+  }
+
   /// 触发一次「即发即忘」的安装确保（不等待、不抛错）。
   ///
   /// 供热路径（如二维码逐帧解码）使用：安装由门在后台完成，
