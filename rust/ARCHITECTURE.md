@@ -982,3 +982,8 @@ P1 实施中通过 3 组实验确认的 flutter_rust_bridge 2.11.1 行为（`rus
   `init_with_ports`（cfg(test)）绕过。注意：同一物理目录若传入不同字符串键会建出第二个 inner。
 - **`repo.db` journal。** `journal_mode=WAL` 是 best-effort（失败只记日志、不致命），
   `busy_timeout=5000ms`。
+- **GitHub metadata 生命周期：写时落库 / 列表只读 / 详情回写。** metadata 在**添加时写穿**
+  （`add_app`）；**列表与渠道页只读、零网络**（`build_stored_info`，直接 `stored.to_summary()`
+  仅做图标稳定化）；**详情页刷新并回写**（`get_app_detail` → 定向 `UPDATE channel_apps
+  SET name/icon/extra`）。后果：从未打开过详情的应用名字/图标停留在添加时快照，打开一次即纠偏；
+  `extra.packageName` 出现前入库的老行在首次打开详情前不带包名标签。

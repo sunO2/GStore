@@ -23,6 +23,10 @@
 //!   `Accept: application/vnd.github+json`, `User-Agent: GStore-App/1.0`).
 //! * GitHub add semantics: `GitHubChannel.dart:316-373`.
 //! * GitHub error mapping statuses: Todo 10 contract in the wave plan.
+//! * Intentional divergence — the list/info read path no longer applies metadata
+//!   to a stored row (Dart's `GitHubChannel.getAppInfo` re-fetched
+//!   `MetadataRepository.fetchInfo` per call); the row is now a snapshot refreshed
+//!   only when the detail page opens (`get_app_detail` writes name/icon/extra back).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -626,14 +630,15 @@ fn localdb_github_parity_github_list_info_search_and_canonical() {
     assert_eq!(listed[2].user, "acme");
     assert_eq!(listed[2].repositories, "dirty");
 
-    // Stored hit -> metadata override, no HTTP call.
+    // Stored hit -> local snapshot, no HTTP and no metadata call. The row is
+    // refreshed only when the detail page opens (see `get_app_detail`).
     let stored = driver.get_app_info("acme/alpha", false).unwrap();
-    assert_eq!(stored.name, "Alpha Meta");
+    assert_eq!(stored.name, "Stored Alpha");
     assert_eq!(
         stored.package_name.as_deref(),
-        Some("com.example.alpha.meta")
+        Some("com.example.stored")
     );
-    assert_eq!(stored.icon, "https://icons.test/alpha-meta.png");
+    assert_eq!(stored.icon, "stored-alpha.png");
     assert_eq!(stored.des, "Stored alpha description");
     assert!(
         http.calls().is_empty(),

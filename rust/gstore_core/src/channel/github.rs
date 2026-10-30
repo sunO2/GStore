@@ -189,15 +189,68 @@ impl GitHubDriver {
         }))
     }
 
+    /// Builds the summary for one stored channel row without touching the
+    /// network.
+    ///
+    /// The row is the snapshot written by [`Self::add_app`] at add time (and
+    /// refreshed by [`Self::get_app_detail`] when the detail page opens), so
+    /// the list and info read paths never re-fetch metadata. The only change
+    /// applied here is icon stability; see [`stable_stored_icon`].
     fn build_stored_info(&self, stored: StoredApp) -> Result<AppSummary, Error> {
-        let base = stored.to_summary();
-        if stored.user.is_empty() || stored.repositories.is_empty() {
-            return Ok(base);
+        let mut summary = stored.to_summary();
+        summary.icon = stable_stored_icon(&summary.icon, &summary.user, &summary.repositories);
+        Ok(summary)
+    }
+
+    /// Merges freshly fetched metadata into the detail summary and persists the
+    /// refreshed `name`/`icon`/`extra` on the stored row.
+    ///
+    /// The merge reuses [`apply_metadata`] with the add-time rules, so the
+    /// detail response, the stored snapshot, and a fresh [`Self::add_app`] agree
+    /// on name/icon/package/labels. The write is a targeted `UPDATE` (never
+    /// `INSERT OR REPLACE`), which leaves `add_time`, `description`, `category`
+    /// and every other column untouched; a missing row is a no-op. `extra` is
+    /// merged key-by-key: `packageName` is replaced only when the metadata
+    /// carries a valid package name, and all remaining keys survive.
+    fn apply_detail_refresh(
+        &self,
+        info: AppSummary,
+        metadata: PackageMetadata,
+        stored: &StoredApp,
+    ) -> Result<AppSummary, Error> {
+        let fresh_package = valid_package_name(metadata.package_name.as_deref());
+        let refreshed = apply_metadata(info, metadata, true);
+
+        let mut extra = stored.extra().unwrap_or_default();
+        if let Some(package_name) = fresh_package.as_deref() {
+            extra.insert(
+                "packageName".to_string(),
+                Value::String(package_name.to_string()),
+            );
         }
-        let Some(metadata) = self.metadata.fetch(&stored.user, &stored.repositories)? else {
-            return Ok(base);
+        let extra = if extra.is_empty() {
+            None
+        } else {
+            Some(Value::Object(extra).to_string())
         };
-        Ok(apply_metadata(base, metadata, true))
+
+        // `apply_metadata` only substitutes non-empty metadata values, so these
+        // fall back to the stored row and never blank a good value.
+        let name = refreshed.name.clone();
+        let icon = refreshed.icon.clone();
+        let app_id = refreshed.app_id.clone();
+        self.db
+            .with_writer(|conn| {
+                conn.execute(
+                    "UPDATE channel_apps SET name = ?3, icon = ?4, extra = ?5 \
+                     WHERE channel_key = ?1 AND app_id = ?2",
+                    rusqlite::params![self.key.as_str(), app_id, name, icon, extra],
+                )
+                .map_err(|error| crate::db::DbError(error.to_string()))?;
+                Ok(())
+            })
+            .map_err(|error| Error::Io(format!("github detail refresh: {error}")))?;
+        Ok(refreshed)
     }
 
     fn apply_metadata_for_info(&self, app: AppSummary) -> Result<AppSummary, Error> {
@@ -285,7 +338,19 @@ impl ChannelDriver for GitHubDriver {
     }
 
     fn get_app_detail(&self, app_id: &str, force_refresh: bool) -> Result<AppDetail, Error> {
-        let info = self.get_app_info(app_id, force_refresh)?;
+        let mut info = self.get_app_info(app_id, force_refresh)?;
+        // A stored row is a snapshot taken when the app was added; opening the
+        // detail page refreshes it exactly once and writes the result back so
+        // the next local read is current. Non-stored ids already went through
+        // `apply_metadata_for_info` in `get_app_info`, so they must not trigger
+        // a second metadata lookup.
+        if let Some(stored) = self.find_stored(&info.app_id)? {
+            if !info.user.is_empty() && !info.repositories.is_empty() {
+                if let Some(metadata) = self.metadata.fetch(&info.user, &info.repositories)? {
+                    info = self.apply_detail_refresh(info, metadata, &stored)?;
+                }
+            }
+        }
         let url = GitHubReleases::repo_url(&info.user, &info.repositories);
         let (status, repo_value) = self.api.get_value(&url)?;
         let repo = repo_value
@@ -613,6 +678,32 @@ impl ChannelDriver for GitHubDriver {
     }
 }
 
+/// Returns a stored icon URL that can be relied on across releases.
+///
+/// * An empty stored icon falls back to the repository-metadata path when the
+///   owner and repo are known, so a row added before metadata had an icon still
+///   renders one.
+/// * A `sunO2/GStore-Repositorys` metadata URL carrying the `?r=<fingerprint>`
+///   cache-buster is reduced to scheme/host/path. The fingerprint changes with
+///   every icon update, so a stale fingerprinted URL can 404 once the Actions
+///   job rewrites the file, while the bare path stays valid.
+/// * Any other URL (an avatar, an absolute CDN URL, ...) is returned verbatim.
+fn stable_stored_icon(icon: &str, owner: &str, repo: &str) -> String {
+    const METADATA_PREFIX: &str = "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/";
+    if icon.is_empty() {
+        if owner.is_empty() || repo.is_empty() {
+            return String::new();
+        }
+        return format!("{METADATA_PREFIX}main/metadata/{owner}@{repo}/icon.png");
+    }
+    if icon.starts_with(METADATA_PREFIX) {
+        if let Some((path, _query)) = icon.split_once('?') {
+            return path.to_string();
+        }
+    }
+    icon.to_string()
+}
+
 fn apply_metadata(
     app: AppSummary,
     metadata: PackageMetadata,
@@ -668,4 +759,312 @@ fn encode_component(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use crate::dto::{summary_labels, ChannelKind};
+    use crate::ports::{CoreConfig, FakeHttpPort, FakeMetadataPort, HttpResponse};
+
+    use super::*;
+
+    const APP_ID: &str = "acme/repo";
+
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gstore_core_github_{tag}_{}_{}",
+                std::process::id(),
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn channel_meta() -> ChannelMeta {
+        ChannelMeta {
+            kind: ChannelKind::Github,
+            name: "GitHubAPI".to_string(),
+            description: "GitHub channel".to_string(),
+            enabled: true,
+            priority: 0,
+            support_offline: true,
+            last_update_time: None,
+            version: Some("1".to_string()),
+        }
+    }
+
+    fn driver(
+        db: &DbHandle,
+        http: Arc<FakeHttpPort>,
+        metadata: Arc<FakeMetadataPort>,
+    ) -> GitHubDriver {
+        GitHubDriver::new(
+            ChannelKey::new("github").unwrap(),
+            channel_meta(),
+            db.clone(),
+            CoreConfig::default(),
+            http,
+            metadata,
+        )
+    }
+
+    /// Seeds one stored GitHub row; `extra` is the raw JSON column.
+    fn seed_row(
+        db: &DbHandle,
+        app_id: &str,
+        name: &str,
+        icon: &str,
+        description: &str,
+        add_time: i64,
+        extra: Option<&str>,
+    ) {
+        db.with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO channel_apps(channel_key,app_id,name,user,repositories,apprepo,\
+                 icon,description,category,add_time,extra) \
+                 VALUES ('github',?1,?2,'acme','repo',?1,?3,?4,NULL,?5,?6)",
+                rusqlite::params![app_id, name, icon, description, add_time, extra],
+            )
+            .map_err(|error| crate::db::DbError(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Reads `(add_time, description, extra, name, icon)` for one stored row.
+    fn stored_row(
+        db: &DbHandle,
+        app_id: &str,
+    ) -> (i64, String, Option<String>, String, String) {
+        let conn = db.reader().unwrap();
+        conn.query_row(
+            "SELECT add_time,description,extra,name,icon FROM channel_apps \
+             WHERE channel_key = 'github' AND app_id = ?1",
+            [app_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap()
+    }
+
+    fn metadata_new() -> PackageMetadata {
+        PackageMetadata {
+            package_name: Some("com.example.new".to_string()),
+            app_name: Some("New Name".to_string()),
+            icon_url: Some("https://new.test/icon.png".to_string()),
+            version_name: None,
+        }
+    }
+
+    fn push_json(http: &FakeHttpPort, body: &str) {
+        http.push_response(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+        });
+    }
+
+    /// Queues the three responses `get_app_detail` needs after the metadata
+    /// refresh: repo JSON, an empty releases array, and an empty README object.
+    fn push_detail_responses(http: &FakeHttpPort) {
+        push_json(
+            http,
+            r#"{"full_name":"acme/repo","html_url":"https://github.com/acme/repo"}"#,
+        );
+        push_json(http, "[]");
+        push_json(http, "{}");
+    }
+
+    #[test]
+    fn build_stored_info_makes_no_metadata_call() {
+        let dir = TempDir::new("no_metadata");
+        let db = DbHandle::open(&dir.0).unwrap();
+        seed_row(
+            &db,
+            APP_ID,
+            "Stored Name",
+            "stored.png",
+            "stored description",
+            42,
+            Some(r#"{"packageName":"com.example.pkg"}"#),
+        );
+        let metadata = Arc::new(FakeMetadataPort::new());
+        metadata.set(
+            "acme",
+            "repo",
+            Some(PackageMetadata {
+                package_name: Some("com.example.meta".to_string()),
+                app_name: Some("Meta Name".to_string()),
+                icon_url: Some("https://icons.test/meta.png".to_string()),
+                version_name: None,
+            }),
+        );
+        let driver = driver(&db, Arc::new(FakeHttpPort::new()), metadata.clone());
+
+        let info = driver.get_app_info(APP_ID, false).unwrap();
+
+        assert_eq!(
+            metadata.fetch_count(),
+            0,
+            "a stored info read must never fetch metadata"
+        );
+        assert_eq!(info.name, "Stored Name", "the stored snapshot wins");
+        assert_eq!(info.icon, "stored.png");
+        assert_eq!(info.package_name.as_deref(), Some("com.example.pkg"));
+        assert_eq!(
+            info.labels,
+            summary_labels("acme", Some("com.example.pkg"), "repo"),
+            "stored labels must equal the metadata-applied label set"
+        );
+    }
+
+    #[test]
+    fn stable_stored_icon_falls_back_to_fixed_metadata_url() {
+        assert_eq!(
+            stable_stored_icon("", "acme", "repo"),
+            "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/acme@repo/icon.png"
+        );
+    }
+
+    #[test]
+    fn stable_stored_icon_strips_fingerprint_query() {
+        assert_eq!(
+            stable_stored_icon(
+                "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/o@r/icon.png?r=abc123",
+                "o",
+                "r"
+            ),
+            "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/o@r/icon.png"
+        );
+    }
+
+    #[test]
+    fn stable_stored_icon_leaves_other_urls_alone() {
+        for url in [
+            "https://avatars.githubusercontent.com/u/1?v=4",
+            "https://icons.test/acme.png",
+            "stored.png",
+        ] {
+            assert_eq!(stable_stored_icon(url, "acme", "repo"), url);
+        }
+    }
+
+    #[test]
+    fn get_app_detail_refreshes_and_writes_back() {
+        let dir = TempDir::new("detail_refresh");
+        let db = DbHandle::open(&dir.0).unwrap();
+        seed_row(
+            &db,
+            APP_ID,
+            "Old Name",
+            "https://old.test/icon.png",
+            "keep description",
+            1_700_000_000_000,
+            Some(r#"{"packageName":"com.example.old","other":"keep"}"#),
+        );
+        let metadata = Arc::new(FakeMetadataPort::new());
+        metadata.set("acme", "repo", Some(metadata_new()));
+        let http = FakeHttpPort::new();
+        push_detail_responses(&http);
+        let driver = driver(&db, Arc::new(http), metadata.clone());
+
+        let detail = driver.get_app_detail(APP_ID, false).unwrap();
+
+        assert_eq!(
+            metadata.fetch_count(),
+            1,
+            "the detail read must fetch metadata exactly once"
+        );
+        assert_eq!(detail.name, "New Name");
+        assert_eq!(detail.icon, "https://new.test/icon.png");
+        assert_eq!(detail.package_name.as_deref(), Some("com.example.new"));
+
+        let local = driver.get_app_info(APP_ID, false).unwrap();
+        assert_eq!(
+            metadata.fetch_count(),
+            1,
+            "the local read after the refresh must not fetch"
+        );
+        assert_eq!(local.name, "New Name", "the refresh must be written back");
+        assert_eq!(local.icon, "https://new.test/icon.png");
+        assert_eq!(local.package_name.as_deref(), Some("com.example.new"));
+
+        let (add_time, description, extra, name, icon) = stored_row(&db, APP_ID);
+        assert_eq!(add_time, 1_700_000_000_000, "add_time must not change");
+        assert_eq!(description, "keep description", "description must not change");
+        assert_eq!(name, "New Name");
+        assert_eq!(icon, "https://new.test/icon.png");
+        let extra: Value =
+            serde_json::from_str(extra.as_deref().expect("extra must persist")).unwrap();
+        assert_eq!(
+            extra.get("packageName").and_then(Value::as_str),
+            Some("com.example.new"),
+            "extra.packageName must be refreshed"
+        );
+        assert_eq!(
+            extra.get("other").and_then(Value::as_str),
+            Some("keep"),
+            "extra must be merged, not replaced"
+        );
+    }
+
+    #[test]
+    fn get_app_detail_keeps_stored_values_when_metadata_missing() {
+        let dir = TempDir::new("detail_no_metadata");
+        let db = DbHandle::open(&dir.0).unwrap();
+        seed_row(
+            &db,
+            APP_ID,
+            "Stored Name",
+            "https://stored.test/icon.png",
+            "keep description",
+            7,
+            Some(r#"{"packageName":"com.example.stored"}"#),
+        );
+        let metadata = Arc::new(FakeMetadataPort::new());
+        metadata.set("acme", "repo", None);
+        let http = FakeHttpPort::new();
+        push_detail_responses(&http);
+        let driver = driver(&db, Arc::new(http), metadata.clone());
+
+        let detail = driver.get_app_detail(APP_ID, false).unwrap();
+
+        assert_eq!(metadata.fetch_count(), 1, "one fetch, even for a miss");
+        assert_eq!(detail.name, "Stored Name");
+        assert_eq!(detail.icon, "https://stored.test/icon.png");
+        let (_, _, extra, name, icon) = stored_row(&db, APP_ID);
+        assert_eq!(name, "Stored Name", "a miss must not clobber the row");
+        assert_eq!(icon, "https://stored.test/icon.png");
+        let extra: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            extra.get("packageName").and_then(Value::as_str),
+            Some("com.example.stored"),
+            "a miss must leave packageName untouched"
+        );
+    }
 }
