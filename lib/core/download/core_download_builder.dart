@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:gstore/core/logger/LogManager.dart';
+
 import 'download_paths.dart';
 
 /// Rust 内核下载请求的 Dart 镜像。
@@ -71,6 +73,7 @@ class CoreDownloadBuilder {
           downloadsDir == null ? null : Directory(downloadsDir),
       docsDirProvider: () async => Directory(docsDir),
     );
+    appLog.info('download: destPath=$destPath'); // 用于核对 FileProvider 覆盖范围
 
     return CoreDownloadRequest(
       appId: appId,

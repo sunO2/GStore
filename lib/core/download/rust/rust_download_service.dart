@@ -168,10 +168,14 @@ class RustDownloadService implements IDownloadService {
     await _ensureCoreReady();
 
     // An absolute save path short-circuits directory resolution; otherwise the
-    // builder falls back to the app documents dir exactly like DownloadPaths.
+    // directory MUST live inside the FileProvider `<files-path>` root, because
+    // the system install intent is built with FileProvider.getUriForFile and a
+    // path outside that root throws, so no installer UI ever appears. App
+    // support (/data/user/0/<pkg>/files) is covered; app documents
+    // (app_flutter) is NOT.
     final docsDir = saveFileName != null && saveFileName.startsWith('/')
         ? ''
-        : (await getApplicationDocumentsDirectory()).path;
+        : (await getApplicationSupportDirectory()).path;
     final core = await CoreDownloadBuilder.build(
       appId: appid,
       appName: appName,
