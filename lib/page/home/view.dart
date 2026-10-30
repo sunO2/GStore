@@ -308,35 +308,50 @@ class _HomePageState extends ConsumerState<HomePage>
                                 NavigationDestination(
                                   // 选中项图标微放大（AnimatedScale 包在 AnimatedSwitcher 外，
                                   // 两动画独立叠加：切换淡入淡出 + 缩放）
-                                  icon: AnimatedScale(
-                                    scale: (index == 0) ? 1.15 : 1.0,
-                                    duration: AppAnimation.fast,
-                                    curve: AppAnimation.curve,
-                                    child: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: Icon(
-                                        (index == 0)
-                                            ? TablerIcons.home_filled
-                                            : TablerIcons.home,
-                                        key: ValueKey(index == 0 ? 0 : 1),
-                                        size: AppTypography.iconLG,
+                                  icon: SizedBox(
+                                    width: 32,
+                                    height: 24,
+                                    child: Center(
+                                      child: AnimatedScale(
+                                        scale: (index == 0) ? 1.15 : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          // 选中态用 home_2：TablerIcons.home_filled 的码位 U+FE2B 落在
+                                          // U+FE20–FE2F（Combining Diacritical Marks for Symbols），会被文字排版
+                                          // 当作组合符号，导致图标渲染在选中胶囊的左边缘。home_2 在私用区，安全。
+                                          child: Icon(
+                                            (index == 0)
+                                                ? TablerIcons.home_2
+                                                : TablerIcons.home,
+                                            key: ValueKey(index == 0 ? 0 : 1),
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
                                   label: "首页",
                                 ),
                                 NavigationDestination(
-                                  icon: AnimatedScale(
-                                    scale: (index == 1) ? 1.15 : 1.0,
-                                    duration: AppAnimation.fast,
-                                    curve: AppAnimation.curve,
-                                    child: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: (index == 1)
-                                          ? const Icon(TablerIcons.compass_filled,
-                                              key: ValueKey(2))
-                                          : const Icon(TablerIcons.compass,
-                                              key: ValueKey(3)),
+                                  icon: SizedBox(
+                                    width: 32,
+                                    height: 24,
+                                    child: Center(
+                                      child: AnimatedScale(
+                                        scale: (index == 1) ? 1.15 : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          child: (index == 1)
+                                              ? const Icon(
+                                                  TablerIcons.compass_filled,
+                                                  key: ValueKey(2))
+                                              : const Icon(TablerIcons.compass,
+                                                  key: ValueKey(3)),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                   label: "发现",
@@ -344,35 +359,49 @@ class _HomePageState extends ConsumerState<HomePage>
                                 // AI 助手入口随 agent_tools 模块上下线显隐
                                 if (_agentModuleEnabled)
                                   NavigationDestination(
-                                    icon: AnimatedScale(
-                                      scale: (index == 2) ? 1.15 : 1.0,
-                                      duration: AppAnimation.fast,
-                                      curve: AppAnimation.curve,
-                                      child: AnimatedSwitcher(
-                                        duration: AppAnimations.normal,
-                                        child: (index == 2)
-                                            ? const Icon(
-                                                TablerIcons.message_chatbot_filled,
-                                                key: ValueKey(6))
-                                            : const Icon(
-                                                TablerIcons.message_chatbot,
-                                                key: ValueKey(7)),
+                                    icon: SizedBox(
+                                      width: 32,
+                                      height: 24,
+                                      child: Center(
+                                        child: AnimatedScale(
+                                          scale: (index == 2) ? 1.15 : 1.0,
+                                          duration: AppAnimation.fast,
+                                          curve: AppAnimation.curve,
+                                          child: AnimatedSwitcher(
+                                            duration: AppAnimations.normal,
+                                            child: (index == 2)
+                                                ? const Icon(
+                                                    TablerIcons
+                                                        .message_chatbot_filled,
+                                                    key: ValueKey(6))
+                                                : const Icon(
+                                                    TablerIcons.message_chatbot,
+                                                    key: ValueKey(7)),
+                                          ),
+                                        ),
                                       ),
                                     ),
                                     label: "AI 助手",
                                   ),
                                 NavigationDestination(
-                                  icon: AnimatedScale(
-                                    scale: (index == 3) ? 1.15 : 1.0,
-                                    duration: AppAnimation.fast,
-                                    curve: AppAnimation.curve,
-                                    child: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: (index == 3)
-                                          ? const Icon(TablerIcons.user_filled,
-                                              key: ValueKey(4))
-                                          : const Icon(TablerIcons.user,
-                                              key: ValueKey(5)),
+                                  icon: SizedBox(
+                                    width: 32,
+                                    height: 24,
+                                    child: Center(
+                                      child: AnimatedScale(
+                                        scale: (index == 3) ? 1.15 : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          child: (index == 3)
+                                              ? const Icon(
+                                                  TablerIcons.user_filled,
+                                                  key: ValueKey(4))
+                                              : const Icon(TablerIcons.user,
+                                                  key: ValueKey(5)),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                   label: "我的",
