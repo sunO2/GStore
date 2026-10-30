@@ -319,8 +319,13 @@ impl AggregationService {
             let elapsed_ms = row_start.elapsed().as_millis();
             self.emit_trace(|| {
                 format!(
-                    "aggregate row channel={} app_id={} state={} err={} elapsed_ms={}",
-                    entry.channel_code, entry.added_app.app_id, state, err, elapsed_ms
+                    "aggregate row channel={} app_id={} state={} err={} icon_len={} elapsed_ms={}",
+                    entry.channel_code,
+                    entry.added_app.app_id,
+                    state,
+                    err,
+                    entry.app.icon.len(),
+                    elapsed_ms
                 )
             });
             results.push(entry);
@@ -1040,21 +1045,21 @@ mod tests {
         };
         assert!(
             row("com.example.hit").starts_with(
-                "aggregate row channel=fdroid app_id=com.example.hit state=cache err=0 elapsed_ms="
+                "aggregate row channel=fdroid app_id=com.example.hit state=cache err=0 icon_len="
             ),
             "driver hit row must trace as cache: {}",
             row("com.example.hit")
         );
         assert!(
             row("com.example.fallback").starts_with(
-                "aggregate row channel=fdroid_b app_id=com.example.fallback state=store err=0 elapsed_ms="
+                "aggregate row channel=fdroid_b app_id=com.example.fallback state=store err=0 icon_len="
             ),
             "channel-store row must trace as store: {}",
             row("com.example.fallback")
         );
         assert!(
             row("com.example.placeholder").starts_with(
-                "aggregate row channel=fdroid_c app_id=com.example.placeholder state=unresolved err=0 elapsed_ms="
+                "aggregate row channel=fdroid_c app_id=com.example.placeholder state=unresolved err=0 icon_len="
             ),
             "placeholder row must trace as unresolved: {}",
             row("com.example.placeholder")

@@ -169,6 +169,19 @@ impl LocalDbDriver {
 pub(crate) const APP_COLUMNS: &str =
     "SELECT appId,name,user,repositories,icon,des,readme,category,extra FROM apps";
 
+/// Repository-metadata icon path shared by the local catalog fallback and the
+/// GStore channel's add/detail refresh (`.../{owner}@{repo}/icon.png`).
+pub(crate) const METADATA_ICON_PREFIX: &str =
+    "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata";
+
+/// Maps one catalog `apps` row to a summary.
+///
+/// Icon fallback rule: when the stored `apps.icon` is empty and both `user`
+/// and `repositories` are known, the row is given the repository-metadata icon
+/// path (`.../metadata/{owner}@{repo}/icon.png`, the same convention as
+/// `HttpMetadataPort::fetch` and Dart `MetadataRepository.iconUrl`). Every
+/// non-empty stored icon is returned verbatim — no proxy rewriting, no query
+/// stripping — so a `ghp.ci/`-prefixed URL survives untouched.
 pub(crate) fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
     let app_id: String = row.get(0)?;
     let name: String = row.get(1)?;
@@ -193,6 +206,13 @@ pub(crate) fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
 
     let user = user.unwrap_or_default();
     let repositories = repositories.unwrap_or_default();
+    let icon = icon.filter(|value| !value.is_empty()).unwrap_or_else(|| {
+        if user.is_empty() || repositories.is_empty() {
+            String::new()
+        } else {
+            format!("{METADATA_ICON_PREFIX}/{user}@{repositories}/icon.png")
+        }
+    });
     let labels = summary_labels(&user, package_name.as_deref(), &repositories);
 
     Ok(AppSummary {
@@ -201,7 +221,7 @@ pub(crate) fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
         name,
         user,
         repositories,
-        icon: icon.unwrap_or_default(),
+        icon,
         des: des.unwrap_or_default(),
         readme: readme.filter(|value| !value.is_empty()),
         // Dart `CategoryConverter.decode`: split(",") or [] for NULL.
@@ -216,7 +236,8 @@ pub(crate) fn row_to_summary(row: &Row<'_>) -> rusqlite::Result<AppSummary> {
     })
 }
 
-fn valid_package_name(value: Option<&str>) -> Option<String> {
+/// Returns a trimmed package name that looks valid (`a.b`), else `None`.
+pub(crate) fn valid_package_name(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     if value.is_empty() || !value.contains('.') {
         return None;
@@ -609,6 +630,60 @@ mod tests {
         let driver = LocalDbDriver::new(ChannelKey::new("local_db").unwrap(), channel_meta(), db)
             .with_metadata(Arc::new(metadata.clone()));
         (dir, driver, metadata)
+    }
+
+    /// Seeds one catalog row with explicit icon/owner/repo values.
+    fn seeded_icon_driver(
+        tag: &str,
+        icon: &str,
+        user: &str,
+        repositories: &str,
+    ) -> (TempDir, LocalDbDriver) {
+        let dir = TempDir::new(tag);
+        let db = DbHandle::open(dir.path()).unwrap();
+        db.with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO apps(appId,name,user,repositories,icon,des,readme,category,extra) \
+                 VALUES ('com.example.icon','Icon Row',?1,?2,?3,'des',NULL,'TOOLS',NULL)",
+                rusqlite::params![user, repositories, icon],
+            )
+            .map_err(|error| crate::db::DbError(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+        let driver = LocalDbDriver::new(ChannelKey::new("local_db").unwrap(), channel_meta(), db);
+        (dir, driver)
+    }
+
+    #[test]
+    fn row_icon_falls_back_to_metadata_path_when_empty() {
+        let (_dir, driver) = seeded_icon_driver("icon_empty", "", "acme", "snap");
+
+        let info = driver.get_app_info("com.example.icon", false).unwrap();
+
+        assert_eq!(
+            info.icon,
+            "https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/acme@snap/icon.png"
+        );
+    }
+
+    #[test]
+    fn row_icon_is_kept_verbatim_when_present() {
+        let stored = "https://ghp.ci/raw.githubusercontent.com/sunO2/GStore-Repositorys/main/metadata/acme@snap/icon.png";
+        let (_dir, driver) = seeded_icon_driver("icon_present", stored, "acme", "snap");
+
+        let info = driver.get_app_info("com.example.icon", false).unwrap();
+
+        assert_eq!(info.icon, stored, "a non-empty icon must not be rewritten");
+    }
+
+    #[test]
+    fn row_icon_stays_empty_without_owner_repo() {
+        let (_dir, driver) = seeded_icon_driver("icon_no_owner", "", "", "");
+
+        let info = driver.get_app_info("com.example.icon", false).unwrap();
+
+        assert_eq!(info.icon, "", "without owner/repo there is no fallback path");
     }
 
     #[test]
