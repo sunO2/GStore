@@ -6,7 +6,9 @@ use crate::scheduler::SchedulerConfig;
 
 use super::keys::{
     KEY_DEFAULT_CONNECTIONS, KEY_MAX_CONCURRENT, KEY_MAX_RETRIES, KEY_MULTI_SEGMENT_ENABLED,
-    KEY_SPEED_LIMIT_BPS,
+    KEY_SPEED_LIMIT_BPS, REGISTRY_DEFAULT_CONNECTIONS, REGISTRY_DEFAULT_MAX_CONCURRENT,
+    REGISTRY_DEFAULT_MAX_RETRIES, REGISTRY_DEFAULT_MULTI_SEGMENT_ENABLED,
+    REGISTRY_DEFAULT_SPEED_LIMIT_BPS,
 };
 
 /// The module's view of its own configuration, with registry-compatible defaults.
@@ -94,17 +96,31 @@ pub fn parse_proxy_url(value: &Value) -> Option<Option<String>> {
 /// Applies a single delivered change to `cfg`. Returns `true` when the key was
 /// recognized and applied; `false` for an unknown key or a malformed value,
 /// which leaves `cfg` untouched.
+///
+/// An explicit JSON `null` is the wire shape of `clear` (`ConfigChangePayload`
+/// has no `skip_serializing_if`), so it is normalized to "unset" here: every
+/// consumed key then falls back to its registry default (or, for
+/// `speed_limit_bps`, to "unlimited"). Without this normalization the module
+/// would try to parse `null` and keep the stale value.
 pub fn apply_key(cfg: &mut SchedulerConfig, key: &str, value: Option<&Value>) -> bool {
+    let value = value.filter(|value| !value.is_null());
     let Some(value) = value else {
-        // A cleared entry falls back to the registry default for that key.
+        // A cleared entry (absent or explicit JSON null) falls back to the
+        // registry default for that key. These constants MUST match
+        // `gstore_core/src/config/schema.rs`; deriving them from
+        // `SchedulerConfig::default()` would silently use engine defaults
+        // (e.g. max_retries = 4 instead of the registry's 3).
         match key {
-            KEY_MULTI_SEGMENT_ENABLED => cfg.multi_segment_enabled = true,
-            KEY_MAX_CONCURRENT => cfg.max_concurrent = SchedulerConfig::default().max_concurrent,
-            KEY_DEFAULT_CONNECTIONS => {
-                cfg.default_connections = SchedulerConfig::default().default_connections
+            KEY_MULTI_SEGMENT_ENABLED => {
+                cfg.multi_segment_enabled = REGISTRY_DEFAULT_MULTI_SEGMENT_ENABLED
             }
-            KEY_MAX_RETRIES => cfg.max_retries = SchedulerConfig::default().max_retries,
-            KEY_SPEED_LIMIT_BPS => cfg.speed_limit_bps = None,
+            KEY_MAX_CONCURRENT => cfg.max_concurrent = REGISTRY_DEFAULT_MAX_CONCURRENT,
+            KEY_DEFAULT_CONNECTIONS => cfg.default_connections = REGISTRY_DEFAULT_CONNECTIONS,
+            KEY_MAX_RETRIES => cfg.max_retries = REGISTRY_DEFAULT_MAX_RETRIES,
+            KEY_SPEED_LIMIT_BPS => {
+                cfg.speed_limit_bps = (REGISTRY_DEFAULT_SPEED_LIMIT_BPS != 0)
+                    .then_some(REGISTRY_DEFAULT_SPEED_LIMIT_BPS)
+            }
             _ => return false,
         }
         return true;
@@ -167,6 +183,45 @@ mod parser_tests {
             Some(Some("https://gh-proxy.org/".to_string()))
         );
         assert_eq!(parse_proxy_url(&json!(7)), None);
+    }
+
+    #[test]
+    fn apply_key_treats_json_null_as_unset() {
+        // Deliberately start every knob at a NON-default value so a no-op
+        // clear cannot pass. Expected values are the registry-aligned module
+        // constants, never `SchedulerConfig::default()` (whose max_retries is
+        // the engine default 4, while the registry default is 3).
+        let mut cfg = SchedulerConfig {
+            multi_segment_enabled: false,
+            max_concurrent: 7,
+            default_connections: 9,
+            max_retries: 4,
+            speed_limit_bps: Some(1024),
+        };
+        for key in [
+            KEY_MULTI_SEGMENT_ENABLED,
+            KEY_MAX_CONCURRENT,
+            KEY_DEFAULT_CONNECTIONS,
+            KEY_MAX_RETRIES,
+            KEY_SPEED_LIMIT_BPS,
+        ] {
+            assert!(
+                apply_key(&mut cfg, key, Some(&Value::Null)),
+                "{key} must accept an explicit JSON null as unset"
+            );
+        }
+        assert_eq!(
+            cfg.multi_segment_enabled,
+            REGISTRY_DEFAULT_MULTI_SEGMENT_ENABLED
+        );
+        assert_eq!(cfg.max_concurrent, REGISTRY_DEFAULT_MAX_CONCURRENT);
+        assert_eq!(cfg.default_connections, REGISTRY_DEFAULT_CONNECTIONS);
+        assert_eq!(cfg.max_retries, REGISTRY_DEFAULT_MAX_RETRIES);
+        assert_eq!(
+            cfg.speed_limit_bps,
+            (REGISTRY_DEFAULT_SPEED_LIMIT_BPS != 0).then_some(REGISTRY_DEFAULT_SPEED_LIMIT_BPS)
+        );
+        assert_eq!(cfg.max_retries, 3, "registry default, not engine default 4");
     }
 
     #[test]

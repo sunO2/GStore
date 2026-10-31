@@ -61,6 +61,96 @@ fn malformed_or_out_of_range_value_keeps_previous() {
 }
 
 #[test]
+fn clear_json_null_restores_the_live_scheduler_default() {
+    let _guard = test_lock();
+    crate::reset_for_test();
+    let (host, _api) = mount();
+    let id = create_instance();
+
+    // A fresh instance reads the registry defaults through the vtable.
+    assert_eq!(
+        stats(id)["maxRetries"],
+        config::REGISTRY_DEFAULT_MAX_RETRIES
+    );
+    assert_eq!(stats(id)["maxRetries"], 3, "registry default, not engine 4");
+    assert_eq!(
+        stats(id)["maxConcurrent"],
+        config::REGISTRY_DEFAULT_MAX_CONCURRENT
+    );
+    assert_eq!(
+        stats(id)["defaultConnections"],
+        config::REGISTRY_DEFAULT_CONNECTIONS
+    );
+    assert_eq!(
+        stats(id)["multiSegmentEnabled"],
+        config::REGISTRY_DEFAULT_MULTI_SEGMENT_ENABLED
+    );
+    assert_eq!(stats(id)["speedLimitBps"], serde_json::Value::Null);
+
+    host.set_value("download", config::KEY_MAX_CONCURRENT, json!(6));
+    assert_eq!(stats(id)["maxConcurrent"], 6);
+
+    // `clear` reaches the module as an explicit `"value": null`. The live
+    // scheduler must fall back to the REGISTRY default, not keep the stale
+    // value (and not use an engine default).
+    host.set_value(
+        "download",
+        config::KEY_MAX_CONCURRENT,
+        serde_json::Value::Null,
+    );
+    assert_eq!(
+        stats(id)["maxConcurrent"],
+        config::REGISTRY_DEFAULT_MAX_CONCURRENT
+    );
+
+    host.set_value("download", config::KEY_MULTI_SEGMENT_ENABLED, json!(false));
+    assert_eq!(stats(id)["multiSegmentEnabled"], false);
+    host.set_value(
+        "download",
+        config::KEY_MULTI_SEGMENT_ENABLED,
+        serde_json::Value::Null,
+    );
+    assert_eq!(
+        stats(id)["multiSegmentEnabled"],
+        config::REGISTRY_DEFAULT_MULTI_SEGMENT_ENABLED
+    );
+
+    host.set_value("download", config::KEY_MAX_RETRIES, json!(1));
+    assert_eq!(stats(id)["maxRetries"], 1);
+    host.set_value("download", config::KEY_MAX_RETRIES, serde_json::Value::Null);
+    assert_eq!(
+        stats(id)["maxRetries"],
+        config::REGISTRY_DEFAULT_MAX_RETRIES,
+        "clear must restore the registry default 3, not engine default 4"
+    );
+
+    host.set_value("download", config::KEY_DEFAULT_CONNECTIONS, json!(7));
+    assert_eq!(stats(id)["defaultConnections"], 7);
+    host.set_value(
+        "download",
+        config::KEY_DEFAULT_CONNECTIONS,
+        serde_json::Value::Null,
+    );
+    assert_eq!(
+        stats(id)["defaultConnections"],
+        config::REGISTRY_DEFAULT_CONNECTIONS
+    );
+
+    host.set_value("download", config::KEY_SPEED_LIMIT_BPS, json!(2048));
+    assert_eq!(stats(id)["speedLimitBps"], 2048);
+    host.set_value(
+        "download",
+        config::KEY_SPEED_LIMIT_BPS,
+        serde_json::Value::Null,
+    );
+    assert_eq!(
+        stats(id)["speedLimitBps"],
+        serde_json::Value::Null,
+        "registry default 0 means unlimited (engine represents it as None)"
+    );
+}
+
+#[test]
 fn download_config_writes_through_vtable() {
     let _guard = test_lock();
     crate::reset_for_test();

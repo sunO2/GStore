@@ -1,13 +1,29 @@
 /*
- * ABI v5 config-consumer fixture (Todo 11 manual QA / integration surface).
+ * ABI v5 config-consumer fixture (Todo 11 / Todo 13 real-surface harness).
  *
- * Exports a real `libgstore_mod_download.so` module whose register callback
- * keeps the host-injected `GStoreConfigApiV1`, subscribes to its own module
- * (whole-module) and to the foreign `theme` module (whole-module), and records
- * every delivered change. `call("dump")` returns the recorded changes as
- * newline-delimited JSON; `call("set_invalid")` exercises the malformed-JSON
- * boundary. `on_event` is intentionally NULL to prove a module without it does
- * not break config writes.
+ * Exports a real `libgstore_mod_<name>.so` module whose register callback keeps
+ * the host-injected `GStoreConfigApiV1`, optionally subscribes to its own module
+ * (whole-module) and to the foreign `theme` module, and records every delivered
+ * change. `call("dump")` returns the recorded changes as newline-delimited JSON.
+ *
+ * Build-time parameters:
+ *   - `FIXTURE_NAME`          module name (default `download`)
+ *   - `FIXTURE_ABI`           advertised ABI probe value (default 5)
+ *   - `FIXTURE_MIN_HOST_ABI`  required host ABI (default 5)
+ *   - `FIXTURE_AUTO_SUBSCRIBE` 1 = subscribe on register (default), 0 = only via
+ *                            the explicit `subscribe` call.
+ *
+ * Generic calls (payloads are `|`-separated; an empty module/key means NULL):
+ *   - `get`       `<module>|<key>`          -> `<code>|<json>`
+ *   - `set`       `<key>|<value_json>`      -> `<code>`
+ *   - `list`      `<module>`                -> `<code>|<json array>`
+ *   - `subscribe` `<module>|<key>`          -> `<code>|<token>`
+ *   - `unsubscribe` `<token>`               -> `<code>`
+ *   - `clear_records`                       -> `ok`
+ *   - `entry_probe`                         -> `<abi>|<entry_size>|<has_config>`
+ *
+ * `set_invalid` exercises the malformed-JSON boundary. `on_event` is
+ * intentionally NULL to prove a module without it does not break config writes.
  *
  * Compiled at test time with `cc -shared -fPIC -std=c99 -Wall -Wextra -Werror`.
  */
@@ -18,8 +34,16 @@
 #define FIXTURE_NAME download
 #endif
 
+#ifndef FIXTURE_ABI
+#define FIXTURE_ABI 5
+#endif
+
 #ifndef FIXTURE_MIN_HOST_ABI
 #define FIXTURE_MIN_HOST_ABI 5
+#endif
+
+#ifndef FIXTURE_AUTO_SUBSCRIBE
+#define FIXTURE_AUTO_SUBSCRIBE 1
 #endif
 
 #define GS_STR2(x) #x
@@ -84,6 +108,7 @@ typedef struct {
 
 #define MAX_CHANGES 64
 #define CHANGE_CAP 1024
+#define ARGS_CAP 4096
 
 static const ConfigApi *g_config;
 static uint64_t g_own_token;
@@ -91,6 +116,9 @@ static uint64_t g_foreign_token;
 static int g_change_count;
 static int g_slow;
 static char g_changes[MAX_CHANGES][CHANGE_CAP];
+static uint32_t g_entry_abi;
+static uint32_t g_entry_size;
+static int g_entry_has_config;
 
 static void module_free(void *ptr) {
     free(ptr);
@@ -179,11 +207,156 @@ static int reply_text(const char *text, uint8_t **out_data, size_t *out_len) {
     return 0;
 }
 
+static int reply_code_json(int code, const char *json, uint8_t **out_data, size_t *out_len) {
+    size_t json_len = json == NULL ? 0 : strlen(json);
+    size_t cap = json_len + 32;
+    char *text = (char *)malloc(cap);
+    if (text == NULL) {
+        return -7;
+    }
+    snprintf(text, cap, "%d|%s", code, json == NULL ? "" : json);
+    *out_data = (uint8_t *)text;
+    *out_len = strlen(text);
+    return 0;
+}
+
+static int copy_payload(const uint8_t *payload, size_t payload_len, char *buf, size_t cap) {
+    if (payload == NULL || payload_len >= cap) {
+        return -1;
+    }
+    memcpy(buf, payload, payload_len);
+    buf[payload_len] = '\0';
+    return 0;
+}
+
+/* Copies a host-owned ByteBuf into a malloc'd C string, then frees the host buf. */
+static char *take_json(const ConfigApi *config, ByteBuf *buf) {
+    char *copy = NULL;
+    if (buf->ptr != NULL && buf->len > 0) {
+        copy = (char *)malloc(buf->len + 1);
+        if (copy != NULL) {
+            memcpy(copy, buf->ptr, buf->len);
+            copy[buf->len] = '\0';
+        }
+    }
+    if (config != NULL && config->free_buf != NULL) {
+        config->free_buf(*buf);
+    }
+    buf->ptr = NULL;
+    buf->len = 0;
+    return copy;
+}
+
+static int cmd_get(const uint8_t *payload, size_t payload_len, uint8_t **out_data,
+                   size_t *out_len) {
+    char args[ARGS_CAP];
+    char *sep;
+    ByteBuf out = {NULL, 0};
+    int code = -11;
+    char *json;
+    if (copy_payload(payload, payload_len, args, sizeof(args)) != 0) {
+        return reply_code_json(-11, "", out_data, out_len);
+    }
+    sep = strchr(args, '|');
+    if (sep == NULL) {
+        return reply_code_json(-11, "", out_data, out_len);
+    }
+    *sep = '\0';
+    if (g_config != NULL && g_config->get != NULL) {
+        code = g_config->get(g_config->context, args[0] == '\0' ? NULL : args, sep + 1, &out);
+    }
+    json = take_json(g_config, &out);
+    code = reply_code_json(code, json, out_data, out_len);
+    free(json);
+    return code;
+}
+
+static int cmd_list(const uint8_t *payload, size_t payload_len, uint8_t **out_data,
+                    size_t *out_len) {
+    char args[ARGS_CAP];
+    ByteBuf out = {NULL, 0};
+    int code = -11;
+    char *json;
+    if (copy_payload(payload, payload_len, args, sizeof(args)) != 0) {
+        return reply_code_json(-11, "", out_data, out_len);
+    }
+    if (g_config != NULL && g_config->list != NULL) {
+        code = g_config->list(g_config->context, args[0] == '\0' ? NULL : args, &out);
+    }
+    json = take_json(g_config, &out);
+    code = reply_code_json(code, json, out_data, out_len);
+    free(json);
+    return code;
+}
+
+static int cmd_set(const uint8_t *payload, size_t payload_len, uint8_t **out_data,
+                   size_t *out_len) {
+    char args[ARGS_CAP];
+    char *sep;
+    char text[32];
+    int code = -11;
+    if (copy_payload(payload, payload_len, args, sizeof(args)) != 0) {
+        snprintf(text, sizeof(text), "%d", code);
+        return reply_text(text, out_data, out_len);
+    }
+    sep = strchr(args, '|');
+    if (sep == NULL) {
+        snprintf(text, sizeof(text), "%d", code);
+        return reply_text(text, out_data, out_len);
+    }
+    *sep = '\0';
+    if (g_config != NULL && g_config->set != NULL) {
+        code = g_config->set(g_config->context, args, sep + 1);
+    }
+    snprintf(text, sizeof(text), "%d", code);
+    return reply_text(text, out_data, out_len);
+}
+
+static int cmd_subscribe(const uint8_t *payload, size_t payload_len, uint8_t **out_data,
+                         size_t *out_len) {
+    char args[ARGS_CAP];
+    char *sep;
+    char text[64];
+    uint64_t token = 0;
+    int code = -11;
+    if (copy_payload(payload, payload_len, args, sizeof(args)) != 0) {
+        snprintf(text, sizeof(text), "%d|0", code);
+        return reply_text(text, out_data, out_len);
+    }
+    sep = strchr(args, '|');
+    if (sep == NULL) {
+        snprintf(text, sizeof(text), "%d|0", code);
+        return reply_text(text, out_data, out_len);
+    }
+    *sep = '\0';
+    if (g_config != NULL && g_config->subscribe != NULL) {
+        code = g_config->subscribe(g_config->context, args[0] == '\0' ? NULL : args,
+                                   sep[1] == '\0' ? NULL : sep + 1, NULL, record_change,
+                                   &token);
+    }
+    snprintf(text, sizeof(text), "%d|%llu", code, (unsigned long long)token);
+    return reply_text(text, out_data, out_len);
+}
+
+static int cmd_unsubscribe(const uint8_t *payload, size_t payload_len, uint8_t **out_data,
+                           size_t *out_len) {
+    char args[ARGS_CAP];
+    char text[32];
+    uint64_t token = 0;
+    int code = -11;
+    if (copy_payload(payload, payload_len, args, sizeof(args)) == 0) {
+        token = strtoull(args, NULL, 10);
+        if (g_config != NULL && g_config->unsubscribe != NULL) {
+            code = g_config->unsubscribe(g_config->context, token);
+        }
+    }
+    snprintf(text, sizeof(text), "%d", code);
+    return reply_text(text, out_data, out_len);
+}
+
 static int module_call(uint64_t instance, const char *method, const uint8_t *payload,
                        size_t payload_len, uint8_t **out_data, size_t *out_len) {
     (void)instance;
-    (void)payload;
-    (void)payload_len;
     if (method == NULL || out_data == NULL || out_len == NULL) {
         return -11;
     }
@@ -214,6 +387,31 @@ static int module_call(uint64_t instance, const char *method, const uint8_t *pay
         char text[32];
         snprintf(text, sizeof(text), "%d", g_change_count);
         return reply_text(text, out_data, out_len);
+    }
+    if (strcmp(method, "clear_records") == 0) {
+        g_change_count = 0;
+        return reply_text("ok", out_data, out_len);
+    }
+    if (strcmp(method, "entry_probe") == 0) {
+        char text[64];
+        snprintf(text, sizeof(text), "%u|%u|%d", g_entry_abi, g_entry_size,
+                 g_entry_has_config);
+        return reply_text(text, out_data, out_len);
+    }
+    if (strcmp(method, "get") == 0) {
+        return cmd_get(payload, payload_len, out_data, out_len);
+    }
+    if (strcmp(method, "list") == 0) {
+        return cmd_list(payload, payload_len, out_data, out_len);
+    }
+    if (strcmp(method, "set") == 0) {
+        return cmd_set(payload, payload_len, out_data, out_len);
+    }
+    if (strcmp(method, "subscribe") == 0) {
+        return cmd_subscribe(payload, payload_len, out_data, out_len);
+    }
+    if (strcmp(method, "unsubscribe") == 0) {
+        return cmd_unsubscribe(payload, payload_len, out_data, out_len);
     }
     if (strcmp(method, "set_invalid") == 0) {
         char text[32];
@@ -285,7 +483,7 @@ static int module_shutdown(void) {
 }
 
 uint32_t GS_CAT(gstore_mod_, GS_CAT(FIXTURE_NAME, _abi))(void) {
-    return 5;
+    return FIXTURE_ABI;
 }
 
 int GS_CAT(gstore_mod_, GS_CAT(FIXTURE_NAME, _register))(const ModuleEntry *entry,
@@ -293,6 +491,11 @@ int GS_CAT(gstore_mod_, GS_CAT(FIXTURE_NAME, _register))(const ModuleEntry *entr
     if (entry == NULL || api == NULL) {
         return -11;
     }
+    g_entry_abi = entry->abi_version;
+    g_entry_size = entry->entry_size;
+    g_entry_has_config = 0;
+
+#if FIXTURE_ABI >= 5
     if (entry->abi_version < 5 || entry->entry_size < sizeof(ModuleEntry)) {
         return -2;
     }
@@ -302,13 +505,27 @@ int GS_CAT(gstore_mod_, GS_CAT(FIXTURE_NAME, _register))(const ModuleEntry *entr
     if (entry->config->abi_version < 5 || entry->config->struct_size < sizeof(ConfigApi)) {
         return -2;
     }
+    g_entry_has_config = 1;
     g_config = entry->config;
-    if (g_config->subscribe != NULL) {
+#else
+    if (entry->abi_version < FIXTURE_ABI) {
+        return -2;
+    }
+    /* A v4 module must see exactly the v4 layout, never the v5 full entry. */
+    if (entry->entry_size != (uint32_t)offsetof(ModuleEntry, config)) {
+        return -2;
+    }
+    g_config = NULL;
+#endif
+
+#if FIXTURE_AUTO_SUBSCRIBE
+    if (g_config != NULL && g_config->subscribe != NULL) {
         (void)g_config->subscribe(g_config->context, NULL, NULL, NULL, record_change,
                                   &g_own_token);
         (void)g_config->subscribe(g_config->context, "theme", NULL, NULL, record_change,
                                   &g_foreign_token);
     }
+#endif
     record_marker("registered", GS_STR(FIXTURE_NAME));
     {
         int delay_ms = env_int("GS_REGISTER_DELAY_MS", 0);
