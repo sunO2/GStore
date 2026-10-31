@@ -1,0 +1,10 @@
+{
+  "prefs": {
+    "config_download_max_concurrent": 6,
+    "config_theme_config": "{this is not valid json",
+    "config_agent_models": "also-not-json",
+    "config_module.download.enabled": true,
+    "config_proxy_engine_stack": "gvisor"
+  },
+  "secure": {}
+}
