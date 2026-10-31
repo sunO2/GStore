@@ -297,21 +297,6 @@ impl ConfigChangeDto {
     }
 }
 
-// MUST be deleted when `frb_generated.rs` is regenerated in Todo 9: codegen
-// emits its own SseEncode impl for ConfigChangeDto and keeping this one would
-// cause a duplicate-impl E0119 compile error.
-impl crate::frb_generated::SseEncode for ConfigChangeDto {
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.module, serializer);
-        <String>::sse_encode(self.key, serializer);
-        <String>::sse_encode(self.wire_key, serializer);
-        <Option<String>>::sse_encode(self.value_json, serializer);
-        <Option<String>>::sse_encode(self.old_value_json, serializer);
-        <u64>::sse_encode(self.revision, serializer);
-        <String>::sse_encode(self.source, serializer);
-    }
-}
-
 fn snapshot_dto(snapshot: gstore_core::config::ConfigSnapshot) -> ConfigSnapshotDto {
     let module = snapshot.key.module().to_string();
     let key = snapshot.key.key().to_string();

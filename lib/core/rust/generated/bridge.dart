@@ -3,6 +3,7 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import 'config_api.dart';
 import 'event_bridge.dart';
 import 'frb_generated.dart';
 import 'log_bridge.dart';
@@ -11,10 +12,10 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'script_pack.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `import_err`, `init_inner`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build_inner`, `build`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `import_err`, `init_inner`, `inner_cache`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `mirrors_from`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `FdroidSourceSpec`, `HostDriverResolver`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`, `run`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_app_icons`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `config_value_for_test`, `events_recording_config_for_test`, `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`, `reset_config_store_for_test`, `run`, `shares_config_store_with_global_for_test`, `watch_recording_config_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
 /// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
@@ -214,8 +215,10 @@ abstract class ChannelApi implements RustOpaqueInterface {
 
   /// Initializes the facade with the same directory shape as `CoreApi`.
   ///
-  /// Safe to call more than once against the same directories: registry rows
-  /// and drivers are re-registered idempotently. No feature flag is armed.
+  /// Safe to call more than once against the same directories: the first call
+  /// caches the [`ChannelApiInner`] process-wide and later calls return that
+  /// same inner, so the core DB handle, repo port and driver set are never
+  /// duplicated. No feature flag is armed.
   static Future<ChannelApi> init(
           {required String dataDir,
           required String filesDir,
@@ -327,6 +330,76 @@ abstract class ChannelApi implements RustOpaqueInterface {
 
   /// Removes a channel registration and its driver binding.
   Future<void> unregister({required String key});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ConfigApi>>
+abstract class ConfigApi implements RustOpaqueInterface {
+  /// Clears a stored value (reads fall back to the registry default).
+  Future<ConfigOpResultDto> clear(
+      {required String module, required String key, required String source});
+
+  /// Global compatibility stream (all modules). Prefer [`ConfigApi::watch`].
+  Stream<ConfigChangeDto> configEventsStream();
+
+  /// Hydrates the store cache; reports readiness separately from migration.
+  ///
+  /// Todo 8 never runs legacy migration, so `migrated` is always `false`.
+  Future<ConfigMigrationStateDto> ensureMigrated();
+
+  /// Raw export for backups. The only DTO that may contain plaintext secrets.
+  Future<ConfigExportDto> export_();
+
+  /// Reads one value as JSON. `masked = true` is the default contract;
+  /// trusted Dart may pass `masked = false` for the owner's raw value (C3).
+  Future<String> get_(
+      {required String module, required String key, required bool masked});
+
+  /// Idempotent bulk import: validates everything, applies the valid subset
+  /// in one transaction, publishes one event per applied key.
+  Future<ConfigImportReportDto> import_(
+      {required List<ConfigImportEntryDto> entries, required String source});
+
+  /// Creates the facade; fails with `CORE_E_NOT_INITIALIZED` until
+  /// `CoreApi.init()` has installed the process-global store.
+  static Future<ConfigApi> init() =>
+      RustLib.instance.api.crateBridgeConfigApiInit();
+
+  /// Registry metadata plus the current (masked) value. `None` = all modules.
+  Future<List<ConfigEntryDto>> list({String? module});
+
+  /// Reads an arbitrary `config_meta` key.
+  Future<String?> metaGet({required String key});
+
+  /// Writes an arbitrary `config_meta` key (`revision` is store-owned).
+  Future<void> metaSet({required String key, required String valueJson});
+
+  /// Restores and persists the registry default.
+  Future<ConfigOpResultDto> reset(
+      {required String module, required String key, required String source});
+
+  /// Validates, commits, and publishes one value.
+  Future<ConfigOpResultDto> set_(
+      {required String module,
+      required String key,
+      required String valueJson,
+      required String source});
+
+  /// One stored snapshot (masked), or `None` when unset.
+  Future<ConfigSnapshotDto?> snapshot(
+      {required String module, required String key});
+
+  /// Stored snapshots, optionally filtered to one module.
+  Future<List<ConfigSnapshotDto>> snapshots({String? module});
+
+  /// Re-reads the committed values and compares them with `entries`.
+  Future<ConfigVerifyReportDto> verify(
+      {required List<ConfigVerifyEntryDto> entries});
+
+  /// Per-subscription filtered stream; `key = None` observes the whole module.
+  ///
+  /// Two listeners on the same filter both receive (C18); a sink whose send
+  /// fails is pruned without affecting the others.
+  Stream<ConfigChangeDto> watch({required String module, String? key});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CoreApi>>

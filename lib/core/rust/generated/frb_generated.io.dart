@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'bridge.dart';
+import 'config_api.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
@@ -32,6 +33,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ChannelApiPtr =>
       wire._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApiPtr;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ConfigApiPtr =>
+      wire._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApiPtr;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CoreApiPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApiPtr;
@@ -96,6 +100,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ChannelApi
       dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApi(
+          dynamic raw);
+
+  @protected
+  ConfigApi
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
           dynamic raw);
 
   @protected
@@ -189,6 +198,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  ConfigApi
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          dynamic raw);
+
+  @protected
   CoreApi
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           dynamic raw);
@@ -277,6 +291,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  ConfigApi
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          dynamic raw);
+
+  @protected
   CoreApi
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           dynamic raw);
@@ -347,6 +366,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  RustStreamSink<ConfigChangeDto> dco_decode_StreamSink_config_change_dto_Sse(
+      dynamic raw);
+
+  @protected
   RustStreamSink<DownloadTaskDto> dco_decode_StreamSink_download_task_dto_Sse(
       dynamic raw);
 
@@ -389,6 +412,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ChannelRegistration dco_decode_box_autoadd_channel_registration(dynamic raw);
 
   @protected
+  ConfigSnapshotDto dco_decode_box_autoadd_config_snapshot_dto(dynamic raw);
+
+  @protected
   CoreWritesMarkerDto dco_decode_box_autoadd_core_writes_marker_dto(
       dynamic raw);
 
@@ -398,6 +424,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DownloadTaskDto dco_decode_box_autoadd_download_task_dto(dynamic raw);
+
+  @protected
+  double dco_decode_box_autoadd_f_64(dynamic raw);
 
   @protected
   FlagsPatch dco_decode_box_autoadd_flags_patch(dynamic raw);
@@ -486,6 +515,45 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ChannelRegistration dco_decode_channel_registration(dynamic raw);
 
   @protected
+  ConfigChangeDto dco_decode_config_change_dto(dynamic raw);
+
+  @protected
+  ConfigEntryDto dco_decode_config_entry_dto(dynamic raw);
+
+  @protected
+  ConfigExportDto dco_decode_config_export_dto(dynamic raw);
+
+  @protected
+  ConfigExportEntryDto dco_decode_config_export_entry_dto(dynamic raw);
+
+  @protected
+  ConfigImportEntryDto dco_decode_config_import_entry_dto(dynamic raw);
+
+  @protected
+  ConfigImportFailureDto dco_decode_config_import_failure_dto(dynamic raw);
+
+  @protected
+  ConfigImportReportDto dco_decode_config_import_report_dto(dynamic raw);
+
+  @protected
+  ConfigMigrationStateDto dco_decode_config_migration_state_dto(dynamic raw);
+
+  @protected
+  ConfigOpResultDto dco_decode_config_op_result_dto(dynamic raw);
+
+  @protected
+  ConfigSnapshotDto dco_decode_config_snapshot_dto(dynamic raw);
+
+  @protected
+  ConfigVerifyEntryDto dco_decode_config_verify_entry_dto(dynamic raw);
+
+  @protected
+  ConfigVerifyReportDto dco_decode_config_verify_report_dto(dynamic raw);
+
+  @protected
+  ConfigVerifyResultDto dco_decode_config_verify_result_dto(dynamic raw);
+
+  @protected
   CoreInitResult dco_decode_core_init_result(dynamic raw);
 
   @protected
@@ -505,6 +573,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DownloadTaskDto dco_decode_download_task_dto(dynamic raw);
+
+  @protected
+  double dco_decode_f_64(dynamic raw);
 
   @protected
   Flags dco_decode_flags(dynamic raw);
@@ -583,6 +654,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ChannelLabel> dco_decode_list_channel_label(dynamic raw);
 
   @protected
+  List<ConfigEntryDto> dco_decode_list_config_entry_dto(dynamic raw);
+
+  @protected
+  List<ConfigExportEntryDto> dco_decode_list_config_export_entry_dto(
+      dynamic raw);
+
+  @protected
+  List<ConfigImportEntryDto> dco_decode_list_config_import_entry_dto(
+      dynamic raw);
+
+  @protected
+  List<ConfigImportFailureDto> dco_decode_list_config_import_failure_dto(
+      dynamic raw);
+
+  @protected
+  List<ConfigSnapshotDto> dco_decode_list_config_snapshot_dto(dynamic raw);
+
+  @protected
+  List<ConfigVerifyEntryDto> dco_decode_list_config_verify_entry_dto(
+      dynamic raw);
+
+  @protected
+  List<ConfigVerifyResultDto> dco_decode_list_config_verify_result_dto(
+      dynamic raw);
+
+  @protected
   List<DownloadTaskDto> dco_decode_list_download_task_dto(dynamic raw);
 
   @protected
@@ -651,11 +748,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       dynamic raw);
 
   @protected
+  ConfigSnapshotDto? dco_decode_opt_box_autoadd_config_snapshot_dto(
+      dynamic raw);
+
+  @protected
   CoreWritesMarkerDto? dco_decode_opt_box_autoadd_core_writes_marker_dto(
       dynamic raw);
 
   @protected
   DownloadTaskDto? dco_decode_opt_box_autoadd_download_task_dto(dynamic raw);
+
+  @protected
+  double? dco_decode_opt_box_autoadd_f_64(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -754,6 +858,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  ConfigApi
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          SseDeserializer deserializer);
+
+  @protected
   CoreApi
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           SseDeserializer deserializer);
@@ -841,6 +950,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ChannelApi
       sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApi(
+          SseDeserializer deserializer);
+
+  @protected
+  ConfigApi
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
           SseDeserializer deserializer);
 
   @protected
@@ -933,6 +1047,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  ConfigApi
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          SseDeserializer deserializer);
+
+  @protected
   CoreApi
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           SseDeserializer deserializer);
@@ -1003,6 +1122,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<ConfigChangeDto> sse_decode_StreamSink_config_change_dto_Sse(
+      SseDeserializer deserializer);
+
+  @protected
   RustStreamSink<DownloadTaskDto> sse_decode_StreamSink_download_task_dto_Sse(
       SseDeserializer deserializer);
 
@@ -1051,6 +1174,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  ConfigSnapshotDto sse_decode_box_autoadd_config_snapshot_dto(
+      SseDeserializer deserializer);
+
+  @protected
   CoreWritesMarkerDto sse_decode_box_autoadd_core_writes_marker_dto(
       SseDeserializer deserializer);
 
@@ -1061,6 +1188,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DownloadTaskDto sse_decode_box_autoadd_download_task_dto(
       SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_box_autoadd_f_64(SseDeserializer deserializer);
 
   @protected
   FlagsPatch sse_decode_box_autoadd_flags_patch(SseDeserializer deserializer);
@@ -1166,6 +1296,55 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  ConfigChangeDto sse_decode_config_change_dto(SseDeserializer deserializer);
+
+  @protected
+  ConfigEntryDto sse_decode_config_entry_dto(SseDeserializer deserializer);
+
+  @protected
+  ConfigExportDto sse_decode_config_export_dto(SseDeserializer deserializer);
+
+  @protected
+  ConfigExportEntryDto sse_decode_config_export_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigImportEntryDto sse_decode_config_import_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigImportFailureDto sse_decode_config_import_failure_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigImportReportDto sse_decode_config_import_report_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigMigrationStateDto sse_decode_config_migration_state_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigOpResultDto sse_decode_config_op_result_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigSnapshotDto sse_decode_config_snapshot_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigVerifyEntryDto sse_decode_config_verify_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigVerifyReportDto sse_decode_config_verify_report_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  ConfigVerifyResultDto sse_decode_config_verify_result_dto(
+      SseDeserializer deserializer);
+
+  @protected
   CoreInitResult sse_decode_core_init_result(SseDeserializer deserializer);
 
   @protected
@@ -1188,6 +1367,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DownloadTaskDto sse_decode_download_task_dto(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_64(SseDeserializer deserializer);
 
   @protected
   Flags sse_decode_flags(SseDeserializer deserializer);
@@ -1278,6 +1460,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  List<ConfigEntryDto> sse_decode_list_config_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigExportEntryDto> sse_decode_list_config_export_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigImportEntryDto> sse_decode_list_config_import_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigImportFailureDto> sse_decode_list_config_import_failure_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigSnapshotDto> sse_decode_list_config_snapshot_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigVerifyEntryDto> sse_decode_list_config_verify_entry_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  List<ConfigVerifyResultDto> sse_decode_list_config_verify_result_dto(
+      SseDeserializer deserializer);
+
+  @protected
   List<DownloadTaskDto> sse_decode_list_download_task_dto(
       SseDeserializer deserializer);
 
@@ -1356,12 +1566,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  ConfigSnapshotDto? sse_decode_opt_box_autoadd_config_snapshot_dto(
+      SseDeserializer deserializer);
+
+  @protected
   CoreWritesMarkerDto? sse_decode_opt_box_autoadd_core_writes_marker_dto(
       SseDeserializer deserializer);
 
   @protected
   DownloadTaskDto? sse_decode_opt_box_autoadd_download_task_dto(
       SseDeserializer deserializer);
+
+  @protected
+  double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer);
 
   @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
@@ -1466,6 +1683,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          ConfigApi self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           CoreApi self, SseSerializer serializer);
 
@@ -1553,6 +1775,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApi(
           ChannelApi self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          ConfigApi self, SseSerializer serializer);
 
   @protected
   void
@@ -1645,6 +1872,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+          ConfigApi self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCoreApi(
           CoreApi self, SseSerializer serializer);
 
@@ -1714,6 +1946,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           UpdateApi self, SseSerializer serializer);
 
   @protected
+  void sse_encode_StreamSink_config_change_dto_Sse(
+      RustStreamSink<ConfigChangeDto> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_StreamSink_download_task_dto_Sse(
       RustStreamSink<DownloadTaskDto> self, SseSerializer serializer);
 
@@ -1762,6 +1998,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ChannelRegistration self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_config_snapshot_dto(
+      ConfigSnapshotDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_core_writes_marker_dto(
       CoreWritesMarkerDto self, SseSerializer serializer);
 
@@ -1772,6 +2012,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_download_task_dto(
       DownloadTaskDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_flags_patch(
@@ -1882,6 +2125,58 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ChannelRegistration self, SseSerializer serializer);
 
   @protected
+  void sse_encode_config_change_dto(
+      ConfigChangeDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_entry_dto(
+      ConfigEntryDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_export_dto(
+      ConfigExportDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_export_entry_dto(
+      ConfigExportEntryDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_import_entry_dto(
+      ConfigImportEntryDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_import_failure_dto(
+      ConfigImportFailureDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_import_report_dto(
+      ConfigImportReportDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_migration_state_dto(
+      ConfigMigrationStateDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_op_result_dto(
+      ConfigOpResultDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_snapshot_dto(
+      ConfigSnapshotDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_verify_entry_dto(
+      ConfigVerifyEntryDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_verify_report_dto(
+      ConfigVerifyReportDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_config_verify_result_dto(
+      ConfigVerifyResultDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_core_init_result(
       CoreInitResult self, SseSerializer serializer);
 
@@ -1907,6 +2202,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_download_task_dto(
       DownloadTaskDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_f_64(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_flags(Flags self, SseSerializer serializer);
@@ -2002,6 +2300,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       List<ChannelLabel> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_config_entry_dto(
+      List<ConfigEntryDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_export_entry_dto(
+      List<ConfigExportEntryDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_import_entry_dto(
+      List<ConfigImportEntryDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_import_failure_dto(
+      List<ConfigImportFailureDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_snapshot_dto(
+      List<ConfigSnapshotDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_verify_entry_dto(
+      List<ConfigVerifyEntryDto> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_config_verify_result_dto(
+      List<ConfigVerifyResultDto> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_download_task_dto(
       List<DownloadTaskDto> self, SseSerializer serializer);
 
@@ -2083,12 +2409,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ChannelConfigInfo? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_config_snapshot_dto(
+      ConfigSnapshotDto? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_core_writes_marker_dto(
       CoreWritesMarkerDto? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_download_task_dto(
       DownloadTaskDto? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(
@@ -2288,6 +2621,38 @@ class RustLibWire implements BaseWire {
           'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApi');
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApi =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerChannelApiPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApiPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi');
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApiPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApiPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi');
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApi =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerConfigApiPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
