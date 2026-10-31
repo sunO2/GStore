@@ -101,6 +101,46 @@ class _MapLegacySource implements LegacyConfigSource {
   Future<Map<String, String?>> readSecure() async => _secure;
 }
 
+/// Wraps a fixture source and counts reads, so the already-migrated short
+/// circuit can prove the legacy stores are never touched.
+class _CountingLegacySource implements LegacyConfigSource {
+  _CountingLegacySource(this._delegate);
+
+  final _MapLegacySource _delegate;
+  int prefsReads = 0;
+  int secureReads = 0;
+
+  @override
+  Future<Map<String, Object?>> readPrefs() {
+    prefsReads++;
+    return _delegate.readPrefs();
+  }
+
+  @override
+  Future<Map<String, String?>> readSecure() {
+    secureReads++;
+    return _delegate.readSecure();
+  }
+}
+
+_CountingLegacySource _countingSourceOf(Map<String, Object?> fixture) {
+  return _CountingLegacySource(
+    _MapLegacySource(_prefsOf(fixture), _secureOf(fixture)),
+  );
+}
+
+/// Seeds an in-memory DB with a fixture's `meta` block, modelling an
+/// already-migrated database (marker present).
+void _seedFixtureMeta(_FakeMigrationApi fake, Map<String, Object?> fixture) {
+  final raw = fixture['meta'];
+  if (raw is! Map) return;
+  for (final entry in raw.entries) {
+    final value = entry.value;
+    fake.meta[entry.key.toString()] =
+        value is String ? value : jsonEncode(value);
+  }
+}
+
 /// In-memory stand-in for `ConfigApi.import_` / `verify` / `meta_*`.
 ///
 /// It applies the same semantics the Rust batch import has for our purpose:
@@ -804,6 +844,303 @@ void main() {
       expect(second.alreadyDone, isTrue);
     } finally {
       await temp.delete(recursive: true);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Todo 24: five required migration fixtures + failure modes.
+  // ---------------------------------------------------------------------------
+
+  test('prefs-only fixture migrates every key and writes the marker', () async {
+    final fixture = _fixture('legacy_config_migration_prefs_only.json');
+    final source = _countingSourceOf(fixture);
+    final fake = _FakeMigrationApi();
+    final report = await ConfigMigrationTool.run(api: fake, source: source);
+
+    expect(report.alreadyDone, isFalse);
+    expect(report.coreReady, isTrue);
+    expect(report.totalStorageKeys, 7);
+    expect(report.applied, 7);
+    expect(report.unchanged, 0);
+    expect(report.failed, 0);
+    expect(report.verifyFailures, 0);
+    expect(report.markerWritten, isTrue);
+    expect(report.errorCode, isNull);
+    expect(report.distinctWireKeys, 7);
+    expect(report.secretScanClean, isTrue);
+
+    expect(fake.importCalls, 1);
+    expect(fake.verifyCalls, 1);
+    expect(source.prefsReads, 1);
+    expect(source.secureReads, 1);
+
+    expect(fake.stored['download.multi_segment.enabled'], isFalse);
+    expect(fake.stored['download.max_concurrent'], 3);
+    expect(fake.stored['download.wifi_only'], isTrue);
+    expect(fake.stored['download.max_retries'], 1);
+    expect(fake.stored['theme.mode'], 1);
+    expect(fake.stored['proxy.engine_stack'], 'system');
+    expect(fake.stored['module.download.enabled'], isTrue);
+    expect(fake.meta.containsKey(kConfigMigrationMarkerKey), isTrue);
+    expect(_prefsOf(fixture), isNotEmpty,
+        reason: 'old prefs are never deleted by the tool');
+  });
+
+  test('secure WebDAV bare-key fixture migrates and its backup is secret-free',
+      () async {
+    final fixture = _fixture('legacy_config_migration_secure_webdav_bare.json');
+    final fake = _FakeMigrationApi();
+    final temp = await Directory.systemTemp.createTemp('gstore_cfg_bare_');
+    try {
+      final report = await _run(fixture, api: fake, backupDir: temp.path);
+
+      expect(report.totalStorageKeys, 5);
+      expect(report.applied, 5);
+      expect(report.failed, 0);
+      expect(report.verifyFailures, 0);
+      expect(report.markerWritten, isTrue);
+      expect(report.secretScanClean, isTrue);
+      expect(fake.stored['webdav.url'],
+          'https://dav.bare-only.example/remote.php/dav/files/bare');
+      expect(fake.stored['webdav.username'], 'bare-only-user');
+      expect(fake.stored['webdav.password'], 'BareOnly!-webdav-secret');
+      expect(fake.stored['webdav.backup_path'], '/BareOnlyBackup');
+      expect(fake.stored['webdav.enable_https'], isTrue);
+
+      // Secret scan covers the backup artifact and the marker payload.
+      expect(report.backupPath, isNotNull);
+      final backup = File(report.backupPath!);
+      expect(backup.existsSync(), isTrue);
+      final backupContent = backup.readAsStringSync();
+      expect(backupContent, isNot(contains('BareOnly!-webdav-secret')));
+      final backupJson = jsonDecode(backupContent) as Map<String, Object?>;
+      final backupSecure =
+          Map<String, Object?>.from(backupJson['secure']! as Map);
+      expect(backupSecure.containsKey('webdav_password'), isFalse);
+      final marker = fake.meta[kConfigMigrationMarkerKey]!;
+      expect(marker, isNot(contains('BareOnly!-webdav-secret')));
+    } finally {
+      await temp.delete(recursive: true);
+    }
+  });
+
+  test('secure_config_ fixture migrates the stale provider copy', () async {
+    final fixture = _fixture('legacy_config_migration_secure_config_keys.json');
+    final fake = _FakeMigrationApi();
+    final report = await _run(fixture, api: fake);
+
+    expect(report.totalStorageKeys, 5);
+    expect(report.applied, 5);
+    expect(report.failed, 0);
+    expect(report.markerWritten, isTrue);
+    expect(report.secretScanClean, isTrue);
+    expect(fake.stored['webdav.url'],
+        'https://dav.provider-copy.example/remote.php/dav/files/provider');
+    expect(fake.stored['webdav.username'], 'provider-copy-user');
+    expect(fake.stored['webdav.password'], 'ProviderCopy!-webdav-secret');
+    expect(fake.stored['webdav.backup_path'], '/ProviderCopyBackup');
+    expect(fake.stored['webdav.enable_https'], isFalse);
+  });
+
+  test('divergent WebDAV fixture migrates the bare copy only', () async {
+    final fixture = _fixture('legacy_config_migration_webdav_divergent.json');
+    final fake = _FakeMigrationApi();
+    final report = await _run(fixture, api: fake);
+
+    expect(report.totalStorageKeys, 10);
+    expect(report.applied, 5, reason: 'only the bare WebDavConfigManager wins');
+    expect(report.failed, 0);
+    expect(report.verifyFailures, 0);
+    expect(report.markerWritten, isTrue);
+
+    final superseded = report.keys
+        .where((key) => key.status == 'superseded')
+        .toList();
+    expect(superseded, hasLength(5));
+    expect(
+      superseded.every(
+        (key) => key.storageKey.startsWith('secure_config_webdav_'),
+      ),
+      isTrue,
+    );
+    expect(
+      report.keys.any((key) =>
+          key.storageKey == 'secure_config_webdav_password' &&
+          key.status == 'superseded' &&
+          key.wireKey == 'webdav.password'),
+      isTrue,
+    );
+
+    expect(fake.stored['webdav.url'],
+        'https://dav.live-bare.example/remote.php/dav/files/live');
+    expect(fake.stored['webdav.username'], 'live-bare-user');
+    expect(fake.stored['webdav.password'], 'LiveBare!-webdav-secret');
+    expect(fake.stored['webdav.backup_path'], '/LiveBareBackup');
+    expect(fake.stored['webdav.enable_https'], isTrue);
+    final storedJson = jsonEncode(fake.stored);
+    expect(storedJson, isNot(contains('stale-copy.example')));
+    expect(storedJson, isNot(contains('stale-copy-user')));
+    expect(storedJson, isNot(contains('StaleCopy!-webdav-secret')));
+    expect(storedJson, isNot(contains('/StaleCopyBackup')));
+  });
+
+  test('already-migrated fixture returns alreadyDone without reading/importing',
+      () async {
+    final fixture =
+        _fixture('legacy_config_migration_already_migrated.json');
+    final fake = _FakeMigrationApi();
+    _seedFixtureMeta(fake, fixture);
+    final markerBefore = fake.meta[kConfigMigrationMarkerKey];
+    expect(markerBefore, isNotNull);
+
+    final source = _countingSourceOf(fixture);
+    final first = await ConfigMigrationTool.run(api: fake, source: source);
+
+    expect(first.alreadyDone, isTrue);
+    expect(first.coreReady, isTrue);
+    expect(first.markerWritten, isFalse);
+    expect(first.totalStorageKeys, 0);
+    expect(first.applied, 0);
+    expect(first.failed, 0);
+    expect(first.keys, isEmpty);
+    expect(fake.importCalls, 0);
+    expect(fake.verifyCalls, 0);
+    expect(fake.stored, isEmpty);
+    expect(source.prefsReads, 0);
+    expect(source.secureReads, 0);
+    expect(fake.meta[kConfigMigrationMarkerKey], markerBefore);
+
+    // A second call on the same already-migrated DB is still a no-op.
+    final second = await ConfigMigrationTool.run(api: fake, source: source);
+    expect(second.alreadyDone, isTrue);
+    expect(second.markerWritten, isFalse);
+    expect(fake.importCalls, 0);
+    expect(fake.verifyCalls, 0);
+    expect(source.prefsReads, 0);
+    expect(source.secureReads, 0);
+    expect(fake.meta[kConfigMigrationMarkerKey], markerBefore);
+  });
+
+  test('all five required fixtures produce their expected reports', () async {
+    const expectations = <String, ({
+      int total,
+      int applied,
+      int failed,
+      bool marker,
+      bool alreadyDone,
+      String? errorCode,
+    })>{
+      'legacy_config_migration_prefs_only.json': (
+        total: 7,
+        applied: 7,
+        failed: 0,
+        marker: true,
+        alreadyDone: false,
+        errorCode: null,
+      ),
+      'legacy_config_migration_secure_webdav_bare.json': (
+        total: 5,
+        applied: 5,
+        failed: 0,
+        marker: true,
+        alreadyDone: false,
+        errorCode: null,
+      ),
+      'legacy_config_migration_secure_config_keys.json': (
+        total: 5,
+        applied: 5,
+        failed: 0,
+        marker: true,
+        alreadyDone: false,
+        errorCode: null,
+      ),
+      'legacy_config_migration_corrupt.json': (
+        total: 5,
+        applied: 3,
+        failed: 2,
+        marker: false,
+        alreadyDone: false,
+        errorCode: 'migration_incomplete',
+      ),
+      'legacy_config_migration_already_migrated.json': (
+        total: 0,
+        applied: 0,
+        failed: 0,
+        marker: false,
+        alreadyDone: true,
+        errorCode: null,
+      ),
+    };
+
+    for (final entry in expectations.entries) {
+      final fixture = _fixture(entry.key);
+      final fake = _FakeMigrationApi();
+      _seedFixtureMeta(fake, fixture);
+      final report = await _run(fixture, api: fake);
+      final expected = entry.value;
+
+      expect(report.totalStorageKeys, expected.total,
+          reason: '${entry.key}: total');
+      expect(report.applied, expected.applied,
+          reason: '${entry.key}: applied');
+      expect(report.failed, expected.failed, reason: '${entry.key}: failed');
+      expect(report.markerWritten, expected.marker,
+          reason: '${entry.key}: markerWritten');
+      expect(report.alreadyDone, expected.alreadyDone,
+          reason: '${entry.key}: alreadyDone');
+      expect(report.verifyFailures, 0, reason: '${entry.key}: verify');
+      expect(report.secretScanClean, isTrue,
+          reason: '${entry.key}: secret scan');
+      expect(report.errorCode, expected.errorCode,
+          reason: '${entry.key}: errorCode');
+    }
+  });
+
+  test('manual QA: per-fixture counts, statuses and marker presence', () async {
+    const fixtures = <String>[
+      'legacy_config_migration_prefs_only.json',
+      'legacy_config_migration_secure_webdav_bare.json',
+      'legacy_config_migration_secure_config_keys.json',
+      'legacy_config_migration_corrupt.json',
+      'legacy_config_migration_already_migrated.json',
+      'legacy_config_migration_webdav_divergent.json',
+    ];
+
+    for (final name in fixtures) {
+      final fixture = _fixture(name);
+      final fake = _FakeMigrationApi();
+      _seedFixtureMeta(fake, fixture);
+      final report = await _run(fixture, api: fake);
+
+      print('=== $name ===');
+      print('summary: $report');
+      print('counts: total=${report.totalStorageKeys} '
+          'applied=${report.applied} unchanged=${report.unchanged} '
+          'failed=${report.failed} verifyFailures=${report.verifyFailures} '
+          'distinctWireKeys=${report.distinctWireKeys}');
+      print('alreadyDone=${report.alreadyDone} '
+          'markerPresent=${fake.meta.containsKey(kConfigMigrationMarkerKey)} '
+          'markerWritten=${report.markerWritten} '
+          'secretScanClean=${report.secretScanClean} '
+          'errorCode=${report.errorCode}');
+      final byStatus = <String, int>{};
+      for (final key in report.keys) {
+        byStatus[key.status] = (byStatus[key.status] ?? 0) + 1;
+      }
+      print('statuses: $byStatus');
+      for (final key in report.keys) {
+        print('  ${key.storageKey} -> ${key.wireKey}: ${key.status}'
+            '${key.code == null ? '' : ' (${key.code})'}');
+      }
+      if (fake.meta.containsKey(kConfigMigrationMarkerKey)) {
+        print('marker: ${fake.meta[kConfigMigrationMarkerKey]}');
+      } else {
+        print('marker: <absent>');
+      }
+
+      // Every fixture must report honestly; no values in reports.
+      expect(report.coreReady, isTrue);
+      expect(report.toJson().toString(), isNot(contains('!-webdav-secret')));
     }
   });
 }

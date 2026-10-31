@@ -1,0 +1,15 @@
+{
+  "prefs": {},
+  "secure": {
+    "secure_config_webdav_url": "https://dav.stale-copy.example/remote.php/dav/files/stale",
+    "secure_config_webdav_username": "stale-copy-user",
+    "secure_config_webdav_password": "StaleCopy!-webdav-secret",
+    "secure_config_webdav_backup_path": "/StaleCopyBackup",
+    "secure_config_webdav_enable_https": "false",
+    "webdav_url": "https://dav.live-bare.example/remote.php/dav/files/live",
+    "webdav_username": "live-bare-user",
+    "webdav_password": "LiveBare!-webdav-secret",
+    "webdav_backup_path": "/LiveBareBackup",
+    "webdav_enable_https": "true"
+  }
+}

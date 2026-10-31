@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "config.migrated.v1": {
+      "version": 1,
+      "markerKey": "config.migrated.v1",
+      "source": "migration",
+      "alreadyDone": false,
+      "totalStorageKeys": 2,
+      "applied": 2,
+      "unchanged": 0,
+      "failed": 0,
+      "verifyFailures": 0,
+      "secretScanClean": true,
+      "backupFile": null,
+      "keys": [
+        {
+          "storageKey": "config_download_max_concurrent",
+          "wireKey": "download.max_concurrent",
+          "status": "applied"
+        },
+        {
+          "storageKey": "config_module.download.enabled",
+          "wireKey": "module.download.enabled",
+          "status": "applied"
+        }
+      ]
+    }
+  },
+  "prefs": {
+    "config_download_max_concurrent": 4,
+    "config_module.download.enabled": false,
+    "config_theme_config": "{\"useCustomColors\":true}"
+  },
+  "secure": {
+    "webdav_password": "AlreadyMigrated!-must-not-be-read"
+  }
+}

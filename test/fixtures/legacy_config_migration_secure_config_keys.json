@@ -1,0 +1,10 @@
+{
+  "prefs": {},
+  "secure": {
+    "secure_config_webdav_url": "https://dav.provider-copy.example/remote.php/dav/files/provider",
+    "secure_config_webdav_username": "provider-copy-user",
+    "secure_config_webdav_password": "ProviderCopy!-webdav-secret",
+    "secure_config_webdav_backup_path": "/ProviderCopyBackup",
+    "secure_config_webdav_enable_https": "false"
+  }
+}

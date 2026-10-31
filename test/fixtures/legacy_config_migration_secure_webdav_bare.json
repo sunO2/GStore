@@ -1,0 +1,10 @@
+{
+  "prefs": {},
+  "secure": {
+    "webdav_url": "https://dav.bare-only.example/remote.php/dav/files/bare",
+    "webdav_username": "bare-only-user",
+    "webdav_password": "BareOnly!-webdav-secret",
+    "webdav_backup_path": "/BareOnlyBackup",
+    "webdav_enable_https": "true"
+  }
+}

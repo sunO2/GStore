@@ -1,0 +1,12 @@
+{
+  "prefs": {
+    "config_download_multi_segment": false,
+    "config_download_max_concurrent": 3,
+    "config_download_wifi_only": true,
+    "config_download_max_retry": 1,
+    "config_theme_mode": 1,
+    "config_proxy_engine_stack": "system",
+    "config_module.download.enabled": true
+  },
+  "secure": {}
+}
