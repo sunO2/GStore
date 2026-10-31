@@ -12,6 +12,7 @@
 pub mod error;
 pub mod model;
 pub mod schema;
+pub mod store;
 
 pub use error::{
     ConfigAccess, ConfigError, CODE_INVALID_KEY, CODE_INVALID_MODULE, CODE_INVALID_SOURCE,
@@ -23,3 +24,7 @@ pub use model::{
     MASKED_VALUE, MAX_KEY_LEN, MAX_MODULE_LEN,
 };
 pub use schema::{entries, entry, has, module_entries, MODULE_NAMES};
+pub use store::{
+    ConfigExportEntry, ConfigImportReport, ConfigSnapshot, ConfigStore, ConfigStoreError,
+    CONFIG_SECRET_PREFIX,
+};
