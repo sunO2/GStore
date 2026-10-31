@@ -11,6 +11,7 @@
 
 pub mod bus;
 pub mod error;
+pub mod import;
 pub mod model;
 pub mod schema;
 pub mod secrets;
@@ -23,6 +24,10 @@ pub use error::{
     ConfigAccess, ConfigError, CODE_INVALID_KEY, CODE_INVALID_MODULE, CODE_INVALID_SOURCE,
     CODE_INVALID_WIRE_NAME, CODE_NOT_PERMITTED, CODE_TYPE_MISMATCH, CODE_UNKNOWN_KEY,
     CODE_VALIDATION,
+};
+pub use import::{
+    import_batch, import_batch_with_events, import_quiet, verify, ImportReport, VerifyReport,
+    VerifyResult, VerifyStatus, CODE_IMPORT_DUPLICATE,
 };
 pub use model::{
     ConfigChange, ConfigEntry, ConfigKey, ConfigSource, ConfigValueType, ConfigVisibility,
