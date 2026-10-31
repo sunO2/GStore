@@ -75,6 +75,9 @@ fn mutex_lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
 /// first, so a re-init can never keep delivering from the old bus.
 pub(crate) fn install_core_config(store: Arc<ConfigStore>, bus: Arc<ConfigBus>, db: DbHandle) {
     clear_sinks();
+    // Native-module subscribers are bound to the previous bus; detach them too
+    // so a second CoreApi init cannot deliver from a stale bus.
+    crate::dl_adapter::clear_module_config_sinks();
     *write_lock(&CONFIG_STORE) = Some(store);
     *write_lock(&CONFIG_BUS) = Some(bus);
     *write_lock(&CONFIG_META_DB) = Some(db);
@@ -98,6 +101,19 @@ fn bus() -> Result<Arc<ConfigBus>, String> {
     read_lock(&CONFIG_BUS)
         .clone()
         .ok_or_else(|| NOT_INITIALIZED.to_string())
+}
+
+/// Host-side seam for the native-module config pump (Todo 11).
+///
+/// The ABI v5 `GStoreConfigApiV1` subscribers live inside the **host**, not on
+/// the Dart side, so `dl_adapter` must observe every committed change. The
+/// config bus is the only commit-time fan-out that covers `set`/`clear`/
+/// `reset`/`import`, so the pump is a `ConfigCaller::Host` subscription on this
+/// exact bus. Exposing only the bus handle (never the store or a writer lock)
+/// keeps the pump on the same committed-change path as every other surface and
+/// prevents a second DB/connection. `None` until `CoreApi::finish_init`.
+pub(crate) fn host_bus() -> Option<Arc<ConfigBus>> {
+    read_lock(&CONFIG_BUS).clone()
 }
 
 fn meta_db() -> Result<DbHandle, String> {

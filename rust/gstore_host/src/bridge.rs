@@ -448,6 +448,7 @@ impl HostInspector {
         crate::event_bridge::clear_sink();
         crate::task_bridge::reset_sinks();
         crate::config_api::clear_sinks();
+        crate::dl_adapter::clear_module_config_sinks();
     }
 }
 

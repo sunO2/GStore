@@ -50,6 +50,14 @@ pub trait GStoreModule: Send + Sync {
 
     /// 模块级清理（refcount 归零时调用）
     fn shutdown(&self) {}
+
+    /// ABI v5 per-module config lifetime gate (None for modules without one).
+    ///
+    /// The manager uses this on unload to clear subscriptions and defer
+    /// `shutdown` until in-flight config callbacks return.
+    fn config_binding(&self) -> Option<Arc<crate::dl_adapter::ModuleConfigBinding>> {
+        None
+    }
 }
 
 /// 注册表条目
@@ -125,18 +133,35 @@ impl ModuleManager {
     }
 
     /// 注册模块（返回 module_id）。同名模块重复注册：refcount+1 复用（幂等）
+    #[allow(dead_code)] // retained for compile-time in-process modules
     pub fn register(&self, module: Arc<dyn GStoreModule>) -> u64 {
         self.register_inner(module, false)
     }
 
     /// 预注册常驻模块（preload）：refcount 归零也不卸载。
     /// 用于高依赖状态的核心域（repo：SQLite 句柄必须常驻，避免意外 shutdown 丢连接）。
+    #[cfg(test)]
     pub fn register_preload(&self, module: Arc<dyn GStoreModule>) -> u64 {
         self.register_inner(module, true)
     }
 
     /// 唯一插入路径：同名复用（+refcount，必要时升级 persistent）/ 否则新建
+    #[allow(dead_code)] // used by the in-process `register`/`register_preload` paths
     fn register_inner(&self, module: Arc<dyn GStoreModule>, persistent: bool) -> u64 {
+        self.insert_module(None, module, persistent)
+    }
+
+    /// Inserts under a pre-reserved id when free.
+    ///
+    /// `.so` loading reserves the id before the handshake because the ABI v5
+    /// config context binds `module_id` at that moment; reusing a different id
+    /// afterwards would break token/ownership diagnostics.
+    pub(crate) fn insert_module(
+        &self,
+        preferred_id: Option<u64>,
+        module: Arc<dyn GStoreModule>,
+        persistent: bool,
+    ) -> u64 {
         let name = module.name().to_string();
         let id = {
             let mut reg = self.write();
@@ -149,7 +174,10 @@ impl ModuleManager {
                     return id;
                 }
             }
-            let id = self.next_module_id.fetch_add(1, Ordering::SeqCst);
+            let id = match preferred_id {
+                Some(id) if !reg.modules.contains_key(&id) => id,
+                _ => self.next_module_id.fetch_add(1, Ordering::SeqCst),
+            };
             reg.modules.insert(
                 id,
                 ModuleEntry {
@@ -191,7 +219,12 @@ impl ModuleManager {
             if let Some(entry) = reg.modules.remove(&module_id) {
                 reg.by_name.remove(&entry.name);
                 drop(reg); // 释放注册表锁后再回调模块（避免模块 cleanup 重入死锁）
-                entry.module.shutdown();
+                match entry.module.config_binding() {
+                    // Config-enabled modules clear their subscriptions and defer
+                    // shutdown until in-flight config callbacks return.
+                    Some(binding) => binding.begin_unload(entry.module.clone()),
+                    None => entry.module.shutdown(),
+                }
             }
         }
     }
@@ -220,26 +253,36 @@ impl ModuleManager {
     }
 
     /// 从 .so 动态加载模块（P2 多 .so 场景）：dlopen + 握手 + 注册。
-    /// 幂等：同名模块已注册则 refcount+1 复用（走统一插入路径）。
+    ///
+    /// mount-once / dedupe **before** dlopen: a module name that is already
+    /// registered only gets a refcount bump. The duplicate skips dlopen,
+    /// `register`, and `min_host_abi` probing entirely and reuses the mounted
+    /// module; a newer binary takes effect on the next process start. Loading a
+    /// duplicate would run the module's `register` (installing a second config
+    /// vtable/binding) and then discard the adapter, whose `dlclose` would leave
+    /// the leaked binding's subscriptions pointing at unmapped code (reproduced
+    /// SIGSEGV).
     pub fn load_module_from_so(&self, so_path: &std::path::Path) -> Result<u64, ModuleError> {
-        let adapter = crate::dl_adapter::DlModuleAdapter::load(so_path)
-            .map_err(|e| ModuleError::internal(format!("dlopen adapter failed: {e}")))?;
-        let name = adapter.name().to_string();
-        let version = adapter.version();
-        // mount-once：.so 永不 dlclose，同名模块的热替换不会在本进程生效。
-        // 若已在册且版本不同，明确提示需重启（新文件留待下次启动加载）。
-        if let Some(id) = self.module_id_by_name(&name) {
+        let module_name = crate::dl_adapter::module_name_from_so_path(so_path)
+            .map_err(|e| ModuleError::internal(format!("module name: {e}")))?;
+        if let Some(id) = self.module_id_by_name(&module_name) {
             let loaded = self.module_version(id);
-            if loaded != Some(version) {
-                crate::log_bridge::push_host_log(
-                    2,
-                    format!(
-                        "module {name} already mounted (v{loaded:?}); new v{version} takes effect after restart"
-                    ),
-                );
-            }
+            crate::log_bridge::push_host_log(
+                2,
+                format!(
+                    "module {module_name} already mounted (v{loaded:?}); ignoring duplicate mount from {} (new version takes effect next start)",
+                    so_path.display()
+                ),
+            );
+            return self.register_by_name(&module_name);
         }
-        Ok(self.register(Arc::new(adapter)))
+        let reserved_id = self.next_module_id.fetch_add(1, Ordering::SeqCst);
+        let adapter = crate::dl_adapter::DlModuleAdapter::load_with_module_id(
+            so_path,
+            reserved_id,
+        )
+        .map_err(|e| ModuleError::internal(format!("dlopen adapter failed: {e}")))?;
+        Ok(self.insert_module(Some(reserved_id), Arc::new(adapter), false))
     }
 
     /// 已注册模块的功能版本（用于热更新提示）

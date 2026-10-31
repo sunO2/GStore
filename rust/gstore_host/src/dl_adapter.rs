@@ -4,14 +4,23 @@
 // 本适配器把 Api 函数指针转发为 trait 方法。持有 Library 保持 .so 驻留
 // （架构 5.5：mount-once 永不 unload）。
 
+use std::any::Any;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use gstore_contract::abi::{
-    host_abi_satisfies, ABI_ERR_DETAIL, ABI_OK, GStoreModuleApi, GStoreModuleEntry,
-    GSTORE_MODULE_ABI_VERSION, MIN_HOST_ABI,
+    host_abi_satisfies, ByteBuf, GStoreConfigApiV1, GStoreConfigContextV1, ABI_ERR_CONFIG_BAD_TOKEN,
+    ABI_ERR_CONFIG_FORBIDDEN, ABI_ERR_CONFIG_INVALID, ABI_ERR_CONFIG_NOT_FOUND, ABI_ERR_DETAIL,
+    ABI_OK, CONFIG_CAP_ALL, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    MIN_HOST_ABI,
 };
 use gstore_contract::error::ModuleError;
+use gstore_core::config::{
+    schema, secrets, ConfigBus, ConfigCaller, ConfigChangePayload, ConfigFilter, ConfigKey,
+    ConfigSource, ConfigToken, ConfigVisibility,
+};
+use serde_json::Value;
 
 use crate::manager::GStoreModule;
 
@@ -66,17 +75,704 @@ extern "C" fn host_protect_fd(fd: c_int) -> c_int {
     SOCKET_PROTECT.read().unwrap_or_else(|e| e.into_inner())(fd)
 }
 
-/// 构造宿主注入表（`load` 与测试共用）。
+// ---------------------------------------------------------------------------
+// ABI v5 module configuration (Todo 11 / C7 / C18)
+// ---------------------------------------------------------------------------
+
+type ChangeCallback = extern "C" fn(user_ctx: *mut c_void, change_json: *const c_char) -> c_int;
+
+/// Per-module lifetime gate shared by the vtable context and delivery pump.
 ///
-/// `abi` 是模块探测到的目标 ABI（`gstore_mod_<name>_abi`，缺失时回退 3）。
-/// **必须逐版精确**，绝不把 v5 的 `entry_size` 报给旧模块：
-/// - `abi == 3` → `PLATFORM_OFFSET`（v3 布局，无 `platform`/`config` 槽）；
-/// - `abi == 4` → `CONFIG_OFFSET`（v4 布局，有 `platform`、无 `config`）；
-/// - `abi == 5` → `size_of::<GStoreModuleEntry>()`（v5 布局，有 `config`）。
+/// The vtable context, its binding handle, and this binding are intentionally
+/// leaked for the process lifetime (mount-once: a `.so` is never `dlclose`d).
+/// That makes the raw pointers handed to module code permanently valid even
+/// after a logical unload, so a late callback can only observe `unloaded=true`
+/// instead of dereferencing freed memory.
+pub(crate) struct ModuleConfigBinding {
+    module_id: u64,
+    module_name: String,
+    generation: AtomicU64,
+    state: Mutex<BindingState>,
+    /// Process-lifetime keepalive for the module's dlopen handle.
+    ///
+    /// A callback snapshotted just before `detach()` may still be executing
+    /// inside the `.so`. The binding itself is leaked for the process lifetime,
+    /// so holding the `Arc<Library>` here makes "mount-once: never dlclose"
+    /// true even when a discarded adapter's `_lib` field drops. Never cleared
+    /// by `detach`/`Drop`.
+    library: Mutex<Option<Box<dyn Any + Send + Sync>>>,
+}
+
+struct BindingState {
+    unloaded: bool,
+    active_deliveries: usize,
+    pending_shutdown: Option<Arc<dyn GStoreModule>>,
+}
+
+struct BindingHandle {
+    binding: Arc<ModuleConfigBinding>,
+}
+
+impl ModuleConfigBinding {
+    fn new(module_id: u64, module_name: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            module_id,
+            module_name: module_name.into(),
+            generation: AtomicU64::new(1),
+            state: Mutex::new(BindingState {
+                unloaded: false,
+                active_deliveries: 0,
+                pending_shutdown: None,
+            }),
+            library: Mutex::new(None),
+        })
+    }
+
+    /// Pins the dlopen handle so it outlives every possible callback frame.
+    pub(crate) fn keep_library<T>(self: &Arc<Self>, library: T)
+    where
+        T: Any + Send + Sync,
+    {
+        let mut slot = self
+            .library
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(Box::new(library));
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn is_unloaded(&self) -> bool {
+        lock_state(&self.state).unloaded
+    }
+
+    /// Enters a delivery only while loaded and on the generation the
+    /// subscription was registered for. The returned guard keeps unload's
+    /// deferred shutdown from running until the callback returns.
+    fn begin_delivery(self: &Arc<Self>, generation: u64) -> Option<DeliveryGuard> {
+        let mut state = lock_state(&self.state);
+        if state.unloaded || generation != self.generation() {
+            return None;
+        }
+        state.active_deliveries += 1;
+        Some(DeliveryGuard {
+            binding: Arc::clone(self),
+        })
+    }
+
+    /// Idempotently revokes this binding without calling `shutdown`.
+    ///
+    /// Used by `Drop for DlModuleAdapter` (the `.so` is about to be `dlclose`d,
+    /// so every subscription must be gone before the library handle drops) and
+    /// by post-register failure cleanup. `shutdown` is deliberately not called:
+    /// it may already have run, and Drop must never re-enter module code.
+    pub(crate) fn detach(self: &Arc<Self>) {
+        let bumped = {
+            let mut state = lock_state(&self.state);
+            if state.unloaded {
+                false
+            } else {
+                state.unloaded = true;
+                true
+            }
+        };
+        if bumped {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
+        clear_subscriptions_for_binding(self);
+    }
+
+    /// Marks the module unloaded, clears its subscriptions, and shuts the
+    /// module down now or after the last in-flight callback returns.
+    pub(crate) fn begin_unload(self: &Arc<Self>, module: Arc<dyn GStoreModule>) {
+        let immediate = {
+            let mut state = lock_state(&self.state);
+            if state.unloaded {
+                None
+            } else {
+                state.unloaded = true;
+                self.generation.fetch_add(1, Ordering::AcqRel);
+                if state.active_deliveries == 0 {
+                    Some(module)
+                } else {
+                    state.pending_shutdown = Some(module);
+                    None
+                }
+            }
+        };
+        clear_subscriptions_for_binding(self);
+        if let Some(module) = immediate {
+            module.shutdown();
+        }
+    }
+}
+
+struct DeliveryGuard {
+    binding: Arc<ModuleConfigBinding>,
+}
+
+impl Drop for DeliveryGuard {
+    fn drop(&mut self) {
+        let pending = {
+            let mut state = lock_state(&self.binding.state);
+            state.active_deliveries = state.active_deliveries.saturating_sub(1);
+            if state.active_deliveries == 0 && state.unloaded {
+                state.pending_shutdown.take()
+            } else {
+                None
+            }
+        };
+        if let Some(module) = pending {
+            module.shutdown();
+        }
+    }
+}
+
+fn lock_state(state: &Mutex<BindingState>) -> MutexGuard<'_, BindingState> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct ModuleSubscription {
+    token: u64,
+    generation: u64,
+    target_module: String,
+    key: Option<String>,
+    user_ctx: usize,
+    callback: ChangeCallback,
+    binding: Arc<ModuleConfigBinding>,
+}
+
+#[derive(Default)]
+struct SubscriptionRegistry {
+    subscriptions: Vec<ModuleSubscription>,
+    next_token: u64,
+}
+
+fn registry() -> &'static Mutex<SubscriptionRegistry> {
+    static REGISTRY: OnceLock<Mutex<SubscriptionRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        Mutex::new(SubscriptionRegistry {
+            subscriptions: Vec::new(),
+            next_token: 1,
+        })
+    })
+}
+
+fn lock_registry() -> MutexGuard<'static, SubscriptionRegistry> {
+    registry().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct PumpState {
+    bus: Arc<ConfigBus>,
+    tokens: Vec<ConfigToken>,
+}
+
+fn pump() -> &'static Mutex<Option<PumpState>> {
+    static PUMP: OnceLock<Mutex<Option<PumpState>>> = OnceLock::new();
+    PUMP.get_or_init(|| Mutex::new(None))
+}
+
+fn lock_pump() -> MutexGuard<'static, Option<PumpState>> {
+    pump().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Registers (or re-registers) the host pump on the current config bus.
 ///
-/// 越界 ABI 拒绝，绝不静默降级。`platform`/`config` 槽在真实 vtable 接线前保持
-/// NULL，模块走降级路径。
-fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
+/// `ConfigBus` fans out only to subscriptions whose filter names the changed
+/// module, so one `Host` subscription per registered namespace is required.
+/// The pump holds no store or writer lock; the bus invokes callbacks after it
+/// has committed and released its own snapshot lock.
+fn ensure_pump() {
+    let Some(bus) = crate::config_api::host_bus() else {
+        return;
+    };
+    let mut current = lock_pump();
+    if current
+        .as_ref()
+        .is_some_and(|state| Arc::ptr_eq(&state.bus, &bus))
+    {
+        return;
+    }
+    if let Some(previous) = current.take() {
+        for token in previous.tokens {
+            let _ = previous.bus.unsubscribe(&token);
+        }
+    }
+    let mut modules: Vec<&'static str> = schema::entries()
+        .iter()
+        .map(|entry| entry.key.module())
+        .collect();
+    modules.sort_unstable();
+    modules.dedup();
+    let tokens = modules
+        .into_iter()
+        .map(|module| {
+            bus.subscribe(
+                ConfigCaller::Host,
+                ConfigFilter::whole_module(module),
+                deliver_change,
+            )
+        })
+        .collect();
+    *current = Some(PumpState { bus, tokens });
+}
+
+fn clear_pump() {
+    let mut current = lock_pump();
+    if let Some(state) = current.take() {
+        for token in state.tokens {
+            let _ = state.bus.unsubscribe(&token);
+        }
+    }
+}
+
+fn authorized_foreign(entry: &gstore_core::config::ConfigEntry) -> bool {
+    entry.visibility == ConfigVisibility::PublicRead
+        && !secrets::is_secret_entry(entry)
+}
+
+/// Snapshot matching subscriptions, release the registry lock, then invoke.
+///
+/// The config writer lock is never held here: the store commits first, the bus
+/// snapshots and releases, and this function keeps its own tiny snapshot.
+fn deliver_change(payload: &ConfigChangePayload) {
+    let Ok(key) = ConfigKey::new(payload.module.clone(), payload.key.clone()) else {
+        return;
+    };
+    let Some(entry) = schema::entry(&key) else {
+        return;
+    };
+    let foreign_ok = authorized_foreign(entry);
+    let matching: Vec<ModuleSubscription> = {
+        let registry = lock_registry();
+        registry
+            .subscriptions
+            .iter()
+            .filter(|subscription| {
+                subscription.target_module == payload.module
+                    && subscription
+                        .key
+                        .as_deref()
+                        .is_none_or(|key| key == payload.key)
+                    && (subscription.binding.module_name == payload.module || foreign_ok)
+            })
+            .map(|subscription| ModuleSubscription {
+                token: subscription.token,
+                generation: subscription.generation,
+                target_module: subscription.target_module.clone(),
+                key: subscription.key.clone(),
+                user_ctx: subscription.user_ctx,
+                callback: subscription.callback,
+                binding: Arc::clone(&subscription.binding),
+            })
+            .collect()
+    };
+    let Ok(json) = serde_json::to_string(payload) else {
+        return;
+    };
+    let Ok(change_json) = CString::new(json) else {
+        return;
+    };
+    for subscription in matching {
+        let Some(_guard) = subscription.binding.begin_delivery(subscription.generation) else {
+            continue;
+        };
+        let code = (subscription.callback)(
+            subscription.user_ctx as *mut c_void,
+            change_json.as_ptr(),
+        );
+        if code != ABI_OK {
+            crate::log_bridge::push_host_log(
+                2,
+                format!(
+                    "config: module {} callback returned {code} for {}",
+                    subscription.binding.module_name, key.wire()
+                ),
+            );
+        }
+    }
+}
+
+fn clear_subscriptions_for_binding(binding: &Arc<ModuleConfigBinding>) {
+    let mut registry = lock_registry();
+    registry.subscriptions.retain(|subscription| {
+        !std::ptr::eq(
+            Arc::as_ptr(&subscription.binding),
+            Arc::as_ptr(binding),
+        )
+    });
+}
+
+/// Clears every native-module subscription and detaches the pump.
+///
+/// Called from `HostInspector::reset_bridges` (isolate teardown) and from
+/// `config_api::install_core_config`. Loaded modules keep running, but their
+/// subscriptions are bound to the previous bus/store: **modules must
+/// resubscribe after a core re-init** (their next `subscribe` also re-installs
+/// the pump on the new bus).
+pub(crate) fn clear_module_config_sinks() {
+    let bindings: Vec<Arc<ModuleConfigBinding>> = {
+        let mut registry = lock_registry();
+        registry
+            .subscriptions
+            .drain(..)
+            .map(|subscription| subscription.binding)
+            .collect()
+    };
+    for binding in bindings {
+        binding.generation.fetch_add(1, Ordering::AcqRel);
+    }
+    clear_pump();
+}
+
+fn binding_from_ctx(ctx: *mut c_void) -> Option<Arc<ModuleConfigBinding>> {
+    if ctx.is_null() {
+        return None;
+    }
+    // SAFETY: `ctx` is the `context` field of a vtable built by
+    // `build_config_vtable`, which leaks a `GStoreConfigContextV1` whose
+    // `host` points at a leaked `BindingHandle`. Both outlive every module
+    // callback (mount-once, never dlclosed), so the borrow is valid.
+    let context = unsafe { &*(ctx as *const GStoreConfigContextV1) };
+    if context.host.is_null() {
+        return None;
+    }
+    // SAFETY: same invariant as above; `host` is the leaked BindingHandle.
+    let handle = unsafe { &*(context.host as *const BindingHandle) };
+    Some(Arc::clone(&handle.binding))
+}
+
+fn opt_string(ptr: *const c_char) -> Result<Option<String>, c_int> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: the ABI contract requires a NUL-terminated C string owned by the
+    // caller for the duration of this call; we only read it here.
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map(|text| Some(text.to_string()))
+        .map_err(|_| ABI_ERR_CONFIG_INVALID)
+}
+
+fn parse_key(module: &str, key: &str) -> Result<ConfigKey, c_int> {
+    ConfigKey::new(module.to_string(), key.to_string()).map_err(|_| ABI_ERR_CONFIG_INVALID)
+}
+
+fn target_module(binding: &ModuleConfigBinding, module: Option<String>) -> String {
+    module.unwrap_or_else(|| binding.module_name.clone())
+}
+
+fn put_json(out: *mut ByteBuf, json: &str) {
+    if out.is_null() {
+        return;
+    }
+    let bytes = json.as_bytes().to_vec().into_boxed_slice();
+    let len = bytes.len();
+    let ptr = Box::into_raw(bytes) as *mut u8;
+    // SAFETY: `out` is a caller-provided out-parameter (checked non-null). The
+    // buffer is heap-owned and released only by `config_free_buf`, which
+    // reconstructs the exact `len == capacity` slice.
+    unsafe { *out = ByteBuf { ptr, len } };
+}
+
+fn store_value(key: &ConfigKey) -> Result<Value, c_int> {
+    let Some(store) = crate::config_api::installed_store_for_test() else {
+        return Err(ABI_ERR_CONFIG_INVALID);
+    };
+    store.get(key).map_err(|_| ABI_ERR_CONFIG_INVALID)
+}
+
+extern "C" fn config_get(
+    ctx: *mut c_void,
+    module_or_null: *const c_char,
+    key: *const c_char,
+    out_json: *mut ByteBuf,
+) -> c_int {
+    let Some(binding) = binding_from_ctx(ctx) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    if out_json.is_null() || binding.is_unloaded() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    // SAFETY: `out_json` is non-null per the guard above; zero it so a failure
+    // never leaves the caller with an uninitialised buffer.
+    unsafe { *out_json = ByteBuf { ptr: std::ptr::null_mut(), len: 0 } };
+    let key = match opt_string(key) {
+        Ok(Some(key)) => key,
+        Ok(None) | Err(_) => return ABI_ERR_CONFIG_INVALID,
+    };
+    let module = match opt_string(module_or_null) {
+        Ok(module) => target_module(&binding, module),
+        Err(code) => return code,
+    };
+    let key = match parse_key(&module, &key) {
+        Ok(key) => key,
+        Err(code) => return code,
+    };
+    let Some(entry) = schema::entry(&key) else {
+        return ABI_ERR_CONFIG_NOT_FOUND;
+    };
+    if module != binding.module_name && !authorized_foreign(entry) {
+        return ABI_ERR_CONFIG_FORBIDDEN;
+    }
+    match store_value(&key) {
+        Ok(value) => {
+            let json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+            put_json(out_json, &json);
+            ABI_OK
+        }
+        Err(code) => code,
+    }
+}
+
+extern "C" fn config_set(
+    ctx: *mut c_void,
+    key: *const c_char,
+    value_json: *const c_char,
+) -> c_int {
+    let Some(binding) = binding_from_ctx(ctx) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    if binding.is_unloaded() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    let key = match opt_string(key) {
+        Ok(Some(key)) => key,
+        Ok(None) | Err(_) => return ABI_ERR_CONFIG_INVALID,
+    };
+    let value = match opt_string(value_json) {
+        Ok(Some(value)) => value,
+        Ok(None) | Err(_) => return ABI_ERR_CONFIG_INVALID,
+    };
+    let key = match parse_key(&binding.module_name, &key) {
+        Ok(key) => key,
+        Err(code) => return code,
+    };
+    if schema::entry(&key).is_none() {
+        return ABI_ERR_CONFIG_NOT_FOUND;
+    }
+    if serde_json::from_str::<Value>(&value).is_err() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    match crate::config_api::set(
+        binding.module_name.clone(),
+        key.key().to_string(),
+        value,
+        ConfigSource::Module.as_str().to_string(),
+    ) {
+        Ok(_) => ABI_OK,
+        Err(error) => config_error_code(&error),
+    }
+}
+
+fn config_error_code(error: &str) -> c_int {
+    if error.contains("config_unknown_key") {
+        ABI_ERR_CONFIG_NOT_FOUND
+    } else if error.contains("config_not_permitted") {
+        ABI_ERR_CONFIG_FORBIDDEN
+    } else {
+        ABI_ERR_CONFIG_INVALID
+    }
+}
+
+extern "C" fn config_list(
+    ctx: *mut c_void,
+    module_or_null: *const c_char,
+    out_json: *mut ByteBuf,
+) -> c_int {
+    let Some(binding) = binding_from_ctx(ctx) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    if out_json.is_null() || binding.is_unloaded() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    // SAFETY: non-null out-parameter; zeroed before any early return.
+    unsafe { *out_json = ByteBuf { ptr: std::ptr::null_mut(), len: 0 } };
+    let module = match opt_string(module_or_null) {
+        Ok(module) => target_module(&binding, module),
+        Err(code) => return code,
+    };
+    let own = module == binding.module_name;
+    let mut items = Vec::new();
+    for entry in schema::module_entries(&module) {
+        if !own && !authorized_foreign(entry) {
+            continue;
+        }
+        let key = &entry.key;
+        let snapshot = crate::config_api::installed_store_for_test()
+            .and_then(|store| store.snapshot(key).ok().flatten());
+        let value = if own && entry.sensitive {
+            match store_value(key) {
+                Ok(value) => value,
+                Err(code) => return code,
+            }
+        } else {
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.value.clone())
+                .unwrap_or_else(|| entry.default_json.clone())
+        };
+        items.push(serde_json::json!({
+            "module": key.module(),
+            "key": key.key(),
+            "wireKey": key.wire(),
+            "value": value,
+            "revision": snapshot.as_ref().map(|snapshot| snapshot.revision).unwrap_or(0),
+            "visibility": entry.visibility.as_str(),
+        }));
+    }
+    match serde_json::to_string(&items) {
+        Ok(json) => {
+            put_json(out_json, &json);
+            ABI_OK
+        }
+        Err(_) => ABI_ERR_CONFIG_INVALID,
+    }
+}
+
+extern "C" fn config_subscribe(
+    ctx: *mut c_void,
+    module_or_null: *const c_char,
+    key_or_null: *const c_char,
+    user_ctx: *mut c_void,
+    callback: Option<ChangeCallback>,
+    out_token: *mut u64,
+) -> c_int {
+    let Some(binding) = binding_from_ctx(ctx) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    let Some(callback) = callback else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    if out_token.is_null() || binding.is_unloaded() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    let module = match opt_string(module_or_null) {
+        Ok(module) => target_module(&binding, module),
+        Err(code) => return code,
+    };
+    let key = match opt_string(key_or_null) {
+        Ok(key) => key,
+        Err(code) => return code,
+    };
+    if let Some(key_name) = &key {
+        let key = match parse_key(&module, key_name) {
+            Ok(key) => key,
+            Err(code) => return code,
+        };
+        let Some(entry) = schema::entry(&key) else {
+            return ABI_ERR_CONFIG_NOT_FOUND;
+        };
+        if module != binding.module_name && !authorized_foreign(entry) {
+            return ABI_ERR_CONFIG_FORBIDDEN;
+        }
+    } else if module != binding.module_name {
+        // A foreign whole-module subscription is accepted, but it is never a
+        // blanket grant: `deliver_change` re-checks each change's visibility.
+        if parse_key(&module, "probe").is_err() {
+            return ABI_ERR_CONFIG_INVALID;
+        }
+    }
+    let token = {
+        let mut registry = lock_registry();
+        let token = registry.next_token;
+        registry.next_token += 1;
+        registry.subscriptions.push(ModuleSubscription {
+            token,
+            generation: binding.generation(),
+            target_module: module,
+            key,
+            user_ctx: user_ctx as usize,
+            callback,
+            binding: Arc::clone(&binding),
+        });
+        token
+    };
+    ensure_pump();
+    // SAFETY: non-null out-parameter guarded above.
+    unsafe { *out_token = token };
+    ABI_OK
+}
+
+extern "C" fn config_unsubscribe(ctx: *mut c_void, token: u64) -> c_int {
+    let Some(binding) = binding_from_ctx(ctx) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    let mut registry = lock_registry();
+    let Some(index) = registry
+        .subscriptions
+        .iter()
+        .position(|subscription| subscription.token == token)
+    else {
+        return ABI_ERR_CONFIG_BAD_TOKEN;
+    };
+    if !std::ptr::eq(
+        Arc::as_ptr(&registry.subscriptions[index].binding),
+        Arc::as_ptr(&binding),
+    ) {
+        return ABI_ERR_CONFIG_BAD_TOKEN;
+    }
+    let subscription = registry.subscriptions.remove(index);
+    if subscription.generation != binding.generation() {
+        return ABI_ERR_CONFIG_BAD_TOKEN;
+    }
+    ABI_OK
+}
+
+extern "C" fn config_free_buf(buf: ByteBuf) {
+    if buf.ptr.is_null() {
+        return;
+    }
+    // SAFETY: every buffer handed out by `put_json` is a `Box<[u8]>` with
+    // `len == capacity`, so rebuilding the same slice and dropping it is the
+    // unique matching free. Module code must never free host buffers itself.
+    unsafe { drop(Vec::from_raw_parts(buf.ptr, buf.len, buf.len)) };
+}
+
+fn detach_config_binding(binding: &Option<Arc<ModuleConfigBinding>>) {
+    if let Some(binding) = binding {
+        binding.detach();
+    }
+}
+
+fn build_config_vtable(
+    binding: &Arc<ModuleConfigBinding>,
+) -> GStoreConfigApiV1 {
+    let name = CString::new(binding.module_name.as_str()).unwrap_or_default();
+    let name_ptr = name.into_raw();
+    let handle = Box::into_raw(Box::new(BindingHandle {
+        binding: Arc::clone(binding),
+    }));
+    let context = Box::into_raw(Box::new(GStoreConfigContextV1 {
+        module_id: binding.module_id,
+        module_name: name_ptr,
+        host: handle.cast(),
+    }));
+    GStoreConfigApiV1 {
+        abi_version: GSTORE_MODULE_ABI_VERSION,
+        struct_size: std::mem::size_of::<GStoreConfigApiV1>() as u32,
+        capabilities: CONFIG_CAP_ALL,
+        context: context.cast(),
+        get: Some(config_get),
+        set: Some(config_set),
+        list: Some(config_list),
+        subscribe: Some(config_subscribe),
+        unsubscribe: Some(config_unsubscribe),
+        free_buf: Some(config_free_buf),
+    }
+}
+
+/// Builds the host injection table for one module.
+///
+/// `config` is the module's already-built vtable (or null for ABI < 5).
+fn host_entry_with_config(
+    abi: u32,
+    config: *const GStoreConfigApiV1,
+) -> Result<GStoreModuleEntry, String> {
     if !(MIN_HOST_ABI..=GSTORE_MODULE_ABI_VERSION).contains(&abi) {
         return Err(format!(
             "unsupported module ABI {abi} (host supports {MIN_HOST_ABI}..={GSTORE_MODULE_ABI_VERSION})"
@@ -87,6 +783,7 @@ fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
         4 => GStoreModuleEntry::CONFIG_OFFSET,
         _ => std::mem::size_of::<GStoreModuleEntry>(),
     } as u32;
+    let config = if abi >= 5 { config } else { std::ptr::null() };
     Ok(GStoreModuleEntry {
         abi_version: abi,
         entry_size,
@@ -99,9 +796,23 @@ fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
         protect_fd: Some(host_protect_fd),
         // ABI v4：真实 platform vtable 接线不属于本 todo，保持 NULL。
         platform: std::ptr::null(),
-        // ABI v5：配置 vtable 由 Todo 11 注入，当前保持 NULL。
-        config: std::ptr::null(),
+        config,
     })
+}
+
+/// 构造宿主注入表（`load` 与测试共用）。
+///
+/// `abi` 是模块探测到的目标 ABI（`gstore_mod_<name>_abi`，缺失时回退 3）。
+/// **必须逐版精确**，绝不把 v5 的 `entry_size` 报给旧模块：
+/// - `abi == 3` → `PLATFORM_OFFSET`（v3 布局，无 `platform`/`config` 槽）；
+/// - `abi == 4` → `CONFIG_OFFSET`（v4 布局，有 `platform`、无 `config`）；
+/// - `abi == 5` → `size_of::<GStoreModuleEntry>()`（v5 布局，有 `config`）。
+///
+/// 越界 ABI 拒绝，绝不静默降级。此无模块身份的重载不注入 config 槽（测试用）；
+/// 生产路径走 [`host_entry_with_config`], 每模块一份 vtable。
+#[cfg(test)]
+fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
+    host_entry_with_config(abi, std::ptr::null())
 }
 
 fn api_name(api: &GStoreModuleApi) -> Result<String, String> {
@@ -118,12 +829,22 @@ fn api_name(api: &GStoreModuleApi) -> Result<String, String> {
 /// 只允许一个 gate：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 拒绝。
 /// 这是追加式 ABI 演进的关键——不做任何精确匹配，旧模块（min_host_abi <= 2）
 /// 因此仍能挂载到 v3 宿主。
+#[cfg(test)]
 fn handshake_with(
     register: RegisterFn,
     module_name: &str,
     abi: u32,
 ) -> Result<(String, GStoreModuleApi), String> {
-    let entry = host_entry(abi)?;
+    handshake_with_config(register, module_name, abi, std::ptr::null())
+}
+
+fn handshake_with_config(
+    register: RegisterFn,
+    module_name: &str,
+    abi: u32,
+    config: *const GStoreConfigApiV1,
+) -> Result<(String, GStoreModuleApi), String> {
+    let entry = host_entry_with_config(abi, config)?;
     let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
     let code = unsafe { register(&entry, api.as_mut_ptr()) };
     let api = unsafe { api.assume_init() };
@@ -163,6 +884,16 @@ pub struct DlModuleAdapter {
     destroy: DestroyFn,
     shutdown: Option<ShutdownFn>,
     free: FreeFn, // 释放模块分配的内存（谁分配谁释放）
+    config_binding: Option<Arc<ModuleConfigBinding>>,
+}
+
+/// Derives the module name from a `.so` path (same convention as `load`).
+pub(crate) fn module_name_from_so_path(path: &std::path::Path) -> Result<String, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid .so filename")?;
+    parse_module_name(file_name)
 }
 
 /// 从 .so 文件名推导模块名：libgstore_mod_qr.so → qr；
@@ -254,7 +985,17 @@ fn preload_opencl() {
     });
 }
 
+    #[cfg(test)]
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        Self::load_with_module_id(path, 0)
+    }
+
+    /// dlopen + handshake with the manager-assigned `module_id` bound into the
+    /// ABI v5 config context (the context's identity is host-authoritative).
+    pub(crate) fn load_with_module_id(
+        path: &std::path::Path,
+        module_id: u64,
+    ) -> Result<Self, String> {
         Self::preload_opencl();
         // 1. dlopen
         // 用 RTLD_NOW 强制立即绑定全部符号：libloading::Library::new 默认 RTLD_LAZY，
@@ -305,14 +1046,48 @@ fn preload_opencl() {
             format!("gstore_host: module={module_name} probe_abi={probe_abi}"),
         );
 
-        // 3c. 握手：传 Entry（宿主服务）收 Api（模块能力）+ ABI/名字校验
-        let (name, api) = handshake_with(*register, &module_name, probe_abi)?;
+        // 3c. ABI v5：为每个模块构造独立 config vtable + 宿主绑定的 context。
+        //     指针故意泄漏（mount-once，模块可能在进程内一直持有）。
+        let (config_binding, config_ptr) = if probe_abi >= 5 {
+            let binding = ModuleConfigBinding::new(module_id, module_name.clone());
+            // Pin the library before register can subscribe, so every later
+            // error/discard path keeps the code mapped for in-flight callbacks.
+            binding.keep_library(Arc::clone(&lib));
+            let vtable = Box::into_raw(Box::new(build_config_vtable(&binding)));
+            (Some(binding), vtable.cast_const())
+        } else {
+            (None, std::ptr::null())
+        };
+
+        // 3d. 握手：传 Entry（宿主服务）收 Api（模块能力）+ ABI/名字校验。
+        //     `register` may already have subscribed through the vtable, so any
+        //     failure from here on must detach before `lib` is dlclose'd.
+        let (name, api) =
+            match handshake_with_config(*register, &module_name, probe_abi, config_ptr) {
+                Ok(handshake) => handshake,
+                Err(error) => {
+                    detach_config_binding(&config_binding);
+                    return Err(error);
+                }
+            };
 
         // 4. 包装
-        let create = api.create.ok_or("module missing create")?;
-        let call = api.call.ok_or("module missing call")?;
-        let destroy = api.destroy.ok_or("module missing destroy")?;
-        let free = api.free.ok_or("module missing free")?;
+        let Some(create) = api.create else {
+            detach_config_binding(&config_binding);
+            return Err("module missing create".to_string());
+        };
+        let Some(call) = api.call else {
+            detach_config_binding(&config_binding);
+            return Err("module missing call".to_string());
+        };
+        let Some(destroy) = api.destroy else {
+            detach_config_binding(&config_binding);
+            return Err("module missing destroy".to_string());
+        };
+        let Some(free) = api.free else {
+            detach_config_binding(&config_binding);
+            return Err("module missing free".to_string());
+        };
 
         Ok(Self {
             _lib: lib,
@@ -325,6 +1100,7 @@ fn preload_opencl() {
             destroy,
             shutdown: api.shutdown,
             free,
+            config_binding,
         })
     }
 
@@ -438,6 +1214,21 @@ impl GStoreModule for DlModuleAdapter {
     fn shutdown(&self) {
         if let Some(f) = self.shutdown {
             unsafe { f() };
+        }
+    }
+
+    fn config_binding(&self) -> Option<Arc<ModuleConfigBinding>> {
+        self.config_binding.clone()
+    }
+}
+
+impl Drop for DlModuleAdapter {
+    fn drop(&mut self) {
+        // Drop::drop runs before any field is dropped, so every subscription is
+        // revoked before `_lib` (the dlopen handle) is released. Never call
+        // module.shutdown() here: it must not re-enter a library we are closing.
+        if let Some(binding) = &self.config_binding {
+            binding.detach();
         }
     }
 }
@@ -1104,4 +1895,685 @@ mod abi_handshake {
             "must be the module's own -2 rejection, not a host-side gate error: {err}"
         );
     }
+}
+
+#[cfg(test)]
+mod module_config_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::MutexGuard;
+
+    use gstore_core::config::ConfigStore;
+    use gstore_core::db::DbHandle;
+    use gstore_core::ports::FileSecretStore;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+    static NEXT_MODULE_ID: AtomicU64 = AtomicU64::new(10_000);
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "gstore_module_config_{tag}_{}_{}",
+                std::process::id(),
+                NEXT_MODULE_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("data")).expect("create data dir");
+            let db = DbHandle::open(&root.join("data")).expect("open core db");
+            let secrets = Arc::new(FileSecretStore::new(root.join("data").join("secrets")));
+            let store = Arc::new(ConfigStore::new(db.clone(), secrets));
+            store.load_all().expect("load config store");
+            let bus = Arc::new(ConfigBus::new());
+            crate::config_api::install_core_config(store, bus, db);
+            Self { root }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            crate::config_api::reset_store_for_test();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        changes: Mutex<Vec<Value>>,
+    }
+
+    impl Recorder {
+        fn new() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        fn changes(&self) -> Vec<Value> {
+            self.changes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.changes()
+                .iter()
+                .filter_map(|change| {
+                    let module = change.get("module")?.as_str()?;
+                    let key = change.get("key")?.as_str()?;
+                    Some(format!("{module}.{key}"))
+                })
+                .collect()
+        }
+
+        fn push(&self, change: Value) {
+            self.changes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(change);
+        }
+    }
+
+    extern "C" fn record(user: *mut c_void, change: *const c_char) -> c_int {
+        if user.is_null() || change.is_null() {
+            return ABI_ERR_CONFIG_INVALID;
+        }
+        // SAFETY: the test owns the leaked Recorder passed as user_ctx; the
+        // change string lives only for this call and is copied immediately.
+        let recorder = unsafe { &*(user as *const Recorder) };
+        let text = unsafe { CStr::from_ptr(change) }.to_string_lossy();
+        match serde_json::from_str::<Value>(&text) {
+            Ok(value) => recorder.push(value),
+            Err(_) => return ABI_ERR_CONFIG_INVALID,
+        }
+        ABI_OK
+    }
+
+    struct TestModule {
+        binding: Arc<ModuleConfigBinding>,
+        vtable: GStoreConfigApiV1,
+    }
+
+    impl TestModule {
+        fn new(name: &str) -> Self {
+            let id = NEXT_MODULE_ID.fetch_add(1, Ordering::Relaxed);
+            let binding = ModuleConfigBinding::new(id, name);
+            let vtable = build_config_vtable(&binding);
+            Self { binding, vtable }
+        }
+
+        fn ctx(&self) -> *mut c_void {
+            self.vtable.context
+        }
+
+        fn subscribe(
+            &self,
+            target: Option<&str>,
+            key: Option<&str>,
+            recorder: &Arc<Recorder>,
+        ) -> Result<u64, c_int> {
+            let target = target.map(|text| CString::new(text).expect("target CString"));
+            let key = key.map(|text| CString::new(text).expect("key CString"));
+            let user = Arc::into_raw(Arc::clone(recorder)) as *mut c_void;
+            let mut token = 0u64;
+            let code = config_subscribe(
+                self.ctx(),
+                target.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                key.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                user,
+                Some(record),
+                &mut token,
+            );
+            if code == ABI_OK {
+                Ok(token)
+            } else {
+                Err(code)
+            }
+        }
+
+        fn subscribe_with(
+            &self,
+            target: Option<&str>,
+            key: Option<&str>,
+            user: *mut c_void,
+            callback: ChangeCallback,
+        ) -> Result<u64, c_int> {
+            let target = target.map(|text| CString::new(text).expect("target CString"));
+            let key = key.map(|text| CString::new(text).expect("key CString"));
+            let mut token = 0u64;
+            let code = config_subscribe(
+                self.ctx(),
+                target.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                key.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                user,
+                Some(callback),
+                &mut token,
+            );
+            if code == ABI_OK {
+                Ok(token)
+            } else {
+                Err(code)
+            }
+        }
+
+        fn unsubscribe(&self, token: u64) -> c_int {
+            config_unsubscribe(self.ctx(), token)
+        }
+
+        fn get(&self, target: Option<&str>, key: &str) -> Result<Value, c_int> {
+            self.get_result(target, key).map_err(|(code, _)| code)
+        }
+
+        fn get_result(&self, target: Option<&str>, key: &str) -> Result<Value, (c_int, String)> {
+            let target = target.map(|text| CString::new(text).expect("target CString"));
+            let key = CString::new(key).expect("key CString");
+            let mut out = ByteBuf {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            };
+            let code = config_get(
+                self.ctx(),
+                target.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                key.as_ptr(),
+                &mut out,
+            );
+            if code != ABI_OK {
+                return Err((code, String::new()));
+            }
+            // SAFETY: on success the host filled `out` with a buffer it owns;
+            // copy it and hand it back through the vtable's free_buf.
+            let text = unsafe { std::slice::from_raw_parts(out.ptr, out.len) }.to_vec();
+            config_free_buf(out);
+            serde_json::from_slice(&text).map_err(|_| (ABI_ERR_CONFIG_INVALID, String::new()))
+        }
+
+        fn set(&self, key: &str, value_json: &str) -> c_int {
+            let key = CString::new(key).expect("key CString");
+            let value = CString::new(value_json).expect("value CString");
+            config_set(self.ctx(), key.as_ptr(), value.as_ptr())
+        }
+
+        fn list(&self, target: Option<&str>) -> Result<Value, c_int> {
+            let target = target.map(|text| CString::new(text).expect("target CString"));
+            let mut out = ByteBuf {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            };
+            let code = config_list(
+                self.ctx(),
+                target.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                &mut out,
+            );
+            if code != ABI_OK {
+                return Err(code);
+            }
+            // SAFETY: same host-owned buffer contract as `get_result`.
+            let text = unsafe { std::slice::from_raw_parts(out.ptr, out.len) }.to_vec();
+            config_free_buf(out);
+            serde_json::from_slice(&text).map_err(|_| ABI_ERR_CONFIG_INVALID)
+        }
+    }
+
+    fn commit(module: &str, key: &str, value_json: &str) {
+        crate::config_api::set(
+            module.to_string(),
+            key.to_string(),
+            value_json.to_string(),
+            "user".to_string(),
+        )
+        .expect("commit config change");
+    }
+
+    fn build_fixture_so(name: &str, min_host_abi: u32) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/module_config_fixtures/unit");
+        std::fs::create_dir_all(&dir).expect("create unit fixture dir");
+        let output = dir.join(format!("libgstore_mod_{name}.so"));
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config_module.c");
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        let status = std::process::Command::new(cc)
+            .args(["-shared", "-fPIC", "-std=c99", "-Wall", "-Wextra", "-Werror"])
+            .arg(format!("-DFIXTURE_NAME={name}"))
+            .arg(format!("-DFIXTURE_MIN_HOST_ABI={min_host_abi}"))
+            .arg("-o")
+            .arg(&output)
+            .arg(&source)
+            .status()
+            .expect("spawn cc for unit fixture");
+        assert!(status.success(), "C fixture compile failed: {status}");
+        output
+    }
+
+    fn record_count(path: &std::path::Path, prefix: &str) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| {
+                text.lines()
+                    .filter(|line| line.starts_with(prefix))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn wait_record_count(path: &std::path::Path, prefix: &str, expected: usize) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if record_count(path, prefix) >= expected {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    fn module_config_download_only_subscriber_is_called_theme_is_not() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("routing");
+        let download = TestModule::new("download");
+        let theme = TestModule::new("theme");
+        let download_recorder = Recorder::new();
+        let theme_recorder = Recorder::new();
+        download
+            .subscribe(None, None, &download_recorder)
+            .expect("download subscription");
+        theme
+            .subscribe(None, None, &theme_recorder)
+            .expect("theme subscription");
+
+        commit("download", "max_concurrent", "5");
+
+        assert_eq!(download_recorder.keys(), vec!["download.max_concurrent"]);
+        assert!(theme_recorder.changes().is_empty(), "theme must not observe download");
+    }
+
+    #[test]
+    fn module_config_exact_key_receives_only_that_key() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("exact");
+        let download = TestModule::new("download");
+        let recorder = Recorder::new();
+        download
+            .subscribe(None, Some("max_concurrent"), &recorder)
+            .expect("exact-key subscription");
+
+        commit("download", "max_concurrent", "6");
+        commit("download", "default_connections", "3");
+
+        assert_eq!(recorder.keys(), vec!["download.max_concurrent"]);
+    }
+
+    #[test]
+    fn module_config_foreign_whole_module_is_not_a_blanket_grant() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("foreign-owner");
+        let foreign = TestModule::new("download");
+        let recorder = Recorder::new();
+        foreign
+            .subscribe(Some("theme"), None, &recorder)
+            .expect("foreign whole-module subscription");
+
+        commit("theme", "config", r#"{"dark":true}"#);
+        assert!(
+            recorder.changes().is_empty(),
+            "a later Owner key must not reach a foreign key=None subscription"
+        );
+
+        commit("theme", "mode", "2");
+        assert_eq!(recorder.keys(), vec!["theme.mode"]);
+    }
+
+    #[test]
+    fn module_config_public_read_cross_module_change_is_delivered() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("publicread");
+        let foreign = TestModule::new("download");
+        let recorder = Recorder::new();
+        foreign
+            .subscribe(Some("theme"), Some("mode"), &recorder)
+            .expect("PublicRead exact-key subscription");
+
+        commit("theme", "mode", "1");
+
+        assert_eq!(recorder.keys(), vec!["theme.mode"]);
+    }
+
+    #[test]
+    fn module_config_unsubscribe_validates_ownership_and_stale_generations() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("tokens");
+        let download = TestModule::new("download");
+        let other = TestModule::new("theme");
+        let recorder = Recorder::new();
+        let first = download
+            .subscribe(None, None, &recorder)
+            .expect("first subscription");
+        let second = download
+            .subscribe(None, None, &recorder)
+            .expect("second subscription");
+
+        assert_eq!(
+            other.unsubscribe(first),
+            ABI_ERR_CONFIG_BAD_TOKEN,
+            "a foreign module cannot unsubscribe another module's token"
+        );
+        assert_eq!(download.unsubscribe(second), ABI_OK);
+        commit("download", "max_concurrent", "7");
+        assert_eq!(recorder.keys(), vec!["download.max_concurrent"]);
+
+        clear_module_config_sinks();
+        assert_eq!(
+            download.unsubscribe(first),
+            ABI_ERR_CONFIG_BAD_TOKEN,
+            "a stale-generation token is gone after reset"
+        );
+        commit("download", "max_concurrent", "8");
+        assert_eq!(recorder.keys().len(), 1, "no delivery after clearing sinks");
+    }
+
+    struct UnloadRecorder {
+        recorder: Arc<Recorder>,
+        binding: Arc<ModuleConfigBinding>,
+        module: Arc<dyn GStoreModule>,
+    }
+
+    extern "C" fn record_then_unload(user: *mut c_void, change: *const c_char) -> c_int {
+        if user.is_null() {
+            return ABI_ERR_CONFIG_INVALID;
+        }
+        // SAFETY: the test leaks this UnloadRecorder for the callbacks' lifetime.
+        let state = unsafe { &*(user as *const UnloadRecorder) };
+        let code = record(Arc::as_ptr(&state.recorder) as *mut c_void, change);
+        state.binding.begin_unload(Arc::clone(&state.module));
+        code
+    }
+
+    struct CountingModule {
+        shutdowns: Arc<AtomicUsize>,
+        config: Option<Arc<ModuleConfigBinding>>,
+    }
+
+    impl GStoreModule for CountingModule {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+        fn create(&self, _config: &[u8]) -> Result<u64, ModuleError> {
+            Ok(1)
+        }
+        fn call(
+            &self,
+            _instance: Option<u64>,
+            method: &str,
+            _payload: &[u8],
+        ) -> Result<Vec<u8>, ModuleError> {
+            Err(ModuleError::method_not_found(method))
+        }
+        fn destroy(&self, _instance: u64) -> Result<(), ModuleError> {
+            Ok(())
+        }
+        fn shutdown(&self) {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        }
+        fn config_binding(&self) -> Option<Arc<ModuleConfigBinding>> {
+            self.config.clone()
+        }
+    }
+
+    #[test]
+    fn module_config_unload_during_delivery_defers_shutdown_and_stops_delivery() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("unload");
+        let download = TestModule::new("download");
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let module: Arc<dyn GStoreModule> = Arc::new(CountingModule {
+            shutdowns: Arc::clone(&shutdowns),
+            config: None,
+        });
+        let state = Box::into_raw(Box::new(UnloadRecorder {
+            recorder: Recorder::new(),
+            binding: Arc::clone(&download.binding),
+            module: Arc::clone(&module),
+        }));
+        download
+            .subscribe_with(None, None, state.cast(), record_then_unload)
+            .expect("unloading subscription");
+
+        commit("download", "max_concurrent", "9");
+        // SAFETY: state is leaked for the module lifetime (test scope).
+        let delivered = unsafe { &*state }.recorder.keys();
+        assert_eq!(delivered, vec!["download.max_concurrent"]);
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1, "deferred shutdown ran once");
+        assert!(download.binding.is_unloaded());
+
+        commit("download", "max_concurrent", "10");
+        // SAFETY: same leaked state.
+        assert_eq!(
+            unsafe { &*state }.recorder.keys().len(),
+            1,
+            "no callback after unload"
+        );
+    }
+
+    #[test]
+    fn module_config_detach_revokes_subscriptions_without_shutdown() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("detach");
+        let download = TestModule::new("download");
+        let recorder = Recorder::new();
+        download
+            .subscribe(None, None, &recorder)
+            .expect("subscription");
+
+        let generation = download.binding.generation();
+        download.binding.detach();
+
+        assert!(download.binding.is_unloaded());
+        assert!(download.binding.generation() > generation);
+        assert!(lock_registry().subscriptions.is_empty());
+        download.binding.detach();
+        assert!(lock_registry().subscriptions.is_empty());
+
+        commit("download", "max_concurrent", "5");
+        assert!(recorder.changes().is_empty(), "detached binding must not deliver");
+    }
+
+    #[test]
+    fn module_config_adapter_drop_keeps_library_mapped_during_callback() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("drop-race");
+        let dir = std::env::temp_dir().join(format!(
+            "gstore_drop_race_{}_{}",
+            std::process::id(),
+            NEXT_MODULE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create drop-race dir");
+        let record = dir.join("deliveries.log");
+        std::env::set_var("GS_CONFIG_RECORD_FILE", &record);
+        std::env::set_var("GS_CONFIG_SLOW_MS", "1200");
+
+        let so = build_fixture_so("download", 5);
+        let adapter =
+            DlModuleAdapter::load_with_module_id(&so, 77_001).expect("load ABI v5 fixture");
+        let binding = adapter.config_binding().expect("config binding");
+        let setter = std::thread::spawn(|| commit("download", "max_concurrent", "5"));
+        assert!(
+            wait_record_count(&record, "enter ", 1),
+            "callback must enter before the adapter is dropped"
+        );
+
+        // The callback is still inside the .so while Drop::drop runs. The
+        // binding's process-lifetime library keepalive must keep the code page
+        // mapped; no wait/shutdown is needed.
+        drop(adapter);
+        setter.join().expect("setter joined");
+
+        assert!(binding.is_unloaded());
+        assert!(
+            binding
+                .library
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some(),
+            "detach must not clear the library keepalive"
+        );
+        assert_eq!(
+            record_count(&record, "deliver "),
+            1,
+            "the in-flight callback must complete after the adapter was dropped"
+        );
+
+        commit("download", "max_concurrent", "3");
+        assert_eq!(
+            record_count(&record, "deliver "),
+            1,
+            "detached binding must not receive later changes"
+        );
+
+        std::env::remove_var("GS_CONFIG_RECORD_FILE");
+        std::env::remove_var("GS_CONFIG_SLOW_MS");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_config_unref_clears_subscriptions_and_runs_shutdown() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("unref");
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let binding = ModuleConfigBinding::new(42_424, "download");
+        let module = Arc::new(CountingModule {
+            shutdowns: Arc::clone(&shutdowns),
+            config: Some(Arc::clone(&binding)),
+        });
+        let manager = crate::manager::ModuleManager::new();
+        let id = manager.insert_module(Some(42_424), module.clone(), false);
+        let recorder = Recorder::new();
+        let vtable = build_config_vtable(&binding);
+        let mut token = 0u64;
+        let user = Arc::into_raw(Arc::clone(&recorder)) as *mut c_void;
+        assert_eq!(
+            config_subscribe(
+                vtable.context,
+                std::ptr::null(),
+                std::ptr::null(),
+                user,
+                Some(record),
+                &mut token,
+            ),
+            ABI_OK
+        );
+
+        manager.unref(id);
+
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+        assert!(binding.is_unloaded());
+        let registry = lock_registry();
+        assert!(
+            registry.subscriptions.is_empty(),
+            "unref must clear every subscription owned by the module"
+        );
+    }
+
+    #[test]
+    fn module_config_boundary_rejects_malformed_and_enforces_visibility() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("boundary");
+        let download = TestModule::new("download");
+        let theme = TestModule::new("theme");
+        let webdav = TestModule::new("webdav");
+
+        assert_eq!(
+            download.set("max_concurrent", "{not json"),
+            ABI_ERR_CONFIG_INVALID,
+            "malformed JSON must be rejected at the boundary"
+        );
+        assert_eq!(
+            download.set("max_concurrent", r#""not-an-int""#),
+            ABI_ERR_CONFIG_INVALID,
+            "wrong JSON type must be rejected"
+        );
+        assert_eq!(
+            download.get(None, "nope").unwrap_err(),
+            ABI_ERR_CONFIG_NOT_FOUND
+        );
+        assert_eq!(
+            download.get(Some("theme"), "config").unwrap_err(),
+            ABI_ERR_CONFIG_FORBIDDEN,
+            "foreign Owner reads are forbidden"
+        );
+        assert_eq!(
+            download.get(Some("webdav"), "password").unwrap_err(),
+            ABI_ERR_CONFIG_FORBIDDEN,
+            "foreign Secret reads are forbidden"
+        );
+
+        assert_eq!(webdav.set("password", r#""s3cret""#), ABI_OK);
+        assert_eq!(
+            webdav.get(None, "password").expect("own raw secret"),
+            serde_json::json!("s3cret"),
+            "own-module reads are trusted raw"
+        );
+        assert_eq!(
+            download.get(Some("webdav"), "password").unwrap_err(),
+            ABI_ERR_CONFIG_FORBIDDEN
+        );
+
+        let listed = theme.list(None).expect("own list");
+        let arrays = listed.as_array().expect("list array");
+        assert!(arrays.iter().any(|item| item["key"] == "mode"));
+        assert!(arrays.iter().any(|item| item["key"] == "config"));
+
+        let foreign = download.list(Some("theme")).expect("foreign list");
+        let arrays = foreign.as_array().expect("list array");
+        assert!(
+            arrays.iter().all(|item| item["visibility"] == "public_read"),
+            "foreign list exposes only PublicRead entries: {foreign}"
+        );
+        assert!(arrays.iter().any(|item| item["key"] == "mode"));
+        assert!(arrays.iter().all(|item| item["key"] != "config"));
+    }
+
+    #[test]
+    fn module_config_module_without_subscription_or_on_event_does_not_break_write() {
+        let _guard = serial();
+        clear_module_config_sinks();
+        let _fixture = Fixture::new("no-sub");
+        let theme = TestModule::new("theme");
+        let recorder = Recorder::new();
+        theme
+            .subscribe(None, None, &recorder)
+            .expect("theme subscription");
+
+        assert_eq!(
+            crate::config_api::set(
+                "download".to_string(),
+                "max_concurrent".to_string(),
+                "4".to_string(),
+                "module".to_string(),
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+            Ok(()),
+            "a write with no on_event/subscriber must still commit"
+        );
+        assert!(recorder.changes().is_empty());
+    }
+
 }
