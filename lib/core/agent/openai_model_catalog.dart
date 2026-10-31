@@ -61,6 +61,47 @@ Future<List<String>> fetchOpenAiModelIds({
   }
 }
 
+/// 把（可能是历史字符串编码的）原始缓存值展开成 JSON 结构。
+///
+/// `agent.model_catalog` 注册为 `json` 类型（C6）：当前格式是已解码的 `Map`；
+/// 旧数据是 `writeString(jsonEncode(...))` 落盘的字符串（可能双重编码）。
+Object? _decodeCatalogJson(Object? raw) {
+  var value = raw;
+  for (var depth = 0; depth < 2 && value is String; depth++) {
+    final text = value.trim();
+    if (text.isEmpty) return null;
+    final looksJson = text.startsWith('{') ||
+        text.startsWith('[') ||
+        text.startsWith('"');
+    if (!looksJson) return null;
+    try {
+      value = jsonDecode(text);
+    } catch (_) {
+      return null;
+    }
+  }
+  return value;
+}
+
+/// 归一化缓存值：`{baseUrl: [modelId, ...]}`。
+({Map<String, List<String>> cache, bool fromLegacyString})
+_decodeCatalogValue(Object? raw) {
+  final decoded = _decodeCatalogJson(raw);
+  // 仅当历史字符串成功解出 map 时才迁移；畸形数据保持原样。
+  final fromLegacyString = raw is String && decoded is Map;
+  if (decoded is! Map) {
+    return (cache: <String, List<String>>{}, fromLegacyString: false);
+  }
+  final result = <String, List<String>>{};
+  decoded.forEach((key, value) {
+    if (value is List) {
+      result[key.toString()] =
+          value.map((e) => e.toString()).toList(growable: false);
+    }
+  });
+  return (cache: result, fromLegacyString: fromLegacyString);
+}
+
 /// 读取全部已缓存的模型列表（key = [modelCatalogKey] 的结果）。
 ///
 /// 存储不可用（测试环境未初始化等）或内容损坏时返回空 map，不影响表单使用预设。
@@ -68,22 +109,28 @@ Future<Map<String, List<String>>> loadModelCatalogCache() async {
   try {
     final store = ConfigStore.instance;
     await store.initialize();
-    final raw = await store.readString(ConfigKeys.agentModelCatalog);
-    if (raw == null || raw.isEmpty) return {};
-    final decoded = jsonDecode(raw);
-    if (decoded is! Map) return {};
-    final result = <String, List<String>>{};
-    decoded.forEach((key, value) {
-      if (value is List) {
-        result[key.toString()] =
-            value.map((e) => e.toString()).toList(growable: false);
-      }
-    });
-    return result;
+    Object? raw = await store.readValue(ConfigKeys.agentModelCatalog);
+    if (raw == null || (raw is String && raw.trim().isEmpty)) {
+      // 旧数据兼容：历史版本以 JSON 字符串存于普通存储。
+      raw = await store.readString(ConfigKeys.agentModelCatalog);
+    }
+    final decoded = _decodeCatalogValue(raw);
+    if (decoded.fromLegacyString) {
+      await _writeCatalog(store, decoded.cache);
+    }
+    return decoded.cache;
   } catch (e) {
     debugPrint('模型列表: 读取缓存失败 error=$e');
     return {};
   }
+}
+
+/// 以 typed JSON（`Map<String, List<String>>`）写入缓存。
+Future<bool> _writeCatalog(
+  ConfigStore store,
+  Map<String, List<String>> cache,
+) {
+  return store.write(ConfigKeys.agentModelCatalog, cache);
 }
 
 /// 缓存某个端点拉取到的模型列表（覆盖该端点旧值）。
@@ -93,10 +140,7 @@ Future<void> cacheModelIds(String baseUrl, List<String> modelIds) async {
     await store.initialize();
     final cache = await loadModelCatalogCache();
     cache[modelCatalogKey(baseUrl)] = modelIds;
-    await store.writeString(
-      ConfigKeys.agentModelCatalog,
-      jsonEncode(cache),
-    );
+    await _writeCatalog(store, cache);
     debugPrint('模型列表: 已缓存 baseUrl=$baseUrl count=${modelIds.length}');
   } catch (e) {
     debugPrint('模型列表: 写入缓存失败 error=$e');

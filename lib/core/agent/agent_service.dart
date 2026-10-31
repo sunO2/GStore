@@ -3331,12 +3331,15 @@ class AgentService {
   /// set/clear 返回结构化结果。修改后相关功能自动生效。
   Future<String> _configManager(String action, String key, Object? value) async {
     final service = ConfigService.instance;
+    // Rust 注册表是唯一事实来源：先水合元数据，`has`/`isAgentAccessible`
+    // 才能在首次工具调用时就拿到分组 key（C2）。
+    await service.ensureReady();
     switch (action) {
       case 'list':
         final snapshots = await service.snapshots();
         if (snapshots.isEmpty) return '暂无可配置项';
         final json = jsonEncode(
-          snapshots.map((s) => s.toJson()).toList(),
+          snapshots.map(_maskedSnapshotJson).toList(),
         );
         return json;
 
@@ -3348,7 +3351,7 @@ class AgentService {
         }
         final snapshot = await service.snapshot(key);
         if (snapshot == null) return '配置 $key 未设置';
-        return jsonEncode(snapshot.toJson());
+        return jsonEncode(_maskedSnapshotJson(snapshot));
 
       case 'set':
         if (key.isEmpty) return 'set 需要 key';
@@ -3380,15 +3383,62 @@ class AgentService {
     }
   }
 
-  /// 格式化配置操作结果为结构化 JSON
+  /// Agent 工具输出脱敏（C3）。
+  ///
+  /// 敏感项（`sensitive: true`，如 `agent.models` / `webdav.password`）的当前值
+  /// 一律输出 `***`；即使底层/后端误回传明文，也绝不把明文放进工具响应。
+  Map<String, dynamic> _maskedSnapshotJson(ConfigSnapshot snapshot) {
+    final json = snapshot.toJson();
+    if (snapshot.sensitive && json['value'] != null) {
+      json['value'] = '***';
+    }
+    return json;
+  }
+
+  /// 格式化配置操作结果为结构化 JSON。
+  ///
+  /// 敏感项（C3）的 `value`、`defaultValue` 与 `message` 全部脱敏：
+  /// - `value` / `defaultValue` 一律输出 `***`；
+  /// - `message` 经 [_redactSensitiveText] 兜底，即使某后端把明文拼进
+  ///   消息体（当前 Rust/Dart 只拼 key）也不会泄露给 Agent。
   String _formatOpResult(ConfigOpResult result) {
+    final key = result.key;
+    final sensitive = key != null &&
+        (ConfigService.instance.entry(key)?.sensitive ?? false);
+    final value = sensitive && result.value != null ? '***' : result.value;
+    final defaultValue =
+        sensitive && result.defaultValue != null ? '***' : result.defaultValue;
     return jsonEncode({
       'success': result.success,
-      'message': result.message,
-      'key': result.key,
-      'value': result.value,
-      'defaultValue': result.defaultValue,
+      'message': _redactSensitiveText(
+        result.message,
+        sensitive: sensitive,
+        secrets: <Object?>[result.value, result.defaultValue],
+      ),
+      'key': key,
+      'value': value,
+      'defaultValue': defaultValue,
     });
+  }
+
+  /// 敏感项文本兜底：把可能出现在 [message] 里的明文值替换为 `***`。
+  ///
+  /// 操作 message 目前只包含 key（不含值），因此正常情况下原样返回；本方法
+  /// 是 C3 的第二层防护，专门防止后端/未来改动把值拼进 message。
+  String _redactSensitiveText(
+    String message, {
+    required bool sensitive,
+    required List<Object?> secrets,
+  }) {
+    if (!sensitive || message.isEmpty) return message;
+    var out = message;
+    for (final secret in secrets) {
+      if (secret == null) continue;
+      final text = secret is String ? secret : jsonEncode(secret);
+      if (text.isEmpty || text == '***' || !out.contains(text)) continue;
+      out = out.replaceAll(text, '***');
+    }
+    return out;
   }
 
   /// 主题控制

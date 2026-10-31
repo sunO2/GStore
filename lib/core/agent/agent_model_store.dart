@@ -1,4 +1,6 @@
 import 'dart:convert';
+
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -115,9 +117,66 @@ class AgentModel {
   }
 }
 
+/// 解码 `agent.models` 的存储原始值（**绝不抛**）。
+///
+/// 兼容三种历史形态（C6）：
+/// * `List`（已解码的 typed JSON，当前格式）→ 逐条 [AgentModel.fromJson]；
+/// * `String`（旧 `readString`/`writeString` 落盘的 JSON 字符串）→ 解码一次；
+/// * `String` 再套一层字符串（历史双重编码）→ 再解码一次。
+///
+/// 非列表 / 非法 JSON / 损坏条目 → 跳过（返回空或部分列表）。
+({List<AgentModel> models, bool fromLegacyString}) decodeAgentModelsValue(
+  Object? raw,
+) {
+  final decoded = _decodeAgentModelsJson(raw);
+  // 仅当历史字符串**成功解出列表**时才迁移；畸形数据保持原样（不覆盖用户数据）。
+  final fromLegacyString = raw is String && decoded is List;
+  if (decoded is! List) {
+    return (models: <AgentModel>[], fromLegacyString: false);
+  }
+  final models = <AgentModel>[];
+  for (final item in decoded) {
+    if (item is! Map) continue;
+    try {
+      models.add(AgentModel.fromJson(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      ));
+    } catch (error) {
+      debugPrint('[AgentModelStore] 跳过损坏模型条目: $error');
+    }
+  }
+  return (models: models, fromLegacyString: fromLegacyString);
+}
+
+/// 把（可能是历史字符串编码的）原始值展开成 JSON 结构。
+Object? _decodeAgentModelsJson(Object? raw) {
+  var value = raw;
+  // 最多展开两层：单层 JSON 字符串 + 历史双重编码。
+  for (var depth = 0; depth < 2 && value is String; depth++) {
+    final text = value.trim();
+    if (text.isEmpty) return null;
+    final looksJson = text.startsWith('[') ||
+        text.startsWith('{') ||
+        text.startsWith('"');
+    if (!looksJson) return null;
+    try {
+      value = jsonDecode(text);
+    } catch (error) {
+      debugPrint('[AgentModelStore] 模型列表 JSON 解析失败，按空列表处理: $error');
+      return null;
+    }
+  }
+  return value;
+}
+
 /// 模型存储管理器
 /// 管理多个模型配置，支持选择当前使用的模型
 /// 存储走统一 ConfigService/ConfigStore（key 见 ConfigKeys）
+///
+/// `agent.models` 注册为 `json` 类型（C6）：写入用 [ConfigStore.write] 落
+/// `List<Map>`，读取用 [ConfigStore.readValue] 拿回 typed JSON；只有旧数据
+/// （历史 `writeString` 编码的字符串）才走 [ConfigStore.readString] 兼容路径
+/// 并在读取时**一次性**迁移为 typed 列表。
 class AgentModelStore {
 
   /// 所有模型配置
@@ -140,39 +199,54 @@ class AgentModelStore {
     return null;
   }
 
-  /// 从本地存储加载
+  /// 从本地存储加载（typed JSON，含 API Key 明文——供 LLM 客户端使用）
   static Future<AgentModelStore> load() async {
     final store = ConfigStore.instance;
     await store.initialize();
-    final raw = await store.readString(ConfigKeys.agentModels);
-    List<AgentModel> models = [];
-    if (raw != null && raw.isNotEmpty) {
-      try {
-        final list = jsonDecode(raw) as List;
-        models = list
-            .map((e) => AgentModel.fromJson(e as Map<String, dynamic>))
-            .toList();
-      } catch (e) {
-        // 解析失败则返回空列表
-      }
-    }
+    final selected = await store.readString(ConfigKeys.agentSelectedModelId);
     return AgentModelStore(
-      models: models,
-      selectedId: await store.readString(ConfigKeys.agentSelectedModelId),
+      models: await _readModels(store),
+      // 不同后端对「未设置」返回 null 或默认空串；空串等价于无选中。
+      selectedId: (selected == null || selected.isEmpty) ? null : selected,
     );
+  }
+
+  /// 读取模型列表并完成旧格式的一次性迁移。
+  static Future<List<AgentModel>> _readModels(ConfigStore store) async {
+    // 首选 typed JSON（List<Map>）；readValue 为 null 时才回退旧字符串 shim。
+    Object? raw = await store.readValue(ConfigKeys.agentModels);
+    if (raw == null || (raw is String && raw.trim().isEmpty)) {
+      raw = await store.readString(ConfigKeys.agentModels);
+    }
+    final decoded = decodeAgentModelsValue(raw);
+    if (decoded.fromLegacyString) {
+      // 旧字符串编码 → 迁移为 typed List<Map>（只写一次；后续读走 readValue）。
+      await _writeModels(store, decoded.models);
+    }
+    return decoded.models;
   }
 
   /// 保存到本地存储
   Future<void> save() async {
     final store = ConfigStore.instance;
     await store.initialize();
-    final raw = jsonEncode(models.map((e) => e.toJson()).toList());
-    await store.writeString(ConfigKeys.agentModels, raw);
+    await _writeModels(store, models);
     if (selectedId != null) {
       await store.writeString(ConfigKeys.agentSelectedModelId, selectedId!);
     } else {
       await store.remove(ConfigKeys.agentSelectedModelId);
     }
+  }
+
+  /// 以 typed JSON（`List<Map>`）写入模型列表。
+  static Future<void> _writeModels(
+    ConfigStore store,
+    List<AgentModel> models,
+  ) {
+    return store.write(
+      ConfigKeys.agentModels,
+      models.map((e) => e.toJson()).toList(),
+    );
   }
 
   /// 添加模型（同 id 已存在则更新；未指定选中时自动选中）
@@ -219,9 +293,7 @@ class AgentModelStore {
   }
 
   Future<void> _persistModels() async {
-    final store = ConfigStore.instance;
-    final raw = jsonEncode(models.map((e) => e.toJson()).toList());
-    await store.writeString(ConfigKeys.agentModels, raw);
+    await _writeModels(ConfigStore.instance, models);
   }
 
   /// 清空所有
