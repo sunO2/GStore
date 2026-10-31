@@ -18,7 +18,7 @@ import 'package:gstore/core/download/download_pending_hint.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/config/config_initializer.dart';
-import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/config/migration/config_migration_tool.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
@@ -203,7 +203,8 @@ Future<void> _applyHighestRefreshRate() async {
   if (!Platform.isAndroid) return;
   try {
     const channel = MethodChannel('gstore/display_refresh');
-    final result = await channel.invokeMethod<dynamic>('applyHighestRefreshRate');
+    final result =
+        await channel.invokeMethod<dynamic>('applyHighestRefreshRate');
     appLog.info('高刷新率：已请求设备最高刷新率', data: {
       'result': result?.toString() ?? 'null',
     });
@@ -284,7 +285,8 @@ Future<void> _initModuleManager(Stopwatch sw) async {
   try {
     await manager.initializeAll();
     initSw.stop();
-    appLog.info('_initModuleManager: 全部模块初始化完成（${initSw.elapsedMilliseconds}ms）');
+    appLog
+        .info('_initModuleManager: 全部模块初始化完成（${initSw.elapsedMilliseconds}ms）');
   } catch (e, st) {
     initSw.stop();
     appLog.error('_initModuleManager: 模块初始化异常（降级继续启动）', data: {
@@ -319,17 +321,9 @@ main() async {
   bootMark('manage-space');
 
   // 电池/功耗历史采样器（Scene `power8` 等价，todo 19）：**默认 OFF**，仅当用户
-  // 显式开启性能监控（持久化 `perf.history.enabled`）时启动；未开启时**不启动、
-  // 也不实例化 Rust perf 模块**（详见 _startBatteryHistoryRecorderIfEnabled）。
-  // best-effort：读取配置失败按关闭处理，绝不阻塞或崩溃启动。实测 0ms。
-  //
-  // 门控需要持久化开关（ConfigStore）；今天它在 ConfigInitializer 之后执行，
-  // 首帧优先改造后 config-init 挪到首帧后，故此处先做一次轻量存储初始化
-  //（幂等，config-init 再调用为空操作），保持「用户开启后冷启动仍能恢复采样」
-  // 的既有语义。实测 <2ms。
-  await ConfigStore.instance.initialize();
-  await _startBatteryHistoryRecorderIfEnabled();
-  bootMark('battery-history');
+  // 显式开启性能监控（持久化 `perf.history.enabled`）时启动。它读取持久化配置，
+  // 因此必须晚于 Rust 核心 + 配置初始化（见 [_bootAfterFirstFrame] 的确定性
+  // 序列），绝不在这里、核心就绪之前读配置/FFI。
 
   // ProviderScope：Riverpod 根容器（已迁移页面使用 ConsumerWidget/Notifier）。
   // 树结构不变，整体移入 [_AppRoot] 只是为了让 runApp 更早被调用。
@@ -338,20 +332,199 @@ main() async {
   WidgetsBinding.instance.addPostFrameCallback((_) => bootMark('first-frame'));
 
   // 首帧后的启动装配：不阻塞首帧，完成后经 [StartupGate] 放行首屏列表加载。
+  // 配置迁移 / 配置初始化 / 本地库迁移 / 模块注册全部在同一条 awaited 序列内，
+  // 不存在额外的 post-frame 迁移触发（Todo 23 / C13）。
   unawaited(_bootAfterFirstFrame(bootSw));
+}
 
-  // 需要 navigator 已挂载的一次性迁移（进度框只能在 runApp 之后显示）：
-  // `local_db → gstore` 遗留数据迁移。非致命、幂等，失败不影响启动。
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(CoreBootstrap.runDeferredMigrations());
+/// 配置迁移进度框的载荷（与 [AppDialogs.showProgress] 的监听类型一致）。
+typedef BootMigrationProgress = ({int done, int total, String message});
+
+/// 配置启动阶段的可注入步骤（仅测试使用；生产全部使用默认实现）。
+///
+/// 生产序列（Todo 23 / C13，确定性、单一路径）：
+///   核心就绪 → 配置迁移 → 配置初始化 → 本地库迁移 → 电池历史采样器 →
+///   `registerService`。
+@visibleForTesting
+class BootConfigPhaseSeams {
+  const BootConfigPhaseSeams({
+    this.startCore,
+    this.migrateConfig,
+    this.initializeConfig,
+    this.runDeferredMigrations,
+    this.startBatteryHistory,
+    this.navigatorReady,
+    this.showMigrationProgress,
+    this.dismissMigrationProgress,
   });
+
+  final Future<void> Function()? startCore;
+  final Future<ConfigMigrationReport> Function(
+      ConfigMigrationProgress? onProgress)? migrateConfig;
+  final Future<void> Function()? initializeConfig;
+  final Future<void> Function()? runDeferredMigrations;
+  final Future<void> Function()? startBatteryHistory;
+  final Future<bool> Function()? navigatorReady;
+  final void Function(ValueNotifier<BootMigrationProgress> progress)?
+      showMigrationProgress;
+  final void Function()? dismissMigrationProgress;
+}
+
+/// 运行「核心就绪之后」的配置启动阶段（生产唯一调用点：[_bootAfterFirstFrame]）。
+///
+/// 每一步都 `await`，顺序固定；测试通过 [BootConfigPhaseSeams] 注入记录器，
+/// 不需要真实的 FFI / platform channel。迁移失败只记录日志，后续步骤照常执行，
+/// 因此启动始终可用（下次启动会因缺少 marker 重试迁移）。
+@visibleForTesting
+Future<void> runBootConfigPhase({
+  BootConfigPhaseSeams seams = const BootConfigPhaseSeams(),
+  void Function(String node)? mark,
+}) async {
+  await (seams.startCore ?? _defaultStartCore)();
+  mark?.call('core-ready');
+
+  await _runConfigMigrationWithProgress(seams);
+  mark?.call('config-migration');
+
+  await (seams.initializeConfig ?? ConfigInitializer.initialize)();
+  mark?.call('config-init');
+
+  await (seams.runDeferredMigrations ?? CoreBootstrap.runDeferredMigrations)();
+  mark?.call('deferred-migrations');
+
+  await (seams.startBatteryHistory ?? _startBatteryHistoryRecorderIfEnabled)();
+  mark?.call('battery-history');
+}
+
+Future<void> _defaultStartCore() =>
+    CoreBootstrap.start(includeInventory: false);
+
+Future<ConfigMigrationReport> _defaultConfigMigration(
+  ConfigMigrationProgress? onProgress,
+) =>
+    ConfigMigrationTool.run(onProgress: onProgress);
+
+/// 生产进度框显示：**命名参数**调用，避免 tear-off 被 `??` 推断成裸
+/// [Function] 后按位置参数调用而抛 `NoSuchMethodError`。
+void _defaultShowMigrationProgress(ValueNotifier<BootMigrationProgress> p) =>
+    AppDialogs.showProgress(progress: p);
+
+/// 生产进度框关闭（navigator 未挂载时静默 no-op）。
+void _defaultDismissMigrationProgress() => AppDialogs.dismissLoading();
+
+/// 配置迁移 + 进度框（Todo 23）。
+///
+/// 进度框依赖 [appNavigatorKey]；先等一帧结束并确认导航上下文存在。上下文
+/// 不可用时**跳过进度框**并继续迁移——绝不因为 UI 不可用而放弃迁移/拖垮启动。
+///
+/// UI 层只是装饰：显示/关闭进度框的异常都在这里被吞掉并降级为"无进度框"，
+/// 绝不能中断迁移，也绝不能向上抛出拖垮整个启动阶段。
+Future<void> _runConfigMigrationWithProgress(BootConfigPhaseSeams seams) async {
+  final progress = ValueNotifier<BootMigrationProgress>(
+    (done: 0, total: 0, message: '正在迁移配置数据…'),
+  );
+  var sheetShown = false;
+  try {
+    final navigatorReady =
+        await (seams.navigatorReady ?? _navigatorReadyAfterFrame)();
+    if (navigatorReady) {
+      // 两侧都是 `void Function(ValueNotifier<...>)`，`??` 不会退化成裸
+      // Function；且这次调用在 try 内，显示失败只降级不抛出。
+      try {
+        (seams.showMigrationProgress ?? _defaultShowMigrationProgress)(
+          progress,
+        );
+        sheetShown = true;
+      } catch (error, stackTrace) {
+        appLog.warning('配置迁移：进度框显示失败，继续无进度框迁移', data: {
+          'error': error.toString(),
+          'stack': stackTrace.toString(),
+        });
+      }
+    } else {
+      appLog.warning('配置迁移：导航尚未挂载，跳过进度框（迁移继续，不影响启动）');
+    }
+  } catch (error, stackTrace) {
+    // 等待帧/探测导航本身失败也按"无进度框"处理。
+    appLog.warning('配置迁移：导航就绪检查失败，跳过进度框（迁移继续）', data: {
+      'error': error.toString(),
+      'stack': stackTrace.toString(),
+    });
+  }
+
+  try {
+    final report = await (seams.migrateConfig ?? _defaultConfigMigration)(
+      (done, total) {
+        progress.value = (
+          done: done,
+          total: total,
+          message: '正在迁移配置数据…',
+        );
+      },
+    );
+    appLog.info('配置迁移完成', data: {
+      'alreadyDone': report.alreadyDone,
+      'coreReady': report.coreReady,
+      'totalStorageKeys': report.totalStorageKeys,
+      'applied': report.applied,
+      'unchanged': report.unchanged,
+      'failed': report.failed,
+      'verifyFailures': report.verifyFailures,
+      'markerWritten': report.markerWritten,
+      'secretScanClean': report.secretScanClean,
+      'errorCode': report.errorCode,
+    });
+    if (!report.success && !report.alreadyDone) {
+      appLog.warning('配置迁移未完成（非致命）：旧键保留，下次启动重试');
+    }
+  } catch (error, stackTrace) {
+    // ConfigMigrationTool.run 自身不抛；这里兜底，绝不让迁移拖垮启动。
+    appLog.error('配置迁移失败（非致命，下次启动重试）', data: {
+      'error': error.toString(),
+      'stack': stackTrace.toString(),
+    });
+  } finally {
+    if (sheetShown) {
+      try {
+        (seams.dismissMigrationProgress ?? _defaultDismissMigrationProgress)();
+      } catch (error, stackTrace) {
+        // 关闭进度框失败绝不能影响迁移结果或后续启动步骤。
+        appLog.warning('配置迁移：进度框关闭失败（已忽略）', data: {
+          'error': error.toString(),
+          'stack': stackTrace.toString(),
+        });
+      }
+    }
+    try {
+      progress.dispose();
+    } catch (_) {
+      // dispose 是 best-effort：绝不因为清理失败而中断启动。
+    }
+  }
+}
+
+/// 等待一帧结束并确认导航已挂载（进度框依赖 [appNavigatorKey]）。
+///
+/// 首帧已渲染且导航就绪时立即返回 `true`（零等待）；否则最多再等一帧。
+/// 仍无上下文时返回 `false`，调用方跳过进度框但继续迁移。
+Future<bool> _navigatorReadyAfterFrame() async {
+  if (appNavigatorKey.currentContext != null) return true;
+  try {
+    await WidgetsBinding.instance.endOfFrame.timeout(
+      const Duration(seconds: 2),
+    );
+  } catch (_) {
+    // 无可用帧（例如无 UI 宿主）时按未挂载处理。
+  }
+  return appNavigatorKey.currentContext != null;
 }
 
 /// 首帧之后执行原本位于 `runApp` 之前的昂贵启动装配。
 ///
-/// 顺序与拆分前保持一致：高刷 → 前台任务端口 / 版本 / debugPrint 重定向 →
-/// 核心自举 → 配置初始化 → 模块注册。失败只记录日志；`finally` 无论如何都
-/// 放行 [StartupGate]，保证 UI 不会永久停在 loading。
+/// 顺序：高刷 → 前台任务端口 / 版本 / debugPrint 重定向 →
+/// 核心自举 → 配置迁移 → 配置初始化 → 本地库迁移 → 电池历史采样器 →
+/// 模块注册。失败只记录日志；`finally` 无论如何都放行 [StartupGate]，
+/// 保证 UI 不会永久停在 loading。
 Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
   void bootMark(String node) =>
       appLog.info('⏱️ boot: $node elapsedMs=${bootSw.elapsedMilliseconds}');
@@ -381,22 +554,19 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     FlutterForegroundTask.initCommunicationPort();
     bootMark('fg-task-port');
 
-    // 核心自举（Todo 5 / 计划 Decision 10）：把平台事实 + 已安装清单推给 Rust
-    // 内核。**顺序约束**：必须早于任何 `UpdateApi` / `InstallApi` 使用（两个门面
-    // 都是惰性建句柄，模块初始化 / 更新检查会在 registerService 期间触发），故放在
-    // 配置初始化与 registerService 之前。失败是非致命的：CoreBootstrap.ready 保持
-    // false，旧路径（flags 全 false）继续权威，启动不崩溃。
+    // 核心自举 → 配置迁移 → 配置初始化 → 本地库迁移 → 电池历史采样器：
+    // 单条 awaited 序列（Todo 23 / C13），无额外 post-frame 迁移触发。
+    //
+    // **顺序约束**：核心必须早于任何配置/FFI 读取（`ConfigApi` 依赖已初始化的
+    // `CoreApi`）；配置迁移必须在配置初始化之前，先把旧 SharedPreferences /
+    // secure 键导入 Rust；配置初始化必须在 registerService 之前（模块开关预置
+    // 需要按持久化配置读值）；电池历史采样器同样在配置初始化之后读取开关。
     //
     // 清单推送不在这条关键路径上：原先的 `await CoreBootstrap.start();` 会同步
     // 等待 list-installed（真机 ≈314ms），而首页列表并不需要清单；现在只等事实 +
     // catalog，清单在后台推送（完成后再刷新更新状态），列表可提前 ~300ms 加载。
-    await CoreBootstrap.start(includeInventory: false);
+    await runBootConfigPhase(mark: bootMark);
 
-    // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
-    // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
-    //（_initModuleManager 预置禁用）需要按持久化开关读配置。
-    await ConfigInitializer.initialize();
-    bootMark('config-init');
     await registerService();
     bootMark('register-service');
 
