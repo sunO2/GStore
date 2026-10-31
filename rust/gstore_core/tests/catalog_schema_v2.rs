@@ -134,7 +134,11 @@ fn migration_v2_contract() {
     let dir = TempDir::new("contract");
     let conn = fresh_db(dir.path());
 
-    assert_eq!(user_version(&conn), 5, "fresh schema must be V5");
+    assert_eq!(
+        user_version(&conn),
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION),
+        "fresh schema must carry the current core schema version"
+    );
     println!("user_version = {}", user_version(&conn));
 
     assert_table(
@@ -767,7 +771,10 @@ fn catalog_schema_v2_backup_before_upgrade() {
 
     let conn = db::open_at(&db_path).expect("upgrade V1 database");
 
-    assert_eq!(user_version(&conn), 5);
+    assert_eq!(
+        user_version(&conn),
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION)
+    );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM apps"), 3);
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM categories"), 2);
 
@@ -799,7 +806,10 @@ fn catalog_schema_v2_backup_before_upgrade() {
     drop(conn);
 
     let reopened = db::open_at(&db_path).expect("reopen at current version");
-    assert_eq!(user_version(&reopened), 5);
+    assert_eq!(
+        user_version(&reopened),
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION)
+    );
     let backups_after: Vec<PathBuf> = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|entry| entry.unwrap().path())

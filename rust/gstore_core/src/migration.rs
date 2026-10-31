@@ -18,7 +18,7 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 }
 
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
-pub const CORE_SCHEMA_VERSION: i32 = 5;
+pub const CORE_SCHEMA_VERSION: i32 = 6;
 
 /// Name of the refinery ledger table.
 pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";
@@ -404,6 +404,166 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(version, CORE_SCHEMA_VERSION);
+    }
+
+    fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn index_exists(conn: &rusqlite::Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn user_version(conn: &rusqlite::Connection) -> i32 {
+        conn.pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap()
+    }
+
+    fn migration_ledger_len(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {MIGRATION_LEDGER_TABLE}"),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn v6_config_schema_tables_and_indexes() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
+
+        for table in ["config_entry", "config_change_log", "config_meta"] {
+            assert!(table_exists(&conn, table), "missing table {table}");
+        }
+        assert!(
+            !table_exists(&conn, "config_module"),
+            "C25: config_module must not exist (module metadata lives in code)"
+        );
+        for index in [
+            "ix_config_entry_module",
+            "ix_config_change_log_module_key_seq",
+        ] {
+            assert!(index_exists(&conn, index), "missing index {index}");
+        }
+        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), CORE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v6_config_schema_shape_allows_secret_rows_without_plaintext() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO config_entry(module, key, value_json, secret_ref, secret_hash, \
+             value_type, revision, updated_at, updated_by) \
+             VALUES ('webdav', 'password', NULL, 'config.webdav.password.1', 'deadbeef', \
+                     'string', 1, 1700000000, 'dart')",
+            [],
+        )
+        .unwrap();
+        let (value_json, secret_ref): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT value_json, secret_ref FROM config_entry \
+                 WHERE module='webdav' AND key='password'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(value_json, None, "secret plaintext must not be persisted");
+        assert_eq!(secret_ref.as_deref(), Some("config.webdav.password.1"));
+
+        for (old, new) in [(None, Some("***")), (Some("***"), Some("***"))] {
+            conn.execute(
+                "INSERT INTO config_change_log(module, key, old_json, new_json, source, actor, at) \
+                 VALUES ('webdav', 'password', ?1, ?2, 'dart', 'app', 1700000000)",
+                rusqlite::params![old, new],
+            )
+            .unwrap();
+        }
+        let seqs: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT seq FROM config_change_log ORDER BY seq")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(seqs.len(), 2);
+        assert!(seqs[0] < seqs[1], "seq must increase: {seqs:?}");
+
+        conn.execute(
+            "INSERT INTO config_meta(k, v) VALUES ('revision', '2')",
+            [],
+        )
+        .unwrap();
+        let revision: String = conn
+            .query_row("SELECT v FROM config_meta WHERE k='revision'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(revision, "2");
+    }
+
+    #[test]
+    fn apply_core_schema_upgrades_v5_database_exactly_once() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        {
+            let mut runner = migrations::runner();
+            runner.set_migration_table_name(MIGRATION_LEDGER_TABLE);
+            runner
+                .set_target(refinery::Target::Version(5))
+                .run(&mut conn)
+                .unwrap();
+        }
+        assert_eq!(user_version(&conn), 5, "fixture must be a v5 database");
+        assert_eq!(migration_ledger_len(&conn), 5);
+        for table in ["config_entry", "config_change_log", "config_meta"] {
+            assert!(
+                !table_exists(&conn, table),
+                "v5 fixture must not already have {table}"
+            );
+        }
+        conn.execute(
+            "INSERT INTO channels(key, kind, name) VALUES ('kept', 'custom', 'Kept');",
+            [],
+        )
+        .unwrap();
+
+        apply_core_schema(&mut conn).unwrap();
+        assert_eq!(user_version(&conn), 6);
+        assert_eq!(migration_ledger_len(&conn), 6);
+        for table in ["config_entry", "config_change_log", "config_meta"] {
+            assert!(table_exists(&conn, table), "v6 must create {table}");
+        }
+
+        apply_core_schema(&mut conn).unwrap();
+        assert_eq!(user_version(&conn), 6);
+        assert_eq!(
+            migration_ledger_len(&conn),
+            6,
+            "re-open must not add ledger rows"
+        );
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channels WHERE key='kept'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, 1, "upgrade must preserve existing rows");
     }
 
     #[test]

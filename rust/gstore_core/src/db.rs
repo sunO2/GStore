@@ -596,6 +596,28 @@ mod tests {
         assert!(tables.contains(&"core_writes".to_string()));
         assert!(tables.contains(&"download_task".to_string()));
 
+        let config_tables: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
+                     ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(
+            config_tables,
+            vec![
+                "config_change_log".to_string(),
+                "config_entry".to_string(),
+                "config_meta".to_string(),
+            ],
+            "v6 must create exactly the three config tables (no config_module)"
+        );
+
         drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }

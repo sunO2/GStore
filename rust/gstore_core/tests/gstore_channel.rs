@@ -287,9 +287,12 @@ fn gstore_migration_promotes_local_db_and_is_idempotent() {
         let ledger: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .unwrap();
-        println!("after V5: user_version={version} ledger={ledger}");
-        assert_eq!(version, 5);
-        assert_eq!(ledger, 5);
+        println!("after V5+V6: user_version={version} ledger={ledger}");
+        assert_eq!(
+            version,
+            i64::from(gstore_core::migration::CORE_SCHEMA_VERSION)
+        );
+        assert_eq!(ledger, 6);
     }
 
     let members = count(

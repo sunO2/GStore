@@ -684,13 +684,17 @@ fn migration_v3_upgrades_to_v4() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5, "V3 must upgrade to user_version=5");
+    assert_eq!(
+        version,
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION),
+        "V3 must upgrade to the current core schema version"
+    );
     let ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(ledger, 5, "V4+V5 add two ledger rows");
+    assert_eq!(ledger, 6, "V4+V5+V6 add three ledger rows");
 
     for table in [
         "installed_app",
@@ -772,7 +776,10 @@ fn schema_stamps_v4_and_adds_columns() {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(
+        version,
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION)
+    );
 
     for table in [
         "installed_app",

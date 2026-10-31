@@ -1,16 +1,20 @@
--- Canonical Wave 0/1/2/3/4 schema for gstore_core.
+-- Canonical Wave 0/1/2/3/4/6 schema for gstore_core.
 --
 -- This file is the canonical DDL text. The embedded refinery migrations
 -- `rust/gstore_core/migrations/V1__core_schema.sql`,
--- `V2__catalog_update.sql`, `V3__download_install.sql`, and
--- `V4__inventory_facts.sql` must produce
+-- `V2__catalog_update.sql`, `V3__download_install.sql`,
+-- `V4__inventory_facts.sql`, `V5__gstore_channel.sql`, and
+-- `V6__config.sql` must produce
 -- exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts
 -- that by normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
 -- foreign_key_list dumps for a migrated database and for a database created by
 -- executing this file. V3 adds the durable install-state columns and the
 -- partial pending-install index on `download_task`; V4 adds installed-app
 -- inventory, the single-row platform facts, versioned frontend rules, and the
--- five install-request columns on `download_task`.
+-- five install-request columns on `download_task`; V5 promotes `local_db` into
+-- the writable `gstore` channel; V6 adds the module-scoped config tables
+-- (`config_entry`, `config_change_log`, `config_meta`) and deliberately no
+-- `config_module` table (module metadata lives in the Rust code registry).
 --
 -- refinery owns the `schema_migrations` ledger; its exact DDL is reproduced
 -- first so this file is self-contained.
@@ -308,4 +312,39 @@ CREATE TABLE IF NOT EXISTS outbox(
     updated_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 5;
+CREATE TABLE IF NOT EXISTS config_entry(
+    module TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT,
+    secret_ref TEXT,
+    secret_hash TEXT,
+    value_type TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    updated_by TEXT,
+    PRIMARY KEY(module, key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_config_entry_module
+    ON config_entry(module);
+
+CREATE TABLE IF NOT EXISTS config_change_log(
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    module TEXT NOT NULL,
+    key TEXT NOT NULL,
+    old_json TEXT,
+    new_json TEXT,
+    source TEXT,
+    actor TEXT,
+    at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS ix_config_change_log_module_key_seq
+    ON config_change_log(module, key, seq);
+
+CREATE TABLE IF NOT EXISTS config_meta(
+    k TEXT NOT NULL PRIMARY KEY,
+    v TEXT
+);
+
+PRAGMA user_version = 6;
