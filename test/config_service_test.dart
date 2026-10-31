@@ -432,6 +432,11 @@ void main() {
       final sub = service.onChange.listen(events.add);
       await _settle();
 
+      // Populate the mirror with a non-sensitive value first; otherwise the
+      // secret-absence loop below iterates an empty map and proves nothing.
+      expect(await service.getT<int>(_downloadConcurrentKey), 3);
+      expect(service.debugMirror, isNotEmpty);
+
       final result = await service.set(_webdavPasswordKey, marker);
       expect(result.success, isTrue, reason: result.message);
 
@@ -440,7 +445,9 @@ void main() {
       expect(await service.getRaw(_webdavPasswordKey), marker);
       await _settle();
 
-      // The mirror must never contain the raw secret marker.
+      // The mirror must never contain the raw secret marker (and must be
+      // non-empty, proving the scan is not vacuous).
+      expect(service.debugMirror, isNotEmpty);
       for (final value in service.debugMirror.values) {
         expect(value.toString(), isNot(contains(marker)));
       }
@@ -809,9 +816,12 @@ void main() {
       expect(raw, _rawSecretMarker);
 
       var mirrorLeak = false;
+      expect(service.debugMirror, isNotEmpty,
+          reason: 'non-sensitive reads above must populate the mirror');
       for (final value in service.debugMirror.values) {
         if (value.toString().contains(_rawSecretMarker)) mirrorLeak = true;
       }
+      print('mirror size = ${service.debugMirror.length}');
       print('mirror contains raw secret = $mirrorLeak');
       expect(mirrorLeak, isFalse,
           reason: 'secret plaintext must never enter the Dart mirror (C3)');
