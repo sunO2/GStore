@@ -21,6 +21,9 @@
 //!
 //! 事件：`download.progress`（节流）/ `download.done`（终态），载荷为 JSON 且含 `taskId`。
 
+mod config;
+#[cfg(test)]
+mod config_tests;
 pub mod dedup;
 #[cfg(test)]
 mod dedup_tests;
@@ -39,9 +42,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gstore_contract::abi::{
-    ABI_ERR_ABI_MISMATCH, ABI_ERR_DETAIL, ABI_ERR_INTERNAL, ABI_ERR_NO_INSTANCE, ABI_ERR_NULL,
-    ABI_ERR_PANIC, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
-    MIN_HOST_ABI,
+    ABI_ERR_ABI_MISMATCH, ABI_ERR_CONFIG_INVALID, ABI_ERR_DETAIL, ABI_ERR_INTERNAL,
+    ABI_ERR_NO_INSTANCE, ABI_ERR_NULL, ABI_ERR_PANIC, ABI_OK, GStoreConfigApiV1, GStoreModuleApi,
+    GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION, MIN_HOST_ABI,
 };
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::ModuleError;
@@ -52,6 +55,234 @@ use scheduler::{NewTask, Scheduler, SchedulerConfig, TaskEmitter};
 /// 事件类型（宿主/Dart 侧按此过滤）
 const EVT_PROGRESS: &str = "download.progress";
 const EVT_DONE: &str = "download.done";
+
+/// This module consumes the ABI v5 config vtable, so configuration is a hard
+/// dependency: a v4 host must reject it at probe time instead of silently
+/// loading with `has_config() == false`.
+pub const MODULE_MIN_HOST_ABI: u32 = 5;
+
+/// Own-module subscription tokens plus the most recent `network.proxy_url`.
+struct ConfigBinding {
+    /// Address of the host-owned `GStoreConfigApiV1` (lives for the module's
+    /// lifetime; stored as `usize` so the global stays `Send`).
+    api_addr: usize,
+    tokens: Vec<u64>,
+    proxy_url: Option<String>,
+}
+
+static CONFIG_BINDING: Mutex<Option<ConfigBinding>> = Mutex::new(None);
+
+/// Serialises "read the authoritative config and apply it to live schedulers"
+/// against the subscription callback. This closes the subscribe/read window:
+/// a change that commits after our read cannot be overwritten by that read,
+/// because the callback applies it after we release this lock.
+static CONFIG_APPLY_LOCK: Mutex<()> = Mutex::new(());
+
+fn config_api() -> Option<usize> {
+    CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|binding| binding.api_addr)
+}
+
+fn config_api_ref(addr: usize) -> &'static GStoreConfigApiV1 {
+    // SAFETY: the host owns the vtable for the whole module lifetime and never
+    // frees it; `addr` was produced from a live `*const GStoreConfigApiV1` in
+    // `bind_config`.
+    unsafe { &*(addr as *const GStoreConfigApiV1) }
+}
+
+fn remember_proxy(proxy_url: Option<String>) {
+    if let Some(binding) = CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_mut()
+    {
+        binding.proxy_url = proxy_url;
+    }
+}
+
+fn proxy_configured() -> bool {
+    CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|binding| binding.proxy_url.as_ref())
+        .is_some()
+}
+
+/// Host → module delivery for the two own-module subscriptions.
+///
+/// Ignoring foreign modules here is belt-and-braces: the host already filters,
+/// but the callback must never apply an `Owner`/`Secret` foreign change if one
+/// ever reached this module by mistake.
+extern "C" fn on_config_change(_user_ctx: *mut c_void, change_json: *const c_char) -> c_int {
+    if change_json.is_null() {
+        return ABI_ERR_CONFIG_INVALID;
+    }
+    // SAFETY: the host passes a NUL-terminated string that is valid only for
+    // the duration of this call; we borrow it, never retain it.
+    let Ok(text) = unsafe { CStr::from_ptr(change_json) }.to_str() else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    let Ok(change) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    if change.get("module").and_then(|v| v.as_str()) != Some(config::MODULE) {
+        return ABI_OK;
+    }
+    let Some(key) = change.get("key").and_then(|v| v.as_str()) else {
+        return ABI_ERR_CONFIG_INVALID;
+    };
+    let value = change.get("value");
+
+    let _guard = CONFIG_APPLY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut applied = false;
+    for (_, inst) in instances()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+    {
+        let mut cfg = inst.scheduler.config();
+        if config::apply_key(&mut cfg, key, value) {
+            inst.scheduler.set_config(cfg);
+            applied = true;
+        }
+    }
+    if applied {
+        log_message(1, &format!("download: applied live config change {key}"));
+    }
+    ABI_OK
+}
+
+/// Re-reads the authoritative config and applies it to every live instance.
+///
+/// Holds [`CONFIG_APPLY_LOCK`] so a callback that commits after this read wins.
+fn apply_snapshot_from(addr: usize) {
+    let api = config_api_ref(addr);
+    let _guard = CONFIG_APPLY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let snapshot = config::read_snapshot(api);
+    if snapshot.proxy_url.is_some() {
+        log_message(
+            1,
+            "download: network.proxy_url is set but not applied (GitHub URL prefix, no engine hook)",
+        );
+    }
+    remember_proxy(snapshot.proxy_url.clone());
+    for (_, inst) in instances()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+    {
+        inst.scheduler.set_config(snapshot.to_scheduler());
+    }
+}
+
+/// Writes own-module keys through the bound vtable. The host validates and
+/// publishes; the caller re-reads afterwards so it observes the authoritative
+/// result even if callbacks are asynchronous.
+fn write_own_values(api: usize, writes: &[(&str, serde_json::Value)]) -> Result<(), c_int> {
+    let api = config_api_ref(api);
+    if !config::can_write(api) {
+        return Err(ABI_ERR_CONFIG_INVALID);
+    }
+    for (key, value) in writes {
+        config::set(api, key, value)?;
+    }
+    Ok(())
+}
+
+/// Test-only reset: drops subscriptions and instances so each test starts clean.
+#[cfg(test)]
+pub fn reset_for_test() {
+    if let Some(binding) = CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    {
+        let api = config_api_ref(binding.api_addr);
+        for token in binding.tokens {
+            let _ = config::unsubscribe(api, token);
+        }
+    }
+    let _guard = CONFIG_APPLY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let drained: Vec<Arc<DownloadInstance>> = instances()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .drain()
+        .map(|(_, inst)| inst)
+        .collect();
+    for inst in drained {
+        inst.scheduler.shutdown();
+    }
+}
+
+/// Installs the config vtable: subscribes **before** the first read, then stores
+/// the binding for `create` to read from.
+fn bind_config(entry: &GStoreModuleEntry) {
+    if let Some(previous) = CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    {
+        let previous_api = config_api_ref(previous.api_addr);
+        for token in previous.tokens {
+            let _ = config::unsubscribe(previous_api, token);
+        }
+    }
+    let Some(api_ptr) = entry.config_if_present() else {
+        log_message(
+            1,
+            "download: config vtable absent — falling back to built-in defaults",
+        );
+        return;
+    };
+    // SAFETY: `config_if_present` validates `entry_size` and returns a non-null
+    // host-owned pointer that outlives the module.
+    let api = unsafe { &*api_ptr };
+    if !config::is_usable(api) {
+        log_message(
+            1,
+            "download: config vtable lacks GET capability — using built-in defaults",
+        );
+        return;
+    }
+
+    let mut tokens = Vec::new();
+    match config::subscribe(api, None, None, on_config_change) {
+        Ok(token) => tokens.push(token),
+        Err(code) => log_message(3, &format!("download: subscribe(whole module) failed: {code}")),
+    }
+    match config::subscribe(
+        api,
+        None,
+        Some(config::KEY_MULTI_SEGMENT_ENABLED),
+        on_config_change,
+    ) {
+        Ok(token) => tokens.push(token),
+        Err(code) => log_message(3, &format!("download: subscribe(multi_segment) failed: {code}")),
+    }
+
+    let installed = tokens.len();
+    *CONFIG_BINDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ConfigBinding {
+        api_addr: api_ptr as usize,
+        tokens,
+        proxy_url: None,
+    });
+    log_message(
+        1,
+        &format!("download: config vtable bound (abi v5), {installed} subscription(s)"),
+    );
+}
 
 /// 实例：调度器 + 专用 tokio Runtime（多连接分段下载）。
 ///
@@ -189,13 +420,24 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
         SchedulerConfig::default(),
         emitter,
     );
-    scheduler.start();
 
     let inst = Arc::new(DownloadInstance {
         scheduler,
         _runtime: runtime,
     });
-    instances().lock().unwrap().insert(id, inst);
+    instances()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(id, Arc::clone(&inst));
+
+    // Subscriptions were installed at register time, so this read is already
+    // "subscribe-before-read": a change committed during the window is either
+    // observed here or delivered by the callback after we release the lock.
+    if let Some(addr) = config_api() {
+        apply_snapshot_from(addr);
+    }
+
+    inst.scheduler.start();
     Ok(id)
 }
 
@@ -276,7 +518,7 @@ struct ListReq {
     statuses: Vec<i32>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ConfigReq {
     #[serde(default)]
@@ -426,26 +668,52 @@ fn call_impl(
                 Ok(br#"{"ok":true}"#.to_vec())
             }
             "download.config" => {
-                let req: ConfigReq = parse_json(bytes).unwrap_or(ConfigReq {
-                    max_concurrent: None,
-                    speed_limit_bps: None,
-                    connections: None,
-                });
-                let mut cfg = handle.config();
+                let req: ConfigReq = parse_json(bytes).unwrap_or_default();
+                let mut writes: Vec<(&str, serde_json::Value)> = Vec::new();
                 if let Some(v) = req.max_concurrent {
-                    cfg.max_concurrent = v.max(1);
+                    writes.push((config::KEY_MAX_CONCURRENT, serde_json::json!(v.max(1))));
                 }
                 if let Some(v) = req.speed_limit_bps {
-                    cfg.speed_limit_bps = if v == 0 { None } else { Some(v) };
+                    writes.push((config::KEY_SPEED_LIMIT_BPS, serde_json::json!(v)));
                 }
                 if let Some(v) = req.connections {
-                    cfg.default_connections = v.max(1);
+                    writes.push((config::KEY_DEFAULT_CONNECTIONS, serde_json::json!(v.max(1))));
                 }
-                handle.set_config(cfg.clone());
+
+                if let Some(addr) = config_api() {
+                    if !writes.is_empty() {
+                        write_own_values(addr, &writes).map_err(|code| {
+                            ModuleError::invalid_arg(format!(
+                                "download.config rejected by config store: {code}"
+                            ))
+                        })?;
+                        apply_snapshot_from(addr);
+                    }
+                } else if req.max_concurrent.is_some()
+                    || req.speed_limit_bps.is_some()
+                    || req.connections.is_some()
+                {
+                    // No host config vtable: preserve the legacy in-memory behaviour.
+                    let mut cfg = handle.config();
+                    if let Some(v) = req.max_concurrent {
+                        cfg.max_concurrent = v.max(1);
+                    }
+                    if let Some(v) = req.speed_limit_bps {
+                        cfg.speed_limit_bps = if v == 0 { None } else { Some(v) };
+                    }
+                    if let Some(v) = req.connections {
+                        cfg.default_connections = v.max(1);
+                    }
+                    handle.set_config(cfg);
+                }
+
+                let cfg = handle.config();
                 to_json(&serde_json::json!({
                     "maxConcurrent": cfg.max_concurrent,
                     "speedLimitBps": cfg.speed_limit_bps,
                     "connections": cfg.default_connections,
+                    "multiSegmentEnabled": cfg.multi_segment_enabled,
+                    "effectiveConnections": cfg.effective_connections(),
                     "maxRetries": cfg.max_retries,
                 }))
             }
@@ -463,6 +731,11 @@ fn call_impl(
                     "failed": failed,
                     "maxConcurrent": cfg.max_concurrent,
                     "speedLimitBps": cfg.speed_limit_bps,
+                    "maxRetries": cfg.max_retries,
+                    "multiSegmentEnabled": cfg.multi_segment_enabled,
+                    "defaultConnections": cfg.default_connections,
+                    "effectiveConnections": cfg.effective_connections(),
+                    "proxyConfigured": proxy_configured(),
                 }))
             }
             _ => Err(ModuleError::method_not_found(&method)),
@@ -557,24 +830,33 @@ fn on_event_impl(
     );
 
     if kind_s == "config.changed" {
-        let req: ConfigReq = serde_json::from_slice(payload).unwrap_or(ConfigReq {
-            max_concurrent: None,
-            speed_limit_bps: None,
-            connections: None,
-        });
+        let req: ConfigReq = serde_json::from_slice(payload).unwrap_or_default();
+        let _guard = CONFIG_APPLY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // 广播到所有实例（宿主不知道模块有几个实例）
-        for (_, inst) in instances().lock().unwrap().iter() {
+        for (_, inst) in instances()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+        {
             let mut cfg = inst.scheduler.config();
+            let mut touched = false;
             if let Some(v) = req.max_concurrent {
-                cfg.max_concurrent = v.max(1);
+                cfg.max_concurrent = v.clamp(1, 10);
+                touched = true;
             }
             if let Some(v) = req.speed_limit_bps {
                 cfg.speed_limit_bps = if v == 0 { None } else { Some(v) };
+                touched = true;
             }
             if let Some(v) = req.connections {
                 cfg.default_connections = v.max(1);
+                touched = true;
             }
-            inst.scheduler.set_config(cfg);
+            if touched {
+                inst.scheduler.set_config(cfg);
+            }
         }
     }
     Ok(())
@@ -599,7 +881,8 @@ pub extern "C" fn gstore_mod_download_register(
             return Err(ABI_ERR_NULL);
         }
         let e = unsafe { &*entry };
-        // 接受 ABI 3（v3 宿主，无 platform 槽）与本构建 ABI 4；拒绝更旧/更新的宿主。
+        // 接受 ABI 3..=5（旧宿主无 config 槽时走默认值降级）；拒绝更旧/更新的宿主。
+        // min_host_abi 声明为 5，宿主在 probe 阶段即拒绝 v4 及更旧宿主。
         if e.abi_version < MIN_HOST_ABI || e.abi_version > GSTORE_MODULE_ABI_VERSION {
             return Err(ABI_ERR_ABI_MISMATCH);
         }
@@ -619,10 +902,11 @@ pub extern "C" fn gstore_mod_download_register(
                 env!("CARGO_PKG_VERSION")
             ),
         );
+        bind_config(e);
         let api = unsafe { &mut *out };
         api.name = c"download".as_ptr();
         api.version = 1;
-        api.min_host_abi = MIN_HOST_ABI;
+        api.min_host_abi = MODULE_MIN_HOST_ABI;
         api.init = Some(init_export);
         api.create = Some(create_export);
         api.call = Some(call_export);
@@ -782,12 +1066,24 @@ mod abi_register_tests {
     }
 
     #[test]
-    fn register_accepts_v3_and_v5_host_and_rejects_v6() {
+    fn register_declares_min_host_abi_five_and_rejects_v6() {
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
         let rc = super::gstore_mod_download_register(&register_entry(3), api.as_mut_ptr());
-        assert_eq!(rc, ABI_OK, "v3 宿主必须被接受");
+        assert_eq!(rc, ABI_OK, "v3 宿主仍可被模块接受以走默认值降级");
         let api = unsafe { api.assume_init() };
-        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+        assert_eq!(api.min_host_abi, MODULE_MIN_HOST_ABI);
+        assert_eq!(api.min_host_abi, 5);
+        assert!(
+            !gstore_contract::abi::host_abi_satisfies(api.min_host_abi, 4),
+            "v4 宿主必须在 probe 阶段被拒绝"
+        );
+
+        let mut api4 = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+        assert_eq!(
+            super::gstore_mod_download_register(&register_entry(4), api4.as_mut_ptr()),
+            ABI_OK,
+            "v4 注入表在模块侧仍可握手（无 config 槽 → 默认值）"
+        );
 
         let mut api5 = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
         assert_eq!(

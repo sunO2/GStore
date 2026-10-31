@@ -20,11 +20,16 @@ use crate::model::{now_ms, FailKind, ProgressEvent, Segment, Task, TaskStatus};
 use crate::store::{self, SharedConn};
 
 /// 调度配置（面板可通过 `set_config` 调整并发/限速）。
+///
+/// `multi_segment_enabled` 是 ABI v5 `download.multi_segment.enabled` 的投影：
+/// 关闭时**有效连接数恒为 1**，`default_connections` 只在开启时生效。
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// 全局并发任务数上限
     pub max_concurrent: usize,
-    /// 单任务默认并发连接数（分段数）
+    /// 多段下载开关（关闭 ⇒ 单连接）
+    pub multi_segment_enabled: bool,
+    /// 单任务默认并发连接数（分段数；仅在多段开启时生效）
     pub default_connections: u32,
     /// 全局限速（None = 不限速）
     pub speed_limit_bps: Option<u64>,
@@ -35,9 +40,21 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3, // 与既有 Dart 侧 maxConcurrent 默认值一致
+            multi_segment_enabled: true,
             default_connections: engine::DEFAULT_CONNECTIONS,
             speed_limit_bps: None,
             max_retries: engine::DEFAULT_MAX_RETRIES,
+        }
+    }
+}
+
+impl SchedulerConfig {
+    /// 实际下发给引擎的连接数：多段关闭时强制单连接。
+    pub fn effective_connections(&self) -> u32 {
+        if self.multi_segment_enabled {
+            self.default_connections.max(1)
+        } else {
+            1
         }
     }
 }
@@ -640,13 +657,18 @@ impl Scheduler {
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        let connections = inner
-            .task_connections
-            .lock()
-            .unwrap()
-            .get(&id)
-            .copied()
-            .unwrap_or(cfg.default_connections);
+        let connections = if cfg.multi_segment_enabled {
+            inner
+                .task_connections
+                .lock()
+                .unwrap()
+                .get(&id)
+                .copied()
+                .unwrap_or(cfg.default_connections)
+                .max(1)
+        } else {
+            1
+        };
 
         // 分段容器交给引擎复用；run 结束后由这里落库，
         // 这样面板重新进入页面查询时仍能看到分段明细
