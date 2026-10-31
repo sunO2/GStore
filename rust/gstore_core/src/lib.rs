@@ -5,6 +5,7 @@ pub mod aggregate;
 pub mod catalog;
 pub mod channel;
 pub mod channel_migration;
+pub mod config;
 pub mod db;
 pub mod download;
 pub mod dto;
