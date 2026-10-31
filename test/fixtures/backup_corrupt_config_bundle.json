@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "timestamp": "2026-02-02T00:00:00.000Z",
+  "config_format": 2,
+  "configs": {
+    "theme.mode": 1,
+    "download.max_concurrent": 4,
+    "download.multi_segment.enabled": true,
+    "catalog.source_url": 12345,
+    "webdav_config": "this-is-not-a-map",
+    "mystery_legacy_key": "ignored"
+  },
+  "proxy_url": "https://corrupt-case-proxy.example/"
+}

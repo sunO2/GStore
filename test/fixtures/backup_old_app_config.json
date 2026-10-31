@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "timestamp": "2025-06-01T00:00:00.000Z",
+  "appVersion": "0.9.0",
+  "configs": {
+    "config_download_multi_segment": false,
+    "config_download_max_concurrent": 7,
+    "config_download_wifi_only": true,
+    "config_download_max_retry": 2,
+    "config_theme_mode": 1,
+    "config_update_config": {
+      "channel": "beta",
+      "autoUpdatePolicy": "always",
+      "ignorePrerelease": false,
+      "silentUpdate": true,
+      "checkIntervalHours": 12,
+      "lastCheckTime": "2025-05-31T00:00:00.000Z",
+      "lastUpdatedVersion": "1.2.3"
+    },
+    "agent_models": [
+      {
+        "id": "m-old",
+        "name": "Old Model",
+        "provider": "google",
+        "apiKey": "sk-task30-old-agent-secret",
+        "model": "gemini",
+        "baseUrl": ""
+      }
+    ],
+    "agent_selected_model_id": "m-old",
+    "fdroid_sources": [
+      {
+        "id": "fd1",
+        "name": "F-Droid",
+        "url": "https://f-droid.org/repo"
+      }
+    ],
+    "selected_channels": ["github", "fdroid"],
+    "config_proxy_engine_mtu": 1400,
+    "config_module.channel.enabled": false
+  },
+  "proxy_url": "https://old-backup-proxy.example/",
+  "webdav_config": {
+    "url": "https://old-dav.example/dav",
+    "username": "old-alice",
+    "password": "task30-old-webdav-secret",
+    "backupPath": "/GStore-legacy",
+    "enableHttps": true
+  }
+}
