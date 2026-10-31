@@ -11,8 +11,9 @@ import 'package:gstore/core/module/module_manager.dart';
 ///
 /// 采用"适配而非替换"：DatabaseEventBus / ModuleManager.onChange /
 /// ConfigService.onChange 的公开 API 与全部调用点保持不变，本类只做单向汇聚。
-/// 配置变化额外标记 `downlink: true`，经 AppEventBus 下发到 Rust 模块
-/// （模块用新的 `on_event` 订阅；见 Rust 侧 on_event 槽）。
+/// 配置变化只在 Dart 侧上行广播（`downlink: false`）；Rust 模块通过 ABI v5
+/// 的过滤订阅（vtable `subscribe`）接收配置，旧 `on_event("config.changed")`
+/// 广播路径已删除（plan C4 / Todo 36）。
 class AppEventBusBootstrap {
   AppEventBusBootstrap._();
 
@@ -44,22 +45,20 @@ class AppEventBusBootstrap {
       ));
     }));
 
-    // 配置变化 → 统一总线（并下发 Rust 模块：模块按 key 过滤）
+    // 配置变化 → 统一总线（仅 Dart 侧上行；配置下行改由 ABI v5 过滤订阅）
     _subs.add(ConfigService.instance.onChange.listen((e) {
       bus.publish(AppEvent(
         type: AppEventTypes.configChanged,
         source: AppEventSource.config,
         data: {'key': e.key, 'value': e.newValue},
-        downlink: true,
       ));
 
-      // 主题变化单独成事件（主题模式/主题配置），供模块订阅主题切换
+      // 主题变化单独成事件（主题模式/主题配置），同样只上行、不下行
       if (e.key == ConfigKeys.themeMode || e.key == ConfigKeys.themeConfig) {
         bus.publish(AppEvent(
           type: AppEventTypes.themeChanged,
           source: AppEventSource.config,
           data: {'key': e.key, 'value': e.newValue},
-          downlink: true,
         ));
       }
     }));

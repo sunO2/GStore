@@ -416,8 +416,10 @@ fn cancel_impl(instance_id: u64, _request_id: *const c_char) -> Result<(), c_int
     Ok(())
 }
 
-/// 宿主下发的应用事件（下行订阅）。repo 目前只消费 config.changed，
-/// 解析出变更的配置 key 记录日志（后续可据此热更新模块行为）。
+/// 宿主下发的应用事件（下行订阅）。
+///
+/// 配置变化**不再**走 `on_event("config.changed")` 广播（plan C4 / Todo 36）；
+/// repo 目前没有需要热更新的配置订阅，这里仅记录其他非配置事件。
 fn on_event_impl(
     module_id: u64,
     kind: *const c_char,
@@ -434,13 +436,6 @@ fn on_event_impl(
         unsafe { std::slice::from_raw_parts(data, data_len) }.to_vec()
     };
 
-    if kind == gstore_contract::events::EVT_CONFIG_CHANGED {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
-            let key = v.get("key").and_then(|k| k.as_str()).unwrap_or("?");
-            log_message(1, &format!("repo: 收到配置变化 key={key}"));
-            return Ok(());
-        }
-    }
     log_message(
         1,
         &format!("repo: on_event module_id={module_id} kind={kind} len={}", payload.len()),

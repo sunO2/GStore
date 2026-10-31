@@ -1634,7 +1634,8 @@ mod repo_tests {
         mgr.unref(id);
     }
 
-    /// 下行事件烟测：向已 dlopen 的 repo 模块广播 config.changed（走 ABI on_event）
+    /// 下行事件烟测：向已 dlopen 的 repo 模块广播一个非配置事件（走 ABI on_event）。
+    /// 配置变化已改走 ABI v5 过滤订阅，不再广播 `config.changed`（plan C4）。
     #[test]
     fn broadcast_event_to_repo_module() {
         let _lock = SHARED_STATE_LOCK.lock().unwrap();
@@ -1643,8 +1644,8 @@ mod repo_tests {
         let mgr = crate::manager::ModuleManager::new();
         let id = mgr.load_module_from_so(&so_path).expect("load repo");
 
-        // 不应 panic；模块侧 on_event 解析并记录 key
-        mgr.broadcast_event("config.changed", br#"{"key":"proxyUrl","value":"x"}"#);
+        // 不应 panic；模块侧 on_event 记录非配置事件
+        mgr.broadcast_event("repo.event", br#"{"key":"x"}"#);
 
         mgr.unref(id);
     }

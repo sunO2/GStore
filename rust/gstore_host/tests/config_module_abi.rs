@@ -20,7 +20,7 @@ use gstore_contract::abi::{
     ABI_ERR_ABI_MISMATCH, ABI_ERR_CONFIG_BAD_TOKEN, ABI_ERR_CONFIG_FORBIDDEN,
     ABI_ERR_CONFIG_INVALID, ABI_ERR_CONFIG_NOT_FOUND, CONFIG_CAP_ALL, GSTORE_MODULE_ABI_VERSION,
 };
-use gstore_host::bridge::{ConfigApi, CoreApi, HostInspector, InstanceHandle, ModuleHandle};
+use gstore_host::bridge::{ConfigApi, CoreApi, EventBridge, HostInspector, InstanceHandle, ModuleHandle};
 use serde_json::Value;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -61,6 +61,27 @@ fn build_fixture(
     min_host_abi: u32,
     auto_subscribe: bool,
 ) -> PathBuf {
+    build_fixture_impl(tag, name, abi, min_host_abi, auto_subscribe, false)
+}
+
+fn build_fixture_with_on_event(
+    tag: &str,
+    name: &str,
+    abi: u32,
+    min_host_abi: u32,
+    auto_subscribe: bool,
+) -> PathBuf {
+    build_fixture_impl(tag, name, abi, min_host_abi, auto_subscribe, true)
+}
+
+fn build_fixture_impl(
+    tag: &str,
+    name: &str,
+    abi: u32,
+    min_host_abi: u32,
+    auto_subscribe: bool,
+    on_event: bool,
+) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/config_module_abi_fixtures")
         .join(tag);
@@ -79,6 +100,7 @@ fn build_fixture(
             "-DFIXTURE_AUTO_SUBSCRIBE={}",
             u8::from(auto_subscribe)
         ))
+        .arg(format!("-DFIXTURE_ON_EVENT={}", u8::from(on_event)))
         .arg("-o")
         .arg(&output)
         .arg(&source)
@@ -1403,6 +1425,83 @@ fn v5_only_module_is_rejected_when_the_host_is_v4() {
         api.min_host_abi,
         GSTORE_MODULE_ABI_VERSION
     ));
+}
+
+// ---------------------------------------------------------------------------
+// 16. Config writes never take the legacy broadcast downlink (Todo 36 / C4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_writes_never_reach_any_module_on_event_broadcast_path() {
+    let _guard = serial();
+    let scratch = scratch("no-broadcast");
+    let record = scratch.join("on_event.log");
+    set_record_file(&record);
+    let _core = init_core(&scratch);
+    let config = ConfigApi::init().expect("ConfigApi::init");
+    let probe = ModuleHandle::mount_from_so(
+        build_fixture_with_on_event("no-broadcast", "probe", 5, 5, false)
+            .to_string_lossy()
+            .into_owned(),
+    )
+    .expect("mount on_event probe");
+    let download = mount("no-broadcast", "download");
+    assert_eq!(fixture_subscribe(&download, "", "").0, 0);
+    clear_records(&download);
+    let on_event_before = count_prefixed(&record, "on_event ");
+
+    config
+        .set(
+            "download".into(),
+            "max_concurrent".into(),
+            "5".into(),
+            "user".into(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        keys(&deliveries(&download)),
+        vec!["download.max_concurrent"],
+        "the ABI-filtered subscription still receives its own config change"
+    );
+    assert_eq!(
+        count_prefixed(&record, "on_event "),
+        on_event_before,
+        "a config write must never reach any module's on_event broadcast path"
+    );
+    assert_eq!(
+        count_prefixed(&record, "on_event config.changed"),
+        0,
+        "zero legacy config.changed broadcast deliveries"
+    );
+
+    let config_write_on_event_delta = count_prefixed(&record, "on_event ") - on_event_before;
+    let config_changed_on_event_delta = count_prefixed(&record, "on_event config.changed");
+    assert_eq!(config_write_on_event_delta, 0);
+    assert_eq!(config_changed_on_event_delta, 0);
+    println!(
+        "TRACE filtered config delivery (module.key): {:?}",
+        keys(&deliveries(&download))
+    );
+    println!(
+        "TRACE on_event deliveries from a config write: {config_write_on_event_delta} (config.changed: {config_changed_on_event_delta})"
+    );
+
+    EventBridge::new().broadcast("demo.changed".to_string(), br#"{"ok":true}"#.to_vec());
+    assert_eq!(
+        count_prefixed(&record, "on_event demo.changed"),
+        1,
+        "non-config broadcasts still reach on_event"
+    );
+    println!(
+        "TRACE non-config broadcast demo.changed deliveries: {}",
+        count_prefixed(&record, "on_event demo.changed")
+    );
+
+    drop(download);
+    drop(probe);
+    clear_record_file();
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 // ---------------------------------------------------------------------------

@@ -808,7 +808,11 @@ fn cancel_impl(instance_id: u64, request_id: *const c_char) -> Result<(), c_int>
     Ok(())
 }
 
-/// 宿主下行事件：目前只处理 `config.changed`（并发/限速热更新）。
+/// 宿主下行事件。
+///
+/// 配置变化**不再**走 `on_event("config.changed")` 广播：本模块通过 ABI v5
+/// 的 `config.subscribe` 过滤订阅（见 [`on_config_change`]）接收自己的 key。
+/// 这里只记录其他非配置下行事件，保持 ABI `on_event` 槽的兼容性。
 fn on_event_impl(
     module_id: u64,
     kind: *const c_char,
@@ -828,37 +832,6 @@ fn on_event_impl(
             payload.len()
         ),
     );
-
-    if kind_s == "config.changed" {
-        let req: ConfigReq = serde_json::from_slice(payload).unwrap_or_default();
-        let _guard = CONFIG_APPLY_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // 广播到所有实例（宿主不知道模块有几个实例）
-        for (_, inst) in instances()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-        {
-            let mut cfg = inst.scheduler.config();
-            let mut touched = false;
-            if let Some(v) = req.max_concurrent {
-                cfg.max_concurrent = v.clamp(1, 10);
-                touched = true;
-            }
-            if let Some(v) = req.speed_limit_bps {
-                cfg.speed_limit_bps = if v == 0 { None } else { Some(v) };
-                touched = true;
-            }
-            if let Some(v) = req.connections {
-                cfg.default_connections = v.max(1);
-                touched = true;
-            }
-            if touched {
-                inst.scheduler.set_config(cfg);
-            }
-        }
-    }
     Ok(())
 }
 

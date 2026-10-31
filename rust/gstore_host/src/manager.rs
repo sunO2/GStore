@@ -724,12 +724,12 @@ mod tests {
         let rec = Arc::new(Recorder { got: std::sync::Mutex::new(Vec::new()) });
         let id = mgr.register(rec.clone());
 
-        mgr.broadcast_event("config.changed", br#"{"key":"x"}"#);
+        mgr.broadcast_event("test.event", br#"{"key":"x"}"#);
 
         let got = rec.got.lock().unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, id);
-        assert_eq!(got[0].1, "config.changed");
+        assert_eq!(got[0].1, "test.event");
         assert_eq!(got[0].2, br#"{"key":"x"}"#);
     }
 

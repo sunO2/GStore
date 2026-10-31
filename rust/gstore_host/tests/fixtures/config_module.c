@@ -46,6 +46,10 @@
 #define FIXTURE_AUTO_SUBSCRIBE 1
 #endif
 
+#ifndef FIXTURE_ON_EVENT
+#define FIXTURE_ON_EVENT 0
+#endif
+
 #define GS_STR2(x) #x
 #define GS_STR(x) GS_STR2(x)
 #define GS_CAT2(a, b) a##b
@@ -354,6 +358,21 @@ static int cmd_unsubscribe(const uint8_t *payload, size_t payload_len, uint8_t *
     return reply_text(text, out_data, out_len);
 }
 
+#if FIXTURE_ON_EVENT
+/* Records host downlink deliveries so tests can prove config writes never use
+ * the legacy broadcast path. */
+static int module_on_event(uint64_t module_id, const char *kind, const uint8_t *data,
+                           size_t data_len) {
+    char detail[256];
+    (void)module_id;
+    (void)data;
+    (void)data_len;
+    snprintf(detail, sizeof(detail), "%s", kind == NULL ? "" : kind);
+    record_marker("on_event", detail);
+    return 0;
+}
+#endif
+
 static int module_call(uint64_t instance, const char *method, const uint8_t *payload,
                        size_t payload_len, uint8_t **out_data, size_t *out_len) {
     (void)instance;
@@ -545,6 +564,10 @@ int GS_CAT(gstore_mod_, GS_CAT(FIXTURE_NAME, _register))(const ModuleEntry *entr
     api->shutdown = module_shutdown;
     api->alloc = NULL;
     api->free = module_free;
+#if FIXTURE_ON_EVENT
+    api->on_event = module_on_event;
+#else
     api->on_event = NULL;
+#endif
     return 0;
 }
