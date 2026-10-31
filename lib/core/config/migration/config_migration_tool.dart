@@ -43,6 +43,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../rust/generated/bridge.dart' as generated;
 import '../../rust/generated/config_api.dart' as generated;
+import 'legacy_config_mapping.dart';
 
 /// `config_meta` marker written after a fully verified pass.
 const String kConfigMigrationMarkerKey = 'config.migrated.v1';
@@ -342,26 +343,6 @@ class ConfigMigrationReport {
       'secretScanClean: $secretScanClean, error: $errorCode)';
 }
 
-enum _Shape { boolean, integer, string, jsonMap, jsonList, stringList }
-
-class _DecodeException implements Exception {
-  const _DecodeException(this.code);
-
-  final String code;
-}
-
-class _DecodedBatch {
-  _DecodedBatch(this.storageKey, {List<MigrationEntry>? entries, Map<String, String>? failures})
-      : entries = entries ?? <MigrationEntry>[],
-        failures = failures ?? <String, String>{};
-
-  final String storageKey;
-  final List<MigrationEntry> entries;
-
-  /// Wire key → stable code for fields that could not be decoded.
-  final Map<String, String> failures;
-}
-
 class _PendingEntry {
   const _PendingEntry(this.storageKey, this.entry);
 
@@ -373,145 +354,11 @@ class _PendingEntry {
 class ConfigMigrationTool {
   ConfigMigrationTool._();
 
-  /// Explicit **storage key → grouped wire key(s)** table (C15).
-  ///
-  /// These are the real on-disk keys, not logical object names. There is no
-  /// single `download_config` / `webdav_config` value on disk: download is
-  /// stored per field, WebDAV per field, and `config_update_config` is the
-  /// only aggregated JSON whose fields are split **after** parsing.
-  static const Map<String, List<String>> storageKeyToWireKeys =
-      <String, List<String>>{
-    // ---- download (per-field storage, no `config_download_config`) ----
-    'config_download_multi_segment': <String>[
-      'download.multi_segment.enabled',
-    ],
-    'config_download_max_concurrent': <String>['download.max_concurrent'],
-    'config_download_wifi_only': <String>['download.wifi_only'],
-    'config_download_max_retry': <String>['download.max_retries'],
-    // ---- update (aggregated JSON, split after parsing) ----
-    'config_update_config': <String>[
-      'update.channel',
-      'update.auto_update_policy',
-      'update.ignore_prerelease',
-      'update.silent_update',
-      'update.check_interval_hours',
-      'update.last_check_time',
-      'update.last_updated_version',
-    ],
-    // ---- theme ----
-    'config_theme_config': <String>['theme.config'],
-    'config_theme_mode': <String>['theme.mode'],
-    // ---- perf ----
-    'config_perf.profiles': <String>['perf.profiles'],
-    'config_perf.profiles.enabled': <String>['perf.profiles.enabled'],
-    'config_perf.history.enabled': <String>['perf.history.enabled'],
-    // ---- agent (JSON split after parsing; sensitivity preserved by Rust) ----
-    'config_agent_models': <String>['agent.models'],
-    'config_agent_selected_model_id': <String>['agent.selected_model_id'],
-    'config_agent_model_catalog': <String>['agent.model_catalog'],
-    // ---- fdroid / discovery / network ----
-    'config_fdroid_sources': <String>['fdroid.sources'],
-    'config_last_source_id': <String>['fdroid.last_source_id'],
-    'config_selected_channels': <String>['discovery.selected_channels'],
-    'config_proxy_url': <String>['network.proxy_url'],
-    'config_catalog_url': <String>['catalog.source_url'],
-    // ---- all 11 proxy page keys ----
-    'config_proxy_engine_stack': <String>['proxy.engine_stack'],
-    'config_proxy_engine_mtu': <String>['proxy.engine_mtu'],
-    'config_proxy_routing_mode': <String>['proxy.routing_mode'],
-    'config_proxy_run_mode': <String>['proxy.run_mode'],
-    'config_proxy_active_node_label': <String>['proxy.active_node_label'],
-    'config_proxy_active_profile_id': <String>['proxy.active_profile_id'],
-    'config_proxy_sheet_view_mode': <String>['proxy.sheet_view_mode'],
-    'config_proxy_split_mode': <String>['proxy.split_mode'],
-    'config_proxy_split_apps': <String>['proxy.split_apps'],
-    'config_proxy_always_on_intent': <String>['proxy.always_on_intent'],
-    'config_proxy_log_level': <String>['proxy.log_level'],
-    // ---- all 11 module toggles ----
-    'config_module.channel.enabled': <String>['module.channel.enabled'],
-    'config_module.download.enabled': <String>['module.download.enabled'],
-    'config_module.backup.enabled': <String>['module.backup.enabled'],
-    'config_module.webdav.enabled': <String>['module.webdav.enabled'],
-    'config_module.fdroid.enabled': <String>['module.fdroid.enabled'],
-    'config_module.theme.enabled': <String>['module.theme.enabled'],
-    'config_module.install.enabled': <String>['module.install.enabled'],
-    'config_module.aggregate.enabled': <String>['module.aggregate.enabled'],
-    'config_module.agent_tools.enabled': <String>['module.agent_tools.enabled'],
-    'config_module.update.enabled': <String>['module.update.enabled'],
-    'config_module.badge.enabled': <String>['module.badge.enabled'],
-    // ---- bare legacy keys (older ConfigRegistry / backup imports) ----
-    'fdroid_sources': <String>['fdroid.sources'],
-    'last_source_id': <String>['fdroid.last_source_id'],
-    'selected_channels': <String>['discovery.selected_channels'],
-    'agent_models': <String>['agent.models'],
-    'agent_selected_model_id': <String>['agent.selected_model_id'],
-    // ---- WebDAV bare manager copy (wins) ----
-    'webdav_url': <String>['webdav.url'],
-    'webdav_username': <String>['webdav.username'],
-    'webdav_password': <String>['webdav.password'],
-    'webdav_backup_path': <String>['webdav.backup_path'],
-    'webdav_enable_https': <String>['webdav.enable_https'],
-    // ---- stale `SecureConfigStorage` provider copy (loses) ----
-    'secure_config_webdav_url': <String>['webdav.url'],
-    'secure_config_webdav_username': <String>['webdav.username'],
-    'secure_config_webdav_password': <String>['webdav.password'],
-    'secure_config_webdav_backup_path': <String>['webdav.backup_path'],
-    'secure_config_webdav_enable_https': <String>['webdav.enable_https'],
-  };
-
-  static const Set<String> _bareLegacyStorageKeys = <String>{
-    'fdroid_sources',
-    'last_source_id',
-    'selected_channels',
-    'agent_models',
-    'agent_selected_model_id',
-  };
-
-  static const Set<String> _agentModelsStorageKeys = <String>{
-    'config_agent_models',
-    'agent_models',
-    'secure_config_agent_models',
-  };
-
-  static const Map<String, _Shape> _shapeByWireKey = <String, _Shape>{
-    'download.multi_segment.enabled': _Shape.boolean,
-    'download.max_concurrent': _Shape.integer,
-    'download.wifi_only': _Shape.boolean,
-    'download.max_retries': _Shape.integer,
-    'theme.config': _Shape.jsonMap,
-    'theme.mode': _Shape.integer,
-    'perf.profiles': _Shape.jsonMap,
-    'perf.profiles.enabled': _Shape.boolean,
-    'perf.history.enabled': _Shape.boolean,
-    'agent.models': _Shape.jsonList,
-    'agent.selected_model_id': _Shape.string,
-    'agent.model_catalog': _Shape.jsonMap,
-    'fdroid.sources': _Shape.jsonList,
-    'fdroid.last_source_id': _Shape.string,
-    'discovery.selected_channels': _Shape.stringList,
-    'network.proxy_url': _Shape.string,
-    'catalog.source_url': _Shape.string,
-    'proxy.engine_stack': _Shape.string,
-    'proxy.engine_mtu': _Shape.integer,
-    'proxy.routing_mode': _Shape.string,
-    'proxy.run_mode': _Shape.string,
-    // Rust registry: `proxy.active_node_label` is ConfigValueType::Json (object),
-    // NOT String. The legacy store holds a JSON *string*; it must be parsed to
-    // a Map before crossing the FFI seam (otherwise file-level import fails
-    // with config_type_mismatch).
-    'proxy.active_node_label': _Shape.jsonMap,
-    'proxy.active_profile_id': _Shape.string,
-    'proxy.sheet_view_mode': _Shape.string,
-    'proxy.split_mode': _Shape.string,
-    'proxy.split_apps': _Shape.stringList,
-    'proxy.always_on_intent': _Shape.boolean,
-    'proxy.log_level': _Shape.string,
-    'webdav.url': _Shape.string,
-    'webdav.username': _Shape.string,
-    'webdav.password': _Shape.string,
-    'webdav.backup_path': _Shape.string,
-    'webdav.enable_https': _Shape.boolean,
-  };
+  /// Storage-key table and decoders live in the pure mapping helper so the
+  /// on-device tool (Todo 21) and the offline CLI (Todo 22) share one source
+  /// of truth and cannot drift.
+  static Map<String, List<String>> get storageKeyToWireKeys =>
+      kLegacyStorageKeyToWireKeys;
 
   /// All storage keys in the explicit table (test/static guard helper).
   static Set<String> get allStorageKeys =>
@@ -560,63 +407,32 @@ class ConfigMigrationTool {
       final prefs = await legacySource.readPrefs();
       final secure = await legacySource.readSecure();
 
-      final orderedKeys = _orderedStorageKeys();
-      final presentKeys = <String>[
-        for (final key in orderedKeys)
-          if (_rawValueOf(key, prefs, secure) != null) key,
-      ];
-      final total = presentKeys.length;
+      // One pure mapping pass shared with the offline CLI (Todo 22): the
+      // storage-key table and decoders live in `legacy_config_mapping.dart`,
+      // so the on-device tool and `tool/migrate_config.dart` cannot drift.
+      final mapping = mapLegacyConfig(prefs: prefs, secure: secure);
+      final total = mapping.totalStorageKeys;
       onProgress?.call(0, total);
-
-      final batches = <_DecodedBatch>[];
-      for (var index = 0; index < presentKeys.length; index++) {
-        final storageKey = presentKeys[index];
-        batches.add(
-          _decodeStorageKey(storageKey, _rawValueOf(storageKey, prefs, secure)),
-        );
+      for (var index = 0; index < total; index++) {
         onProgress?.call(index + 1, total);
       }
 
-      // Merge by wire key: keys are visited low → high priority, so a later
-      // (higher-priority) value overwrites the stale copy. WebDAV therefore
-      // resolves as bare `WebDavConfigManager` > `secure_config_` provider copy.
-      final winner = <String, MigrationEntry>{};
-      for (final batch in batches) {
-        for (final entry in batch.entries) {
-          winner[entry.wireKey] = entry;
-        }
-        for (final wireKey in batch.failures.keys) {
-          winner.remove(wireKey);
-        }
-      }
-
-      final keyReports = <MigrationKeyReport>[];
-      final pending = <_PendingEntry>[];
-      for (final batch in batches) {
-        for (final entry in batch.entries) {
-          if (identical(winner[entry.wireKey], entry)) {
-            pending.add(_PendingEntry(batch.storageKey, entry));
-          } else {
-            keyReports.add(
-              MigrationKeyReport(
-                storageKey: batch.storageKey,
-                wireKey: entry.wireKey,
-                status: 'superseded',
-              ),
-            );
-          }
-        }
-        batch.failures.forEach((wireKey, code) {
-          keyReports.add(
-            MigrationKeyReport(
-              storageKey: batch.storageKey,
-              wireKey: wireKey,
-              status: winner.containsKey(wireKey) ? 'superseded' : 'failed',
-              code: winner.containsKey(wireKey) ? null : code,
-            ),
-          );
-        });
-      }
+      final keyReports = <MigrationKeyReport>[
+        for (final report in mapping.reports)
+          MigrationKeyReport(
+            storageKey: report.storageKey,
+            wireKey: report.wireKey,
+            status: report.status,
+            code: report.code,
+          ),
+      ];
+      final pending = <_PendingEntry>[
+        for (final entry in mapping.pending)
+          _PendingEntry(
+            entry.storageKey,
+            MigrationEntry(wireKey: entry.wireKey, value: entry.value),
+          ),
+      ];
 
       var importResult = const MigrationImportResult();
       final verifyFailures = <String, String>{};
@@ -757,294 +573,6 @@ class ConfigMigrationTool {
   }
 
   /// Low → high precedence order (stable within a priority band).
-  static List<String> _orderedStorageKeys() {
-    final ordered = <String>[];
-    for (var priority = 0; priority <= 3; priority++) {
-      for (final key in storageKeyToWireKeys.keys) {
-        if (_priorityOf(key) == priority) ordered.add(key);
-      }
-    }
-    return ordered;
-  }
-
-  static int _priorityOf(String storageKey) {
-    if (storageKey.startsWith('secure_config_')) return 0;
-    if (storageKey.startsWith('webdav_')) return 1;
-    if (_bareLegacyStorageKeys.contains(storageKey)) return 2;
-    return 3;
-  }
-
-  static Object? _rawValueOf(
-    String storageKey,
-    Map<String, Object?> prefs,
-    Map<String, String?> secure,
-  ) {
-    if (storageKey.startsWith('webdav_') ||
-        storageKey.startsWith('secure_config_')) {
-      if (secure.containsKey(storageKey)) return secure[storageKey];
-      return prefs[storageKey];
-    }
-    if (prefs.containsKey(storageKey)) return prefs[storageKey];
-    return secure[storageKey];
-  }
-
-  static _DecodedBatch _decodeStorageKey(String storageKey, Object? raw) {
-    final wireKeys = storageKeyToWireKeys[storageKey]!;
-    if (storageKey == 'config_update_config') {
-      return _decodeUpdateConfig(storageKey, raw);
-    }
-    final wireKey = wireKeys.single;
-    final shape = wireKey.startsWith('module.') &&
-            wireKey.endsWith('.enabled')
-        ? _Shape.boolean
-        : (_shapeByWireKey[wireKey] ?? _Shape.string);
-    try {
-      final value = _decodeScalar(shape, raw);
-      return _DecodedBatch(
-        storageKey,
-        entries: <MigrationEntry>[
-          MigrationEntry(wireKey: wireKey, value: value),
-        ],
-      );
-    } on _DecodeException catch (error) {
-      return _DecodedBatch(
-        storageKey,
-        failures: <String, String>{wireKey: error.code},
-      );
-    }
-  }
-
-  static _DecodedBatch _decodeUpdateConfig(String storageKey, Object? raw) {
-    final decoded = _decodeJsonLenient(raw);
-    if (decoded is! Map) {
-      return _DecodedBatch(
-        storageKey,
-        failures: <String, String>{
-          for (final wireKey in storageKeyToWireKeys[storageKey]!)
-            wireKey: 'config_invalid_json',
-        },
-      );
-    }
-    final json = <String, Object?>{
-      for (final entry in decoded.entries) entry.key.toString(): entry.value,
-    };
-    final batch = _DecodedBatch(storageKey);
-
-    void put(String wireKey, Object? value) {
-      batch.entries.add(MigrationEntry(wireKey: wireKey, value: value));
-    }
-
-    void fail(String wireKey, String code) {
-      batch.failures[wireKey] = code;
-    }
-
-    final channel = _encodeUpdateChannel(json['channel']);
-    if (json['channel'] != null) {
-      if (channel == null) {
-        fail('update.channel', 'config_invalid_enum');
-      } else {
-        put('update.channel', channel);
-      }
-    }
-
-    final policy = _encodeUpdatePolicy(json['autoUpdatePolicy']);
-    if (json['autoUpdatePolicy'] != null) {
-      if (policy == null) {
-        fail('update.auto_update_policy', 'config_invalid_enum');
-      } else {
-        put('update.auto_update_policy', policy);
-      }
-    }
-
-    for (final field in const <String>[
-      'ignorePrerelease',
-      'silentUpdate',
-    ]) {
-      final value = json[field];
-      if (value == null) continue;
-      try {
-        put(
-          field == 'ignorePrerelease'
-              ? 'update.ignore_prerelease'
-              : 'update.silent_update',
-          _asBool(value),
-        );
-      } on _DecodeException catch (error) {
-        fail(
-          field == 'ignorePrerelease'
-              ? 'update.ignore_prerelease'
-              : 'update.silent_update',
-          error.code,
-        );
-      }
-    }
-
-    final interval = json['checkIntervalHours'];
-    if (interval != null) {
-      try {
-        put('update.check_interval_hours', _asInt(interval));
-      } on _DecodeException catch (error) {
-        fail('update.check_interval_hours', error.code);
-      }
-    }
-
-    final lastCheckTime = json['lastCheckTime'];
-    if (lastCheckTime != null) {
-      try {
-        put('update.last_check_time', _asString(lastCheckTime));
-      } on _DecodeException catch (error) {
-        fail('update.last_check_time', error.code);
-      }
-    }
-
-    final lastVersion = json['lastUpdatedVersion'];
-    if (lastVersion != null) {
-      try {
-        put('update.last_updated_version', _asString(lastVersion));
-      } on _DecodeException catch (error) {
-        fail('update.last_updated_version', error.code);
-      }
-    }
-
-    return batch;
-  }
-
-  static String? _encodeUpdateChannel(Object? raw) {
-    if (raw is int) {
-      const values = <String>['stable', 'beta', 'dev'];
-      return raw >= 0 && raw < values.length ? values[raw] : null;
-    }
-    if (raw is String) {
-      final text = raw.trim();
-      final name = text.contains('.') ? text.split('.').last : text;
-      return switch (name.toLowerCase()) {
-        'stable' => 'stable',
-        'beta' => 'beta',
-        'dev' => 'dev',
-        _ => null,
-      };
-    }
-    return null;
-  }
-
-  static String? _encodeUpdatePolicy(Object? raw) {
-    if (raw is int) {
-      const values = <String>['never', 'wifi_only', 'always'];
-      return raw >= 0 && raw < values.length ? values[raw] : null;
-    }
-    if (raw is String) {
-      final text = raw.trim();
-      final name = text.contains('.') ? text.split('.').last : text;
-      return switch (name.toLowerCase()) {
-        'never' => 'never',
-        'wifionly' || 'wifi_only' => 'wifi_only',
-        'always' => 'always',
-        _ => null,
-      };
-    }
-    return null;
-  }
-
-  static Object? _decodeScalar(_Shape shape, Object? raw) {
-    return switch (shape) {
-      _Shape.boolean => _asBool(raw),
-      _Shape.integer => _asInt(raw),
-      _Shape.string => _asString(raw),
-      _Shape.jsonMap => _asJsonMap(raw),
-      _Shape.jsonList => _asJsonList(raw),
-      _Shape.stringList => _asStringList(raw),
-    };
-  }
-
-  static bool _asBool(Object? raw) {
-    if (raw is bool) return raw;
-    if (raw is int) return raw != 0;
-    if (raw is String) {
-      final text = raw.trim().toLowerCase();
-      if (text == 'true' || text == '1') return true;
-      if (text == 'false' || text == '0') return false;
-    }
-    throw const _DecodeException('config_invalid_bool');
-  }
-
-  static int _asInt(Object? raw) {
-    if (raw is int) return raw;
-    if (raw is num && raw == raw.roundToDouble()) return raw.toInt();
-    if (raw is String) {
-      final parsed = int.tryParse(raw.trim());
-      if (parsed != null) return parsed;
-      final asDouble = double.tryParse(raw.trim());
-      if (asDouble != null && asDouble == asDouble.roundToDouble()) {
-        return asDouble.toInt();
-      }
-    }
-    throw const _DecodeException('config_invalid_int');
-  }
-
-  static String _asString(Object? raw) {
-    if (raw is String) return raw;
-    if (raw is Map || raw is List) return jsonEncode(raw);
-    if (raw is num || raw is bool) return raw.toString();
-    throw const _DecodeException('config_invalid_string');
-  }
-
-  static Map<String, Object?> _asJsonMap(Object? raw) {
-    final decoded = _decodeJsonLenient(raw);
-    if (decoded is Map) {
-      return <String, Object?>{
-        for (final entry in decoded.entries) entry.key.toString(): entry.value,
-      };
-    }
-    throw const _DecodeException('config_invalid_json');
-  }
-
-  static List<Object?> _asJsonList(Object? raw) {
-    final decoded = _decodeJsonLenient(raw);
-    if (decoded is List) return List<Object?>.from(decoded);
-    throw const _DecodeException('config_invalid_json');
-  }
-
-  static List<String> _asStringList(Object? raw) {
-    if (raw is List) {
-      return <String>[for (final item in raw) item.toString()];
-    }
-    if (raw is String) {
-      final text = raw.trim();
-      if (text.isEmpty) return const <String>[];
-      if (text.startsWith('[')) {
-        final decoded = _decodeJsonLenient(text);
-        if (decoded is List) {
-          return <String>[for (final item in decoded) item.toString()];
-        }
-        throw const _DecodeException('config_invalid_json');
-      }
-      return <String>[
-        for (final part in text.split(','))
-          if (part.trim().isNotEmpty) part.trim(),
-      ];
-    }
-    throw const _DecodeException('config_invalid_string_list');
-  }
-
-  /// Decodes 0–2 layers of JSON strings (historical double encoding, C6).
-  static Object? _decodeJsonLenient(Object? raw) {
-    var value = raw;
-    for (var depth = 0; depth < 2 && value is String; depth++) {
-      final text = value.trim();
-      if (text.isEmpty) return null;
-      final looksJson = text.startsWith('{') ||
-          text.startsWith('[') ||
-          text.startsWith('"');
-      if (!looksJson) return null;
-      try {
-        value = jsonDecode(text);
-      } catch (_) {
-        return null;
-      }
-    }
-    return value;
-  }
-
   static Set<String> _collectSecrets(
     Map<String, Object?> prefs,
     Map<String, String?> secure,
@@ -1057,7 +585,7 @@ class ConfigMigrationTool {
         if (text.isNotEmpty) secrets.add(text);
       }
       if (isAgentModelsKey(key)) {
-        final decoded = _decodeJsonLenient(value);
+        final decoded = decodeLegacyJsonLenient(value);
         if (decoded is List) {
           for (final item in decoded) {
             if (item is Map) {
@@ -1086,7 +614,7 @@ class ConfigMigrationTool {
   /// Agent model lists carry API keys; exposed for the backup redactor/tests.
   @visibleForTesting
   static bool isAgentModelsKey(String key) =>
-      _agentModelsStorageKeys.contains(key);
+      isLegacyAgentModelsKey(key);
 
   static String _buildBackupContent(
     Map<String, Object?> prefs,
@@ -1121,7 +649,7 @@ class ConfigMigrationTool {
   }
 
   static Object? _maskAgentModels(Object? raw) {
-    final decoded = _decodeJsonLenient(raw);
+    final decoded = decodeLegacyJsonLenient(raw);
     if (decoded is! List) return null; // unparseable: omit rather than leak
     return <Object?>[
       for (final item in decoded)
