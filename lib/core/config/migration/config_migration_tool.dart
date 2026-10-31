@@ -2,7 +2,7 @@
 /// C9/C15).
 ///
 /// The migration is deliberately **standalone**: it does not use
-/// `ConfigManager` / `ConfigStore` / `ConfigService` (those become a thin Rust
+/// legacy config stores / `ConfigStore` / `ConfigService` (those become a thin Rust
 /// facade), and it never edits the boot sequence. It reads the *real* legacy
 /// storage keys (SharedPreferences `config_*` keys + secure `webdav_*` /
 /// `secure_config_webdav_*` keys), maps them to the grouped Rust wire keys

@@ -2,7 +2,7 @@
 //
 // Every fixture below uses the *actual* on-disk keys from the pre-Rust app
 // (`config_*` SharedPreferences keys, bare `webdav_*`, and the stale
-// `secure_config_webdav_*` provider copy). No `ConfigManager` / `ConfigStore`
+// `secure_config_webdav_*` provider copy). No legacy config stack / `ConfigStore`
 // is involved: the tool is exercised through its `ConfigMigrationApi` and
 // `LegacyConfigSource` seams, exactly like the production Rust path.
 // ignore_for_file: avoid_print

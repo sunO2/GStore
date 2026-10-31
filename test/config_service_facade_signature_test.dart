@@ -5,7 +5,6 @@
 // test runs under the default (bridge-unavailable) harness.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/config/config_provider.dart';
 import 'package:gstore/core/config/config_service.dart';
 
 /// Minimal [ConfigModule] implementation used to prove the abstract contract.
@@ -15,29 +14,6 @@ class _SignatureModule extends ConfigModule {
 
   @override
   List<ConfigEntry> get configs => const <ConfigEntry>[];
-}
-
-class _SignatureProvider extends ConfigProvider<Object?> {
-  @override
-  String get configKey => 'signature.key';
-
-  @override
-  Future<Object?> load() async => null;
-
-  @override
-  Future<bool> save(Object? value) async => true;
-
-  @override
-  Future<bool> clear() async => true;
-
-  @override
-  Stream<Object?> watch() => const Stream<Object?>.empty();
-
-  @override
-  Future<bool> exists() async => false;
-
-  @override
-  Future<bool> importFromJson(Map<String, dynamic> json) async => true;
 }
 
 void main() {
@@ -159,8 +135,6 @@ void main() {
       final void Function(String) unregisterModule = service.unregisterModule;
       final bool Function(String) hasModule = service.hasModule;
       final List<String> moduleNames = service.moduleNames;
-      final void Function<T>(ConfigProvider<T>) bridgeProvider =
-          service.bridgeProvider;
       final void Function() initialize = service.initialize;
       final ConfigEntry? Function(String) entry = service.entry;
       final bool Function(String) has = service.has;
@@ -199,7 +173,6 @@ void main() {
       expect(unregisterModule, isNotNull);
       expect(hasModule, isNotNull);
       expect(moduleNames, isA<List<String>>());
-      expect(bridgeProvider, isNotNull);
       expect(initialize, isNotNull);
       expect(entry, isNotNull);
       expect(has, isNotNull);
@@ -226,9 +199,6 @@ void main() {
       expect(module.configs, isEmpty);
       // Default implementation exists and is a no-op.
       module.registerProviders(ConfigService.instance);
-
-      final provider = _SignatureProvider();
-      expect(provider.configKey, 'signature.key');
     });
   });
 }

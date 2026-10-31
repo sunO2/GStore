@@ -6,8 +6,6 @@ import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
-import 'package:gstore/core/config/config_manager.dart';
-import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 
@@ -21,13 +19,6 @@ void main() {
       MemoryConfigStorage(),
     ]);
     ConfigRegistry.registerAll(ConfigService.instance);
-    // 注册 ThemeConfigProvider：主题模式/配置经桥接 provider 持久化
-    ConfigManager.instance
-        .registerProvider(ThemeConfigProvider(MemoryConfigStorage()));
-  });
-
-  tearDown(() {
-    ConfigManager.instance.unregisterProvider('theme_config');
   });
 
   group('themeProvider（Riverpod 主题权威状态）', () {

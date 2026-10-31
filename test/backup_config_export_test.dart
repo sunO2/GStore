@@ -338,7 +338,7 @@ void main() {
     expect(restored.proxyUrl, _proxy);
     expect(restored.webdavPassword, _secret);
     // Grouped config restored through app_config.json (new keys), legacy
-    // aliases remained readable by the old ConfigManager replica.
+    // aliases remained readable by the old-importer replica.
     expect(await ConfigService.instance.getRaw(ConfigKeys.themeMode), 2);
     expect(restored.legacyThemeMode, 2);
     expect(restored.groupedDownloadMultiSegment, isFalse);
@@ -411,13 +411,13 @@ class _OldImporterReplica {
 
     if (appConfigJson != null) {
       // The old importer parses the real ConfigBackupData shape, then applies
-      // ConfigManager's `version > 1` compatibility gate.
+      // the old importer's `version > 1` compatibility gate.
       final backup = ConfigBackupData.fromJson(appConfigJson);
       if (backup.version > 1) {
         throw StateError('old importer rejects config version > 1');
       }
       final configs = backup.configs;
-      // Old ConfigManager reads legacy keys (theme + aggregate download).
+      // The old importer reads legacy keys (theme + aggregate download).
       legacyThemeMode = configs[LegacyConfigKeys.themeMode] as int?;
       final legacyDownload = configs[LegacyConfigKeys.downloadConfig] as Map?;
       legacyDownloadMultiSegment =

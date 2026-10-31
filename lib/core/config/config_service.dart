@@ -21,7 +21,6 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
-import 'config_provider.dart';
 import 'rust/config_api.dart';
 
 /// 配置值类型
@@ -180,7 +179,7 @@ abstract class ConfigModule {
   /// 本模块的配置项
   List<ConfigEntry> get configs;
 
-  /// 可选：桥接本模块已存在的 ConfigProvider
+  /// 历史兼容入口；当前无需额外注册，保留为空实现。
   void registerProviders(ConfigService service) {}
 }
 
@@ -292,10 +291,6 @@ class ConfigService {
   /// clear 旧值兜底（仅非敏感），用于旧值早于清除被捕获（C26）。
   final Map<String, Object?> _pendingClearOld = {};
 
-  /// 已注册的 ConfigProvider 桥接表（仅兼容存量 `bridgeProvider` 调用，
-  /// 已不再委托读取/写入；见 Todo 14"不要保留 provider 委托"）。
-  final Map<String, ConfigProvider<dynamic>> _providers = {};
-
   /// 已注册的配置模块（moduleName → module；仅水合前有效）
   final Map<String, ConfigModule> _modules = {};
 
@@ -339,7 +334,6 @@ class ConfigService {
     _registry.clear();
     _mirror.clear();
     _pendingClearOld.clear();
-    _providers.clear();
     _modules.clear();
     _api = null;
     _readyFuture = null;
@@ -435,7 +429,6 @@ class ConfigService {
     if (module == null) return;
     final keys = module.configs.map((e) => e.key).toSet();
     keys.forEach(_registry.remove);
-    keys.forEach(_providers.remove);
   }
 
   /// 是否已注册指定模块（Rust 注册表或水合前的 Dart 模块）。
@@ -453,12 +446,6 @@ class ConfigService {
       if (module != null) names.add(module);
     }
     return names.toList();
-  }
-
-  /// 桥接已存在的 ConfigProvider（兼容存量调用；水合后 no-op，不再委托）。
-  void bridgeProvider<T>(ConfigProvider<T> provider) {
-    if (_hydrated) return;
-    _providers[provider.configKey] = provider;
   }
 
   /// 初始化（兼容旧调用；同步 no-op，实际水合见 [ensureReady]）。

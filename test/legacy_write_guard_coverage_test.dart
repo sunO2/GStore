@@ -89,10 +89,6 @@ const List<_Writer> _writers = <_Writer>[
   // writers (`saveCheckedAt` / `saveResults` / `saveLogs`); only the surviving
   // preferred-APK writer remains a guarded legacy writer.
   _Writer('lib/core/update/update_cache.dart', 'savePreferredApk', 'update'),
-  _Writer('lib/core/config/providers/update_config_provider.dart', 'save',
-      'update'),
-  _Writer('lib/core/config/providers/update_config_provider.dart', 'clear',
-      'update'),
   // --------------------------------------------------------------- download
   // Wave 6B closeout: the Dart download kernel + its Floor persistence were
   // removed and every panel/agent reader now routes through the Rust-only
@@ -251,7 +247,9 @@ void main() {
           reason: 'every legacy writer must call '
               'LegacyWriteGuard.assertAllowed(<domain>) before writing:\n'
               '${failures.join('\n')}');
-      expect(_writers.length, greaterThanOrEqualTo(17),
+      // Todo 32 removed the two legacy update-config provider writers, so the
+      // exhaustive inventory baseline dropped from 17 to 15 entries.
+      expect(_writers.length, greaterThanOrEqualTo(15),
           reason: 'the writer inventory must stay exhaustive');
     });
 

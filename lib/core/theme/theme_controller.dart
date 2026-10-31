@@ -7,7 +7,7 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
 /// Theme controller for managing app theme persistence and customization
-/// Uses ConfigProvider system to store the user's theme preference
+/// Uses the unified ConfigService to store the user's theme preference
 class ThemeController implements IThemeService {
   static ThemeController? _instance;
 

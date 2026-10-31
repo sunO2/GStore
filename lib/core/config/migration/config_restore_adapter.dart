@@ -26,7 +26,7 @@
 /// * top-level `proxy_url` / `webdav_config` mirrors are lowest priority, so
 ///   grouped/legacy config values override them.
 ///
-/// The adapter never uses `ConfigManager.importAll`. It goes straight to the
+/// The adapter never uses the deleted legacy import path. It goes straight to the
 /// Rust batch import seam (`ConfigApi.import_(entries, source)` through
 /// [GeneratedConfigMigrationApi]) and returns a per-key report. One rejected or
 /// malformed key is reported and never aborts the remaining restore.
