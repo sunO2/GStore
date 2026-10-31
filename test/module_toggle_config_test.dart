@@ -166,6 +166,11 @@ void main() {
       expect(ok, false, reason: '依赖者拒绝必须返回 false');
       expect(await config.isModuleEnabled('channel'), true,
           reason: '依赖者拒绝时配置不得落盘为 false');
+      expect(
+        await ConfigService.instance.getRaw(ModuleToggleConfig.keyOf('channel')),
+        true,
+        reason: '拒绝路径不得改写已持久化的 module.channel.enabled',
+      );
       expect(manager.isModuleEnabled('channel'), true, reason: '模块保持启用');
     });
   });

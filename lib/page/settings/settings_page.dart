@@ -7,8 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
-import 'package:gstore/core/config/config_manager.dart';
-import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_api.dart';
@@ -1293,35 +1291,37 @@ class _MultiSegmentDownloadTileState extends State<_MultiSegmentDownloadTile> {
 
   Future<void> _load() async {
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        final enabled = await provider.isMultiSegmentEnabled();
-        if (mounted) {
-          setState(() {
-            _enabled = enabled;
-            _loaded = true;
-          });
-        }
-        return;
+      final enabled = await ConfigService.instance
+          .getT<bool>(ConfigKeys.downloadMultiSegmentEnabled);
+      if (mounted) {
+        setState(() {
+          _enabled = enabled ?? true;
+          _loaded = true;
+        });
       }
     } catch (e) {
       debugPrint('SettingsPage: 读取多段下载配置失败 - $e');
-    }
-    if (mounted) {
-      setState(() {
-        _enabled = true;
-        _loaded = true;
-      });
+      if (mounted) {
+        setState(() {
+          _enabled = true;
+          _loaded = true;
+        });
+      }
     }
   }
 
   Future<void> _toggle(bool value) async {
     setState(() => _enabled = value);
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        await provider.setMultiSegmentEnabled(value);
+      final result = await ConfigService.instance.set(
+        ConfigKeys.downloadMultiSegmentEnabled,
+        value,
+        source: ConfigChangeSource.user,
+      );
+      if (result.success) {
         appLog.info('SettingsPage: 多段下载已${value ? "开启" : "关闭"}');
+      } else {
+        debugPrint('SettingsPage: 保存多段下载配置失败 - ${result.message}');
       }
     } catch (e) {
       debugPrint('SettingsPage: 保存多段下载配置失败 - $e');
@@ -1369,33 +1369,38 @@ class _MaxConcurrentDownloadTileState
 
   Future<void> _load() async {
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        _value = await provider.getMaxConcurrentDownloads();
-        if (mounted) {
-          setState(() {
-            _loaded = true;
-          });
-        }
-        return;
+      final value = await ConfigService.instance
+          .getT<int>(ConfigKeys.downloadMaxConcurrent);
+      if (mounted) {
+        setState(() {
+          _value = value ?? 3;
+          _loaded = true;
+        });
       }
     } catch (e) {
       debugPrint('SettingsPage: 读取并发数配置失败 - $e');
-    }
-    if (mounted) {
-      setState(() {
-        _value = 3;
-        _loaded = true;
-      });
+      if (mounted) {
+        setState(() {
+          _value = 3;
+          _loaded = true;
+        });
+      }
     }
   }
 
   Future<void> _update(int value) async {
-    setState(() => _value = value);
+    // 滑块已限定 1-10；这里再 clamp 一次，避免程序化调用写入越界值
+    // （ConfigService 仍会按注册表范围校验并拒绝非法写入）。
+    final clamped = value.clamp(1, 10);
+    setState(() => _value = clamped);
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        await provider.setMaxConcurrentDownloads(value);
+      final result = await ConfigService.instance.set(
+        ConfigKeys.downloadMaxConcurrent,
+        clamped,
+        source: ConfigChangeSource.user,
+      );
+      if (!result.success) {
+        debugPrint('SettingsPage: 保存并发数配置失败 - ${result.message}');
       }
     } catch (e) {
       debugPrint('SettingsPage: 保存并发数配置失败 - $e');
@@ -1438,6 +1443,11 @@ class _MaxConcurrentDownloadTileState
 ///
 /// 开关控制是否仅在 WiFi 环境下下载，
 /// 开启后可避免消耗移动数据流量。
+///
+/// **已知 UI-only 设置**：`download.wifi_only` 是 Dart 侧偏好，Rust 下载引擎
+/// 当前不消费该键（见 `gstore_mod_download/src/config/mod.rs`）；此处仅负责
+/// 通过 [ConfigService] 持久化，供下载入口/后续消费方读取。不要静默删除键或
+/// Tile——迁移工具与备份仍需要它。
 class _WifiOnlyDownloadTile extends StatefulWidget {
   const _WifiOnlyDownloadTile();
 
@@ -1457,33 +1467,35 @@ class _WifiOnlyDownloadTileState extends State<_WifiOnlyDownloadTile> {
 
   Future<void> _load() async {
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        _enabled = await provider.isWifiOnly();
-        if (mounted) {
-          setState(() {
-            _loaded = true;
-          });
-        }
-        return;
+      final enabled =
+          await ConfigService.instance.getT<bool>(ConfigKeys.downloadWifiOnly);
+      if (mounted) {
+        setState(() {
+          _enabled = enabled ?? false;
+          _loaded = true;
+        });
       }
     } catch (e) {
       debugPrint('SettingsPage: 读取WiFi-only配置失败 - $e');
-    }
-    if (mounted) {
-      setState(() {
-        _enabled = false;
-        _loaded = true;
-      });
+      if (mounted) {
+        setState(() {
+          _enabled = false;
+          _loaded = true;
+        });
+      }
     }
   }
 
   Future<void> _toggle(bool value) async {
     setState(() => _enabled = value);
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        await provider.setWifiOnly(value);
+      final result = await ConfigService.instance.set(
+        ConfigKeys.downloadWifiOnly,
+        value,
+        source: ConfigChangeSource.user,
+      );
+      if (!result.success) {
+        debugPrint('SettingsPage: 保存WiFi-only配置失败 - ${result.message}');
       }
     } catch (e) {
       debugPrint('SettingsPage: 保存WiFi-only配置失败 - $e');
@@ -1529,33 +1541,38 @@ class _MaxRetryCountTileState extends State<_MaxRetryCountTile> {
 
   Future<void> _load() async {
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        _value = await provider.getMaxRetryCount();
-        if (mounted) {
-          setState(() {
-            _loaded = true;
-          });
-        }
-        return;
+      final value =
+          await ConfigService.instance.getT<int>(ConfigKeys.downloadMaxRetries);
+      if (mounted) {
+        setState(() {
+          _value = value ?? 3;
+          _loaded = true;
+        });
       }
     } catch (e) {
       debugPrint('SettingsPage: 读取重试次数配置失败 - $e');
-    }
-    if (mounted) {
-      setState(() {
-        _value = 3;
-        _loaded = true;
-      });
+      if (mounted) {
+        setState(() {
+          _value = 3;
+          _loaded = true;
+        });
+      }
     }
   }
 
   Future<void> _update(int value) async {
-    setState(() => _value = value);
+    // 滑块已限定 0-5；这里再 clamp 一次，避免程序化调用写入越界值
+    // （ConfigService 仍会按注册表范围校验并拒绝非法写入）。
+    final clamped = value.clamp(0, 5);
+    setState(() => _value = clamped);
     try {
-      final provider = ConfigManager.instance.providers['download_config'];
-      if (provider is DownloadConfigProvider) {
-        await provider.setMaxRetryCount(value);
+      final result = await ConfigService.instance.set(
+        ConfigKeys.downloadMaxRetries,
+        clamped,
+        source: ConfigChangeSource.user,
+      );
+      if (!result.success) {
+        debugPrint('SettingsPage: 保存重试次数配置失败 - ${result.message}');
       }
     } catch (e) {
       debugPrint('SettingsPage: 保存重试次数配置失败 - $e');
