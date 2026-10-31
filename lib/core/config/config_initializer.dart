@@ -1,30 +1,88 @@
 /// 配置初始化
 ///
-/// 负责初始化配置管理系统并注册所有配置提供者
+/// 负责把 Rust 配置客户端接入应用启动流程：建立 `ConfigStore` 的兼容后端，
+/// 并让 `ConfigService` 从 Rust `ConfigApi.list()` 水合同步元数据。
+///
+/// **顺序约束**：必须在 `CoreBootstrap.start()` 成功创建 Rust `CoreApi` **之后**
+/// 调用。`ConfigApi.init()` 依赖已初始化的核心；在核心就绪前调用会以明确的
+/// [StateError] 失败（而不是静默降级或写入半初始化状态）。
 library;
 
-import 'package:flutter/foundation.dart';
-import 'package:gstore/core/core.dart';
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
+import 'package:gstore/core/logger/LogManager.dart' show appLog;
 
-import 'config_manager.dart';
+import 'config_service.dart';
 import 'config_store.dart';
-import 'config_storage.dart';
-import 'providers/webdav_config_provider.dart';
-import 'providers/update_config_provider.dart';
-import 'providers/download_config_provider.dart';
+
+/// 一个初始化步骤（仅测试可注入，生产固定为真实实现）。
+typedef ConfigInitializerStep = Future<void> Function();
 
 /// 配置初始化器
 ///
-/// 负责初始化配置管理系统并注册所有配置提供者
+/// 启动顺序假设（见 `lib/main.dart`）：`CoreBootstrap.start()` →
+/// `ConfigInitializer.initialize()` → 模块注册/`ModuleToggleConfig.preApplyToggles`。
+/// 只有 `ConfigApi` 就绪后，模块开关等配置读取才有权威数据。
 class ConfigInitializer {
   ConfigInitializer._();
 
-  /// 是否已初始化
+  /// 是否已初始化（幂等标记；初始化失败时保持 false，允许重试）。
   static bool _initialized = false;
+
+  static ConfigInitializerStep _initializeStore = _defaultInitializeStore;
+  static ConfigInitializerStep _ensureServiceReady = _defaultEnsureServiceReady;
+
+  /// 测试观察初始化状态（仅测试用）。
+  @visibleForTesting
+  static bool get debugInitialized => _initialized;
+
+  static Future<void> _defaultInitializeStore() =>
+      ConfigStore.instance.initialize();
+
+  /// 水合 `ConfigService`。原生桥缺失/核心未就绪时统一转为 [StateError]，
+  /// 让失败在启动日志里是明确类型而不是不可分类的 FFI 异常。
+  ///
+  /// 只包装 [Exception]（桥/FFI 失败）。编程错误（[Error] 子类，如
+  /// [ArgumentError]/[TypeError]）原样抛出，绝不被误标为桥错误；包装时保留
+  /// 原始堆栈，便于定位真正的失败点。
+  static Future<void> _defaultEnsureServiceReady() async {
+    try {
+      await ConfigService.instance.ensureReady();
+    } on StateError {
+      rethrow;
+    } on Exception catch (error, stackTrace) {
+      Error.throwWithStackTrace(
+        StateError(
+          'ConfigInitializer: Rust ConfigApi 初始化失败'
+          '（CoreApi/原生桥未就绪）: $error',
+        ),
+        stackTrace,
+      );
+    }
+  }
+
+  /// 注入初始化步骤（仅测试使用；未传的步骤恢复生产实现）。
+  @visibleForTesting
+  static void debugSetSteps({
+    ConfigInitializerStep? initializeStore,
+    ConfigInitializerStep? ensureServiceReady,
+  }) {
+    _initializeStore = initializeStore ?? _defaultInitializeStore;
+    _ensureServiceReady = ensureServiceReady ?? _defaultEnsureServiceReady;
+    _initialized = false;
+  }
+
+  /// 恢复生产步骤与幂等标记（仅测试使用）。
+  @visibleForTesting
+  static void debugReset() {
+    _initializeStore = _defaultInitializeStore;
+    _ensureServiceReady = _defaultEnsureServiceReady;
+    _initialized = false;
+  }
 
   /// 初始化配置管理系统
   ///
-  /// 这应该在应用启动时调用，在所有其他配置操作之前
+  /// 这应该在应用启动时调用，且必须晚于 `CoreBootstrap.start()`；在所有其他
+  /// 配置读写/模块开关预置之前完成。重复调用为 no-op。
   static Future<void> initialize() async {
     // 幂等性检查
     if (_initialized) {
@@ -32,116 +90,16 @@ class ConfigInitializer {
       return;
     }
 
-    appLog.info('ConfigInitializer: 开始初始化配置管理系统');
+    appLog.info('ConfigInitializer: 开始初始化 Rust 配置客户端');
 
-    // 初始化配置管理器
-    final manager = ConfigManager.instance;
-    await manager.initialize();
+    // 1) 建立 ConfigStore 兼容适配器后端（生产为 Rust 后端，测试为内存 fake）。
+    await _initializeStore();
 
-    // 创建存储实例
-    final sharedPrefsStorage = SharedPrefsConfigStorage();
-    final secureStorage = SecureConfigStorage();
-
-    // 初始化存储
-    await sharedPrefsStorage.initialize();
-    await secureStorage.initialize();
-
-    final storage = CompositeConfigStorage([
-      sharedPrefsStorage,
-      secureStorage,
-    ]);
-
-    // 注册所有配置提供者
-    _registerProviders(manager, storage);
-
-    // 初始化统一 ConfigService（注册表 + 桥接 provider + 存量迁移）
-    await _initializeConfigService(manager, storage);
+    // 2) 唯一调用 ConfigApi.init()/list() 的水合点：Rust 注册表 → 同步元数据。
+    await _ensureServiceReady();
 
     _initialized = true;
-    appLog.info('ConfigInitializer: 配置管理系统初始化完成');
-  }
-
-  /// 初始化统一 ConfigService
-  static Future<void> _initializeConfigService(
-    ConfigManager manager,
-    CompositeConfigStorage storage,
-  ) async {
-    // 初始化统一存储
-    await ConfigStore.instance.initialize();
-
-    // 注册内置配置项（标记敏感 key）
-    ConfigRegistry.registerAll(ConfigService.instance);
-    ConfigService.instance.initialize();
-
-    // 桥接已存在的 ConfigProvider（读写委托，保持现有机制兼容）
-    final downloadProvider = manager.getProvider<dynamic>('download_config');
-    if (downloadProvider != null) {
-      ConfigService.instance.bridgeProvider(downloadProvider);
-    }
-    final updateProvider = manager.getProvider<dynamic>('update_config');
-    if (updateProvider != null) {
-      ConfigService.instance.bridgeProvider(updateProvider);
-    }
-    final webdavProvider = manager.getProvider<dynamic>('webdav_config');
-    if (webdavProvider != null) {
-      ConfigService.instance.bridgeProvider(webdavProvider);
-    }
-
-    // 存量迁移：散落的旧 key 迁移到统一存储
-    await ConfigRegistry.migrateLegacy(ConfigStore.instance);
-
-    appLog.info('ConfigInitializer: ConfigService 初始化完成 '
+    appLog.info('ConfigInitializer: Rust 配置客户端初始化完成 '
         '(共 ${ConfigService.instance.list().length} 项配置)');
-  }
-
-  /// 注册所有配置提供者
-  static void _registerProviders(
-    ConfigManager manager,
-    CompositeConfigStorage storage,
-  ) {
-    // 注册 WebDAV 配置提供者
-    manager.registerProvider(
-      WebDavConfigProvider(SecureConfigStorage()),
-    );
-    appLog.info('ConfigInitializer: 已注册 WebDAV 配置提供者');
-
-    // 注册更新配置提供者
-    manager.registerProvider(
-      UpdateConfigProvider(storage),
-    );
-    appLog.info('ConfigInitializer: 已注册更新配置提供者');
-
-    // 注册下载配置提供者
-    manager.registerProvider(
-      DownloadConfigProvider(storage),
-    );
-    appLog.info('ConfigInitializer: 已注册下载配置提供者');
-  }
-
-  /// 获取 WebDAV 配置提供者
-  static WebDavConfigProvider getWebDavConfigProvider() {
-    final provider = ConfigManager.instance.providers['webdav_config'];
-    if (provider == null || provider is! WebDavConfigProvider) {
-      throw StateError('WebDavConfigProvider not registered. Call initialize() first.');
-    }
-    return provider;
-  }
-
-  /// 获取更新配置提供者
-  static UpdateConfigProvider getUpdateConfigProvider() {
-    final provider = ConfigManager.instance.providers['update_config'];
-    if (provider == null || provider is! UpdateConfigProvider) {
-      throw StateError('UpdateConfigProvider not registered. Call initialize() first.');
-    }
-    return provider;
-  }
-
-  /// 获取下载配置提供者
-  static DownloadConfigProvider getDownloadConfigProvider() {
-    final provider = ConfigManager.instance.providers['download_config'];
-    if (provider == null || provider is! DownloadConfigProvider) {
-      throw StateError('DownloadConfigProvider not registered. Call initialize() first.');
-    }
-    return provider;
   }
 }
