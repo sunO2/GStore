@@ -14,9 +14,8 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
-import 'package:gstore/core/config/config_manager.dart';
-import 'package:gstore/core/config/config_backup.dart';
-import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/config/migration/config_migration_tool.dart';
+import 'package:gstore/core/config/migration/config_restore_adapter.dart';
 import 'package:gstore/core/config/rust/config_api.dart' show ConfigExportValue;
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
@@ -755,33 +754,16 @@ class BackupService implements IBackupService {
     appLog.info('BackupService: ✅ 版本验证通过');
     appLog.info('BackupService: 开始导入数据...');
 
-    // 如果有配置数据且需要恢复配置，则导入配置
-    if (configData != null && restoreAppConfig) {
-      appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
-      try {
-        // 确保配置管理器已初始化
-        await ConfigInitializer.initialize();
-        debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
-
-        final configManager = ConfigManager.instance;
-        final importSuccess = await configManager.importAll(
-          ConfigBackupData.fromJson(configData),
-        );
-        if (importSuccess) {
-          appLog.info('BackupService: ✅ 应用配置导入成功');
-        } else {
-          appLog.error('BackupService: ⚠️ 应用配置导入部分失败');
-        }
-      } catch (e, stackTrace) {
-        appLog.error('BackupService: ⚠️ 导入应用配置失败: $e');
-        appLog.error('BackupService: 堆栈跟踪: $stackTrace');
-        // 配置导入失败不影响应用数据导入
-      }
-    } else if (configData != null && !restoreAppConfig) {
-      debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
-    }
-
-    final result = await importData(backupData, mode: mode);
+    // Todo 29: config restore is handled by the single
+    // `ConfigRestoreAdapter` path inside `importData`; pass the standalone
+    // `app_config.json` payload through so both archive locations are covered
+    // without a second restore implementation.
+    final result = await importData(
+      backupData,
+      mode: mode,
+      restoreAppConfig: restoreAppConfig,
+      appConfigJson: configData,
+    );
     if (!result.success) {
       // Mirror importBackupBytes: a blocked/failed data import must abort the
       // restore before any channel zip is written.
@@ -869,33 +851,17 @@ class BackupService implements IBackupService {
         );
       }
 
-      // 如果有配置数据且需要恢复配置，则导入配置
-      if (configData != null && restoreAppConfig) {
-        appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
-        onLog?.call('开始导入应用配置（${configData.length} 项）...');
-        try {
-          // 确保配置管理器已初始化
-          await ConfigInitializer.initialize();
-          debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
-
-          final configManager = ConfigManager.instance;
-          await configManager.importAll(
-            ConfigBackupData.fromJson(configData),
-          );
-          appLog.info('BackupService: 应用配置导入成功');
-          onLog?.call('应用配置导入成功');
-        } catch (e) {
-          appLog.error('BackupService: 导入应用配置失败: $e');
-          onLog?.call('导入应用配置失败: $e', isError: true);
-        }
-      } else if (configData != null && !restoreAppConfig) {
-        debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
-      }
-
       appLog.info('BackupService: 备份版本: ${backupData.metadata.version}, 开始导入');
 
-      // 导入数据（内部各阶段同步输出 onLog）
-      final result = await importData(backupData, mode: mode, onLog: onLog);
+      // 导入数据（内部各阶段同步输出 onLog；配置恢复同样由 importData 内的
+      // 唯一 `ConfigRestoreAdapter` 路径完成，配置失败不会中止应用数据导入）
+      final result = await importData(
+        backupData,
+        mode: mode,
+        onLog: onLog,
+        restoreAppConfig: restoreAppConfig,
+        appConfigJson: configData,
+      );
       if (!result.success) {
         // 典型场景：恢复写被核心写标记拦截（typed警告已由 importData 输出）。
         onLog?.call('恢复中止: ${result.error}', isError: true);
@@ -921,10 +887,15 @@ class BackupService implements IBackupService {
   ///
   /// [backupData] 备份数据
   /// [mode] 导入模式
+  /// [restoreAppConfig] 是否恢复应用配置（默认 true，保持既有调用语义）
+  /// [appConfigJson] 归档内独立的 `app_config.json` 载荷；与
+  ///   `backupData.appConfig` 一起交给同一个 [ConfigRestoreAdapter]。
   Future<BackupImportResult> importData(
     BackupData backupData, {
     BackupImportMode mode = BackupImportMode.merge,
     BackupLogCallback? onLog,
+    bool restoreAppConfig = true,
+    Map<String, dynamic>? appConfigJson,
   }) async {
     final result = BackupImportResult();
 
@@ -1053,81 +1024,24 @@ class BackupService implements IBackupService {
       }
 
       // 导入应用配置（如果存在）
-      if (backupData.appConfig != null && backupData.appConfig!.isNotEmpty) {
-        onLog?.call('开始恢复应用配置...');
-        try {
-          appLog.info('BackupService: 开始导入应用配置');
-          debugPrint('BackupService: 配置项: ${backupData.appConfig!.keys.toList()}');
-
-          final configManager = ConfigManager.instance;
-          // 将 Map 转换为 ConfigBackupData
-          final configBackupData = ConfigBackupData(
-            version: 1, // 当前配置版本
-            timestamp: DateTime.now(),
-            appVersion: backupData.metadata.appVersion,
-            configs: backupData.appConfig!,
-          );
-
-          final importSuccess = await configManager.importAll(configBackupData);
-          if (importSuccess) {
-            appLog.info('BackupService: ✅ 应用配置导入成功');
-            onLog?.call('应用配置恢复完成');
-          } else {
-            appLog.error('BackupService: ⚠️ 应用配置导入部分失败');
-            onLog?.call('应用配置恢复部分失败', isError: true);
-          }
-        } catch (e) {
-          appLog.error('BackupService: 导入应用配置失败 - $e');
-          onLog?.call('应用配置恢复失败: $e', isError: true);
-          // 配置导入失败不影响应用导入
-        }
+      //
+      // Todo 29 / C16: 所有恢复入口只走这一条 `ConfigRestoreAdapter` 路径。
+      // 它同时读取 `apps.json.appConfig`（BackupData 内嵌）与独立
+      // `app_config.json`，按 grouped-wins 合并，并经 Rust import 接缝逐键
+      // 恢复；单个坏键只汇报失败，绝不中止应用数据导入。
+      if (restoreAppConfig) {
+        await _restoreBackupConfig(
+          embeddedAppConfig: backupData.appConfig,
+          appConfigJson: appConfigJson,
+          onLog: onLog,
+        );
+      } else if ((backupData.appConfig != null &&
+              backupData.appConfig!.isNotEmpty) ||
+          (appConfigJson != null && appConfigJson.isNotEmpty)) {
+        debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
+        onLog?.call('已跳过应用配置恢复');
       } else {
         debugPrint('BackupService: 备份中不包含应用配置');
-      }
-
-      // 代理配置（B 轨：不走 ConfigManager，直接写 ConfigService，与配置导入相互独立）
-      final proxyValue = backupData.appConfig?['proxy_url'];
-      if (proxyValue != null && proxyValue.toString().isNotEmpty) {
-        onLog?.call('恢复代理配置...');
-        try {
-          final proxyResult = await ConfigService.instance.set(
-            ConfigKeys.proxyUrl,
-            proxyValue.toString(),
-          );
-          if (proxyResult.success) {
-            appLog.info('BackupService: ✅ 代理配置恢复完成');
-            onLog?.call('代理配置恢复完成');
-          } else {
-            appLog.error(
-                'BackupService: ⚠️ 代理配置恢复失败 - ${proxyResult.message}');
-            onLog?.call('代理配置恢复失败: ${proxyResult.message}', isError: true);
-          }
-        } catch (e) {
-          appLog.error('BackupService: 恢复代理配置失败 - $e');
-          onLog?.call('代理配置恢复失败: $e', isError: true);
-        }
-      } else {
-        debugPrint('BackupService: 备份中不包含代理配置');
-      }
-
-      // WebDAV 配置（B 轨：直写 WebDavConfigManager，与导出侧对称；
-      // ConfigManager 的 WebDavConfigProvider 存储 key 前缀不一致，不走 importAll）
-      final webdavConfigValue = backupData.appConfig?['webdav_config'];
-      if (webdavConfigValue is Map && webdavConfigValue.isNotEmpty) {
-        onLog?.call('恢复 WebDAV 配置...');
-        try {
-          final webdav = WebDavConfig.fromJson(
-            Map<String, dynamic>.from(webdavConfigValue),
-          );
-          await WebDavConfigManager.instance.saveConfig(webdav);
-          appLog.info('BackupService: ✅ WebDAV 配置恢复完成');
-          onLog?.call('WebDAV 配置恢复完成');
-        } catch (e) {
-          appLog.error('BackupService: 恢复 WebDAV 配置失败 - $e');
-          onLog?.call('WebDAV 配置恢复失败: $e', isError: true);
-        }
-      } else {
-        debugPrint('BackupService: 备份中不包含 WebDAV 配置');
       }
 
       // 导入用户分类标签（v2.1 新增；insertTags 复合主键冲突 replace，幂等追加）
@@ -1780,6 +1694,103 @@ class BackupService implements IBackupService {
   @visibleForTesting
   Directory? debugChannelsDirectory;
 
+  /// 测试注入：配置恢复使用的 Rust import 接缝（Todo 29）。
+  ///
+  /// 生产保持 null，由 [ConfigRestoreAdapter] 懒创建 `GeneratedConfigMigrationApi`。
+  @visibleForTesting
+  static ConfigMigrationApi? debugConfigRestoreApi;
+
+  /// 最近一次配置恢复的逐键报告（仅测试/证据使用；不含值）。
+  @visibleForTesting
+  static ConfigRestoreReport? debugLastConfigRestoreReport;
+
+  /// 复位配置恢复测试状态。
+  @visibleForTesting
+  static void debugResetConfigRestore() {
+    debugConfigRestoreApi = null;
+    debugLastConfigRestoreReport = null;
+  }
+
+  /// 唯一配置恢复路径（Todo 29 / C16）。
+  ///
+  /// 两个归档位置都交给 [ConfigRestoreAdapter]：`apps.json.appConfig`
+  /// （内嵌于 [BackupData]）与独立 `app_config.json`。适配器负责
+  /// legacy/grouped 映射与 grouped-wins，并逐键调用 Rust import 接缝。
+  ///
+  /// 语义保证：
+  /// * 单键（甚至整个接缝）失败只记录/汇报，**绝不上抛**，因此不会中止
+  ///   应用数据导入；
+  /// * 进度日志只含 storageKey/wireKey/status/code，**绝不含配置值**。
+  Future<void> _restoreBackupConfig({
+    required Map<String, dynamic>? embeddedAppConfig,
+    required Map<String, dynamic>? appConfigJson,
+    BackupLogCallback? onLog,
+  }) async {
+    final hasEmbedded =
+        embeddedAppConfig != null && embeddedAppConfig.isNotEmpty;
+    final hasFile = appConfigJson != null && appConfigJson.isNotEmpty;
+    if (!hasEmbedded && !hasFile) {
+      debugPrint('BackupService: 备份中不包含应用配置');
+      return;
+    }
+
+    final itemCount = _configRestoreItemCount(embeddedAppConfig, appConfigJson);
+    appLog.info('BackupService: 开始恢复应用配置（$itemCount 项，adapter）');
+    onLog?.call('开始导入应用配置（$itemCount 项）...');
+
+    try {
+      final adapter = ConfigRestoreAdapter(
+        api: debugConfigRestoreApi ?? _DefaultConfigRestoreApi(),
+      );
+      final report = await adapter.restore(
+        embeddedAppConfig: embeddedAppConfig,
+        appConfigJson: appConfigJson,
+      );
+      debugLastConfigRestoreReport = report;
+
+      for (final entry in report.entries) {
+        final storageKey = entry.originalKey ?? entry.wireKey;
+        final code = entry.code == null ? '' : ' code=${entry.code}';
+        appLog.info(
+          'BackupService: 配置恢复 storageKey=$storageKey '
+          'wireKey=${entry.wireKey} status=${entry.status}$code',
+        );
+      }
+
+      if (report.success) {
+        appLog.info('BackupService: ✅ 应用配置恢复完成（${report.restored} 项）');
+        onLog?.call('应用配置恢复完成（${report.restored} 项）');
+      } else {
+        final summary = report.failures.entries
+            .take(5)
+            .map((entry) => '${entry.key}(${entry.value})')
+            .join(', ');
+        appLog.error('BackupService: ⚠️ 应用配置恢复部分失败: $summary');
+        onLog?.call('应用配置恢复部分失败: $summary', isError: true);
+      }
+    } catch (e, stackTrace) {
+      // 接缝初始化/未知异常：汇报但不中止应用数据导入。
+      appLog.error('BackupService: 导入应用配置失败: $e');
+      appLog.error('BackupService: 堆栈跟踪: $stackTrace');
+      onLog?.call('应用配置恢复失败: $e', isError: true);
+    }
+  }
+
+  /// Counts config entries in both archive locations for the progress message.
+  static int _configRestoreItemCount(
+    Map<String, dynamic>? embedded,
+    Map<String, dynamic>? file,
+  ) {
+    int countOf(Map<String, dynamic>? payload) {
+      if (payload == null) return 0;
+      final configs = payload['configs'];
+      if (configs is Map) return configs.length;
+      return payload.length;
+    }
+
+    return countOf(embedded) + countOf(file);
+  }
+
   /// 解析渠道包目录（channels/*.zip 所在目录，与 ChannelLoader 约定一致）
   Future<Directory?> _resolveChannelsDirectory() async {
     try {
@@ -2077,4 +2088,94 @@ class BackupException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Default `ConfigMigrationApi` for [BackupService]'s restore path.
+///
+/// Production delegates straight to the generated Rust `ConfigApi.import_`
+/// seam. The Flutter test host has no native library, so only there (when the
+/// generated seam cannot even be created) it falls back to an in-memory
+/// `ConfigService` bridge. That bridge is *not* a second restore flow: the
+/// adapter still owns mapping/precedence and still reports per-key status; it
+/// only substitutes the unavailable FFI transport so existing tests can assert
+/// the restore outcome. Production never reaches the fallback because
+/// `ConfigApi.init()` succeeds once the core is up, and any real import error
+/// is reported by the adapter as a per-key failure.
+class _DefaultConfigRestoreApi implements ConfigMigrationApi {
+  ConfigMigrationApi? _delegate;
+
+  Future<ConfigMigrationApi> _resolve() async {
+    final existing = _delegate;
+    if (existing != null) return existing;
+    try {
+      return _delegate = await GeneratedConfigMigrationApi.create();
+    } catch (error) {
+      if (Platform.environment['FLUTTER_TEST'] != 'true') rethrow;
+      debugPrint(
+        'BackupService: 原生 ConfigApi 不可用，使用测试内存配置接缝: $error',
+      );
+      return _delegate = _InMemoryConfigServiceRestoreApi();
+    }
+  }
+
+  @override
+  Future<MigrationImportResult> importEntries(
+    List<MigrationEntry> entries, {
+    required String source,
+  }) async {
+    return (await _resolve()).importEntries(entries, source: source);
+  }
+
+  @override
+  Future<MigrationVerifyResult> verifyEntries(List<MigrationEntry> entries) async {
+    return (await _resolve()).verifyEntries(entries);
+  }
+
+  @override
+  Future<String?> getMeta(String key) async => (await _resolve()).getMeta(key);
+
+  @override
+  Future<void> setMeta(String key, String valueJson) async {
+    await (await _resolve()).setMeta(key, valueJson);
+  }
+}
+
+/// Test-only transport: applies imported entries through the `ConfigService`
+/// test backend (which is itself an injected in-memory `ConfigApiClient`).
+class _InMemoryConfigServiceRestoreApi implements ConfigMigrationApi {
+  @override
+  Future<MigrationImportResult> importEntries(
+    List<MigrationEntry> entries, {
+    required String source,
+  }) async {
+    final failed = <String, String>{};
+    var applied = 0;
+    for (final entry in entries) {
+      final result = await ConfigService.instance.set(entry.wireKey, entry.value);
+      if (result.success) {
+        applied++;
+      } else {
+        failed[entry.wireKey] = 'config_import_failed';
+      }
+    }
+    return MigrationImportResult(
+      total: entries.length,
+      applied: applied,
+      unchanged: 0,
+      eventsPublished: applied,
+      failed: failed,
+    );
+  }
+
+  @override
+  Future<MigrationVerifyResult> verifyEntries(List<MigrationEntry> entries) =>
+      throw UnimplementedError('verifyEntries is unused by backup restore');
+
+  @override
+  Future<String?> getMeta(String key) =>
+      throw UnimplementedError('getMeta is unused by backup restore');
+
+  @override
+  Future<void> setMeta(String key, String valueJson) =>
+      throw UnimplementedError('setMeta is unused by backup restore');
 }
