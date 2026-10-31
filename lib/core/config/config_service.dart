@@ -1,12 +1,16 @@
 /// 统一配置服务（ConfigService）
 ///
-/// 配置系统的统一门面：
-/// - 声明式注册表（ConfigEntry）：类型/默认值/敏感/Agent 白名单/描述/分组/单位/示例
-/// - 模块化注册（ConfigModule）：模块初始化时注册自身配置，支持覆盖更新与注销
-/// - 读写路由：已注册 ConfigProvider 的 key 委托 provider，其余走 ConfigStore
-/// - 统一事件总线：所有变更广播 ConfigChangeEvent，功能模块订阅后主动响应
-/// - 结构化快照（ConfigSnapshot）：元数据 + 当前值合并返回，Agent 一次解析全懂
-/// - 安全：敏感项（密码/API Key）读取自动脱敏，Agent 写白名单校验
+/// 配置系统的统一门面（Todo 14：Rust `ConfigApi` 客户端 + 元数据/原始值镜像）：
+/// - 元数据：`ensureReady()` 从 Rust 注册表（`ConfigApi.list()`）水合到同步
+///   [ConfigEntry] 映射，`list`/`entry`/`has`/`isAgentAccessible`/`snapshot`
+///   等同步/半同步 API 因此无需每次访问 FFI。
+/// - 读写：全部委托 Rust；`getRaw`/可信读取按需 `ConfigApi.get(masked:false)`，
+///   `get`/`getT` 先查镜像再 `ConfigApi.get`（默认脱敏）。
+/// - 镜像：[ConfigEntry] 原始值缓存（按 wire key）；**绝不缓存敏感明文**（C3）。
+/// - 订阅：`watch`/`watchMany`/`watchModule` 把 module/key 过滤器下推给
+///   `ConfigApi.watch`，由 Rust 在 FRB 之前过滤；`onChange` 保持全局语义，
+///   由每个模块的 Rust 订阅汇总，因此镜像只订阅全局来源、不会与过滤流重复。
+/// - 安全：敏感项（密码/API Key）读取自动脱敏，Agent 写白名单校验。
 ///
 /// 核心架构：写入方（Agent/UI）只负责写配置，功能模块作为订阅者
 /// 监听 onChange 后自行更新，实现"配置修改 → 功能主动响应"。
@@ -15,10 +19,10 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:gstore/core/core.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'config_provider.dart';
-import 'config_store.dart';
+import 'rust/config_api.dart';
 
 /// 配置值类型
 enum ConfigValueType {
@@ -44,7 +48,7 @@ enum ConfigChangeSource {
 
 /// 配置变更事件
 class ConfigChangeEvent {
-  /// 配置 key
+  /// 配置 key（wire key，如 `theme.mode`）
   final String key;
 
   /// 旧值（首次设置/未知时可能为 null）
@@ -108,7 +112,7 @@ class ConfigOpResult {
 /// 只包含静态元数据（值动态存储，见 ConfigSnapshot），
 /// 保持单一数据源、避免双写同步问题。
 class ConfigEntry {
-  /// 配置 key（唯一标识）
+  /// 配置 key（唯一标识，wire key，如 `theme.mode`）
   final String key;
 
   /// 值类型
@@ -265,56 +269,168 @@ class ConfigSnapshot {
 }
 
 /// 统一配置服务（单例）
+///
+/// Rust 侧是唯一事实来源；Dart 侧只保留同步元数据 [ConfigEntry] 与非敏感
+/// 原始值镜像，避免每次读走 FFI，同时确保敏感明文永不进入 Dart 镜像（C3）。
 class ConfigService {
   ConfigService._internal();
 
   static ConfigService? _instance;
   static ConfigService get instance => _instance ??= ConfigService._internal();
 
-  /// 注册表
+  /// 注册表（wire key → 元数据）
+  ///
+  /// `ensureReady()` 之前由 `register*` 填充（旧调用方兼容），水合后替换为
+  /// Rust 注册表内容。
   final Map<String, ConfigEntry> _registry = {};
 
-  /// 已注册的 ConfigProvider 桥接表（key → provider）
+  /// 非敏感原始值镜像（wire key → value）
+  ///
+  /// 绝不写入敏感项明文（C3）。`getRaw`/可信读取按需走 Rust，不依赖该镜像。
+  final Map<String, Object?> _mirror = {};
+
+  /// clear 旧值兜底（仅非敏感），用于旧值早于清除被捕获（C26）。
+  final Map<String, Object?> _pendingClearOld = {};
+
+  /// 已注册的 ConfigProvider 桥接表（仅兼容存量 `bridgeProvider` 调用，
+  /// 已不再委托读取/写入；见 Todo 14"不要保留 provider 委托"）。
   final Map<String, ConfigProvider<dynamic>> _providers = {};
 
-  /// 已注册的配置模块（moduleName → module）
+  /// 已注册的配置模块（moduleName → module；仅水合前有效）
   final Map<String, ConfigModule> _modules = {};
 
-  /// 变更事件控制器
-  final _changeController =
+  /// 全局变更事件控制器
+  StreamController<ConfigChangeEvent> _changeController =
       StreamController<ConfigChangeEvent>.broadcast();
 
-  /// 配置变化事件流
+  /// 每个模块的全局订阅（汇总为 [onChange]；镜像只从这里更新）
+  final List<StreamSubscription<ConfigChangeEvent>> _globalSubs = [];
+
+  ConfigRustApi? _api;
+  Future<void>? _readyFuture;
+  bool _hydrated = false;
+
+  /// 配置变化事件流（全局；external/host 变更同样会到达）
   Stream<ConfigChangeEvent> get onChange => _changeController.stream;
 
-  /// 注册配置项（重复 key 覆盖更新）
-  void register(ConfigEntry entry) {
-    _registry[entry.key] = entry;
-    if (entry.sensitive) {
-      ConfigStore.instance.markSensitive(entry.key);
+  /// 测试注入的 Rust API 客户端（生产由 `ConfigRustApi.init()` 创建）。
+  @visibleForTesting
+  void debugSetApi(ConfigRustApi api) {
+    _api = api;
+    _readyFuture = null;
+    _hydrated = false;
+  }
+
+  /// 测试读取镜像（用于断言敏感明文从未进入 Dart 镜像，C3）。
+  @visibleForTesting
+  Map<String, Object?> get debugMirror =>
+      Map<String, Object?>.unmodifiable(_mirror);
+
+  /// 测试重置单例状态（不关闭事件控制器，避免测试之间互相影响）。
+  @visibleForTesting
+  Future<void> resetForTest() async {
+    for (final sub in _globalSubs) {
+      unawaited(sub.cancel());
+    }
+    _globalSubs.clear();
+    if (_changeController.isClosed) {
+      _changeController = StreamController<ConfigChangeEvent>.broadcast();
+    }
+    _registry.clear();
+    _mirror.clear();
+    _pendingClearOld.clear();
+    _providers.clear();
+    _modules.clear();
+    _api = null;
+    _readyFuture = null;
+    _hydrated = false;
+  }
+
+  /// 水合入口（幂等）。
+  ///
+  /// 这是**唯一**调用 `ConfigApi.init()` 并 `ConfigApi.list()` 的地方：
+  /// 在任意读/写之前把 Rust 注册表加载进同步 `_registry`，并建立全局事件订阅。
+  Future<void> ensureReady() {
+    final ready = _readyFuture;
+    if (ready != null) return ready;
+    final future = _hydrate();
+    _readyFuture = future;
+    return future;
+  }
+
+  Future<void> _hydrate() async {
+    try {
+      final existing = _api;
+      final api = existing ?? await ConfigRustApi.init();
+      _api = api;
+      final entries = await api.list();
+      // Rust 注册表是唯一事实来源：水合后丢弃水合前的旧 Dart 元数据（含 legacy key）。
+      _registry.clear();
+      for (final entry in entries) {
+        _registry[entry.key] = entry;
+      }
+      _hydrated = true;
+      _subscribeGlobal(api);
+    } catch (_) {
+      // 允许重试：初始化失败不应把实例永久卡在失败态。
+      _readyFuture = null;
+      rethrow;
     }
   }
 
-  /// 注册批量配置项
+  void _subscribeGlobal(ConfigRustApi api) {
+    final modules = <String>{};
+    for (final key in _registry.keys) {
+      final module = _moduleOf(key);
+      if (module != null) modules.add(module);
+    }
+    for (final module in modules) {
+      _globalSubs.add(api.watch(module).listen(_onGlobalEvent));
+    }
+  }
+
+  void _onGlobalEvent(ConfigChangeEvent raw) {
+    final event = _normalizeEvent(raw);
+    final entry = _registry[event.key];
+    if (entry == null || entry.sensitive) {
+      _mirror.remove(event.key);
+    } else if (event.newValue == null) {
+      _mirror.remove(event.key);
+    } else {
+      _mirror[event.key] = event.newValue;
+    }
+    if (!_changeController.isClosed) {
+      _changeController.add(event);
+    }
+  }
+
+  /// 注册配置项（重复 key 覆盖更新）。
+  ///
+  /// 水合后为兼容性 no-op；水合前只填充同步元数据（无 provider 委托）。
+  void register(ConfigEntry entry) {
+    if (_hydrated) return;
+    _registry[entry.key] = entry;
+  }
+
+  /// 注册批量配置项（水合后 no-op）。
   void registerAll(List<ConfigEntry> entries) {
+    if (_hydrated) return;
     for (final entry in entries) {
       register(entry);
     }
   }
 
-  /// 注册配置模块（幂等：同名模块重复注册 = 覆盖更新）
-  ///
-  /// 注册后模块的配置项立即可用（list/get/set/clear/快照）。
+  /// 注册配置模块（幂等；水合后 no-op）。
   void registerModule(ConfigModule module) {
+    if (_hydrated) return;
     _modules[module.moduleName] = module;
     registerAll(module.configs);
     module.registerProviders(this);
   }
 
-  /// 注销配置模块
-  ///
-  /// 移除该模块的配置项与 provider 桥接（已存储的数据保留，避免误删用户配置）。
+  /// 注销配置模块（水合后 no-op）。
   void unregisterModule(String moduleName) {
+    if (_hydrated) return;
     final module = _modules.remove(moduleName);
     if (module == null) return;
     final keys = module.configs.map((e) => e.key).toSet();
@@ -322,19 +438,30 @@ class ConfigService {
     keys.forEach(_providers.remove);
   }
 
-  /// 是否已注册指定模块
-  bool hasModule(String moduleName) => _modules.containsKey(moduleName);
-
-  /// 已注册模块名列表（按注册顺序）
-  List<String> get moduleNames => _modules.keys.toList();
-
-  /// 桥接已存在的 ConfigProvider（读写委托，保持现有机制兼容）
-  void bridgeProvider<T>(ConfigProvider<T> provider) {
-    _providers[provider.configKey] =
-        provider as ConfigProvider<dynamic>;
+  /// 是否已注册指定模块（Rust 注册表或水合前的 Dart 模块）。
+  bool hasModule(String moduleName) {
+    if (_modules.containsKey(moduleName)) return true;
+    return _registry.keys.any((key) => _moduleOf(key) == moduleName);
   }
 
-  /// 初始化（幂等；需先 ConfigStore.initialize）
+  /// 已注册模块名列表（Dart 模块 + Rust 注册表中的模块，去重保序）。
+  List<String> get moduleNames {
+    final names = <String>{};
+    names.addAll(_modules.keys);
+    for (final key in _registry.keys) {
+      final module = _moduleOf(key);
+      if (module != null) names.add(module);
+    }
+    return names.toList();
+  }
+
+  /// 桥接已存在的 ConfigProvider（兼容存量调用；水合后 no-op，不再委托）。
+  void bridgeProvider<T>(ConfigProvider<T> provider) {
+    if (_hydrated) return;
+    _providers[provider.configKey] = provider;
+  }
+
+  /// 初始化（兼容旧调用；同步 no-op，实际水合见 [ensureReady]）。
   void initialize() {}
 
   /// 注册表条目
@@ -353,57 +480,42 @@ class ConfigService {
   /// 该配置是否允许 Agent 访问
   bool isAgentAccessible(String key) => _registry[key]?.agentAccessible ?? false;
 
-  /// 读取真实值（内部功能模块使用，不做脱敏）
+  /// 读取真实值（内部功能模块使用，不做脱敏）。
   ///
-  /// - 有 provider 桥接：委托 provider.load()（对象转 Map 返回）
-  /// - 否则：从 ConfigStore 读取（按注册类型转换）
+  /// 可信读取：始终按需 `ConfigApi.get(masked:false)`（C3）；非敏感值顺带
+  /// 刷新镜像，敏感明文绝不入镜像。
   Future<Object?> getRaw(String key) async {
-    final provider = _providers[key];
-    if (provider != null) {
-      final value = await provider.load();
-      return _toJson(value);
-    }
+    final api = await _requireApi();
     final entry = _registry[key];
     if (entry == null) return null;
-    final store = ConfigStore.instance;
-    return switch (entry.type) {
-      ConfigValueType.bool => await store.readBool(key),
-      ConfigValueType.int => await store.readInt(key),
-      ConfigValueType.double => await store.readDouble(key),
-      ConfigValueType.string => await store.readString(key),
-      ConfigValueType.stringList => await store.readStringList(key),
-      ConfigValueType.json => await store.readValue(key),
-    };
+    final parts = _splitWire(key);
+    final raw = await api.get(parts.module, parts.key, masked: false);
+    final value = _coerceValue(entry, raw);
+    if (!entry.sensitive && value != null) {
+      _mirror[key] = value;
+    }
+    return value;
   }
 
-  /// 将对象转为可 JSON 序列化的 Map（有 toJson 时）
-  Object? _toJson(Object? value) {
-    if (value == null) return null;
-    if (value is Map || value is List || value is String ||
-        value is bool || value is num) {
-      return value;
-    }
-    try {
-      final m = (value as dynamic).toJson();
-      return m is Map ? m : value;
-    } catch (_) {
-      return value;
-    }
-  }
-
-  /// 读取值（对外默认脱敏：敏感项返回 '***' 表示已设置）
+  /// 读取值（对外默认脱敏：敏感项返回 '***' 表示已设置）。
   ///
-  /// 返回值：
-  /// - 未设置：null
-  /// - 敏感项已设置：'***'
-  /// - 普通项：真实值
+  /// - 未注册：null
+  /// - 敏感项：`ConfigApi.get(masked:true)`（'***' 或默认值）
+  /// - 普通项：先查镜像，再 `ConfigApi.get`
   Future<Object?> get(String key, {bool masked = true}) async {
-    if (masked && _registry[key]?.sensitive == true) {
-      final exists = await ConfigStore.instance.contains(key) ||
-          _providers.containsKey(key) && await _providers[key]!.exists();
-      return exists ? '***' : null;
+    final api = await _requireApi();
+    final entry = _registry[key];
+    if (entry == null) return null;
+    final parts = _splitWire(key);
+    if (!entry.sensitive && _mirror.containsKey(key)) {
+      return _mirror[key];
     }
-    return getRaw(key);
+    final raw = await api.get(parts.module, parts.key, masked: masked);
+    final value = _coerceValue(entry, raw);
+    if (!entry.sensitive && value != null) {
+      _mirror[key] = value;
+    }
+    return value;
   }
 
   /// 类型化读取（普通项）
@@ -412,15 +524,24 @@ class ConfigService {
     return value is T ? value : null;
   }
 
-  /// 获取单个配置快照（元数据 + 当前值；敏感值脱敏）
+  /// 获取单个配置快照（元数据 + 当前值；敏感值脱敏）。
   Future<ConfigSnapshot?> snapshot(String key) async {
+    final api = await _requireApi();
     final entry = _registry[key];
     if (entry == null) return null;
-    final value = await get(key);
+    final parts = _splitWire(key);
+    final snap = await api.snapshot(parts.module, parts.key);
+    if (snap != null) {
+      if (!entry.sensitive && snap.value != null) {
+        _mirror[key] = _coerceValue(entry, snap.value);
+      }
+      return snap;
+    }
+    // 未设置：保留旧语义（value = null），元数据来自注册表。
     return ConfigSnapshot(
       key: entry.key,
       type: entry.type.name,
-      value: value,
+      value: null,
       defaultValue: entry.defaultValue,
       description: entry.description,
       descriptionEn: entry.descriptionEn,
@@ -437,6 +558,7 @@ class ConfigService {
 
   /// 获取全部配置快照（按 key 排序）
   Future<List<ConfigSnapshot>> snapshots() async {
+    await ensureReady();
     final result = <ConfigSnapshot>[];
     for (final entry in list()) {
       final snap = await snapshot(entry.key);
@@ -445,14 +567,16 @@ class ConfigService {
     return result;
   }
 
-  /// 写入配置（广播事件；已桥接 provider 时委托 provider.save）
+  /// 写入配置（由 Rust 校验/提交/广播事件）。
   ///
-  /// [source] 变更来源
+  /// 保留 Dart 侧友好校验（未知 key/类型/范围/枚举），随后调用
+  /// `ConfigApi.set`；镜像仅对非敏感项即时更新。
   Future<ConfigOpResult> set(
     String key,
     Object? value, {
     ConfigChangeSource source = ConfigChangeSource.internal,
   }) async {
+    final api = await _requireApi();
     final entry = _registry[key];
     if (entry == null) {
       return ConfigOpResult.failure('未知配置项: $key', key: key);
@@ -460,11 +584,12 @@ class ConfigService {
 
     // JSON 类型配置兼容字符串输入：
     // LLM 函数调用参数多为字符串，若 value 是 JSON 字符串则解析为 Map/List
-    if (entry.type == ConfigValueType.json && value is String) {
-      final trimmed = value.trim();
+    var normalized = value;
+    if (entry.type == ConfigValueType.json && normalized is String) {
+      final trimmed = normalized.trim();
       if (trimmed.isNotEmpty) {
         try {
-          value = jsonDecode(trimmed);
+          normalized = jsonDecode(trimmed);
         } catch (_) {
           return ConfigOpResult.failure(
             '配置 $key 需要 JSON 对象（如 {"fontStyle": 3}）或合法 JSON 字符串',
@@ -475,7 +600,7 @@ class ConfigService {
     }
 
     // 类型校验
-    if (!_typeMatches(entry, value)) {
+    if (!_typeMatches(entry, normalized)) {
       return ConfigOpResult.failure(
         '配置 $key 需要 ${_typeLabel(entry.type)} 类型',
         key: key,
@@ -483,56 +608,47 @@ class ConfigService {
     }
 
     // 数值范围校验
-    if (value is num && (entry.min != null || entry.max != null)) {
-      if (entry.min != null && value < entry.min!) {
-        return ConfigOpResult.failure(
-          '配置 $key 不能小于 ${entry.min}',
-          key: key,
-        );
+    if (normalized is num && (entry.min != null || entry.max != null)) {
+      final min = entry.min;
+      final max = entry.max;
+      if (min != null && normalized < min) {
+        return ConfigOpResult.failure('配置 $key 不能小于 $min', key: key);
       }
-      if (entry.max != null && value > entry.max!) {
-        return ConfigOpResult.failure(
-          '配置 $key 不能大于 ${entry.max}',
-          key: key,
-        );
+      if (max != null && normalized > max) {
+        return ConfigOpResult.failure('配置 $key 不能大于 $max', key: key);
       }
     }
 
     // 枚举校验
-    if (entry.enumValues != null && value is String) {
-      if (!entry.enumValues!.contains(value)) {
+    final enumValues = entry.enumValues;
+    if (enumValues != null && normalized is String) {
+      if (!enumValues.contains(normalized)) {
         return ConfigOpResult.failure(
-          '配置 $key 取值必须在 ${entry.enumValues!.join('/')} 中',
+          '配置 $key 取值必须在 ${enumValues.join('/')} 中',
           key: key,
         );
       }
     }
 
-    final oldValue = await getRaw(key);
-
-    // 桥接 provider：Map 值走 importFromJson（保持与备份导入一致），否则 save
-    final provider = _providers[key];
-    if (provider != null) {
-      final ok = value is Map<String, dynamic>
-          ? await provider.importFromJson(value)
-          : await provider.save(value);
-      if (!ok) {
-        return ConfigOpResult.failure('保存配置失败: $key', key: key);
+    final parts = _splitWire(key);
+    try {
+      final result = await api.set(
+        parts.module,
+        parts.key,
+        normalized,
+        source: source,
+      );
+      if (result.success && !entry.sensitive && result.value != null) {
+        _mirror[key] = _coerceValue(entry, result.value);
       }
-    } else {
-      final ok = await ConfigStore.instance.write(key, value);
-      if (!ok) {
-        return ConfigOpResult.failure('保存配置失败: $key', key: key);
-      }
+      return result;
+    } catch (error) {
+      return ConfigOpResult.failure(
+        '保存配置失败: $key ($error)',
+        key: key,
+        defaultValue: entry.defaultValue,
+      );
     }
-
-    _emit(key, oldValue, value, source);
-    return ConfigOpResult.success(
-      '配置已更新: $key',
-      key: key,
-      value: value,
-      defaultValue: entry.defaultValue,
-    );
   }
 
   /// 恢复默认值（reset）
@@ -540,65 +656,187 @@ class ConfigService {
     String key, {
     ConfigChangeSource source = ConfigChangeSource.internal,
   }) async {
+    final api = await _requireApi();
     final entry = _registry[key];
     if (entry == null) {
       return ConfigOpResult.failure('未知配置项: $key', key: key);
     }
-    if (entry.defaultValue == null) {
-      await clear(key, source: source);
-      return ConfigOpResult.success(
-        '配置已清除: $key',
+    final parts = _splitWire(key);
+    try {
+      final result = await api.reset(parts.module, parts.key, source: source);
+      if (result.success && !entry.sensitive && result.value != null) {
+        _mirror[key] = _coerceValue(entry, result.value);
+      }
+      return result;
+    } catch (error) {
+      return ConfigOpResult.failure(
+        '恢复默认值失败: $key ($error)',
         key: key,
-        defaultValue: null,
+        defaultValue: entry.defaultValue,
       );
     }
-    return set(key, entry.defaultValue, source: source);
   }
 
-  /// 清除配置（恢复未设置状态）
+  /// 清除配置（恢复未设置状态）。
+  ///
+  /// 旧值在清除**之前**捕获（C26），非敏感项用于事件 oldValue 兜底。
   Future<ConfigOpResult> clear(
     String key, {
     ConfigChangeSource source = ConfigChangeSource.internal,
   }) async {
+    final api = await _requireApi();
     final entry = _registry[key];
     if (entry == null) {
       return ConfigOpResult.failure('未知配置项: $key', key: key);
     }
-    final provider = _providers[key];
-    if (provider != null) {
-      await provider.clear();
-    } else {
-      await ConfigStore.instance.remove(key);
+    final oldValue = await getRaw(key);
+    if (!entry.sensitive && oldValue != null) {
+      _pendingClearOld[key] = oldValue;
     }
-    _emit(key, await getRaw(key), null, source);
-    return ConfigOpResult.success(
-      '配置已清除: $key',
-      key: key,
-      value: null,
-      defaultValue: entry.defaultValue,
+    final parts = _splitWire(key);
+    try {
+      final result = await api.clear(parts.module, parts.key, source: source);
+      _mirror.remove(key);
+      return result;
+    } catch (error) {
+      _pendingClearOld.remove(key);
+      return ConfigOpResult.failure(
+        '清除配置失败: $key ($error)',
+        key: key,
+        defaultValue: entry.defaultValue,
+      );
+    }
+  }
+
+  /// 监听指定配置变化（wire key 精确匹配；过滤器下推到 Rust）。
+  Stream<ConfigChangeEvent> watch(String wireKey) async* {
+    final api = await _requireApi();
+    final parts = _splitWire(wireKey);
+    yield* api.watch(parts.module, parts.key).map(_normalizeEvent);
+  }
+
+  /// 监听整个模块的变化（过滤器下推到 Rust；`key=null`）。
+  Stream<ConfigChangeEvent> watchModule(String module) async* {
+    final api = await _requireApi();
+    yield* api.watch(module).map(_normalizeEvent);
+  }
+
+  /// 监听多个配置变化（每个 wire key 各自下推精确过滤器）。
+  Stream<ConfigChangeEvent> watchMany(List<String> keys) {
+    final unique = keys.toSet().toList();
+    if (unique.isEmpty) return const Stream<ConfigChangeEvent>.empty();
+    final subs = <StreamSubscription<ConfigChangeEvent>>[];
+    late final StreamController<ConfigChangeEvent> controller;
+    controller = StreamController<ConfigChangeEvent>(
+      onListen: () {
+        for (final key in unique) {
+          subs.add(
+            watch(key).listen(controller.add, onError: controller.addError),
+          );
+        }
+      },
+      onCancel: () {
+        for (final sub in subs) {
+          unawaited(sub.cancel());
+        }
+        subs.clear();
+      },
+    );
+    return controller.stream;
+  }
+
+  /// 释放资源
+  void dispose() {
+    for (final sub in _globalSubs) {
+      unawaited(sub.cancel());
+    }
+    _globalSubs.clear();
+    if (!_changeController.isClosed) {
+      _changeController.close();
+    }
+    _readyFuture = null;
+    _hydrated = false;
+  }
+
+  Future<ConfigRustApi> _requireApi() async {
+    await ensureReady();
+    final api = _api;
+    if (api == null) {
+      throw StateError('ConfigService: Rust ConfigApi 未初始化');
+    }
+    return api;
+  }
+
+  String? _moduleOf(String wireKey) {
+    final dot = wireKey.indexOf('.');
+    if (dot <= 0) return null;
+    return wireKey.substring(0, dot);
+  }
+
+  ({String module, String key}) _splitWire(String wireKey) {
+    final dot = wireKey.indexOf('.');
+    if (dot <= 0 || dot == wireKey.length - 1) {
+      throw ArgumentError.value(
+        wireKey,
+        'wireKey',
+        '必须是 module.key 形式（如 theme.mode）',
+      );
+    }
+    return (
+      module: wireKey.substring(0, dot),
+      key: wireKey.substring(dot + 1),
     );
   }
 
-  /// 监听指定配置变化
-  Stream<ConfigChangeEvent> watch(String key) {
-    return onChange.where((e) => e.key == key);
+  ConfigChangeEvent _normalizeEvent(ConfigChangeEvent event) {
+    final pending = _pendingClearOld.remove(event.key);
+    final oldValue = event.oldValue ?? pending;
+    return ConfigChangeEvent(
+      key: event.key,
+      oldValue: _coerceByKey(event.key, oldValue),
+      newValue: _coerceByKey(event.key, event.newValue),
+      source: event.source,
+    );
   }
 
-  /// 监听多个配置变化
-  Stream<ConfigChangeEvent> watchMany(List<String> keys) {
-    final set = keys.toSet();
-    return onChange.where((e) => set.contains(e.key));
+  Object? _coerceByKey(String key, Object? value) {
+    final entry = _registry[key];
+    if (entry == null) return value;
+    return _coerceValue(entry, value);
   }
 
-  void _emit(String key, Object? oldValue, Object? newValue,
-      ConfigChangeSource source) {
-    if (_changeController.isClosed) return;
-    _changeController.add(ConfigChangeEvent(
-      key: key,
-      oldValue: oldValue,
-      newValue: newValue,
-      source: source,
-    ));
+  Object? _coerceValue(ConfigEntry entry, Object? value) {
+    if (value == null) return null;
+    switch (entry.type) {
+      case ConfigValueType.bool:
+      case ConfigValueType.string:
+        return value;
+      case ConfigValueType.int:
+        return value is num ? value.toInt() : value;
+      case ConfigValueType.double:
+        return value is num ? value.toDouble() : value;
+      case ConfigValueType.stringList:
+        if (value is List) return List<String>.from(value);
+        return value;
+      case ConfigValueType.json:
+        return _deepJson(value);
+    }
+  }
+
+  /// 规范化 JSON 值（`Map<String, dynamic>` / `List<Object?>`），避免
+  /// `getT<List<String>>`/`getT<Map<String, dynamic>>` 因 `List<dynamic>`
+  /// 静默失败（C26/C6）。
+  Object? _deepJson(Object? value) {
+    if (value is Map) {
+      return <String, dynamic>{
+        for (final entry in value.entries)
+          '${entry.key}': _deepJson(entry.value),
+      };
+    }
+    if (value is List) {
+      return value.map(_deepJson).toList();
+    }
+    return value;
   }
 
   bool _typeMatches(ConfigEntry entry, Object? value) {
@@ -608,7 +846,8 @@ class ConfigService {
       ConfigValueType.int => value is int,
       ConfigValueType.double => value is double || value is int,
       ConfigValueType.string => value is String,
-      ConfigValueType.stringList => value is List && value.every((e) => e is String),
+      ConfigValueType.stringList =>
+        value is List && value.every((e) => e is String),
       ConfigValueType.json => value is Map || value is List,
     };
   }
@@ -622,10 +861,5 @@ class ConfigService {
       ConfigValueType.stringList => '字符串列表',
       ConfigValueType.json => 'JSON',
     };
-  }
-
-  /// 释放资源
-  void dispose() {
-    _changeController.close();
   }
 }
