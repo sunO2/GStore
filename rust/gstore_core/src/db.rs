@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -65,7 +66,7 @@ pub const SNAPSHOT_BACKUP: &str = "CORE_E_SNAPSHOT_BACKUP";
 pub const SNAPSHOT_RESTORE: &str = "CORE_E_SNAPSHOT_RESTORE";
 
 /// Tables every restorable core snapshot must contain.
-pub const SNAPSHOT_REQUIRED_TABLES: [&str; 9] = [
+pub const SNAPSHOT_REQUIRED_TABLES: [&str; 12] = [
     "core_writes",
     "download_task",
     "installed_app",
@@ -75,7 +76,13 @@ pub const SNAPSHOT_REQUIRED_TABLES: [&str; 9] = [
     "channels",
     "channel_apps",
     "apps",
+    "config_entry",
+    "config_change_log",
+    "config_meta",
 ];
+
+/// Monotonic suffix shared by every staging file in this process.
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn snapshot_error(code: &str, detail: impl fmt::Display) -> DbError {
     DbError(format!("{code}: {detail}"))
@@ -176,13 +183,18 @@ impl DbHandle {
         f(&conn)
     }
 
-    /// Replaces the live database with `snapshot`.
+    /// Replaces the live database with `snapshot`, upgrading older snapshots.
     ///
-    /// Validation happens while the live database is untouched: schema version,
-    /// required shape, snapshot integrity, and free space are all checked
-    /// first. Only then is the live database backed up with `VACUUM INTO`, and
-    /// only after that is the file swapped under the writer mutex. A failure
-    /// after the swap begins restores the previous file and reopens it.
+    /// A snapshot with `user_version < CORE_SCHEMA_VERSION` is first copied to
+    /// a private staging file and migrated there, so the caller's snapshot file
+    /// is never mutated. The staged copy (or the snapshot itself when it is
+    /// already current) is validated for required tables and `integrity_check`,
+    /// the disk preflight covers staging + backup + migration + the final copy,
+    /// and only then is the live database backed up with `VACUUM INTO` and
+    /// swapped under the writer mutex. A failure after the swap begins restores
+    /// the previous file and reopens it.
+    ///
+    /// Returns the post-migration schema version.
     pub fn replace_from_snapshot(&self, snapshot: &Path) -> Result<i32, DbError> {
         let live = self.path.as_path();
         if snapshot == live {
@@ -215,43 +227,15 @@ impl DbHandle {
                 format!("snapshot v{version} > core v{}", migration::CORE_SCHEMA_VERSION),
             ));
         }
-        if version < migration::CORE_SCHEMA_VERSION {
+        if version < 1 {
             return Err(snapshot_error(
-                SNAPSHOT_OLDER,
-                format!("snapshot v{version} < core v{}", migration::CORE_SCHEMA_VERSION),
+                SNAPSHOT_SHAPE,
+                format!(
+                    "snapshot user_version {version} is not a versioned core database (core v{})",
+                    migration::CORE_SCHEMA_VERSION
+                ),
             ));
         }
-
-        for table in SNAPSHOT_REQUIRED_TABLES {
-            let found: i64 = snapshot_conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    [table],
-                    |row| row.get(0),
-                )
-                .map_err(|e| {
-                    snapshot_error(SNAPSHOT_SHAPE, format!("inspect snapshot tables: {e}"))
-                })?;
-            if found == 0 {
-                return Err(snapshot_error(
-                    SNAPSHOT_SHAPE,
-                    format!("snapshot is missing table {table}"),
-                ));
-            }
-        }
-
-        let integrity: String = snapshot_conn
-            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
-            .map_err(|e| {
-                snapshot_error(SNAPSHOT_INTEGRITY, format!("snapshot integrity_check: {e}"))
-            })?;
-        if integrity != "ok" {
-            return Err(snapshot_error(
-                SNAPSHOT_INTEGRITY,
-                format!("snapshot integrity_check: {integrity}"),
-            ));
-        }
-        drop(snapshot_conn);
 
         let snapshot_size = std::fs::metadata(snapshot)
             .map_err(|e| {
@@ -261,6 +245,7 @@ impl DbHandle {
                 )
             })?
             .len();
+        let live_size = std::fs::metadata(live).map_or(0, |meta| meta.len());
         let live_parent = live.parent().unwrap_or_else(|| Path::new("."));
         let free = free_bytes(live_parent).map_err(|e| {
             snapshot_error(
@@ -268,16 +253,42 @@ impl DbHandle {
                 format!("stat free space at {}: {e}", live_parent.display()),
             )
         })?;
-        let required = snapshot_size.saturating_mul(2);
+        let required = live_size
+            .saturating_mul(2)
+            .saturating_add(snapshot_size.saturating_mul(2));
         if free < required {
             return Err(snapshot_error(
                 SNAPSHOT_DISK,
                 format!(
-                    "free {free} < required {required} (2 x snapshot {snapshot_size}) at {}",
+                    "free {free} < required {required} (2 x live {live_size} + 2 x snapshot {snapshot_size}) at {}",
                     live_parent.display()
                 ),
             ));
         }
+
+        let mut staged = None;
+        let source = if version < migration::CORE_SCHEMA_VERSION {
+            let stage = StagedSnapshot::create(live, snapshot)?;
+            migrate_staged_snapshot(stage.path())?;
+            let path = stage.path().to_path_buf();
+            staged = Some(stage);
+            path
+        } else {
+            snapshot.to_path_buf()
+        };
+
+        let source_conn = if version < migration::CORE_SCHEMA_VERSION {
+            open_connection(&source, true).map_err(|e| {
+                snapshot_error(
+                    SNAPSHOT_INTEGRITY,
+                    format!("open staged snapshot {}: {e}", source.display()),
+                )
+            })?
+        } else {
+            snapshot_conn
+        };
+        validate_snapshot_shape(&source_conn)?;
+        drop(source_conn);
 
         let mut writer = self.writer()?;
         let files_dir = self
@@ -288,9 +299,129 @@ impl DbHandle {
         let backup = backup_before_restore(&writer, &files_dir)?;
         log::debug!("pre-restore backup: {}", backup.display());
 
-        swap_live_db(&mut writer, live, snapshot)?;
-        Ok(version)
+        swap_live_db(&mut writer, live, &source)?;
+        drop(staged);
+        Ok(migration::CORE_SCHEMA_VERSION)
     }
+}
+
+/// A private copy of an older snapshot that is migrated in place.
+///
+/// The `Drop` impl removes the file and its WAL sidecars on every exit path —
+/// success, validation error, migration error, or a panic — so a failed
+/// restore never leaves a partially-migrated database behind.
+struct StagedSnapshot {
+    path: PathBuf,
+}
+
+impl StagedSnapshot {
+    fn create(live: &Path, snapshot: &Path) -> Result<Self, DbError> {
+        let dir = live.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = live
+            .file_name()
+            .map_or_else(|| CORE_DB_FILE.to_string(), |name| name.to_string_lossy().into_owned());
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis());
+        let counter = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(
+            ".{file_name}.restore-stage-{}-{millis}-{counter}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(snapshot, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&path);
+            snapshot_error(
+                SNAPSHOT_RESTORE,
+                format!(
+                    "stage snapshot {} -> {}: {e}",
+                    snapshot.display(),
+                    path.display()
+                ),
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagedSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(sidecar_path(&self.path, "wal"));
+        let _ = std::fs::remove_file(sidecar_path(&self.path, "shm"));
+    }
+}
+
+fn migrate_staged_snapshot(path: &Path) -> Result<(), DbError> {
+    let mut conn = open_connection(path, false).map_err(|e| {
+        snapshot_error(
+            SNAPSHOT_RESTORE,
+            format!("open staged snapshot {}: {e}", path.display()),
+        )
+    })?;
+    migration::apply_core_schema(&mut conn).map_err(|e| {
+        snapshot_error(
+            SNAPSHOT_RESTORE,
+            format!("migrate staged snapshot {}: {e}", path.display()),
+        )
+    })?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| {
+            snapshot_error(
+                SNAPSHOT_RESTORE,
+                format!("read staged user_version {}: {e}", path.display()),
+            )
+        })?;
+    if version != i64::from(migration::CORE_SCHEMA_VERSION) {
+        return Err(snapshot_error(
+            SNAPSHOT_RESTORE,
+            format!(
+                "staged snapshot {} is v{version}, expected v{}",
+                path.display(),
+                migration::CORE_SCHEMA_VERSION
+            ),
+        ));
+    }
+    // The staging connection runs in WAL mode (`open_connection`); flush the
+    // migration writes into the main file before it is copied to the live path.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    Ok(())
+}
+
+fn validate_snapshot_shape(conn: &Connection) -> Result<(), DbError> {
+    for table in SNAPSHOT_REQUIRED_TABLES {
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|e| snapshot_error(SNAPSHOT_SHAPE, format!("inspect snapshot tables: {e}")))?;
+        if found == 0 {
+            return Err(snapshot_error(
+                SNAPSHOT_SHAPE,
+                format!("snapshot is missing table {table}"),
+            ));
+        }
+    }
+
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|e| {
+            snapshot_error(SNAPSHOT_INTEGRITY, format!("snapshot integrity_check: {e}"))
+        })?;
+    if integrity != "ok" {
+        return Err(snapshot_error(
+            SNAPSHOT_INTEGRITY,
+            format!("snapshot integrity_check: {integrity}"),
+        ));
+    }
+    Ok(())
 }
 
 fn backup_before_restore(conn: &Connection, files_dir: &Path) -> Result<PathBuf, DbError> {
@@ -553,7 +684,13 @@ fn open_connection(path: &Path, read_only: bool) -> Result<Connection, DbError> 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
     use super::*;
+    use crate::config::{ConfigKey, ConfigSource, ConfigStore};
+    use crate::ports::secret::FileSecretStore;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gstore_core_db_{tag}_{}", std::process::id()));
@@ -737,6 +874,78 @@ mod tests {
             .count()
     }
 
+    fn staging_files(live: &Path) -> Vec<PathBuf> {
+        let dir = live.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".restore-stage-")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    fn user_version_at(path: &Path) -> i32 {
+        Connection::open(path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap()
+    }
+
+    fn table_columns(path: &Path, table: &str) -> Vec<String> {
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+
+    /// Builds a genuine v5 fixture: a current v6 database with the v6 config
+    /// tables and ledger row removed, then vacuumed into the snapshot path.
+    fn make_v5_snapshot(tag: &str, seed_sql: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        let snapshot = dir.join("snapshot.db");
+        let handle = DbHandle::open(&dir).unwrap();
+        handle
+            .with_writer(|conn| {
+                conn.execute_batch(seed_sql)
+                    .map_err(|e| DbError(e.to_string()))?;
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS config_change_log;\
+                     DROP TABLE IF EXISTS config_entry;\
+                     DROP TABLE IF EXISTS config_meta;\
+                     DELETE FROM schema_migrations WHERE version = 6;\
+                     PRAGMA user_version = 5;",
+                )
+                .map_err(|e| DbError(e.to_string()))?;
+                conn.execute(
+                    "VACUUM INTO ?1",
+                    rusqlite::params![snapshot.to_string_lossy().into_owned()],
+                )
+                .map_err(|e| DbError(e.to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+        drop(handle);
+        snapshot
+    }
+
+    fn config_store(live: &DbHandle, files: &Path) -> ConfigStore {
+        let store = ConfigStore::new(
+            live.clone(),
+            Arc::new(FileSecretStore::new(files.join("secrets"))),
+        );
+        store.load_all().unwrap();
+        store
+    }
+
     #[test]
     fn snapshot_restore_replaces_live_db() {
         let snapshot = make_snapshot(
@@ -903,7 +1112,8 @@ mod tests {
     fn snapshot_rejects_newer_schema() {
         let snapshot = make_snapshot("newer_src", "");
         let newer = copy_snapshot(&snapshot, "newer_copy");
-        set_snapshot_version(&newer, migration::CORE_SCHEMA_VERSION + 1);
+        assert_eq!(migration::CORE_SCHEMA_VERSION + 1, 7);
+        set_snapshot_version(&newer, 7);
         let (live, files) = live_handle(
             "newer_live",
             "INSERT INTO channels(key, kind, name) VALUES ('keep', 'custom', 'Keep');",
@@ -926,24 +1136,362 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_rejects_older_schema() {
-        let snapshot = make_snapshot("older_src", "");
-        let older = copy_snapshot(&snapshot, "older_copy");
-        set_snapshot_version(&older, migration::CORE_SCHEMA_VERSION - 1);
-        let (live, files) = live_handle("older_live", "");
+    fn snapshot_restore_upgrades_older() {
+        let older = make_v5_snapshot(
+            "older_src",
+            "INSERT INTO channels(key, kind, name) VALUES ('from-v5', 'custom', 'V5');",
+        );
+        assert_eq!(user_version_at(&older), 5, "fixture must be a v5 snapshot");
+        assert!(
+            !table_columns(&older, "config_entry").contains(&"module".to_string()),
+            "a v5 fixture has no config tables"
+        );
+
+        let (live, files) = live_handle(
+            "older_live",
+            "INSERT INTO channels(key, kind, name) VALUES ('live-only', 'custom', 'Live');",
+        );
         let handle = restore_handle(&live, &files);
 
-        let error = handle.replace_from_snapshot(&older).unwrap_err();
-        assert!(
-            error.0.starts_with("CORE_E_SNAPSHOT_OLDER"),
-            "unexpected error: {}",
-            error.0
+        let version = handle.replace_from_snapshot(&older).unwrap();
+        assert_eq!(
+            version,
+            migration::CORE_SCHEMA_VERSION,
+            "restore must report the post-migration schema version"
         );
+
         live.with_writer(|conn| {
+            let live_version: i32 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(live_version, migration::CORE_SCHEMA_VERSION);
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='from-v5'"),
+                1,
+                "v5 rows must survive the upgrade"
+            );
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='live-only'"),
+                0,
+                "the snapshot must replace the live database"
+            );
+            for table in ["config_entry", "config_change_log", "config_meta"] {
+                assert_eq!(
+                    count(
+                        conn,
+                        &format!(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+                        )
+                    ),
+                    1,
+                    "migration must create {table}"
+                );
+            }
             assert_integrity_ok(conn);
             Ok(())
         })
         .unwrap();
+
+        assert_eq!(
+            user_version_at(&older),
+            5,
+            "the original snapshot must not be mutated by the upgrade"
+        );
+        assert!(
+            !table_columns(&older, "config_entry").contains(&"module".to_string()),
+            "the original snapshot must stay a v5 database"
+        );
+        assert_eq!(restore_backup_count(&files), 1);
+        assert!(
+            staging_files(handle.path()).is_empty(),
+            "staging file must be deleted after a successful upgrade"
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_reloads_config_cache_and_revision() {
+        let source_dir = temp_dir("cache_src");
+        let source = DbHandle::open(&source_dir).unwrap();
+        let snapshot = source_dir.join("snapshot.db");
+        source
+            .with_writer(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO config_entry(\
+                         module, key, value_json, value_type, revision, updated_at, updated_by) \
+                     VALUES ('download', 'max_concurrent', '5', 'number', 42, 123, 'snapshot');\
+                     INSERT INTO config_meta(k, v) VALUES ('revision', '42');",
+                )
+                .map_err(|e| DbError(e.to_string()))?;
+                conn.execute(
+                    "VACUUM INTO ?1",
+                    rusqlite::params![snapshot.to_string_lossy().into_owned()],
+                )
+                .map_err(|e| DbError(e.to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+        drop(source);
+
+        let (live, files) = live_handle("cache_live", "");
+        let key = ConfigKey::new("download", "max_concurrent").unwrap();
+        let store = config_store(&live, &files);
+        let change = store
+            .set(&key, json!(2), ConfigSource::User, Some("live".into()))
+            .unwrap();
+        assert_eq!(change.revision, 1);
+        assert_eq!(store.revision(), 1);
+
+        let handle = restore_handle(&live, &files);
+        assert_eq!(
+            handle.replace_from_snapshot(&snapshot).unwrap(),
+            migration::CORE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            store.revision(),
+            1,
+            "the cache is expected to be stale until the restore hook reloads it"
+        );
+
+        store.reload_from_db().unwrap();
+        assert_eq!(
+            store.revision(),
+            42,
+            "reload must reset the revision counter from the restored config_meta"
+        );
+        assert_eq!(store.get(&key).unwrap(), json!(5));
+        assert_eq!(
+            store.snapshot(&key).unwrap().unwrap().revision,
+            42,
+            "the restored row must be visible in the cache"
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_secret_hash_policy() {
+        let source_dir = temp_dir("secret_src");
+        let source = DbHandle::open(&source_dir).unwrap();
+        let source_secrets = Arc::new(FileSecretStore::new(source_dir.join("secrets")));
+        let source_store = ConfigStore::new(source.clone(), source_secrets);
+        source_store.load_all().unwrap();
+        let password = ConfigKey::new("webdav", "password").unwrap();
+        source_store
+            .set(
+                &password,
+                json!("hunter2"),
+                ConfigSource::User,
+                Some("source".into()),
+            )
+            .unwrap();
+
+        let (reference, secret_hash) = source
+            .with_writer(|conn| {
+                conn.query_row(
+                    "SELECT secret_ref, secret_hash FROM config_entry \
+                     WHERE module='webdav' AND key='password'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|e| DbError(e.to_string()))
+            })
+            .unwrap();
+        let snapshot = source_dir.join("snapshot.db");
+        source
+            .with_writer(|conn| {
+                conn.execute(
+                    "VACUUM INTO ?1",
+                    rusqlite::params![snapshot.to_string_lossy().into_owned()],
+                )
+                .map_err(|e| DbError(e.to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+        drop(source_store);
+        drop(source);
+
+        let (live, files) = live_handle("secret_live", "");
+        let secret_path = files.join("secrets").join(&reference);
+        std::fs::create_dir_all(secret_path.parent().unwrap()).unwrap();
+        std::fs::copy(source_dir.join("secrets").join(&reference), &secret_path).unwrap();
+        let store = config_store(&live, &files);
+        let handle = restore_handle(&live, &files);
+
+        handle.replace_from_snapshot(&snapshot).unwrap();
+        store.reload_from_db().unwrap();
+        assert_eq!(
+            store.get(&password).unwrap(),
+            json!("hunter2"),
+            "a matching secret file must survive the restore"
+        );
+        let (restored_ref, restored_hash) = live
+            .with_writer(|conn| {
+                conn.query_row(
+                    "SELECT secret_ref, secret_hash FROM config_entry \
+                     WHERE module='webdav' AND key='password'",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .map_err(|e| DbError(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(restored_ref.as_deref(), Some(reference.as_str()));
+        assert_eq!(restored_hash.as_deref(), Some(secret_hash.as_str()));
+
+        std::fs::write(&secret_path, "newer-secret").unwrap();
+        store.reload_from_db().unwrap();
+        assert!(
+            store.snapshot(&password).unwrap().is_none(),
+            "a hash mismatch must persist-clear the row"
+        );
+        assert_eq!(
+            store.get(&password).unwrap(),
+            json!(""),
+            "a cleared secret reads as the registry default"
+        );
+        let cleared_ref: Option<String> = live
+            .with_writer(|conn| {
+                conn.query_row(
+                    "SELECT secret_ref FROM config_entry WHERE module='webdav' AND key='password'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| DbError(e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(cleared_ref, None, "the stale row must be persist-cleared");
+
+        handle.replace_from_snapshot(&snapshot).unwrap();
+        let _ = std::fs::remove_file(&secret_path);
+        store.reload_from_db().unwrap();
+        assert!(
+            store.snapshot(&password).unwrap().is_none(),
+            "a missing secret file must persist-clear the row"
+        );
+        assert_eq!(store.get(&password).unwrap(), json!(""));
+    }
+
+    #[test]
+    fn snapshot_restore_rolls_back_on_migration_failure() {
+        let older = make_v5_snapshot(
+            "migration_fail_src",
+            "INSERT INTO channels(key, kind, name) VALUES ('snapshot-row', 'custom', 'Snap');",
+        );
+        Connection::open(&older)
+            .unwrap()
+            .execute_batch("CREATE TABLE config_entry(bad INTEGER);")
+            .unwrap();
+        assert_eq!(user_version_at(&older), 5);
+
+        let (live, files) = live_handle(
+            "migration_fail_live",
+            "INSERT INTO channels(key, kind, name) VALUES ('old-row', 'custom', 'Old');",
+        );
+        let handle = restore_handle(&live, &files);
+
+        let error = handle.replace_from_snapshot(&older).unwrap_err();
+        assert!(
+            error.0.starts_with(SNAPSHOT_RESTORE),
+            "migration failure must be typed: {}",
+            error.0
+        );
+        assert_eq!(
+            restore_backup_count(&files),
+            0,
+            "migration happens before the pre-restore backup"
+        );
+        live.with_writer(|conn| {
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='old-row'"),
+                1,
+                "live rows must survive a migration failure"
+            );
+            assert_eq!(
+                count(conn, "SELECT COUNT(*) FROM channels WHERE key='snapshot-row'"),
+                0,
+                "no staged rows may land after a migration failure"
+            );
+            assert_integrity_ok(conn);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            staging_files(handle.path()).is_empty(),
+            "staging must be deleted after a migration failure"
+        );
+        assert_eq!(
+            user_version_at(&older),
+            5,
+            "the original snapshot must stay untouched on failure"
+        );
+        assert!(
+            table_columns(&older, "config_entry") == vec!["bad".to_string()],
+            "the original snapshot shape must not be migrated in place"
+        );
+    }
+
+    #[test]
+    fn snapshot_disk_preflight_covers_live_and_staging() {
+        let older = make_v5_snapshot("disk_formula_src", "");
+        let (live, files) = live_handle(
+            "disk_formula_live",
+            "INSERT INTO channels(key, kind, name) VALUES ('old-row', 'custom', 'Old');",
+        );
+        let handle = restore_handle(&live, &files);
+        let live_size = std::fs::metadata(handle.path()).unwrap().len();
+        let snapshot_size = std::fs::metadata(&older).unwrap().len();
+        let required = live_size
+            .saturating_mul(2)
+            .saturating_add(snapshot_size.saturating_mul(2));
+
+        set_forced_free_bytes(Some(required - 1));
+        let error = handle.replace_from_snapshot(&older).unwrap_err();
+        set_forced_free_bytes(None);
+        assert!(
+            error.0.starts_with(SNAPSHOT_DISK),
+            "a shortage below 2 x live + 2 x snapshot must be rejected: {}",
+            error.0
+        );
+        assert!(error.0.contains(&required.to_string()), "{}", error.0);
+        assert!(staging_files(handle.path()).is_empty());
+
+        set_forced_free_bytes(Some(required));
+        let version = handle.replace_from_snapshot(&older).unwrap();
+        set_forced_free_bytes(None);
+        assert_eq!(version, migration::CORE_SCHEMA_VERSION);
+        assert!(staging_files(handle.path()).is_empty());
+        assert_eq!(restore_backup_count(&files), 1);
+    }
+
+    #[test]
+    fn snapshot_restore_cleans_staging_on_every_path() {
+        let older = make_v5_snapshot("cleanup_src", "");
+        let (live, files) = live_handle("cleanup_live", "");
+        let handle = restore_handle(&live, &files);
+        assert!(staging_files(handle.path()).is_empty());
+
+        let newer = copy_snapshot(&older, "cleanup_newer");
+        set_snapshot_version(&newer, migration::CORE_SCHEMA_VERSION + 1);
+        let _ = handle.replace_from_snapshot(&newer).unwrap_err();
+        assert!(
+            staging_files(handle.path()).is_empty(),
+            "a rejected newer snapshot must not stage anything"
+        );
+
+        handle.replace_from_snapshot(&older).unwrap();
+        assert!(
+            staging_files(handle.path()).is_empty(),
+            "a successful upgrade must delete staging"
+        );
+
+        let broken = make_v5_snapshot("cleanup_broken", "");
+        Connection::open(&broken)
+            .unwrap()
+            .execute_batch("CREATE TABLE config_entry(bad INTEGER);")
+            .unwrap();
+        let _ = handle.replace_from_snapshot(&broken).unwrap_err();
+        assert!(
+            staging_files(handle.path()).is_empty(),
+            "a failed migration must delete staging"
+        );
     }
 
     #[test]
@@ -1048,7 +1596,7 @@ mod tests {
         let cases: [(&str, &Path, &str); 4] = [
             ("non-sqlite bytes", &non_sqlite, SNAPSHOT_SHAPE),
             ("truncated file", &truncated, SNAPSHOT_SHAPE),
-            ("empty file", &empty, SNAPSHOT_OLDER),
+            ("empty file", &empty, SNAPSHOT_SHAPE),
             ("directory path", &directory, SNAPSHOT_SHAPE),
         ];
         for (label, path, code) in cases {
