@@ -18,6 +18,17 @@ const String _webdavUser = 'alice';
 const String _webdavPassword = 'task27-webdav-secret';
 const String _agentApiKey = 'sk-task27-agent-secret';
 
+/// Mirrors Rust `ConfigSource::from_str` (`config/model.rs`): any other source
+/// string is rejected at the host boundary and would fail the whole import.
+const Set<String> _allowedConfigSources = <String>{
+  'internal',
+  'user',
+  'agent',
+  'module',
+  'migration',
+  'restore',
+};
+
 /// Registry value types mirrored from Rust `schema.rs`, so the fake rejects a
 /// grouped import exactly like `ConfigApi.import_` would.
 enum _WireType { boolean, integer, string, stringList, jsonObject, jsonArray }
@@ -105,6 +116,10 @@ class _FakeRestoreApi implements ConfigMigrationApi {
     required String source,
   }) async {
     sources.add(source);
+    if (!_allowedConfigSources.contains(source)) {
+      // Match the real Rust boundary: a bad source fails the whole batch.
+      throw StateError('config_invalid_source: $source');
+    }
     lastEntries
       ..clear()
       ..addAll(entries);
@@ -296,7 +311,9 @@ void main() {
     expect(report.success, isTrue);
     expect(report.failedCount, 0);
     expect(report.restored, greaterThan(20));
-    expect(fake.sources, <String>[kConfigRestoreSource]);
+    expect(kConfigRestoreSource, 'restore',
+        reason: 'must match Rust ConfigSource::Restore');
+    expect(fake.sources, <String>['restore']);
 
     expect(fake.stored[ConfigKeys.themeMode], 2);
     expect(fake.stored[ConfigKeys.themeConfig],

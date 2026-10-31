@@ -57,6 +57,16 @@ const String _oldWebdavUser = 'old-alice';
 const String _oldWebdavPassword = 'task30-old-webdav-secret';
 const String _oldAgentApiKey = 'sk-task30-old-agent-secret';
 
+/// Mirrors Rust `ConfigSource::from_str`: only these six codes are accepted.
+const Set<String> _allowedConfigSources = <String>{
+  'internal',
+  'user',
+  'agent',
+  'module',
+  'migration',
+  'restore',
+};
+
 void main() {
   setUpAll(() {
     PackageInfo.setMockInitialValues(
@@ -150,6 +160,8 @@ void main() {
     final report = BackupService.debugLastConfigRestoreReport!;
     expect(report.success, isTrue);
     expect(report.failures, isEmpty);
+    expect(api.sources.toSet(), <String>{'restore'},
+        reason: 'adapter must pass the canonical Rust source code');
     expect(
       report.entries.any((entry) =>
           entry.status == 'restored' &&
@@ -754,6 +766,10 @@ class _RoundTripRestoreApi implements ConfigMigrationApi {
     required String source,
   }) async {
     sources.add(source);
+    if (!_allowedConfigSources.contains(source)) {
+      // The real Rust host rejects an unknown ConfigSource wholesale.
+      throw StateError('config_invalid_source: $source');
+    }
     lastEntries
       ..clear()
       ..addAll(entries);

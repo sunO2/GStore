@@ -40,7 +40,13 @@ import 'legacy_config_mapping.dart';
 import '../../config/config_registry.dart';
 
 /// Stable `source` code passed to `ConfigApi.import`.
-const String kConfigRestoreSource = 'backup_restore';
+///
+/// This **must** match `ConfigSource::Restore`'s canonical Rust wire code
+/// (`rust/gstore_core/src/config/model.rs`). The host passes the string through
+/// `ConfigSource::from_str`, which rejects anything outside
+/// `internal|user|agent|module|migration|restore` — a non-canonical value such
+/// as `backup_restore` makes the whole import fail.
+const String kConfigRestoreSource = 'restore';
 
 /// Source label for the payload embedded in `apps.json`.
 const String kConfigRestoreAppsSource = 'apps.json.appConfig';

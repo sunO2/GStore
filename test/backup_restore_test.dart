@@ -29,6 +29,16 @@ const String _webdavUser = 'alice';
 const String _webdavPassword = 'task29-webdav-secret';
 const String _agentApiKey = 'sk-task29-agent-secret';
 
+/// Mirrors Rust `ConfigSource::from_str`: only these six codes are accepted.
+const Set<String> _allowedConfigSources = <String>{
+  'internal',
+  'user',
+  'agent',
+  'module',
+  'migration',
+  'restore',
+};
+
 void main() {
   setUpAll(() {
     PackageInfo.setMockInitialValues(
@@ -109,6 +119,8 @@ void main() {
     expect((api.stored[ConfigKeys.agentModels] as List).first['apiKey'],
         _agentApiKey);
     expect(BackupService.debugLastConfigRestoreReport!.success, isTrue);
+    expect(api.sources, <String>['restore'],
+        reason: 'adapter must pass the canonical Rust source code');
 
     _printMatrix('old-legacy', api, result, backend);
   });
@@ -255,6 +267,7 @@ class _RecordingRestoreApi implements ConfigMigrationApi {
   final Map<String, Object?> stored = <String, Object?>{};
   final Map<String, String> rejected = <String, String>{};
   final List<MigrationEntry> lastEntries = <MigrationEntry>[];
+  final List<String> sources = <String>[];
   bool failAll = false;
 
   @override
@@ -262,6 +275,10 @@ class _RecordingRestoreApi implements ConfigMigrationApi {
     List<MigrationEntry> entries, {
     required String source,
   }) async {
+    sources.add(source);
+    if (!_allowedConfigSources.contains(source)) {
+      throw StateError('config_invalid_source: $source');
+    }
     if (failAll) {
       throw StateError('config import seam unavailable');
     }

@@ -733,6 +733,22 @@ mod tests {
         assert!("nope".parse::<ConfigSource>().is_err());
     }
 
+    /// Backup restore must use `ConfigSource::Restore`'s canonical wire code.
+    /// The host passes the Dart import `source` string straight into
+    /// `ConfigSource::from_str`; a non-canonical value kills the whole import.
+    #[test]
+    fn restore_source_uses_the_canonical_wire_code() {
+        let parsed = "restore"
+            .parse::<ConfigSource>()
+            .expect("the backup restore source code must parse");
+        assert_eq!(parsed, ConfigSource::Restore);
+        assert_eq!(parsed.as_str(), "restore");
+        assert!(
+            "backup_restore".parse::<ConfigSource>().is_err(),
+            "backup_restore is not a ConfigSource wire code"
+        );
+    }
+
     fn entry(visibility: ConfigVisibility) -> ConfigEntry {
         ConfigEntry {
             key: ConfigKey::new("download", "multi_segment.enabled").unwrap(),
