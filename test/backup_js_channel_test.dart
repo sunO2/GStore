@@ -5,9 +5,6 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
-import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
-import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
@@ -24,7 +21,6 @@ import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/service/backup_service.dart';
-import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -401,19 +397,17 @@ void main() {
     );
   });
 
-  test('WebDAV 配置进备份（B 轨：WebDavConfigManager 直写存储并入 appConfig）', () async {
-    // mock flutter_secure_storage：预置 webdav 配置（与 WebDavConfigManager 同 key）
-    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
-      const {
-        'webdav_url': 'https://example.com/dav',
-        'webdav_username': 'user',
-        'webdav_password': 'pass',
-        'webdav_backup_path': '/GStore',
-        'webdav_enable_https': 'true',
-      },
+  test('WebDAV 配置进备份（统一 ConfigService 存储并入 appConfig）', () async {
+    // Todo 31：WebDAV 只有一个存储（Rust 分组 webdav.* 经 ConfigService）。
+    // 这里按 UI/迁移后的真实写入路径预置，不再 mock 已删除的直写安全存储。
+    await ConfigService.instance.set(
+      ConfigKeys.webdavUrl,
+      'https://example.com/dav',
     );
-    addTearDown(() => FlutterSecureStoragePlatform.instance =
-        TestFlutterSecureStoragePlatform(const {}));
+    await ConfigService.instance.set(ConfigKeys.webdavUsername, 'user');
+    await ConfigService.instance.set(ConfigKeys.webdavPassword, 'pass');
+    await ConfigService.instance.set(ConfigKeys.webdavBackupPath, '/GStore');
+    await ConfigService.instance.set(ConfigKeys.webdavEnableHttps, true);
 
     final bytes = await service.exportCompressedBackup(includeAppConfig: true);
     final appsJson = decodeAppsJson(bytes);

@@ -223,22 +223,12 @@ class BackupService implements IBackupService {
 
   /// Exports WebDAV as the legacy aggregate object (and the top-level mirror).
   ///
-  /// Prefers the manager copy (the old app's real storage, including the
-  /// password) and falls back to the grouped raw values.
-  ///
-  /// Known divergence until Todo 31: the legacy `WebDavConfigManager` copy and
-  /// the Rust `webdav.*` store are still two writes, so the manager can win
-  /// here even when it differs from Rust. Todo 31 unifies WebDAV onto the Rust
-  /// store and makes both sources agree.
+  /// Todo 31 unified WebDAV onto the Rust `webdav.*` store, so the grouped raw
+  /// values (which the `WebDavConfigManager` facade also reads) are the single
+  /// source of truth here. No second store is consulted.
   Future<Map<String, dynamic>?> _exportWebDavConfig(
     Map<String, dynamic> grouped,
   ) async {
-    try {
-      final manager = await WebDavConfigManager.instance.loadConfig();
-      if (manager != null) return manager.toJson();
-    } catch (e) {
-      appLog.error('BackupService: 读取 WebDAV 配置失败 - $e');
-    }
     final hasWebDav = grouped.keys.any((key) => key.startsWith('webdav.'));
     if (!hasWebDav) return null;
     return <String, dynamic>{

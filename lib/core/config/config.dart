@@ -14,7 +14,6 @@ export 'config_registry.dart';
 
 // 导出具体的配置提供者
 export 'providers/theme_config_provider.dart';
-export 'providers/webdav_config_provider.dart';
 export 'providers/update_config_provider.dart';
 
 // 配置初始化
