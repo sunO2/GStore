@@ -2,12 +2,13 @@
 ///
 /// 引擎的路由模式（直连/规则/全局）在新隧道建立时会回落到默认 `rule`，模块自身
 /// 不记住用户选择。这里定义可注入的小接口：生产实现沿用统一 [ConfigStore]
-/// （`proxy_routing_mode`，值为 `direct`|`rule`|`global`），测试注入内存实现即可。
+/// （`proxy.routing_mode`，值为 `direct`|`rule`|`global`），测试注入内存实现即可。
 ///
 /// 与 [ProxyRunModeStore]（VPN / 局域网运行模式）是**两个独立**的持久化值：
 /// 路由模式表达流量如何分流，运行模式表达数据面由谁承载。
 library;
 
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
@@ -30,12 +31,13 @@ abstract class ProxyRoutingModeStore {
 class ConfigStoreProxyRoutingModeStore implements ProxyRoutingModeStore {
   const ConfigStoreProxyRoutingModeStore();
 
-  /// 持久化 key（沿用代理设置页 `proxy_*` 命名）。
-  static const String key = 'proxy_routing_mode';
+  /// 持久化 key（分组 wire key `proxy.routing_mode`）。
+  static const String key = ConfigKeys.proxyRoutingMode;
 
   @override
   Future<ProxyRoutingMode?> read() async {
     try {
+      if (!await ConfigStore.instance.contains(key)) return null;
       final value = await ConfigStore.instance.readString(key);
       if (value == null || value.isEmpty) return null;
       final mode = ProxyRoutingMode.fromWire(value);

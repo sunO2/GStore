@@ -1,10 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
-import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
 /// Theme controller for managing app theme persistence and customization
@@ -20,17 +19,13 @@ class ThemeController implements IThemeService {
   AppThemeMode _themeMode = AppThemeMode.system;
   AppThemeConfig _themeConfig = AppThemeConfig.default_;
 
-  // 配置提供者（延迟加载）
-  ThemeConfigProvider? _themeConfigProvider;
-
   /// 订阅集合（dispose 时清理）
   final List<StreamSubscription> _subscriptions = [];
 
-  /// 获取主题配置提供者
-  ThemeConfigProvider get _provider {
-    _themeConfigProvider ??= ConfigInitializer.getThemeConfigProvider();
-    return _themeConfigProvider!;
-  }
+  /// 状态世代：显式写入 / 外部事件应用自增；启动异步读取仅在世代未变化
+  ///（且未 dispose）时落地，避免晚到初值覆盖更新写入。
+  int _stateGeneration = 0;
+  bool _disposed = false;
 
   /// The current theme mode
   @override
@@ -45,36 +40,13 @@ class ThemeController implements IThemeService {
 
   /// 模块初始化时调用（替代 GetX onInit）：加载持久化配置并订阅变化
   void initialize() {
+    _disposed = false;
+    _stateGeneration = 0;
     _loadThemeMode();
     _loadThemeConfig();
 
-    // 直接订阅配置变化（不使用 ever，因为 provider 可能已经初始化）
-    // provider 未注册（如测试环境）时容错跳过，ConfigService 订阅始终生效
-    try {
-      _subscribeToConfigChanges(_provider);
-    } catch (_) {
-      // ConfigInitializer 未初始化时跳过 provider 订阅
-    }
-
     // 订阅统一 ConfigService：Agent/外部写入配置后主动响应
     _subscribeToConfigService();
-  }
-
-  /// 订阅配置变化
-  void _subscribeToConfigChanges(ThemeConfigProvider provider) {
-    // 监听主题配置变化
-    _subscriptions.add(
-      provider.themeConfigStream.listen((config) {
-        _themeConfig = config;
-      }),
-    );
-
-    // 监听主题模式变化
-    _subscriptions.add(
-      provider.watchMode().listen((mode) {
-        _themeMode = mode;
-      }),
-    );
   }
 
   /// 订阅统一 ConfigService 变化（配置写入 → 主题主动响应）
@@ -83,53 +55,91 @@ class ThemeController implements IThemeService {
       ConfigService.instance.onChange.listen((event) {
         switch (event.key) {
           case ConfigKeys.themeMode:
-            final v = event.newValue;
-            if (v is int && v >= 0 && v < AppThemeMode.values.length) {
-              _themeMode = AppThemeMode.values[v];
+            final mode = _modeFromValue(event.newValue);
+            if (mode != null) {
+              _stateGeneration++;
+              _themeMode = mode;
             }
           case ConfigKeys.themeConfig:
-            final v = event.newValue;
-            if (v is Map<String, dynamic>) {
-              try {
-                _themeConfig = AppThemeConfig.fromJson(v);
-              } catch (_) {
-                // 解析失败保持当前配置
-              }
+            final config = _parseThemeConfig(event.newValue);
+            if (config != null) {
+              _stateGeneration++;
+              _themeConfig = config;
             }
         }
       }),
     );
   }
 
-  /// Load the saved theme mode from ThemeConfigProvider
+  bool _canApply(int generation) =>
+      !_disposed && generation == _stateGeneration;
+
+  /// 从 ConfigService 加载持久化主题模式
   Future<void> _loadThemeMode() async {
+    final generation = _stateGeneration;
     try {
-      final mode = await _provider.loadMode();
+      final mode = _modeFromValue(
+        await ConfigService.instance.getRaw(ConfigKeys.themeMode),
+      );
+      if (!_canApply(generation)) return;
       if (mode != null) {
         _themeMode = mode;
       }
     } catch (e) {
+      if (!_canApply(generation)) return;
       // If loading fails, default to system theme
       _themeMode = AppThemeMode.system;
     }
   }
 
-  /// Load the saved theme config from ThemeConfigProvider
+  /// 从 ConfigService 加载持久化主题配置
   Future<void> _loadThemeConfig() async {
+    final generation = _stateGeneration;
     try {
-      final config = await _provider.load();
+      final config = _parseThemeConfig(
+        await ConfigService.instance.getRaw(ConfigKeys.themeConfig),
+      );
+      if (!_canApply(generation)) return;
       if (config != null) {
         _themeConfig = config;
       }
     } catch (e) {
+      if (!_canApply(generation)) return;
       // If loading fails, default to default config
       _themeConfig = AppThemeConfig.default_;
+    }
+  }
+
+  static AppThemeMode? _modeFromValue(Object? value) {
+    if (value is int && value >= 0 && value < AppThemeMode.values.length) {
+      return AppThemeMode.values[value];
+    }
+    return null;
+  }
+
+  /// 宽容解析主题 JSON；格式损坏时返回 null（保持当前状态）。
+  static AppThemeConfig? _parseThemeConfig(Object? value) {
+    Object? decoded = value;
+    if (decoded is String) {
+      if (decoded.trim().isEmpty) return null;
+      try {
+        decoded = jsonDecode(decoded);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (decoded is! Map) return null;
+    try {
+      return AppThemeConfig.fromJson(Map<String, dynamic>.from(decoded));
+    } catch (_) {
+      return null;
     }
   }
 
   /// Set the theme mode and persist it
   @override
   Future<void> setThemeMode(AppThemeMode mode) async {
+    _stateGeneration++;
     await ConfigService.instance.set(
       ConfigKeys.themeMode,
       mode.index,
@@ -140,6 +150,7 @@ class ThemeController implements IThemeService {
 
   /// Set the theme config and persist it
   Future<void> setThemeConfig(AppThemeConfig config) async {
+    _stateGeneration++;
     await ConfigService.instance.set(
       ConfigKeys.themeConfig,
       config.toJson(),
@@ -163,6 +174,7 @@ class ThemeController implements IThemeService {
   /// 重置为主题默认配置（使用动态色）
   @override
   Future<void> resetToDefault() async {
+    _stateGeneration++;
     await ConfigService.instance.reset(
       ConfigKeys.themeConfig,
       source: ConfigChangeSource.user,
@@ -218,6 +230,7 @@ class ThemeController implements IThemeService {
 
   /// 释放订阅（模块下线/测试重置时调用）
   void dispose() {
+    _disposed = true;
     for (final sub in _subscriptions) {
       sub.cancel();
     }

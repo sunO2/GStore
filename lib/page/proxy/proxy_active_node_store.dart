@@ -6,7 +6,7 @@
 /// 首页入口卡能显示「当前选中的节点」、节点页能在重入时高亮已选节点，这里定义
 /// 一个 page 层的小接缝：
 ///
-/// * 生产实现沿用统一 [ConfigStore]（`proxy_active_node_label`，值为
+/// * 生产实现沿用统一 [ConfigStore]（`proxy.active_node_label`，值为
 ///   `{"group":...,"node":...}` 的 JSON），所有读写 best-effort，持久化失败绝不影响
 ///   页面；
 /// * 测试注入内存实现即可，无需原生模块 / 平台存储。
@@ -17,6 +17,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 
 /// 一次「节点选择」：所属分组 + 节点名。
@@ -51,12 +52,13 @@ abstract class ProxyActiveNodeStore {
 class ConfigStoreProxyActiveNodeStore implements ProxyActiveNodeStore {
   const ConfigStoreProxyActiveNodeStore();
 
-  /// 持久化 key（沿用代理设置页 `proxy_*` 命名）。
-  static const String key = 'proxy_active_node_label';
+  /// 持久化 key（分组 wire key `proxy.active_node_label`）。
+  static const String key = ConfigKeys.proxyActiveNodeLabel;
 
   @override
   Future<ProxyActiveNode?> read() async {
     try {
+      if (!await ConfigStore.instance.contains(key)) return null;
       final value = await ConfigStore.instance.readString(key);
       if (value == null || value.isEmpty) return null;
       final decoded = jsonDecode(value);

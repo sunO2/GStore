@@ -6,11 +6,9 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
-import 'package:gstore/core/config/config_manager.dart';
+import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
-import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -51,15 +49,17 @@ class TestWebDavModule extends AppModule {
   Future<void> onUnregister(ModuleContext context) async {}
 }
 
-/// 注册 ThemeConfigProvider（内存存储预置 useCustomColors=true 配置），
-/// 使 ThemeController 加载到自定义颜色配置（Obx 依赖真实 Rx 可观察值）。
-Future<void> _registerCustomColorConfig() async {
-  final storage = MemoryConfigStorage();
-  await storage.setString(
-    'theme_config',
-    jsonEncode(const AppThemeConfig(useCustomColors: true).toJson()),
+/// 预置 `theme.config`（内存存储 + ConfigStore 兼容适配器），使 Riverpod
+/// `themeProvider` 通过 ConfigService 加载到自定义颜色配置。
+Future<void> _seedCustomColorConfig() async {
+  ConfigStore.instance.resetForTest();
+  await ConfigStore.instance.initialize(
+    storages: [MemoryConfigStorage(), MemoryConfigStorage()],
   );
-  ConfigManager.instance.registerProvider(ThemeConfigProvider(storage));
+  await ConfigStore.instance.write(
+    ConfigKeys.themeConfig,
+    const AppThemeConfig(useCustomColors: true).toJson(),
+  );
 }
 
 /// 下载逻辑测试替身（同 download_manager_view_test.dart 模式）：
@@ -124,8 +124,8 @@ void _useTallView(WidgetTester tester) {
 class _SeededDiscoveryNotifier extends DiscoveryNotifier {
   @override
   DiscoveryState build() {
-    return DiscoveryState(
-      channelApps: const {
+    return const DiscoveryState(
+      channelApps: {
         'github': [
           AppSummary(
             appId: 'com.example.test',
@@ -364,7 +364,7 @@ void main() {
 
     testWidgets('主题设置页自定义色块边框用 outlineVariant（非 Colors.grey）', (tester) async {
       _useTallView(tester);
-      await _registerCustomColorConfig();
+      await _seedCustomColorConfig();
       ModuleManager.instance.bind<ThemeController>(ThemeController());
 
       await tester.pumpWidget(

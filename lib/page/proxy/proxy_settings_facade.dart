@@ -29,6 +29,7 @@ library;
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
@@ -285,10 +286,10 @@ abstract class ProxySettingsStore {
 class ConfigStoreProxySettingsStore implements ProxySettingsStore {
   const ConfigStoreProxySettingsStore();
 
-  static const String _keySplitMode = 'proxy_split_mode';
-  static const String _keySelectedApps = 'proxy_split_apps';
-  static const String _keyAlwaysOn = 'proxy_always_on_intent';
-  static const String _keyLogLevel = 'proxy_log_level';
+  static const String _keySplitMode = ConfigKeys.proxySplitMode;
+  static const String _keySelectedApps = ConfigKeys.proxySplitApps;
+  static const String _keyAlwaysOn = ConfigKeys.proxyAlwaysOnIntent;
+  static const String _keyLogLevel = ConfigKeys.proxyLogLevel;
 
   @override
   Future<ProxySettingsConfig> read() async {

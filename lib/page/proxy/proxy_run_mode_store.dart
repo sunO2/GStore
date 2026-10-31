@@ -3,12 +3,13 @@
 /// 引擎只上报**当前**运行模式（`ping.mode` / `proxy.state.mode`），没有「记住用户
 /// 选择的运行模式」的持久化：断开重连 / 离开再进入代理页时，目标模式会回落到默认
 /// VPN。这里定义可注入的小接口：生产实现沿用统一 [ConfigStore]
-/// （`proxy_run_mode`，值为 `ProxyMode.wire`），测试注入内存实现即可。
+/// （`proxy.run_mode`，值为 `ProxyMode.wire`），测试注入内存实现即可。
 ///
 /// 为**不改动冻结契约**（`lib/core/rust/proxy/*`），本文件只做持久化，不新增任何
 /// 门面方法；`core.start` / `core.set_mode` 的调用语义保持不变。
 library;
 
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
@@ -31,12 +32,13 @@ abstract class ProxyRunModeStore {
 class ConfigStoreProxyRunModeStore implements ProxyRunModeStore {
   const ConfigStoreProxyRunModeStore();
 
-  /// 持久化 key（沿用代理设置页 `proxy_*` 命名）。
-  static const String key = 'proxy_run_mode';
+  /// 持久化 key（分组 wire key `proxy.run_mode`）。
+  static const String key = ConfigKeys.proxyRunMode;
 
   @override
   Future<ProxyMode?> read() async {
     try {
+      if (!await ConfigStore.instance.contains(key)) return null;
       final value = await ConfigStore.instance.readString(key);
       if (value == null || value.isEmpty) return null;
       return ProxyMode.fromWire(value);

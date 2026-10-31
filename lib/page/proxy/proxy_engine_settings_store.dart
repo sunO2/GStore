@@ -5,13 +5,14 @@
 /// 这里把用户选择的引擎参数持久化到应用侧，供首页 / 设置页在启动引擎时读取。
 ///
 /// 为**不改动冻结契约**（`lib/core/rust/proxy/*`），本文件只做持久化，不新增
-/// 任何模块方法。生产实现沿用统一 [ConfigStore]（key：`proxy_engine_stack` /
-/// `proxy_engine_mtu`）；测试注入内存实现即可。
+/// 任何模块方法。生产实现沿用统一 [ConfigStore]（分组 key：
+/// `proxy.engine_stack` / `proxy.engine_mtu`）；测试注入内存实现即可。
 ///
 /// 所有读写都做 best-effort：`ConfigStore` 未初始化 / 存储异常 / 值损坏时回落到
 /// 默认（stack `gvisor`，mtu `1500`），绝不因持久化失败崩溃页面。
 library;
 
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 
 /// 引擎侧设置（隧道的 stack 与 MTU）。
@@ -53,11 +54,11 @@ abstract class ProxyEngineSettingsStore {
 class ConfigStoreProxyEngineSettingsStore implements ProxyEngineSettingsStore {
   const ConfigStoreProxyEngineSettingsStore();
 
-  /// stack 持久化 key。
-  static const String keyStack = 'proxy_engine_stack';
+  /// stack 持久化 key（`proxy.engine_stack`）。
+  static const String keyStack = ConfigKeys.proxyEngineStack;
 
-  /// mtu 持久化 key（整型，经 `ConfigStore.write` 原样存回）。
-  static const String keyMtu = 'proxy_engine_mtu';
+  /// mtu 持久化 key（`proxy.engine_mtu`；整型，经 `ConfigStore.write` 原样存回）。
+  static const String keyMtu = ConfigKeys.proxyEngineMtu;
 
   /// 默认 stack。
   static const String defaultStack = 'gvisor';

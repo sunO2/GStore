@@ -7,11 +7,8 @@ import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 
 import 'config_manager.dart';
-import 'config_registry.dart';
-import 'config_service.dart';
 import 'config_store.dart';
 import 'config_storage.dart';
-import 'providers/theme_config_provider.dart';
 import 'providers/webdav_config_provider.dart';
 import 'providers/update_config_provider.dart';
 import 'providers/download_config_provider.dart';
@@ -77,10 +74,6 @@ class ConfigInitializer {
     ConfigService.instance.initialize();
 
     // 桥接已存在的 ConfigProvider（读写委托，保持现有机制兼容）
-    final themeProvider = manager.getProvider<dynamic>('theme_config');
-    if (themeProvider != null) {
-      ConfigService.instance.bridgeProvider(themeProvider);
-    }
     final downloadProvider = manager.getProvider<dynamic>('download_config');
     if (downloadProvider != null) {
       ConfigService.instance.bridgeProvider(downloadProvider);
@@ -106,12 +99,6 @@ class ConfigInitializer {
     ConfigManager manager,
     CompositeConfigStorage storage,
   ) {
-    // 注册主题配置提供者
-    manager.registerProvider(
-      ThemeConfigProvider(storage),
-    );
-    appLog.info('ConfigInitializer: 已注册主题配置提供者');
-
     // 注册 WebDAV 配置提供者
     manager.registerProvider(
       WebDavConfigProvider(SecureConfigStorage()),
@@ -129,15 +116,6 @@ class ConfigInitializer {
       DownloadConfigProvider(storage),
     );
     appLog.info('ConfigInitializer: 已注册下载配置提供者');
-  }
-
-  /// 获取主题配置提供者
-  static ThemeConfigProvider getThemeConfigProvider() {
-    final provider = ConfigManager.instance.providers['theme_config'];
-    if (provider == null || provider is! ThemeConfigProvider) {
-      throw StateError('ThemeConfigProvider not registered. Call initialize() first.');
-    }
-    return provider;
   }
 
   /// 获取 WebDAV 配置提供者

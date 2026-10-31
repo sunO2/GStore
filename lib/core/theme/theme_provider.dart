@@ -1,12 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
-import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 
 /// 主题运行时状态（Riverpod 主状态源）。
@@ -32,43 +31,49 @@ class ThemeState {
 
 /// 主题逻辑（Riverpod Notifier）
 ///
-/// 权威状态 = 本 Notifier；持久化 = ConfigService（写 → ThemeConfigProvider
-/// save → onChange 广播）。启动时从 ThemeConfigProvider 读持久化值，
-/// 之后订阅 ConfigService.onChange：Agent / GetX 兼容壳 / 备份恢复等
-/// 外部写入统一经 onChange 回流同步到本状态。
+/// 权威状态 = 本 Notifier；持久化 = ConfigService（`theme.mode` /
+/// `theme.config`）。启动时从 ConfigService 读持久化值，之后订阅
+/// ConfigService.onChange：Agent / GetX 兼容壳 / 备份恢复等外部写入统一经
+/// onChange 回流同步到本状态。
 class ThemeNotifier extends Notifier<ThemeState> {
   StreamSubscription<ConfigChangeEvent>? _configSub;
 
-  ThemeConfigProvider get _provider {
-    // 配置系统启动前（测试/首帧）可能未注册 → 兜底默认
-    try {
-      return ConfigInitializer.getThemeConfigProvider();
-    } catch (_) {
-      throw StateError(
-        'ThemeConfigProvider 未注册（ConfigInitializer.initialize() 未调用）',
-      );
-    }
-  }
+  /// 状态世代：每次显式写入 / 外部事件应用都自增；启动异步读取只在世代
+  /// 未变化时落地，避免晚到的初值覆盖更新的写入。
+  int _stateGeneration = 0;
+  bool _disposed = false;
 
   @override
   ThemeState build() {
-    // 异步读取持久化初值（provider 未就绪时保持默认，读取成功后更新）
+    _disposed = false;
+    _stateGeneration = 0;
+    // 异步读取持久化初值（配置系统未就绪时保持默认，读取成功后更新）
     _loadPersisted();
     // 订阅统一 ConfigService：Agent/外部写入配置后主动响应
     _configSub = ConfigService.instance.onChange.listen(_onConfigChange);
-    ref.onDispose(() => _configSub?.cancel());
+    ref.onDispose(() {
+      _disposed = true;
+      _configSub?.cancel();
+    });
     return const ThemeState();
   }
 
+  /// 该次启动读取是否仍可落地（未被更新写入/销毁超越）。
+  bool _canApply(int generation) =>
+      !_disposed && generation == _stateGeneration;
+
   Future<void> _loadPersisted() async {
+    final generation = _stateGeneration;
     try {
-      final provider = _provider;
-      final mode = await provider.loadMode();
-      final config = await provider.load();
-      state = ThemeState(
-        mode: mode ?? AppThemeMode.system,
-        config: config ?? AppThemeConfig.default_,
-      );
+      final service = ConfigService.instance;
+      final modeValue = await service.getRaw(ConfigKeys.themeMode);
+      final configValue = await service.getRaw(ConfigKeys.themeConfig);
+      if (!_canApply(generation)) return;
+
+      final mode = _modeFromValue(modeValue);
+      final config = _parseThemeConfig(configValue);
+      if (mode == null && config == null) return;
+      state = state.copyWith(mode: mode, config: config);
     } catch (_) {
       // 读取失败保持默认
     }
@@ -78,24 +83,50 @@ class ThemeNotifier extends Notifier<ThemeState> {
   void _onConfigChange(ConfigChangeEvent event) {
     switch (event.key) {
       case ConfigKeys.themeMode:
-        final v = event.newValue;
-        if (v is int && v >= 0 && v < AppThemeMode.values.length) {
-          state = state.copyWith(mode: AppThemeMode.values[v]);
+        final mode = _modeFromValue(event.newValue);
+        if (mode != null) {
+          _stateGeneration++;
+          state = state.copyWith(mode: mode);
         }
       case ConfigKeys.themeConfig:
-        final v = event.newValue;
-        if (v is Map<String, dynamic>) {
-          try {
-            state = state.copyWith(config: AppThemeConfig.fromJson(v));
-          } catch (_) {
-            // 解析失败保持当前配置
-          }
+        final config = _parseThemeConfig(event.newValue);
+        if (config != null) {
+          _stateGeneration++;
+          state = state.copyWith(config: config);
         }
+    }
+  }
+
+  static AppThemeMode? _modeFromValue(Object? value) {
+    if (value is int && value >= 0 && value < AppThemeMode.values.length) {
+      return AppThemeMode.values[value];
+    }
+    return null;
+  }
+
+  /// 宽容解析主题 JSON：Map 或 JSON 字符串；格式损坏时返回 null（保持旧状态）。
+  static AppThemeConfig? _parseThemeConfig(Object? value) {
+    Object? decoded = value;
+    if (decoded is String) {
+      if (decoded.trim().isEmpty) return null;
+      try {
+        decoded = jsonDecode(decoded);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (decoded is! Map) return null;
+    try {
+      return AppThemeConfig.fromJson(Map<String, dynamic>.from(decoded));
+    } catch (_) {
+      // 字段损坏（如非法颜色/枚举索引）→ 保持当前配置
+      return null;
     }
   }
 
   /// 设置主题模式并持久化。
   Future<void> setThemeMode(AppThemeMode mode) async {
+    _stateGeneration++;
     await ConfigService.instance.set(
       ConfigKeys.themeMode,
       mode.index,
@@ -107,6 +138,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
 
   /// 设置主题配置并持久化。
   Future<void> setThemeConfig(AppThemeConfig config) async {
+    _stateGeneration++;
     await ConfigService.instance.set(
       ConfigKeys.themeConfig,
       config.toJson(),
@@ -127,6 +159,7 @@ class ThemeNotifier extends Notifier<ThemeState> {
 
   /// 重置为主题默认配置（使用动态色 + 跟随系统）。
   Future<void> resetToDefault() async {
+    _stateGeneration++;
     await ConfigService.instance.reset(
       ConfigKeys.themeConfig,
       source: ConfigChangeSource.user,

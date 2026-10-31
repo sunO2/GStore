@@ -6,10 +6,11 @@
 /// profile id，连接时经 `CoreStartRequest(profileId: ...)` 传入。
 ///
 /// 为**不改动冻结契约**（`lib/core/rust/proxy/*`），这里定义一个可注入的小接口：
-/// 生产实现沿用统一 [ConfigStore]（`proxy_active_profile_id`），测试注入内存实现
+/// 生产实现沿用统一 [ConfigStore]（`proxy.active_profile_id`），测试注入内存实现
 /// 即可，无需原生模块 / 平台存储。
 library;
 
+import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 
 /// 当前选中订阅 id 的只读 + 写入接缝。
@@ -31,12 +32,13 @@ abstract class ProxyActiveProfileStore {
 class ConfigStoreProxyActiveProfileStore implements ProxyActiveProfileStore {
   const ConfigStoreProxyActiveProfileStore();
 
-  /// 持久化 key（沿用代理设置页 `proxy_*` 命名）。
-  static const String key = 'proxy_active_profile_id';
+  /// 持久化 key（分组 wire key `proxy.active_profile_id`）。
+  static const String key = ConfigKeys.proxyActiveProfileId;
 
   @override
   Future<String?> read() async {
     try {
+      if (!await ConfigStore.instance.contains(key)) return null;
       final value = await ConfigStore.instance.readString(key);
       if (value == null || value.isEmpty) return null;
       return value;
