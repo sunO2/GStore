@@ -148,13 +148,25 @@ Future<void> _doLoadProxyFromConfig() async {
 
 /// 更新代理配置（B 轨：写入 ConfigService + 缓存即时更新）
 ///
-/// - null：set null 清除（持久化删除该 key）
+/// - null：走 [ConfigService.clear] 删除该 key（恢复「未设置」）
 /// - 其他：写入统一存储并广播变化事件
 /// - 缓存同步更新保证 getProxy() 立即生效（set 异步不阻塞即时读）
 Future<void> updateProxy(String? proxyUrl) async {
+  // 保持乐观更新：先让 getProxy() 立即反映用户操作，持久化失败仅告警。
   _proxyCache = _resolveProxyValue(proxyUrl);
   try {
-    await ConfigService.instance.set(ConfigKeys.proxyUrl, proxyUrl);
+    final ConfigOpResult result;
+    if (proxyUrl == null) {
+      // 不能用 set(key, null)：Rust 对 String 等强类型条目会以
+      // ConfigTypeMismatch 拒绝 JSON null，旧值不会被删除。清除必须走
+      // 专用的 clear/remove 路径。
+      result = await ConfigService.instance.clear(ConfigKeys.proxyUrl);
+    } else {
+      result = await ConfigService.instance.set(ConfigKeys.proxyUrl, proxyUrl);
+    }
+    if (!result.success) {
+      debugPrint('代理配置持久化失败: ${result.message}');
+    }
   } catch (e) {
     debugPrint('代理配置持久化失败: $e');
   }

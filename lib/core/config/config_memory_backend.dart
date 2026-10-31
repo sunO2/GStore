@@ -210,6 +210,12 @@ class _StorageConfigApiClient implements ConfigApiClient {
   }) async {
     final entry = _require(module, key);
     final value = jsonDecode(valueJson);
+    // 对齐真实 Rust 语义：强类型条目（String/bool/num/list 等）拒绝 JSON
+    // null（ConfigTypeMismatch），清除必须走 clear/remove。测试若用 set(null)
+    // 模拟清除，会在这里失败而不是被 fake 静默接受。
+    if (value == null && entry.type != ConfigValueType.json) {
+      return _op('set', entry, null, success: false);
+    }
     final oldValue = await _value(entry.key);
     final ok = await _storage.setValue(entry.key, value);
     if (!ok) return _op('set', entry, null, success: false);
