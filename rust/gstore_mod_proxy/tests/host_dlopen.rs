@@ -73,6 +73,7 @@ fn dlopen_proxy_module_ping_returns_ok_and_unknown_method_is_405() {
         context: std::ptr::null_mut(),
         protect_fd: Some(dummy_protect),
         platform: std::ptr::null(),
+        config: std::ptr::null(),
     };
     let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
     let code = register(&entry, api.as_mut_ptr());

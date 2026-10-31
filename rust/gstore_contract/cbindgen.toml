@@ -18,11 +18,14 @@ autogen_warning = "/* 警告：本文件由 cbindgen 自动生成，请勿手动
 exclude = ["PROTOCOL_VERSION"]
 include = [
     "GStorePlatformApiV1",
+    "GStoreConfigApiV1",
+    "GStoreConfigContextV1",
     "ByteBuf",
     "GStorePlatformError",
     "GStoreModuleEntry",
     "GStoreModuleApi",
     "PLATFORM_CAP_.*",
+    "CONFIG_CAP_.*",
     "ABI_ERR_.*",
     "ABI_OK",
     "GSTORE_MODULE_ABI_VERSION",

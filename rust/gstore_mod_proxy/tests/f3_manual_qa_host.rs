@@ -263,6 +263,7 @@ fn f3_host_equivalent_request_collector_qa() {
         context: std::ptr::null_mut(),
         protect_fd: Some(dummy_protect),
         platform: std::ptr::null(),
+        config: std::ptr::null(),
     };
     let mut api_uninit = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
     let code = register(&entry, api_uninit.as_mut_ptr());

@@ -69,20 +69,24 @@ extern "C" fn host_protect_fd(fd: c_int) -> c_int {
 /// 构造宿主注入表（`load` 与测试共用）。
 ///
 /// `abi` 是模块探测到的目标 ABI（`gstore_mod_<name>_abi`，缺失时回退 3）。
-/// v3 宿主（`abi == 3`）填入 v3 布局（`entry_size` = `PLATFORM_OFFSET`，无
-/// `platform` 槽）；v4 宿主（`abi == 4`）填满 v4 布局。越界 ABI 拒绝，绝不静默降级。
-/// `platform` 槽在真实 vtable 接线（后续 todo）前保持 NULL，模块走无平台服务降级路径。
+/// **必须逐版精确**，绝不把 v5 的 `entry_size` 报给旧模块：
+/// - `abi == 3` → `PLATFORM_OFFSET`（v3 布局，无 `platform`/`config` 槽）；
+/// - `abi == 4` → `CONFIG_OFFSET`（v4 布局，有 `platform`、无 `config`）；
+/// - `abi == 5` → `size_of::<GStoreModuleEntry>()`（v5 布局，有 `config`）。
+///
+/// 越界 ABI 拒绝，绝不静默降级。`platform`/`config` 槽在真实 vtable 接线前保持
+/// NULL，模块走降级路径。
 fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
     if !(MIN_HOST_ABI..=GSTORE_MODULE_ABI_VERSION).contains(&abi) {
         return Err(format!(
             "unsupported module ABI {abi} (host supports {MIN_HOST_ABI}..={GSTORE_MODULE_ABI_VERSION})"
         ));
     }
-    let entry_size = if abi == 3 {
-        GStoreModuleEntry::PLATFORM_OFFSET as u32
-    } else {
-        std::mem::size_of::<GStoreModuleEntry>() as u32
-    };
+    let entry_size = match abi {
+        3 => GStoreModuleEntry::PLATFORM_OFFSET,
+        4 => GStoreModuleEntry::CONFIG_OFFSET,
+        _ => std::mem::size_of::<GStoreModuleEntry>(),
+    } as u32;
     Ok(GStoreModuleEntry {
         abi_version: abi,
         entry_size,
@@ -95,6 +99,8 @@ fn host_entry(abi: u32) -> Result<GStoreModuleEntry, String> {
         protect_fd: Some(host_protect_fd),
         // ABI v4：真实 platform vtable 接线不属于本 todo，保持 NULL。
         platform: std::ptr::null(),
+        // ABI v5：配置 vtable 由 Todo 11 注入，当前保持 NULL。
+        config: std::ptr::null(),
     })
 }
 
@@ -574,7 +580,7 @@ mod abi_v3_compat_tests {
     #[test]
     fn v2_module_still_mounts_on_v3_host_and_gets_protect_fd() {
         let _guard = PROTECT_LOCK.lock().unwrap();
-        assert_eq!(GSTORE_MODULE_ABI_VERSION, 4, "宿主 ABI 已升 v4");
+        assert_eq!(GSTORE_MODULE_ABI_VERSION, 5, "宿主 ABI 已升 v5");
 
         let (name, api) = handshake_with(v2_register, "v2mod", 3).expect("v2 模块必须仍能挂载 v3 宿主");
         assert_eq!(name, "v2mod");
@@ -624,9 +630,12 @@ mod abi_v3_compat_tests {
         assert!(full.protect_fd_if_present().is_some());
     }
 
-    /// (e) 宿主注入表按模块探测到的 ABI 选择 v3/v4 布局（具体数值断言）。
+    /// (e) 宿主注入表按模块探测到的 ABI 逐版选择布局（具体数值断言）。
+    ///
+    /// 关键回归：v4 模块绝不能看到 v5 的 `entry_size`（否则它会越过 entry_size
+    /// 读取并误以为 `config` 槽存在）。
     #[test]
-    fn host_entry_selects_v3_and_v4() {
+    fn host_entry_selects_v3_v4_and_v5() {
         let v3 = host_entry(3).expect("v3 entry");
         assert_eq!(v3.abi_version, 3);
         assert_eq!(v3.entry_size as usize, GStoreModuleEntry::PLATFORM_OFFSET);
@@ -634,24 +643,41 @@ mod abi_v3_compat_tests {
         assert_eq!(v3.entry_size, 56, "x86_64 v3 布局 entry_size 具体数值");
         assert!(v3.platform.is_null());
         assert!(!v3.has_platform(), "v3 entry 不得暴露 platform 槽");
+        assert!(!v3.has_config(), "v3 entry 不得暴露 config 槽");
 
         let v4 = host_entry(4).expect("v4 entry");
         assert_eq!(v4.abi_version, 4);
-        assert_eq!(
+        assert_eq!(v4.entry_size as usize, GStoreModuleEntry::CONFIG_OFFSET);
+        assert_ne!(
             v4.entry_size as usize,
-            std::mem::size_of::<GStoreModuleEntry>()
+            std::mem::size_of::<GStoreModuleEntry>(),
+            "v4 模块绝不能收到 v5 的完整 entry_size"
         );
         #[cfg(target_pointer_width = "64")]
         assert_eq!(v4.entry_size, 64, "x86_64 v4 布局 entry_size 具体数值");
         assert!(v4.platform.is_null());
         assert!(v4.has_platform(), "v4 entry 覆盖 platform 槽");
+        assert!(!v4.has_config(), "v4 entry 不得暴露 config 槽");
+
+        let v5 = host_entry(5).expect("v5 entry");
+        assert_eq!(v5.abi_version, 5);
+        assert_eq!(
+            v5.entry_size as usize,
+            std::mem::size_of::<GStoreModuleEntry>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(v5.entry_size, 72, "x86_64 v5 布局 entry_size 具体数值");
+        assert!(v5.has_platform());
+        assert!(v5.has_config(), "v5 entry 覆盖 config 槽");
+        assert!(v5.config.is_null(), "Todo 11 接线前 config 槽保持 NULL");
+        assert!(v5.config_if_present().is_none());
     }
 
     /// (f) ABI 越界（过旧/未来版本）拒绝，绝不静默降级。
     #[test]
     fn rejects_future_abi() {
-        assert!(host_entry(5).is_err());
-        assert!(host_entry(2).is_err());
+        assert!(host_entry(6).is_err(), "v6 宿主必须被拒绝");
+        assert!(host_entry(2).is_err(), "v2 宿主必须被拒绝");
     }
 
     /// 可替换全局：宿主 stub 可换成真实实现（Todo 4 JNI）并可复位。
@@ -1017,8 +1043,11 @@ mod abi_handshake {
             *lib.get(b"gstore_mod_repo_abi\0")
                 .unwrap_or_else(|e| panic!("v4 module must export gstore_mod_repo_abi: {e}"))
         };
-        assert_eq!(probe(), 4, "v4 模块探针(dlsym 自真实 .so)必须返回 ABI 4");
-        assert_eq!(probe(), GSTORE_MODULE_ABI_VERSION);
+        assert_eq!(
+            probe(),
+            GSTORE_MODULE_ABI_VERSION,
+            "模块探针(dlsym 自真实 .so)必须返回本构建 ABI"
+        );
 
         let register = dlsym_register(&lib);
         let (name, api) = handshake_with(register, "repo", 3)
@@ -1047,9 +1076,10 @@ mod abi_handshake {
         assert_eq!(v4_entry.entry_size, 64, "x86_64 v4 host entry_size concrete value");
         assert_eq!(
             v4_entry.entry_size as usize,
-            std::mem::size_of::<GStoreModuleEntry>(),
-            "v4 宿主 entry 铺满 platform 槽"
+            GStoreModuleEntry::CONFIG_OFFSET,
+            "v4 宿主 entry 铺满 platform 槽、但不含 v5 config 槽"
         );
+        assert!(!v4_entry.has_config(), "v4 宿主 entry 不得暴露 config");
 
         let lib = dlopen(&fixture);
         let register = dlsym_register(&lib);

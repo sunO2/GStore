@@ -47,6 +47,7 @@ fn register_reports_perf_and_abi_v3() {
         context: std::ptr::null_mut(),
         protect_fd: None,
         platform: std::ptr::null(),
+        config: std::ptr::null(),
     };
     let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
     assert_eq!(gstore_mod_perf_register(&entry, api.as_mut_ptr()), ABI_OK);
@@ -58,7 +59,7 @@ fn register_reports_perf_and_abi_v3() {
 #[test]
 fn abi_probe_reports_build_version() {
     assert_eq!(gstore_mod_perf_abi(), GSTORE_MODULE_ABI_VERSION);
-    assert_eq!(gstore_mod_perf_abi(), 4);
+    assert_eq!(gstore_mod_perf_abi(), 5);
 }
 
 #[test]

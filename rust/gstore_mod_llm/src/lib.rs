@@ -359,7 +359,11 @@ mod tests {
     fn register_entry(abi_version: u32) -> GStoreModuleEntry {
         GStoreModuleEntry {
             abi_version,
-            entry_size: GStoreModuleEntry::PLATFORM_OFFSET as u32,
+            entry_size: match abi_version {
+                3 => GStoreModuleEntry::PLATFORM_OFFSET as u32,
+                4 => GStoreModuleEntry::CONFIG_OFFSET as u32,
+                _ => std::mem::size_of::<GStoreModuleEntry>() as u32,
+            },
             log: None,
             alloc: None,
             free: None,
@@ -367,11 +371,12 @@ mod tests {
             context: std::ptr::null_mut(),
             protect_fd: None,
             platform: std::ptr::null(),
+            config: std::ptr::null(),
         }
     }
 
     #[test]
-    fn register_accepts_v3_host_and_rejects_future_abi() {
+    fn register_accepts_v3_and_v5_host_and_rejects_v6() {
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
         let rc = super::gstore_mod_llm_register(&register_entry(3), api.as_mut_ptr());
         assert_eq!(rc, ABI_OK, "v3 宿主必须被接受");
@@ -381,15 +386,22 @@ mod tests {
         let mut api5 = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
         assert_eq!(
             super::gstore_mod_llm_register(&register_entry(5), api5.as_mut_ptr()),
+            ABI_OK,
+            "v5 宿主必须被接受"
+        );
+
+        let mut api6 = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+        assert_eq!(
+            super::gstore_mod_llm_register(&register_entry(6), api6.as_mut_ptr()),
             ABI_ERR_ABI_MISMATCH,
-            "v5 宿主必须被拒绝"
+            "v6 宿主必须被拒绝"
         );
     }
 
     #[test]
     fn abi_probe_reports_build_version() {
         assert_eq!(super::gstore_mod_llm_abi(), GSTORE_MODULE_ABI_VERSION);
-        assert_eq!(super::gstore_mod_llm_abi(), 4);
+        assert_eq!(super::gstore_mod_llm_abi(), 5);
     }
 
     #[test]

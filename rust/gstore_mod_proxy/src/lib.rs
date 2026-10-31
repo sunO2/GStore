@@ -2651,10 +2651,10 @@ mod abi_tests {
     fn register_entry_with(abi_version: u32) -> GStoreModuleEntry {
         GStoreModuleEntry {
             abi_version,
-            entry_size: if abi_version >= GSTORE_MODULE_ABI_VERSION {
-                std::mem::size_of::<GStoreModuleEntry>() as u32
-            } else {
-                GStoreModuleEntry::PLATFORM_OFFSET as u32
+            entry_size: match abi_version {
+                3 => GStoreModuleEntry::PLATFORM_OFFSET as u32,
+                4 => GStoreModuleEntry::CONFIG_OFFSET as u32,
+                _ => std::mem::size_of::<GStoreModuleEntry>() as u32,
             },
             log: None,
             alloc: None,
@@ -2663,6 +2663,7 @@ mod abi_tests {
             context: std::ptr::null_mut(),
             protect_fd: Some(dummy_protect),
             platform: std::ptr::null(),
+            config: std::ptr::null(),
         }
     }
 
@@ -2758,19 +2759,21 @@ mod abi_tests {
     }
 
     #[test]
-    fn register_accepts_v3_host() {
+    fn register_accepts_v3_and_v5_host() {
         let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = register_entry_with(3);
-        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
-        assert_eq!(gstore_mod_proxy_register(&entry, api.as_mut_ptr()), ABI_OK);
-        let api = unsafe { api.assume_init() };
-        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+        for abi in [3u32, 5u32] {
+            let entry = register_entry_with(abi);
+            let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
+            assert_eq!(gstore_mod_proxy_register(&entry, api.as_mut_ptr()), ABI_OK);
+            let api = unsafe { api.assume_init() };
+            assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+        }
     }
 
     #[test]
     fn register_rejects_future_host_abi() {
         let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = register_entry_with(5);
+        let entry = register_entry_with(6);
         let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
         assert_eq!(
             gstore_mod_proxy_register(&entry, api.as_mut_ptr()),
@@ -2781,7 +2784,7 @@ mod abi_tests {
     #[test]
     fn abi_probe_reports_build_version() {
         assert_eq!(gstore_mod_proxy_abi(), GSTORE_MODULE_ABI_VERSION);
-        assert_eq!(gstore_mod_proxy_abi(), 4);
+        assert_eq!(gstore_mod_proxy_abi(), 5);
     }
 
     /// Security: the `proxy.subscription.added` event must not leak the

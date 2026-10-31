@@ -28,3 +28,7 @@ protoc-bin-vendored = "3.2.0"
 # prost module in src/lib.rs. Declare it as an expected feature value so
 # rustc's check-cfg does not flag it while the backing feature is opt-in.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("dynamic-pb"))'] }
+
+[dev-dependencies]
+# dlopen the compiled ABI v4 fixture (tests/abi_v5.rs).
+libloading = "0.8"

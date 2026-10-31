@@ -313,6 +313,7 @@ mod tests {
             context: std::ptr::null_mut(),
             protect_fd: None,
             platform: std::ptr::null(),
+            config: std::ptr::null(),
         }
     }
 
@@ -356,19 +357,24 @@ mod tests {
     }
 
     #[test]
-    fn register_accepts_v3_host() {
-        let mut e = entry();
-        e.abi_version = 3;
-        e.entry_size = GStoreModuleEntry::PLATFORM_OFFSET as u32;
-        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
-        assert_eq!(gstore_mod_perf_register(&e, api.as_mut_ptr()), ABI_OK);
-        let api = unsafe { api.assume_init() };
-        assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+    fn register_accepts_v3_and_v5_host() {
+        for (abi, size) in [
+            (3, GStoreModuleEntry::PLATFORM_OFFSET),
+            (5, std::mem::size_of::<GStoreModuleEntry>()),
+        ] {
+            let mut e = entry();
+            e.abi_version = abi;
+            e.entry_size = size as u32;
+            let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
+            assert_eq!(gstore_mod_perf_register(&e, api.as_mut_ptr()), ABI_OK);
+            let api = unsafe { api.assume_init() };
+            assert_eq!(api.min_host_abi, MIN_HOST_ABI);
+        }
     }
 
     #[test]
     fn register_rejects_out_of_range_host_abi() {
-        for bad in [2u32, 5u32] {
+        for bad in [2u32, 6u32] {
             let mut e = entry();
             e.abi_version = bad;
             let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::uninit();
@@ -379,7 +385,7 @@ mod tests {
     #[test]
     fn abi_probe_reports_build_version() {
         assert_eq!(gstore_mod_perf_abi(), GSTORE_MODULE_ABI_VERSION);
-        assert_eq!(gstore_mod_perf_abi(), 4);
+        assert_eq!(gstore_mod_perf_abi(), 5);
     }
 
     #[test]
