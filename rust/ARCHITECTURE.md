@@ -821,16 +821,23 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 
 - **事件类型常量**：Rust `gstore_contract::events` 与 Dart `lib/core/event/app_event.dart::AppEventTypes`
   一一对应（`config.changed` / `db.changed` / `module.lifecycle` / `rust.event` / `theme.changed`）。
+  `config.changed` / `theme.changed` 常量仍保留，但**不再走 `on_event` 下行广播**。
 - **上行（模块 → 应用）**：模块 `emit_event` → 宿主事件桥 → FRB Stream → Dart
   `RustModuleManager.moduleEvents`，并接入统一 `AppEventBus`（`rust.event`）。
-- **下行（应用 → 模块）**：`AppEventBus` 中标记 `downlink` 的事件 → `EventBridge.broadcast`（FRB）
-  → 宿主 `ModuleManager::broadcast_event` 遍历已加载模块 → ABI `on_event`（**ABI v2 追加槽**）。
+- **下行（应用 → 模块）**：`AppEventBus` 中标记 `downlink` 的**非配置**事件 → `EventBridge.broadcast`
+  （FRB）→ 宿主 `ModuleManager::broadcast_event` 遍历已加载模块 → ABI `on_event`
+  （**ABI v2 追加槽**）。配置变更**不**经此路径。
+- **配置下行（ABI v5）**：模块通过 `GStoreConfigApiV1::subscribe` 按 `(module, key)` 过滤订阅，
+  宿主逐条按条目可见性裁决（`PublicRead` 才可跨模块），载荷为
+  `{module, key, value, oldValue, revision, source}` 且秘密值脱敏为 `***`。
+  旧的 `on_event("config.changed")` 广播路径已删除（Todo 36）；详见
+  [`docs/config-architecture.md`](../docs/config-architecture.md)。
 - **Dart 统一总线**：`AppEventBus` 以"适配而非替换"方式收口 DB
   （`DatabaseEventBus`）/ 模块生命周期（`ModuleManager.onChange`）/ 配置（`ConfigService.onChange`），
-  现有各 API 与调用点保持不变。
+  现有各 API 与调用点保持不变；配置在 Dart 侧只做 `downlink: false` 的上行汇聚。
 - **约束**：`on_event` 为同步回调——宿主分发前先快照 `(id, Arc)` 再释放注册表锁（避免长锁与重入死锁）；
   模块应在回调内快速处理或转投自有 runtime；跨边界载荷为 JSON 字节。
-- **当前订阅方**：配置变化下发全部已加载模块（payload `{key, value}`），repo 解析并记录变更 key。
+- **当前配置订阅方**：仅经 ABI v5 过滤订阅接收自己有权看到的变更，不再有“全模块广播”订阅方。
 
 ---
 

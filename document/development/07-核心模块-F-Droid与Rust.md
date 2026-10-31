@@ -78,6 +78,16 @@ GetxController，管理 F-Droid 数据源与索引：
 - Dart 侧由 `frb_generated.dart` 提供，平台差异实现 `.io.dart` / `.web.dart`。
 - Rust 侧 `frb_generated.rs` 由 build_runner 的 `flutter_rust_bridge_codegen` 生成。
 
+### 配置依赖（ABI v5）
+
+- 需要读写配置的模块（F-Droid 的源列表等）必须使用宿主注入的
+  `GStoreConfigApiV1` vtable，并设置 `min_host_abi = 5`；v4 宿主会在 probe 阶段拒绝。
+- 模块先用 `GStoreModuleEntry::config_if_present()` 守卫，再按 `CONFIG_CAP_*` 能力位
+  调用 `get`/`set`/`list`/`subscribe`；跨模块只允许 `PublicRead` 条目。
+- 旧 `on_event("config.changed")` 广播已删除；配置变更走 vtable `subscribe` 的过滤投递，
+  载荷为 `{module, key, value, oldValue, revision, source}`，秘密值脱敏为 `***`。
+- 完整键表、迁移与备份契约见 [`docs/config-architecture.md`](../../docs/config-architecture.md)。
+
 ### 构建
 
 见 `rust/BUILD_ANDROID.md`、`rust/ANDROID_BUILD.md`，以及根目录脚本：

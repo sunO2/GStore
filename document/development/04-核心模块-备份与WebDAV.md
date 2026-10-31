@@ -60,9 +60,15 @@ downloadFromWebDav
   → gzip.decode + TarDecoder                # 解压 tar.gz
   → 提取 apps.json / app_config.json
   → BackupData.fromJson（版本校验 v1.0/v2.0）
-  → ConfigManager.importAll（可选，恢复应用配置）
+  → ConfigRestoreAdapter.restore（读 apps.json.appConfig + app_config.json，
+      grouped `module.key` 优先于 legacy 别名/top-level 镜像，
+      经 Rust `ConfigApi.import(source="restore")` 写入）
   → importData（替换/合并写入聚合库与渠道库）
 ```
+
+配置载荷格式为 `config_format: 2`（`ConfigBackupData.version` 仍为 1）；`includeAppConfig=false`
+时整个配置载荷被省略，绝不用 `***` 掩码代替。详见
+[`docs/config-architecture.md`](../../docs/config-architecture.md) §7。
 
 ## 4. WebDAV 客户端（webdav_client.dart）
 
@@ -89,7 +95,8 @@ Basic Auth（`base64(username:password)`），请求头注入。
 
 - `WebDavConfig`：url / username / password / backupPath（默认 `/GStore`）/ enableHttps。
 - `baseUrl` getter：自动补 `https://`（或 http），带协议时移除末尾斜杠。
-- `WebDavConfigManager`：基于 `flutter_secure_storage` 存取凭据。
+- `WebDavConfigManager`：兼容门面；凭据真实来源是 Rust `webdav.*` 配置
+  （分组键经 `ConfigApi` 读写，秘密值由 `FileSecretStore` 落盘并脱敏）。
 
 ## 5. 备份文件命名
 

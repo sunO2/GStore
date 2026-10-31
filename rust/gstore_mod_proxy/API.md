@@ -1603,13 +1603,19 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 
 | kind | payload | meaning |
 |---|---|---|
-| `config.changed` | `{ "key": string, "value": any }` | config hot-reload (e.g. `proxy.mode`) |
 | `db.changed` | `{ "type": string, "data": any }` | data-store change |
 | `module.lifecycle` | `{ "module": string, "lifecycle": string }` | module up/down |
 | `vpn.stop` | `{}` | host/Kotlin-initiated teardown: stop the TUN reader loop **without** a supervisor restart (Todo 24). The host broadcasts it from `nativeStopTunnel` and waits (bounded) for `proxy.tun.released` before Kotlin closes the PFD. |
 | `vpn.network_changed` | `{}` | underlying network handover (Wi-Fi↔cellular / airplane mode); Kotlin already rebuilt the default interface via `setUnderlyingNetworks(null)` — the datapath keeps running (Todo 24). |
 | `proxy.uid.query` | `{ "queries": [ { "recordId": 0, "protocol": "tcp", "srcIp": string, "srcPort": 0, "dstIp": string, "dstPort": 0 } ] }` | **module → host** (this table's only reverse lane): the module asks the host to resolve the Android owner UID for a TCP flow. The host **consumes and drops** it — it is **never** forwarded into the Dart event ring (Todo 11/13). |
 | `uid.result` | `{ "results": [ { "recordId": 0, "uid": 0, "packages": [] } ] }` | host → module reply to `proxy.uid.query`, delivered on the module's `on_event` (Todo 11/13). |
+
+> **Configuration is not an `on_event` kind.** The legacy
+> `config.changed { "key", "value" }` broadcast was removed (Todo 36). Modules
+> that depend on configuration use the ABI v5 `GStoreConfigApiV1::subscribe`
+> vtable slot (payload `{module, key, value, oldValue, revision, source}`, with
+> secrets masked as `***`); a module using it must set `min_host_abi = 5`.
+> See [`docs/config-architecture.md`](../../docs/config-architecture.md).
 
 ## 5. Domain error codes
 
