@@ -14,7 +14,7 @@
 //! # Sensitive values (C3 / C10)
 //!
 //! Entries whose registry flag is `sensitive` (or whose visibility is
-//! [`ConfigVisibility::Secret`]) are never written to `value_json` or the
+//! [`super::model::ConfigVisibility::Secret`]) are never written to `value_json` or the
 //! change log. Their plaintext lives only in the [`FileSecretPort`] under a
 //! fresh, versioned key:
 //!
@@ -71,14 +71,16 @@ use sha2::{Digest, Sha256};
 
 use crate::db::DbHandle;
 use crate::error::Error;
-use crate::ports::secret::{FileSecretPort, MAX_SECRET_KEY_LEN};
+use crate::ports::secret::FileSecretPort;
 
 use super::error::ConfigError;
 use super::model::{
-    ConfigChange, ConfigEntry, ConfigKey, ConfigSource, ConfigValueType, ConfigVisibility,
-    MASKED_VALUE,
+    ConfigChange, ConfigEntry, ConfigKey, ConfigSource, ConfigValueType,
 };
 use super::schema;
+use super::secrets::{
+    is_secret_entry, masked_snapshot_value, redact_change_log_value, secret_ref_for, MASKED,
+};
 
 /// Root namespace for versioned config secrets.
 ///
@@ -359,14 +361,14 @@ impl ConfigStore {
     pub fn get_masked(&self, key: &ConfigKey) -> Result<Value, ConfigStoreError> {
         self.ensure_loaded()?;
         let entry = require_entry(key)?;
-        if is_secret(entry) {
+        if is_secret_entry(entry) {
             let cache = self.read_cache()?;
             if cache
                 .get(key)
                 .and_then(|state| state.stored.as_ref())
                 .is_some()
             {
-                return Ok(Value::String(MASKED_VALUE.to_string()));
+                return Ok(Value::String(MASKED.to_string()));
             }
         }
         self.get(key)
@@ -397,7 +399,7 @@ impl ConfigStore {
 
         let mut new_secret: Option<(String, String)> = None;
         let mut written_secret: Option<String> = None;
-        if is_secret(entry) {
+        if is_secret_entry(entry) {
             let text = encode_secret(&value)?;
             let new_hash = sha256_hex(text.as_bytes());
             let old_ref = old_row.as_ref().and_then(|row| row.secret_ref.clone());
@@ -727,7 +729,7 @@ impl ConfigStore {
             let revision = base_revision + index as u64 + 1;
             let old_row = read_row(&writer, key)?;
             let mut secret = None;
-            if is_secret(entry) {
+            if is_secret_entry(entry) {
                 let text = encode_secret(value)?;
                 let hash = sha256_hex(text.as_bytes());
                 let old_ref = old_row.as_ref().and_then(|row| row.secret_ref.clone());
@@ -796,7 +798,7 @@ impl ConfigStore {
         {
             let mut cache = self.write_cache()?;
             for item in &prepared {
-                let stored = if is_secret(item.entry) {
+                let stored = if is_secret_entry(item.entry) {
                     match item.secret.clone() {
                         Some((reference, _hash)) => Some(Stored::Secret { reference }),
                         None => continue,
@@ -912,7 +914,7 @@ impl ConfigStore {
     ) -> Result<(), ConfigStoreError> {
         let new_ref = secret.as_ref().map(|(reference, _)| reference.clone());
         let mut cache = self.write_cache()?;
-        let stored = if is_secret(entry) {
+        let stored = if is_secret_entry(entry) {
             let Some((reference, _hash)) = secret else {
                 return Err(ConfigStoreError::Core(Error::Internal(
                     "CORE_E_CONFIG_SECRET: missing computed secret ref".to_string(),
@@ -1045,11 +1047,6 @@ fn require_entry(key: &ConfigKey) -> Result<&'static ConfigEntry, ConfigStoreErr
 }
 
 
-/// Sensitive surfaces are the `sensitive` flag or `Secret` visibility.
-fn is_secret(entry: &ConfigEntry) -> bool {
-    entry.sensitive || matches!(entry.visibility, ConfigVisibility::Secret)
-}
-
 fn snapshot_for_list(
     entry: &'static ConfigEntry,
     state: Option<&EntryState>,
@@ -1072,10 +1069,10 @@ fn snapshot_for_state(
     key: &ConfigKey,
     state: &EntryState,
 ) -> ConfigSnapshot {
-    let masked = is_secret(entry) && state.stored.is_some();
+    let masked = is_secret_entry(entry) && state.stored.is_some();
     let value = match &state.stored {
-        Some(Stored::Value(value)) => Some(value.clone()),
-        Some(Stored::Secret { .. }) => Some(Value::String(MASKED_VALUE.to_string())),
+        Some(Stored::Value(value)) => Some(masked_snapshot_value(entry, value)),
+        Some(Stored::Secret { .. }) => Some(Value::String(MASKED.to_string())),
         None => Some(entry.default_json.clone()),
     };
     ConfigSnapshot {
@@ -1097,11 +1094,8 @@ fn change_for(
     source: ConfigSource,
     actor: Option<String>,
 ) -> ConfigChange {
-    let (old_json, new_json) = if is_secret(entry) {
-        (
-            None,
-            new_value.map(|_| Value::String(MASKED_VALUE.to_string())),
-        )
+    let (old_json, new_json) = if is_secret_entry(entry) {
+        (None, redact_change_log_value(entry, new_value))
     } else {
         let old = old_row
             .and_then(|row| row.value_json.as_deref())
@@ -1245,7 +1239,7 @@ fn write_entry(
     updated_at: i64,
     updated_by: Option<&str>,
 ) -> Result<(), ConfigStoreError> {
-    let (value_json, secret_ref, secret_hash) = if is_secret(entry) {
+    let (value_json, secret_ref, secret_hash) = if is_secret_entry(entry) {
         let Some((reference, hash)) = secret else {
             return Err(ConfigStoreError::Core(Error::Internal(
                 "CORE_E_CONFIG_SECRET: missing computed secret ref".to_string(),
@@ -1287,10 +1281,10 @@ fn write_change_log(
     actor: Option<&str>,
     at: i64,
 ) -> Result<(), ConfigStoreError> {
-    let (old_json, new_json) = if is_secret(entry) {
+    let (old_json, new_json) = if is_secret_entry(entry) {
         (
             None,
-            new_value.map(|_| MASKED_VALUE.to_string()),
+            new_value.map(|_| MASKED.to_string()),
         )
     } else {
         let old = old_row.and_then(|row| row.value_json.clone());
@@ -1403,22 +1397,6 @@ fn read_all_rows(
     Ok(out)
 }
 
-/// Builds the versioned secret ref for `(key, revision)`.
-///
-/// Falls back to a hashed form when `config.<module>.<key>.<revision>` would
-/// exceed [`MAX_SECRET_KEY_LEN`] (C23). Both forms end in the numeric revision
-/// so the GC can classify them.
-fn secret_ref_for(key: &ConfigKey, revision: u64) -> String {
-    let base = format!("{CONFIG_SECRET_PREFIX}{}.{}", key.module(), key.key());
-    let candidate = format!("{base}.{revision}");
-    if candidate.len() <= MAX_SECRET_KEY_LEN {
-        candidate
-    } else {
-        let hashed = sha256_hex(base.as_bytes());
-        format!("{CONFIG_SECRET_PREFIX}h{hashed}.{revision}")
-    }
-}
-
 fn is_config_versioned_key(secret_key: &str) -> bool {
     secret_key.starts_with(CONFIG_SECRET_PREFIX) && version_suffix(secret_key).is_some()
 }
@@ -1511,7 +1489,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::ports::secret::FileSecretStore;
+    use crate::ports::secret::{FileSecretStore, MAX_SECRET_KEY_LEN};
 
     fn temp_root(tag: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);

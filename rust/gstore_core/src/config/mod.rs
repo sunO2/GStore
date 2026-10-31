@@ -12,6 +12,7 @@
 pub mod error;
 pub mod model;
 pub mod schema;
+pub mod secrets;
 pub mod store;
 
 pub use error::{
@@ -24,6 +25,12 @@ pub use model::{
     MASKED_VALUE, MAX_KEY_LEN, MAX_MODULE_LEN,
 };
 pub use schema::{entries, entry, has, module_entries, MODULE_NAMES};
+pub use secrets::{
+    dart_mirror_value, is_secret_entry, mask_if_secret, masked_agent_tool_output,
+    masked_change_payload, masked_report, masked_snapshot_value, redact_change_log_value,
+    secret_ref_for, trusted_read_allowed, ConfigCaller, ConfigRedactor, DART_MIRROR_GUIDANCE,
+    MASKED,
+};
 pub use store::{
     ConfigExportEntry, ConfigImportReport, ConfigSnapshot, ConfigStore, ConfigStoreError,
     CONFIG_SECRET_PREFIX,
