@@ -6,6 +6,7 @@ mod frb_generated; /* AUTO INJECTED BY flutter_rust_bridge. This line may not be
 #[allow(dead_code)]
 mod models;
 pub mod bridge;
+mod config_api;
 mod manager;
 mod repo_port;
 pub mod download_host;

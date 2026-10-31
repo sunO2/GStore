@@ -130,6 +130,177 @@ impl EventBridge {
     }
 }
 
+/// Configuration DTOs (plain data classes; FRB follows these re-exports).
+pub use crate::config_api::{
+    ConfigChangeDto, ConfigEntryDto, ConfigExportDto, ConfigExportEntryDto,
+    ConfigImportEntryDto, ConfigImportFailureDto, ConfigImportReportDto, ConfigMigrationStateDto,
+    ConfigOpResultDto, ConfigSnapshotDto, ConfigVerifyEntryDto, ConfigVerifyReportDto,
+    ConfigVerifyResultDto, RecordingConfigSink,
+};
+
+/// Module-scoped configuration facade (Todo 8).
+///
+/// Backed by the process-global `Arc<ConfigStore>` installed by
+/// [`CoreApi::finish_init`] from the **same** `SharedConn`/`files_dir` as the
+/// rest of the core (C1). It never opens a second `DbHandle`.
+///
+/// Secret policy (C3): `get(masked = true)`, `list`, `snapshots`, `snapshot`,
+/// and every change event are masked. `get(masked = false)` is the explicit
+/// trusted-Dart raw read, and [`ConfigApi::export`] is the only raw backup DTO.
+#[frb(opaque)]
+pub struct ConfigApi;
+
+impl ConfigApi {
+    /// Creates the facade; fails with `CORE_E_NOT_INITIALIZED` until
+    /// `CoreApi.init()` has installed the process-global store.
+    pub fn init() -> Result<ConfigApi, String> {
+        crate::config_api::api_init()?;
+        Ok(ConfigApi)
+    }
+
+    /// Reads one value as JSON. `masked = true` is the default contract;
+    /// trusted Dart may pass `masked = false` for the owner's raw value (C3).
+    pub fn get(&self, module: String, key: String, masked: bool) -> Result<String, String> {
+        crate::config_api::get(module, key, masked)
+    }
+
+    /// Validates, commits, and publishes one value.
+    pub fn set(
+        &self,
+        module: String,
+        key: String,
+        value_json: String,
+        source: String,
+    ) -> Result<ConfigOpResultDto, String> {
+        crate::config_api::set(module, key, value_json, source)
+    }
+
+    /// Clears a stored value (reads fall back to the registry default).
+    pub fn clear(
+        &self,
+        module: String,
+        key: String,
+        source: String,
+    ) -> Result<ConfigOpResultDto, String> {
+        crate::config_api::clear(module, key, source)
+    }
+
+    /// Restores and persists the registry default.
+    pub fn reset(
+        &self,
+        module: String,
+        key: String,
+        source: String,
+    ) -> Result<ConfigOpResultDto, String> {
+        crate::config_api::reset(module, key, source)
+    }
+
+    /// Registry metadata plus the current (masked) value. `None` = all modules.
+    pub fn list(&self, module: Option<String>) -> Result<Vec<ConfigEntryDto>, String> {
+        crate::config_api::list(module)
+    }
+
+    /// One stored snapshot (masked), or `None` when unset.
+    pub fn snapshot(
+        &self,
+        module: String,
+        key: String,
+    ) -> Result<Option<ConfigSnapshotDto>, String> {
+        crate::config_api::snapshot(module, key)
+    }
+
+    /// Stored snapshots, optionally filtered to one module.
+    pub fn snapshots(&self, module: Option<String>) -> Result<Vec<ConfigSnapshotDto>, String> {
+        crate::config_api::snapshots(module)
+    }
+
+    /// Raw export for backups. The only DTO that may contain plaintext secrets.
+    pub fn export(&self) -> Result<ConfigExportDto, String> {
+        crate::config_api::export()
+    }
+
+    /// Idempotent bulk import: validates everything, applies the valid subset
+    /// in one transaction, publishes one event per applied key.
+    pub fn import(
+        &self,
+        entries: Vec<ConfigImportEntryDto>,
+        source: String,
+    ) -> Result<ConfigImportReportDto, String> {
+        crate::config_api::import(entries, source)
+    }
+
+    /// Re-reads the committed values and compares them with `entries`.
+    pub fn verify(
+        &self,
+        entries: Vec<ConfigVerifyEntryDto>,
+    ) -> Result<ConfigVerifyReportDto, String> {
+        crate::config_api::verify(entries)
+    }
+
+    /// Reads an arbitrary `config_meta` key.
+    pub fn meta_get(&self, key: String) -> Result<Option<String>, String> {
+        crate::config_api::meta_get(key)
+    }
+
+    /// Writes an arbitrary `config_meta` key (`revision` is store-owned).
+    pub fn meta_set(&self, key: String, value_json: String) -> Result<(), String> {
+        crate::config_api::meta_set(key, value_json)
+    }
+
+    /// Hydrates the store cache; reports readiness separately from migration.
+    ///
+    /// Todo 8 never runs legacy migration, so `migrated` is always `false`.
+    pub fn ensure_migrated(&self) -> Result<ConfigMigrationStateDto, String> {
+        crate::config_api::ensure_migrated()
+    }
+
+    /// Global compatibility stream (all modules). Prefer [`ConfigApi::watch`].
+    pub fn config_events_stream(
+        &self,
+        sink: crate::frb_generated::StreamSink<ConfigChangeDto>,
+    ) {
+        crate::config_api::events_stream(sink);
+    }
+
+    /// Per-subscription filtered stream; `key = None` observes the whole module.
+    ///
+    /// Two listeners on the same filter both receive (C18); a sink whose send
+    /// fails is pruned without affecting the others.
+    pub fn watch(
+        &self,
+        module: String,
+        key: Option<String>,
+        sink: crate::frb_generated::StreamSink<ConfigChangeDto>,
+    ) {
+        crate::config_api::watch_stream(module, key, sink);
+    }
+}
+
+/// Test seam: drops the process-global store/bus/meta handle and all sinks.
+#[doc(hidden)]
+#[frb(ignore)]
+pub fn reset_config_store_for_test() {
+    crate::config_api::reset_store_for_test();
+}
+
+/// Test seam: registers an in-memory watcher without an FRB runtime.
+#[doc(hidden)]
+#[frb(ignore)]
+pub fn watch_recording_config_for_test(
+    module: String,
+    key: Option<String>,
+    sink: RecordingConfigSink,
+) -> Result<(), String> {
+    crate::config_api::watch_recording(module, key, sink)
+}
+
+/// Test seam: registers an in-memory global stream without an FRB runtime.
+#[doc(hidden)]
+#[frb(ignore)]
+pub fn events_recording_config_for_test(sink: RecordingConfigSink) {
+    crate::config_api::events_recording(sink);
+}
+
 /// 模块代理（Dart 侧 = 模块对象）。内部携带 module_id，调用时宿主自动路由。
 #[frb(opaque)]
 pub struct ModuleHandle {
@@ -276,6 +447,7 @@ impl HostInspector {
         crate::log_bridge::clear_sink();
         crate::event_bridge::clear_sink();
         crate::task_bridge::reset_sinks();
+        crate::config_api::clear_sinks();
     }
 }
 
@@ -510,6 +682,7 @@ pub struct CoreApi {
     facts: gstore_core::facts::FactStore,
     inventory: gstore_core::inventory::InventoryStore,
     rules: gstore_core::rules::RuleStore,
+    config: std::sync::Arc<gstore_core::config::ConfigStore>,
 }
 
 pub struct CoreInitResult {
@@ -669,6 +842,24 @@ impl CoreApi {
         shared: gstore_core::db::SharedConn,
         download: crate::download_host::HostDownloadPort,
     ) -> Result<CoreApi, String> {
+        let config_secrets: std::sync::Arc<dyn gstore_core::ports::FileSecretPort + Send + Sync> =
+            std::sync::Arc::new(gstore_core::ports::FileSecretStore::new(
+                std::path::Path::new(&files_dir).join("secrets"),
+            ));
+        let config = std::sync::Arc::new(gstore_core::config::ConfigStore::new(
+            handle.clone(),
+            config_secrets,
+        ));
+        config
+            .load_all()
+            .map_err(|error| format!("CORE_E_INIT: config load: {error}"))?;
+        let config_bus = std::sync::Arc::new(gstore_core::config::ConfigBus::new());
+        crate::config_api::install_core_config(
+            std::sync::Arc::clone(&config),
+            config_bus,
+            handle.clone(),
+        );
+
         let api = CoreApi {
             paths: std::sync::Mutex::new(Some(CorePaths {
                 data_dir,
@@ -680,6 +871,7 @@ impl CoreApi {
             facts: gstore_core::facts::FactStore::new(handle.clone()),
             inventory: gstore_core::inventory::InventoryStore::new(handle.clone()),
             rules: gstore_core::rules::RuleStore::new(handle.clone()),
+            config,
         };
         {
             let _suppression = core_migration::suppress_core_write_markers();
@@ -705,6 +897,24 @@ impl CoreApi {
     #[allow(dead_code)] // observable init reconcile outcome for tests and Todo 2
     pub(crate) fn download_reconcile(&self) -> Option<crate::download_host::ReconcileOutcome> {
         self.download.last_reconcile()
+    }
+
+    /// Test seam: whether this handle's store is the one in the process global.
+    #[doc(hidden)]
+    #[frb(ignore)]
+    pub fn shares_config_store_with_global_for_test(&self) -> bool {
+        crate::config_api::installed_store_for_test()
+            .is_some_and(|store| std::sync::Arc::ptr_eq(&store, &self.config))
+    }
+
+    /// Test seam: raw read through this handle's own store.
+    #[doc(hidden)]
+    #[frb(ignore)]
+    pub fn config_value_for_test(&self, module: String, key: String) -> Result<String, String> {
+        let key = gstore_core::config::ConfigKey::new(module, key)
+            .map_err(|error| error.to_string())?;
+        let value = self.config.get(&key).map_err(|error| error.to_string())?;
+        serde_json::to_string(&value).map_err(|error| error.to_string())
     }
 
     pub fn migrate_paths(&self) -> Result<CoreInitResult, String> {
@@ -855,6 +1065,9 @@ impl CoreApi {
         let version = handle
             .replace_from_snapshot(std::path::Path::new(&path))
             .map_err(|e| e.0)?;
+        self.config
+            .reload_from_db()
+            .map_err(|error| format!("CORE_E_SNAPSHOT_RESTORE: config reload: {error}"))?;
         let armed = handle
             .with_writer(|conn| core_migration::core_writes_present(conn))
             .map_err(|e| format!("CORE_E_SNAPSHOT_RESTORE: hydrate core_writes: {}", e.0))?;
