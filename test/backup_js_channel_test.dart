@@ -305,7 +305,7 @@ void main() {
       'PINGAN_PASS': 'p',
     });
 
-    final bytes = await service.exportCompressedBackup();
+    final bytes = await service.exportCompressedBackup(includeAppConfig: true);
     final appsJson = decodeAppsJson(bytes);
     final extras = appsJson['extras'] as Map<String, dynamic>?;
     expect(extras, isNotNull);
@@ -322,7 +322,9 @@ void main() {
     );
     await File('${channelsDir.path}/pingan.zip').writeAsBytes(pinganZip);
     await seedRustPack('js_pingan', {'PINGAN_USER': 'backup-user'});
-    final backupBytes = await service.exportCompressedBackup();
+    // C16: config-bearing extras are gated behind includeAppConfig.
+    final backupBytes =
+        await service.exportCompressedBackup(includeAppConfig: true);
 
     // 2. 清空渠道包目录 + env，制造"恢复前状态"
     await File('${channelsDir.path}/pingan.zip').delete();

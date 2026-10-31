@@ -3199,7 +3199,13 @@ class AgentService {
         case 'export':
           // 统一 tar.gz 格式：生成压缩包字节并写入默认备份文件
           _updateToolStep('正在导出备份数据…');
-          final bytes = await service.exportCompressedBackup();
+          // Explicit opt-in: the agent export tool has always included app
+          // config (models/API keys, F-Droid sources, JS env, proxy/WebDAV).
+          // Now that exportCompressedBackup forwards the flag correctly, the
+          // call site must opt in or those sections silently disappear.
+          final bytes = await service.exportCompressedBackup(
+            includeAppConfig: true,
+          );
           if (bytes.isEmpty) return '备份导出失败：生成字节为空';
           _updateToolStep('备份数据生成完成，写入文件…');
           final directory = await getApplicationDocumentsDirectory();

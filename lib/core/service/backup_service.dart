@@ -17,6 +17,7 @@ import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_backup.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/config/rust/config_api.dart' show ConfigExportValue;
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -95,6 +96,182 @@ class BackupService implements IBackupService {
     if (channelDb == null) return const <ChannelAppBackupItem>[];
     final apps = await channelDb.dao.getAppsByChannel(code);
     return apps.map(ChannelAppBackupItem.fromChannelAddedApp).toList();
+  }
+
+  /// Builds the shared `app_config.json` / `apps.json.appConfig` payload (C16).
+  ///
+  /// Every export path funnels through this method, and this method only uses
+  /// `ConfigService.exportRaw()` → `ConfigApi.export()`; raw values are wanted
+  /// for a backup artifact (C3). If the Rust export fails because a leftover
+  /// `config_entry` row no longer maps to a registry key, fall back to
+  /// per-key raw reads and skip the unreadable rows instead of failing the
+  /// whole backup.
+  Future<Map<String, dynamic>?> _buildAppConfigMap() async {
+    final grouped = <String, dynamic>{};
+    try {
+      final entries = await ConfigService.instance.exportRaw();
+      for (final ConfigExportValue entry in entries) {
+        grouped[entry.wireKey] = entry.value;
+      }
+    } catch (e) {
+      appLog.warning(
+          'BackupService: ConfigApi.export 失败，回退逐键导出（跳过未注册/不可读行）: $e');
+      for (final entry in ConfigService.instance.list()) {
+        try {
+          grouped[entry.key] =
+              await ConfigService.instance.getRaw(entry.key);
+        } catch (err) {
+          appLog.warning('BackupService: 跳过无法导出的配置 ${entry.key}: $err');
+        }
+      }
+    }
+
+    final configs = <String, dynamic>{...grouped};
+    _addLegacyConfigAliases(configs, grouped);
+
+    final proxy = _nonEmptyString(grouped[ConfigKeys.proxyUrl]);
+    final webdav = await _exportWebDavConfig(grouped);
+    if (proxy != null) {
+      configs[LegacyConfigKeys.proxyUrl] = proxy;
+    }
+    if (webdav != null) {
+      configs[LegacyConfigKeys.webdavConfig] = webdav;
+    }
+
+    final payload = <String, dynamic>{
+      // C16: config_format is additive; ConfigBackupData.version stays 1.
+      'version': 1,
+      'timestamp': DateTime.now().toIso8601String(),
+      'appVersion': null,
+      'config_format': 2,
+      'configs': configs,
+    };
+    // Top-level mirrors for the old importer.
+    if (proxy != null) {
+      payload[LegacyConfigKeys.proxyUrl] = proxy;
+    }
+    if (webdav != null) {
+      payload[LegacyConfigKeys.webdavConfig] = webdav;
+    }
+    return payload;
+  }
+
+  /// Grouped wire key → legacy alias for keys whose names differ.
+  static const Map<String, String> _legacyAliasesByWireKey = <String, String>{
+    ConfigKeys.themeConfig: LegacyConfigKeys.themeConfig,
+    ConfigKeys.themeMode: LegacyConfigKeys.themeMode,
+    ConfigKeys.proxyUrl: LegacyConfigKeys.proxyUrl,
+    ConfigKeys.catalogUrl: LegacyConfigKeys.catalogUrl,
+    ConfigKeys.agentModels: LegacyConfigKeys.agentModels,
+    ConfigKeys.agentSelectedModelId: LegacyConfigKeys.agentSelectedModelId,
+    ConfigKeys.agentModelCatalog: LegacyConfigKeys.agentModelCatalog,
+    ConfigKeys.fdroidSources: LegacyConfigKeys.fdroidSources,
+    ConfigKeys.lastSourceId: LegacyConfigKeys.lastSourceId,
+    ConfigKeys.selectedChannels: LegacyConfigKeys.selectedChannels,
+    ConfigKeys.webdavUrl: LegacyConfigKeys.webdavUrl,
+    ConfigKeys.webdavUsername: LegacyConfigKeys.webdavUsername,
+    ConfigKeys.webdavPassword: LegacyConfigKeys.webdavPassword,
+    ConfigKeys.webdavBackupPath: LegacyConfigKeys.webdavBackupPath,
+    ConfigKeys.webdavEnableHttps: LegacyConfigKeys.webdavEnableHttps,
+  };
+
+  /// Adds the legacy mirror keys (C16) next to the grouped keys.
+  void _addLegacyConfigAliases(
+    Map<String, dynamic> configs,
+    Map<String, dynamic> grouped,
+  ) {
+    for (final entry in _legacyAliasesByWireKey.entries) {
+      if (grouped.containsKey(entry.key)) {
+        configs[entry.value] = grouped[entry.key];
+      }
+    }
+
+    final hasDownload =
+        grouped.keys.any((key) => key.startsWith('download.'));
+    if (hasDownload) {
+      configs[LegacyConfigKeys.downloadConfig] = <String, dynamic>{
+        'multiSegmentEnabled':
+            _asBool(grouped[ConfigKeys.downloadMultiSegmentEnabled]) ?? true,
+        'maxSegments': _asInt(grouped[ConfigKeys.downloadDefaultConnections]) ?? 8,
+        'segmentSizeBytes': 8 * 1024 * 1024,
+        'maxConcurrentDownloads':
+            _asInt(grouped[ConfigKeys.downloadMaxConcurrent]) ?? 3,
+        'wifiOnly': _asBool(grouped[ConfigKeys.downloadWifiOnly]) ?? false,
+        'maxRetryCount': _asInt(grouped[ConfigKeys.downloadMaxRetries]) ?? 3,
+      };
+    }
+
+    final hasUpdate = grouped.keys.any((key) => key.startsWith('update.'));
+    if (hasUpdate) {
+      final lastCheck =
+          _nonEmptyString(grouped[ConfigKeys.updateLastCheckTime]);
+      final lastVersion =
+          _nonEmptyString(grouped[ConfigKeys.updateLastUpdatedVersion]);
+      configs[LegacyConfigKeys.updateConfig] = <String, dynamic>{
+        'channel': _nonEmptyString(grouped[ConfigKeys.updateChannel]) ?? 'stable',
+        'autoUpdatePolicy': _legacyAutoUpdatePolicy(
+            grouped[ConfigKeys.updateAutoUpdatePolicy]),
+        'ignorePrerelease':
+            _asBool(grouped[ConfigKeys.updateIgnorePrerelease]) ?? true,
+        'silentUpdate': _asBool(grouped[ConfigKeys.updateSilentUpdate]) ?? false,
+        'checkIntervalHours':
+            _asInt(grouped[ConfigKeys.updateCheckIntervalHours]) ?? 24,
+        'lastCheckTime': lastCheck,
+        'lastUpdatedVersion': lastVersion,
+      };
+    }
+  }
+
+  /// Exports WebDAV as the legacy aggregate object (and the top-level mirror).
+  ///
+  /// Prefers the manager copy (the old app's real storage, including the
+  /// password) and falls back to the grouped raw values.
+  ///
+  /// Known divergence until Todo 31: the legacy `WebDavConfigManager` copy and
+  /// the Rust `webdav.*` store are still two writes, so the manager can win
+  /// here even when it differs from Rust. Todo 31 unifies WebDAV onto the Rust
+  /// store and makes both sources agree.
+  Future<Map<String, dynamic>?> _exportWebDavConfig(
+    Map<String, dynamic> grouped,
+  ) async {
+    try {
+      final manager = await WebDavConfigManager.instance.loadConfig();
+      if (manager != null) return manager.toJson();
+    } catch (e) {
+      appLog.error('BackupService: 读取 WebDAV 配置失败 - $e');
+    }
+    final hasWebDav = grouped.keys.any((key) => key.startsWith('webdav.'));
+    if (!hasWebDav) return null;
+    return <String, dynamic>{
+      'url': _nonEmptyString(grouped[ConfigKeys.webdavUrl]) ?? '',
+      'username': _nonEmptyString(grouped[ConfigKeys.webdavUsername]) ?? '',
+      'password': _nonEmptyString(grouped[ConfigKeys.webdavPassword]) ?? '',
+      'backupPath':
+          _nonEmptyString(grouped[ConfigKeys.webdavBackupPath]) ?? '/GStore',
+      'enableHttps': _asBool(grouped[ConfigKeys.webdavEnableHttps]) ?? true,
+    };
+  }
+
+  static String? _nonEmptyString(Object? value) {
+    if (value is! String || value.isEmpty) return null;
+    return value;
+  }
+
+  static bool? _asBool(Object? value) => value is bool ? value : null;
+
+  static int? _asInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return null;
+  }
+
+  static String _legacyAutoUpdatePolicy(Object? value) {
+    return switch (_nonEmptyString(value)) {
+      'wifi_only' => 'wifiOnly',
+      'never' => 'never',
+      'always' => 'always',
+      _ => 'wifiOnly',
+    };
   }
 
   // ==================== 导出功能 ====================
@@ -187,120 +364,103 @@ class BackupService implements IBackupService {
       }
     }
 
-    // 导出应用配置（如果需要）
+    // 导出应用配置（如果需要）。
+    //
+    // C16：所有导出路径共享同一个 `ConfigApi.export` 辅助方法（raw 值），
+    // app_config.json / apps.json.appConfig 都由这里构造；`includeAppConfig`
+    // 为 false 时整个 appConfig 缺省（绝不用 *** 掩码）。
     Map<String, dynamic>? appConfig;
     if (includeAppConfig) {
       try {
         appLog.info('BackupService: 开始导出应用配置');
-        final configManager = ConfigManager.instance;
-        final configBackupData = await configManager.exportAll();
-
-        // 将 ConfigBackupData 转换为 Map
-        appConfig = configBackupData.toJson();
-        appLog.info('BackupService: 应用配置导出完成 (共 ${appConfig.length} 项配置)');
+        appConfig = await _buildAppConfigMap();
+        if (appConfig != null) {
+          final configCount =
+              (appConfig['configs'] as Map?)?.length ?? 0;
+          appLog.info('BackupService: 应用配置导出完成 (共 $configCount 项配置)');
+        }
       } catch (e) {
         appLog.error('BackupService: 导出应用配置失败 - $e');
-      }
-
-      // 代理配置（B 轨：ConfigService 单独存储，不在 ConfigManager 注册表内），
-      // 并入 appConfig 保持配置一致性；导入时走 ConfigService.set 恢复
-      if (appConfig != null) {
-        try {
-          final proxy = await ConfigService.instance.get(ConfigKeys.proxyUrl);
-          if (proxy != null && proxy.toString().isNotEmpty) {
-            appConfig['proxy_url'] = proxy.toString();
-            appLog.info('BackupService: 导出代理配置完成');
-          }
-        } catch (e) {
-          appLog.error('BackupService: 导出代理配置失败 - $e');
-        }
-
-        // WebDAV 配置（敏感，WebDavConfigManager 直写 FlutterSecureStorage，
-        // key 无前缀，与 ConfigManager 的 WebDavConfigProvider（secure_config_ 前缀）
-        // 存储不一致——exportAll 读不到——故 B 轨直接读 WebDavConfigManager 并入）
-        try {
-          final webdav = await WebDavConfigManager.instance.loadConfig();
-          if (webdav != null) {
-            appConfig['webdav_config'] = webdav.toJson();
-            appLog.info('BackupService: 导出 WebDAV 配置完成');
-          }
-        } catch (e) {
-          appLog.error('BackupService: 导出 WebDAV 配置失败 - $e');
-        }
       }
     }
 
     // 导出扩展数据（F-Droid 源、Agent 配置等）
-    final extras = <String, dynamic>{};
-    try {
-      // F-Droid 仓库源列表
-      final fdroidSources = FdroidRepoManager.instance.sources;
-      if (fdroidSources.isNotEmpty) {
-        extras['fdroid_sources'] =
-            fdroidSources.map((s) => s.toJson()).toList();
-        appLog.info('BackupService: 导出 F-Droid 源 ${fdroidSources.length} 个');
-      }
-    } catch (e) {
-      appLog.error('BackupService: 导出 F-Droid 源失败 - $e');
-    }
-
-    try {
-      // Agent LLM 模型配置
-      final modelStore = await AgentModelStore.load();
-      if (modelStore.models.isNotEmpty) {
-        extras['agent_models'] = modelStore.models
-            .map((m) => {
-                  'id': m.id,
-                  'name': m.name,
-                  'provider': m.provider.name,
-                  'apiKey': m.apiKey,
-                  'model': m.model,
-                  'baseUrl': m.baseUrl,
-                })
-            .toList();
-        extras['agent_selected_id'] = modelStore.selectedId;
-        appLog.info('BackupService: 导出 Agent 模型 ${modelStore.models.length} 个');
-      }
-    } catch (e) {
-      appLog.error('BackupService: 导出 Agent 配置失败 - $e');
-    }
-
-    // 导出脚本渠道环境变量（channelKey → env map）
-    // zip 本体经 tar.gz 的 channels/ 条目原样打包；env 随 apps.json 的 extras 走（JSON 明文）。
     //
-    // Rust 脚本通道（CoreFlags.jsChannel=true，生产默认）：渠道包 env 存 Rust
-    // `channel_env` 表 + FileSecretStore，经 `ScriptApi.getEnv` 逐包读取导出
-    // （与脚本 `host.env.get` 同一份存储，敏感项从密钥存储解析）。
-    try {
-      final jsEnvs = <String, Map<String, String>>{};
-      final omitted = <String>[];
-      if (CoreFlags.jsChannel) {
-        await RustScriptChannelLane.instance.refresh();
-        for (final pack in RustScriptChannelLane.instance.packs) {
-          try {
-            final env = await ScriptApi.instance.getEnv(key: pack.key);
-            if (env.isNotEmpty) jsEnvs[pack.key] = env;
-          } catch (e) {
-            // 单个包读取失败不阻塞其他包；显式记录遗漏，绝不静默丢弃。
-            omitted.add(pack.key);
-            appLog.warning(
-                'BackupService: Rust 脚本渠道包 ${pack.key} 的 env 读取失败: $e');
+    // C16：extras 里全部是配置承载数据（F-Droid 源、Agent 模型/API Key、脚本
+    // 渠道 env）。`includeAppConfig` 为 false 时必须**整体省略**，绝不能用
+    // `***` 掩码——旧恢复路径会把掩码原样写回。
+    final extras = <String, dynamic>{};
+    if (includeAppConfig) {
+      try {
+        // F-Droid 仓库源列表
+        final fdroidSources = FdroidRepoManager.instance.sources;
+        if (fdroidSources.isNotEmpty) {
+          extras['fdroid_sources'] =
+              fdroidSources.map((s) => s.toJson()).toList();
+          appLog.info('BackupService: 导出 F-Droid 源 ${fdroidSources.length} 个');
+        }
+      } catch (e) {
+        appLog.error('BackupService: 导出 F-Droid 源失败 - $e');
+      }
+
+      try {
+        // Agent LLM 模型配置
+        final modelStore = await AgentModelStore.load();
+        if (modelStore.models.isNotEmpty) {
+          extras['agent_models'] = modelStore.models
+              .map((m) => {
+                    'id': m.id,
+                    'name': m.name,
+                    'provider': m.provider.name,
+                    'apiKey': m.apiKey,
+                    'model': m.model,
+                    'baseUrl': m.baseUrl,
+                  })
+              .toList();
+          extras['agent_selected_id'] = modelStore.selectedId;
+          appLog.info('BackupService: 导出 Agent 模型 ${modelStore.models.length} 个');
+        }
+      } catch (e) {
+        appLog.error('BackupService: 导出 Agent 配置失败 - $e');
+      }
+
+      // 导出脚本渠道环境变量（channelKey → env map）
+      // zip 本体经 tar.gz 的 channels/ 条目原样打包；env 随 apps.json 的 extras 走（JSON 明文）。
+      //
+      // Rust 脚本通道（CoreFlags.jsChannel=true，生产默认）：渠道包 env 存 Rust
+      // `channel_env` 表 + FileSecretStore，经 `ScriptApi.getEnv` 逐包读取导出
+      // （与脚本 `host.env.get` 同一份存储，敏感项从密钥存储解析）。
+      try {
+        final jsEnvs = <String, Map<String, String>>{};
+        final omitted = <String>[];
+        if (CoreFlags.jsChannel) {
+          await RustScriptChannelLane.instance.refresh();
+          for (final pack in RustScriptChannelLane.instance.packs) {
+            try {
+              final env = await ScriptApi.instance.getEnv(key: pack.key);
+              if (env.isNotEmpty) jsEnvs[pack.key] = env;
+            } catch (e) {
+              // 单个包读取失败不阻塞其他包；显式记录遗漏，绝不静默丢弃。
+              omitted.add(pack.key);
+              appLog.warning(
+                  'BackupService: Rust 脚本渠道包 ${pack.key} 的 env 读取失败: $e');
+            }
           }
         }
+        if (jsEnvs.isNotEmpty) {
+          extras['js_envs'] = jsEnvs;
+          appLog.info('BackupService: 导出脚本渠道环境变量 ${jsEnvs.length} 个渠道');
+        }
+        if (omitted.isNotEmpty) {
+          // 读取失败的渠道包键记录于 extras.js_envs_rust_lane_omitted（可见性，不静默丢弃）。
+          extras['js_envs_rust_lane_omitted'] = omitted;
+          appLog.warning(
+              'BackupService: ${omitted.length} 个 Rust 脚本渠道包的 env 未导出'
+              '（键记录于 extras.js_envs_rust_lane_omitted）');
+        }
+      } catch (e) {
+        appLog.error('BackupService: 导出脚本渠道环境变量失败 - $e');
       }
-      if (jsEnvs.isNotEmpty) {
-        extras['js_envs'] = jsEnvs;
-        appLog.info('BackupService: 导出脚本渠道环境变量 ${jsEnvs.length} 个渠道');
-      }
-      if (omitted.isNotEmpty) {
-        // 读取失败的渠道包键记录于 extras.js_envs_rust_lane_omitted（可见性，不静默丢弃）。
-        extras['js_envs_rust_lane_omitted'] = omitted;
-        appLog.warning(
-            'BackupService: ${omitted.length} 个 Rust 脚本渠道包的 env 未导出'
-            '（键记录于 extras.js_envs_rust_lane_omitted）');
-      }
-    } catch (e) {
-      appLog.error('BackupService: 导出脚本渠道环境变量失败 - $e');
     }
 
     // 导出用户分类标签（v2.1 新增）
@@ -372,7 +532,13 @@ class BackupService implements IBackupService {
     try {
       // 生成备份数据
       onLog?.call('开始导出数据...');
-      final backupData = await exportData(options: options, channels: channels);
+      final backupData = await exportData(
+        options: options,
+        channels: channels,
+        // C16: without forwarding the flag the WebDAV path would leak config
+        // (and secrets) while `includeAppConfig` is false.
+        includeAppConfig: includeAppConfig,
+      );
       onLog?.call('已添加应用 ${backupData.apps.length} 个');
       if (backupData.channelApps.isNotEmpty) {
         onLog?.call('导出渠道库数据（${backupData.channelApps.length} 个渠道）');
@@ -393,36 +559,30 @@ class BackupService implements IBackupService {
       archive.addFile(ArchiveFile('apps.json', appsBytes.length, appsBytes));
       debugPrint('BackupService: apps.json 已添加 (${appsBytes.length} bytes)');
 
-      // 检查是否需要包含应用配置
+      // app_config.json 与 apps.json.appConfig 使用同一份共享载荷（C16）。
       if (includeAppConfig) {
         debugPrint('BackupService: 包含应用配置');
-        try {
-          // 确保配置管理器已初始化
-          await ConfigInitializer.initialize();
-          debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
+        final appConfig = backupData.appConfig;
+        final configs = appConfig?['configs'];
+        final configCount = configs is Map ? configs.length : 0;
+        if (appConfig != null &&
+            configs is Map &&
+            configCount > 0) {
+          appLog.info('BackupService: 应用配置导出成功，包含 $configCount 项配置');
+          // 添加 app_config.json 到归档
+          final configJsonString = jsonEncode(appConfig);
+          final configBytes = utf8.encode(configJsonString);
+          archive.addFile(ArchiveFile(
+              'app_config.json', configBytes.length, configBytes));
+          debugPrint(
+              'BackupService: app_config.json 已添加 (${configBytes.length} bytes)');
 
-          final configManager = ConfigManager.instance;
-          final configBackup = await configManager.exportAll();
-
-          appLog.info('BackupService: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
-
-          if (configBackup.configs.isNotEmpty) {
-            // 添加 app_config.json 到归档
-            final configJsonString = jsonEncode(configBackup.toJson());
-            final configBytes = utf8.encode(configJsonString);
-            archive.addFile(ArchiveFile('app_config.json', configBytes.length, configBytes));
-            debugPrint('BackupService: app_config.json 已添加 (${configBytes.length} bytes)');
-
-            // 打印配置键列表
-            for (final key in configBackup.configs.keys) {
-              debugPrint('BackupService:   - $key');
-            }
-          } else {
-            debugPrint('BackupService: ⚠️ 配置为空，跳过 app_config.json');
+          // 打印配置键列表
+          for (final key in configs.keys) {
+            debugPrint('BackupService:   - $key');
           }
-        } catch (e, stackTrace) {
-          appLog.error('BackupService: 导出应用配置失败: $e');
-          appLog.error('BackupService: 堆栈跟踪: $stackTrace');
+        } else {
+          debugPrint('BackupService: ⚠️ 配置为空，跳过 app_config.json');
         }
       }
 
@@ -1099,7 +1259,7 @@ class BackupService implements IBackupService {
 
       result.success = true;
       result.totalCount = backupData.apps.length;
-      result.addedCount = backupData.apps.length - (result.skippedCount ?? 0);
+      result.addedCount = backupData.apps.length - result.skippedCount;
 
       appLog.info('BackupService: ✅ 导入成功');
       debugPrint('BackupService: 总数: ${result.totalCount}, 新增: ${result.addedCount}, 跳过: ${result.skippedCount}');

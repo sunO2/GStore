@@ -70,8 +70,34 @@ abstract class ConfigApiClient {
   });
 }
 
+/// Optional capability for clients backed by the real `ConfigApi.export`.
+///
+/// It is kept separate from [ConfigApiClient] so the many in-memory fakes (and
+/// any external implementers) do not have to grow a raw-export method; they get
+/// an equivalent list+get derivation in [ConfigRustApi.export].
+abstract class ConfigExportApiClient {
+  /// Raw export for backups (the only raw DTO, C3/C16).
+  Future<generated.ConfigExportDto> export();
+}
+
+/// One decoded raw export entry (backup artifact only).
+class ConfigExportValue {
+  const ConfigExportValue({
+    required this.module,
+    required this.key,
+    required this.wireKey,
+    required this.value,
+  });
+
+  final String module;
+  final String key;
+  final String wireKey;
+  final Object? value;
+}
+
 /// Maps the generated FRB facade onto [ConfigApiClient].
-class _GeneratedConfigApiClient implements ConfigApiClient {
+class _GeneratedConfigApiClient
+    implements ConfigApiClient, ConfigExportApiClient {
   _GeneratedConfigApiClient(this._api);
 
   final generated.ConfigApi _api;
@@ -135,6 +161,9 @@ class _GeneratedConfigApiClient implements ConfigApiClient {
     String? key,
   }) =>
       _api.watch(module: module, key: key);
+
+  @override
+  Future<generated.ConfigExportDto> export() => _api.export_();
 }
 
 /// Dart-side entry point for the module-scoped Rust config store.
@@ -245,6 +274,58 @@ class ConfigRustApi {
     return _client
         .watch(module: module, key: key)
         .map(_changeEventFromDto);
+  }
+
+  /// Raw export for backups (C3/C16). Never masked; backup-only.
+  ///
+  /// Production clients expose the real `ConfigApi.export` through
+  /// [ConfigExportApiClient]. In-memory fakes without that capability get an
+  /// equivalent list+get derivation; entries that cannot be read are skipped so
+  /// a stale `config_entry` row never fails the whole export.
+  Future<List<ConfigExportValue>> export() async {
+    final client = _client;
+    final generated.ConfigExportDto dto;
+    if (client is ConfigExportApiClient) {
+      dto = await (client as ConfigExportApiClient).export();
+    } else {
+      dto = await _exportFromList(client);
+    }
+    return <ConfigExportValue>[
+      for (final entry in dto.entries)
+        ConfigExportValue(
+          module: entry.module,
+          key: entry.key,
+          wireKey: entry.wireKey,
+          value: _decodeJson(entry.valueJson),
+        ),
+    ];
+  }
+
+  Future<generated.ConfigExportDto> _exportFromList(
+    ConfigApiClient client,
+  ) async {
+    final entries = <generated.ConfigExportEntryDto>[];
+    for (final entry in await client.list()) {
+      try {
+        final valueJson = await client.get(
+          module: entry.module,
+          key: entry.key,
+          masked: false,
+        );
+        entries.add(generated.ConfigExportEntryDto(
+          module: entry.module,
+          key: entry.key,
+          wireKey: entry.wireKey,
+          valueJson: valueJson,
+        ));
+      } catch (_) {
+        // Unregistered/unreadable row: skip it, keep the rest of the backup.
+      }
+    }
+    return generated.ConfigExportDto(
+      revision: BigInt.zero,
+      entries: entries,
+    );
   }
 
   Future<generated.ConfigEntryDto?> _entryDto(

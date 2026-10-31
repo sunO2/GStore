@@ -8,8 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/config/config_manager.dart';
-import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/page/backup/state.dart';
@@ -161,91 +159,96 @@ class BackupLogic extends ChangeNotifier {
       appLog.info('BackupLogic: 开始导出压缩备份');
       _update(_state.copyWith(isExporting: true));
 
-      // 创建 Archive 对象
-      final archive = Archive();
-
-      // 先生成应用备份数据（使用用户配置的导出选项）
-      debugPrint('BackupLogic: 正在生成应用备份数据...');
-      final backupData = await backup.exportData(
-        options: _buildBackupOptions(),
-      );
-
-      // 移除 appConfig 字段（如果存在），因为我们将配置单独保存
-      final appsData = backupData.appConfig != null
-          ? backupData.copyWith(appConfig: null)
-          : backupData;
-
-      // 添加 apps.json 到归档
-      final appsJsonString = jsonEncode(appsData.toJson());
-      final appsBytes = utf8.encode(appsJsonString);
-      archive.addFile(ArchiveFile('apps.json', appsBytes.length, appsBytes));
-      debugPrint('BackupLogic: apps.json 已添加 (${appsBytes.length} bytes)');
-
-      // 检查是否需要包含应用配置
-      if (_state.includeAppConfig) {
-        debugPrint('BackupLogic: 包含应用配置');
-        try {
-          // 确保配置管理器已初始化
-          await ConfigInitializer.initialize();
-          debugPrint('BackupLogic: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
-
-          final configManager = ConfigManager.instance;
-          final configBackup = await configManager.exportAll();
-
-          appLog.info('BackupLogic: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
-
-          if (configBackup.configs.isEmpty) {
-            debugPrint('BackupLogic: ⚠️ 配置为空，跳过 app_config.json');
-          } else {
-            // 添加 app_config.json 到归档
-            final configJsonString = jsonEncode(configBackup.toJson());
-            final configBytes = utf8.encode(configJsonString);
-            archive.addFile(ArchiveFile('app_config.json', configBytes.length, configBytes));
-            debugPrint('BackupLogic: app_config.json 已添加 (${configBytes.length} bytes)');
-
-            // 打印配置键列表
-            for (final key in configBackup.configs.keys) {
-              debugPrint('BackupLogic:   - $key');
-            }
-          }
-        } catch (e, stackTrace) {
-          appLog.error('BackupLogic: 导出应用配置失败: $e');
-          appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-          AppDialogs.showWarning('导出应用配置失败，仅导出应用数据');
-        }
-      } else {
-        debugPrint('BackupLogic: 不包含应用配置');
-      }
-
-      // 渠道包（脚本渠道 zip 原样打包进 tar.gz，无需 base64）
-      try {
-        final channelFiles = await _backupService?.buildChannelPackageArchiveFiles() ?? const [];
-        for (final entry in channelFiles) {
-          archive.addFile(entry);
-          debugPrint('BackupLogic: channels 条目已添加 ${entry.name}');
-        }
-        if (channelFiles.isNotEmpty) {
-          debugPrint('BackupLogic: 渠道包 ${channelFiles.length} 个已打包');
-        }
-      } catch (e) {
-        appLog.error('BackupLogic: 收集渠道包失败（不影响应用数据导出）- $e');
-      }
-
-      // 将 Archive 编码为 tar 字节
-      final tarBytes = TarEncoder().encode(archive);
-
-      // 使用 gzip 压缩
-      final compressedBytes = gzip.encode(tarBytes);
-
-      debugPrint('BackupLogic: 压缩完成: ${tarBytes.length} -> ${compressedBytes.length} bytes (${((1 - compressedBytes.length / tarBytes.length) * 100).toStringAsFixed(1)}% 压缩率)');
-
-      await _saveCompressedBackup(context, Uint8List.fromList(compressedBytes), tarBytes.length);
+      final result = await buildLocalBackupArchive();
+      await _saveCompressedBackup(context, result.bytes, result.originalSize);
     } catch (e, stackTrace) {
       appLog.error('BackupLogic: 导出失败 - $e');
       appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
       _update(_state.copyWith(isExporting: false));
       AppDialogs.showError('导出数据失败: $e', title: '导出失败');
     }
+  }
+
+  /// Builds the local-path tar.gz (C16). Extracted from [exportCompressed] so
+  /// the archive can be asserted without the file picker. It must use the same
+  /// shared `BackupService.exportData` → `ConfigApi.export` route and forward
+  /// `_state.includeAppConfig`; `apps.json` keeps the embedded `appConfig`.
+  @visibleForTesting
+  Future<({Uint8List bytes, int originalSize})> buildLocalBackupArchive() async {
+    final backup = _backupService;
+    if (backup == null) {
+      throw StateError('备份模块未启用');
+    }
+
+    // 创建 Archive 对象
+    final archive = Archive();
+
+    // 先生成应用备份数据（使用用户配置的导出选项）
+    debugPrint('BackupLogic: 正在生成应用备份数据...');
+    final backupData = await backup.exportData(
+      options: _buildBackupOptions(),
+      includeAppConfig: _state.includeAppConfig,
+    );
+
+    // C16: keep appConfig embedded so the old importer can read top-level
+    // proxy_url / webdav_config. Never strip it.
+    final appsJsonString = jsonEncode(backupData.toJson());
+    final appsBytes = utf8.encode(appsJsonString);
+    archive.addFile(ArchiveFile('apps.json', appsBytes.length, appsBytes));
+    debugPrint('BackupLogic: apps.json 已添加 (${appsBytes.length} bytes)');
+
+    // app_config.json 与 apps.json.appConfig 使用同一份共享载荷（C16）。
+    if (_state.includeAppConfig) {
+      debugPrint('BackupLogic: 包含应用配置');
+      final appConfig = backupData.appConfig;
+      final configs = appConfig?['configs'];
+      final configCount = configs is Map ? configs.length : 0;
+      if (appConfig != null && configs is Map && configCount > 0) {
+        appLog.info('BackupLogic: 应用配置导出成功，包含 $configCount 项配置');
+        final configJsonString = jsonEncode(appConfig);
+        final configBytes = utf8.encode(configJsonString);
+        archive.addFile(
+            ArchiveFile('app_config.json', configBytes.length, configBytes));
+        debugPrint(
+            'BackupLogic: app_config.json 已添加 (${configBytes.length} bytes)');
+        for (final key in configs.keys) {
+          debugPrint('BackupLogic:   - $key');
+        }
+      } else {
+        debugPrint('BackupLogic: ⚠️ 配置为空，跳过 app_config.json');
+      }
+    } else {
+      debugPrint('BackupLogic: 不包含应用配置');
+    }
+
+    // 渠道包（脚本渠道 zip 原样打包进 tar.gz，无需 base64）
+    try {
+      final channelFiles =
+          await _backupService?.buildChannelPackageArchiveFiles() ?? const [];
+      for (final entry in channelFiles) {
+        archive.addFile(entry);
+        debugPrint('BackupLogic: channels 条目已添加 ${entry.name}');
+      }
+      if (channelFiles.isNotEmpty) {
+        debugPrint('BackupLogic: 渠道包 ${channelFiles.length} 个已打包');
+      }
+    } catch (e) {
+      appLog.error('BackupLogic: 收集渠道包失败（不影响应用数据导出）- $e');
+    }
+
+    // 将 Archive 编码为 tar 字节
+    final tarBytes = TarEncoder().encode(archive);
+
+    // 使用 gzip 压缩
+    final compressedBytes = gzip.encode(tarBytes);
+
+    debugPrint(
+        'BackupLogic: 压缩完成: ${tarBytes.length} -> ${compressedBytes.length} bytes (${((1 - compressedBytes.length / tarBytes.length) * 100).toStringAsFixed(1)}% 压缩率)');
+
+    return (
+      bytes: Uint8List.fromList(compressedBytes),
+      originalSize: tarBytes.length,
+    );
   }
 
   /// 保存压缩备份文件
@@ -436,7 +439,7 @@ class BackupLogic extends ChangeNotifier {
 
         // 显示成功消息
         String message = '导入成功！已添加 ${result.addedCount} 个应用';
-        if (result.skippedCount != null && result.skippedCount! > 0) {
+        if (result.skippedCount > 0) {
           message += '，跳过 ${result.skippedCount} 个已存在的应用';
         }
 

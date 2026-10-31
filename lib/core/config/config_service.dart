@@ -480,6 +480,17 @@ class ConfigService {
   /// 该配置是否允许 Agent 访问
   bool isAgentAccessible(String key) => _registry[key]?.agentAccessible ?? false;
 
+  /// Raw config export for backups (C3/C16).
+  ///
+  /// This is the **only** caller-facing surface that returns raw values for
+  /// every registered key (including secrets); it must never be used for UI or
+  /// Agent output. All backup export paths share this single `ConfigApi.export`
+  /// route.
+  Future<List<ConfigExportValue>> exportRaw() async {
+    final api = await _requireApi();
+    return api.export();
+  }
+
   /// 读取真实值（内部功能模块使用，不做脱敏）。
   ///
   /// 可信读取：始终按需 `ConfigApi.get(masked:false)`（C3）；非敏感值顺带
