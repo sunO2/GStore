@@ -119,8 +119,8 @@ String _resolveProxyValue(Object? value) {
 
 /// 从统一配置服务加载代理并订阅变化（幂等，重复调用直接返回）
 ///
-/// - 读取 ConfigService.get(ConfigKeys.proxyUrl) 初始化缓存
-///   （null → defaultProxy、'' → ''）
+/// - 读取 ConfigService.snapshot(ConfigKeys.proxyUrl) 初始化缓存
+///   （未设置 → snapshot 为 null → defaultProxy；显式 '' → ''）
 /// - 订阅 proxy_url 变化：B 轨写入（set/clear）后 getProxy() 即时反映
 /// - Future memoize：首次调用执行 _doLoadProxyFromConfig，并发调用
 ///   复用同一 Future（幂等 + 只建立一次订阅）
@@ -134,9 +134,11 @@ Future<void> loadProxyFromConfig() {
 }
 
 Future<void> _doLoadProxyFromConfig() async {
-  _proxyCache = _resolveProxyValue(
-    await ConfigService.instance.get(ConfigKeys.proxyUrl),
-  );
+  // snapshot 的 value 仅在 key 真正有提交值时非 null：未设置 → null（回落
+  // defaultProxy），显式空串 → ''。不能用 get：未设置时它返回注册表默认值 ''，
+  // 会与「显式空白」混淆。
+  final snap = await ConfigService.instance.snapshot(ConfigKeys.proxyUrl);
+  _proxyCache = _resolveProxyValue(snap?.value);
   _proxySubscription = ConfigService.instance
       .watch(ConfigKeys.proxyUrl)
       .listen((event) {

@@ -47,11 +47,15 @@ void main() {
       expect(entry.sensitive, isFalse);
     });
 
-    test('未设置时经 ConfigService 读取为 null（store 层再降级为空）', () async {
+    test('未设置时 snapshot.value 为 null，getRaw 回落注册表默认空 map', () async {
       await initForTest();
+      final snap =
+          await ConfigService.instance.snapshot(ConfigKeys.perfProfiles);
+      expect(snap?.value, isNull, reason: '真正未设置：快照无提交值');
       expect(
         await ConfigService.instance.getRaw(ConfigKeys.perfProfiles),
-        isNull,
+        <String, dynamic>{},
+        reason: 'getRaw 未设置时返回注册表默认值（空 map）',
       );
     });
   });

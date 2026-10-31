@@ -1,6 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/config/config_registry.dart';
-import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,7 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const proxyKey = 'config_proxy_url';
+  // 新配置栈的分组 wire key 为 network.proxy_url；SharedPreferences 存储层
+  // 统一加 config_ 前缀，故预置键为 config_network.proxy_url。
+  const proxyKey = 'config_network.proxy_url';
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -60,7 +60,13 @@ void main() {
       await updateProxy('https://x.example.com/');
       await updateProxy(null);
       expect(getProxy(), defaultProxy);
-      expect(await ConfigService.instance.get(ConfigKeys.proxyUrl), isNull);
+      final snap = await ConfigService.instance.snapshot(ConfigKeys.proxyUrl);
+      expect(snap?.value, isNull, reason: '清除后快照表示「未设置」');
+      expect(
+        await ConfigService.instance.getRaw(ConfigKeys.proxyUrl),
+        '',
+        reason: '未设置时 getRaw 回落注册表默认值（空串）',
+      );
     });
 
     test('预置值 → load 后 getProxy() 返回该值', () async {

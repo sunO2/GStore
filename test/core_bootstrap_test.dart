@@ -524,13 +524,25 @@ void main() {
     );
   });
 
-  test('main.dart awaits CoreBootstrap.start before config and services', () {
+  test('main.dart starts core before the boot config phase and services', () {
     final source = File('lib/main.dart').readAsStringSync();
-    final bootstrap = source.indexOf('await CoreBootstrap.start();');
-    expect(bootstrap, greaterThanOrEqualTo(0));
-    expect(bootstrap,
-        lessThan(source.indexOf('await ConfigInitializer.initialize();')));
-    expect(bootstrap, lessThan(source.indexOf('await registerService();')));
+
+    // 配置初始化已并入 runBootConfigPhase，main.dart 不得再直接初始化配置库。
+    expect(source.contains('ConfigStore.instance.initialize'), isFalse);
+
+    final bootPhase = source.indexOf('await runBootConfigPhase(mark: bootMark);');
+    expect(bootPhase, greaterThanOrEqualTo(0),
+        reason: 'main.dart 必须 await 配置启动阶段');
+
+    final coreStart = source.indexOf('CoreBootstrap.start');
+    expect(coreStart, greaterThanOrEqualTo(0));
+    expect(coreStart, lessThan(bootPhase),
+        reason: '核心启动必须早于配置启动阶段');
+
+    final registerService = source.indexOf('await registerService();');
+    expect(registerService, greaterThanOrEqualTo(0));
+    expect(registerService, greaterThan(bootPhase),
+        reason: '服务注册必须等配置初始化完成');
   });
 
   test('the Dart mirror default stays all-false', () {
