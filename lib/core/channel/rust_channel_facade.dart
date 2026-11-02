@@ -185,8 +185,14 @@ abstract class ChannelApiBackend {
   Future<rust.LibraryApi> library();
 }
 
+/// Optional capability: backends that can push a GitHub credential to Rust.
+abstract class GithubTokenSyncBackend {
+  Future<void> setGithubToken({String? token});
+}
+
 /// Production backend: lazily initialises the generated `ChannelApi`.
-class FrbChannelApiBackend implements ChannelApiBackend {
+class FrbChannelApiBackend
+    implements ChannelApiBackend, GithubTokenSyncBackend {
   FrbChannelApiBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   /// Optional explicit directories; when omitted, app support subdirectories
@@ -490,6 +496,10 @@ class FrbChannelApiBackend implements ChannelApiBackend {
   @override
   Future<void> setFdroidSources({required List<String> sources}) =>
       _call((api) => api.setFdroidSources(sources: sources));
+
+  @override
+  Future<void> setGithubToken({String? token}) =>
+      _call((api) => api.setGithubToken(token: token));
 }
 
 /// Singleton facade with a replaceable backend.
@@ -517,6 +527,16 @@ class RustChannelFacade {
   @visibleForTesting
   static void resetBackend() {
     _instance = RustChannelFacade();
+  }
+
+  /// Pushes (or clears) the GitHub token used by Rust channel requests.
+  ///
+  /// Backends without the optional capability (test fakes) ignore the call.
+  Future<void> setGithubToken({String? token}) async {
+    final backend = _backend;
+    if (backend is GithubTokenSyncBackend) {
+      await (backend as GithubTokenSyncBackend).setGithubToken(token: token);
+    }
   }
 
   Future<List<rust.ChannelEntry>> list() => _backend.list();

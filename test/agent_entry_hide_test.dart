@@ -70,8 +70,7 @@ void main() {
         TestFlutterSecureStoragePlatform(const {});
   });
 
-  tearDown(() {
-  });
+  tearDown(() {});
 
   /// NavigationBar 内指定 label 的 destination
   Finder navBarDest(String label) => find.descendant(
@@ -142,8 +141,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('③ 下线时点 display2（我的）→ 实际切到 raw3（我的页）',
-        (tester) async {
+    testWidgets('③ 下线时点 display2（我的）→ 实际切到 raw3（我的页）', (tester) async {
       await pumpHome(tester);
       await disableAgent(tester);
 
@@ -208,20 +206,20 @@ void main() {
         (tester) async {
       await pumpMinePage(tester);
 
-      // 上线态：AI/已安装/设置 三个 tile → 2 个 Divider
+      // 上线态：AI/设置/关于 三个 tile → 2 个 Divider
       expect(
           find.descendant(
               of: find.ancestor(
-                  of: find.text('已安装应用'), matching: find.byType(Card)),
+                  of: find.text('设置'), matching: find.byType(Card)),
               matching: find.byType(Divider)),
           findsNWidgets(2));
 
       await disableAgent(tester);
 
-      // 下线态：已安装/设置 两个 tile → 恰好 1 个 Divider（AI 与其 Divider 一并隐藏；
+      // 下线态：设置/关于 两个 tile → 恰好 1 个 Divider（AI 与其 Divider 一并隐藏；
       // 若 Divider 残留会检出 2 个）
-      final quickCard = find.ancestor(
-          of: find.text('已安装应用'), matching: find.byType(Card));
+      final quickCard =
+          find.ancestor(of: find.text('设置'), matching: find.byType(Card));
       expect(find.descendant(of: quickCard, matching: find.byType(Divider)),
           findsNWidgets(1));
       expect(tester.takeException(), isNull);

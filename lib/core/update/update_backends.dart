@@ -25,6 +25,25 @@ abstract interface class UpdateReportSource {
   CoreCheckReport? get lastReport;
 }
 
+/// Optional capability: a backend that streams per-app check progress.
+///
+/// Separate from [UpdateBackend] so existing fakes keep compiling; the facade
+/// falls back to the batch result when a backend does not implement it.
+abstract interface class UpdateProgressBackend {
+  Future<List<AppUpdateInfo>> checkWithProgress({
+    required bool force,
+    required void Function(rust.UpdateProgressDto event) onProgress,
+  });
+}
+
+/// Optional capability: read the Rust-owned persisted update cache.
+///
+/// Startup uses this instead of the legacy SharedPreferences cache so the last
+/// result survives app restarts after the core cutover.
+abstract interface class UpdateCachedStateSource {
+  Future<CachedUpdateSnapshot?> cachedState();
+}
+
 /// Injectable update transport seam.
 abstract class UpdateBackend {
   /// Checks updates, honoring the cache unless [force].
@@ -47,7 +66,12 @@ abstract class UpdateBackend {
 }
 
 /// Production FRB backend.
-class FrbUpdateBackend implements UpdateBackend, UpdateReportSource {
+class FrbUpdateBackend
+    implements
+        UpdateBackend,
+        UpdateReportSource,
+        UpdateProgressBackend,
+        UpdateCachedStateSource {
   FrbUpdateBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   final String? dataDir;
@@ -120,12 +144,65 @@ class FrbUpdateBackend implements UpdateBackend, UpdateReportSource {
       _call((api) => api.check(force: force)).then(_record);
 
   @override
-  Future<List<AppUpdateInfo>> run() =>
-      _call((api) => api.run()).then(_record);
+  Future<List<AppUpdateInfo>> run() => _call((api) => api.run()).then(_record);
+
+  @override
+  Future<List<AppUpdateInfo>> checkWithProgress({
+    required bool force,
+    required void Function(rust.UpdateProgressDto event) onProgress,
+  }) async {
+    final rust.UpdateApi api;
+    try {
+      api = await _ensureApi();
+    } catch (error) {
+      throw CoreUpdateException.fromRaw(error);
+    }
+    rust.UpdateProgressDto? terminal;
+    try {
+      await for (final event in api.checkWithProgress(force: force)) {
+        onProgress(event);
+        if (event.finished) terminal = event;
+      }
+    } catch (error) {
+      throw CoreUpdateException.fromRaw(error);
+    }
+    if (terminal == null) {
+      throw CoreUpdateException.fromRaw(
+        'CORE_E_UPDATE: progress stream closed without a terminal event',
+      );
+    }
+    final error = terminal.error;
+    if (error != null && error.isNotEmpty) {
+      throw CoreUpdateException.fromRaw(error);
+    }
+    final updates = decodeUpdateList(terminal.updatesJson);
+    lastReport = CoreCheckReport(
+      updates: updates,
+      skipped: decodeUpdateSkips(terminal.skippedJson),
+      checkedAt:
+          DateTime.fromMillisecondsSinceEpoch(terminal.checkedAt.toInt()),
+      total: terminal.total.toInt(),
+      usedCache: terminal.usedCache,
+    );
+    return updates;
+  }
 
   @override
   Future<List<AppUpdateInfo>> list() =>
       _call((api) => api.list()).then(decodeUpdateList);
+
+  @override
+  Future<CachedUpdateSnapshot?> cachedState() =>
+      _call((api) => api.cachedState()).then((state) {
+        final checkedAt = state.lastCheckedAt;
+        return (
+          updates: decodeUpdateList(state.updatesJson),
+          logs: decodeCheckLogs(state.logsJson),
+          lastCheckedAt: checkedAt == null
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(checkedAt.toInt()),
+        );
+      });
 
   @override
   Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) =>
@@ -162,4 +239,3 @@ List<AppUpdateInfo> decodeUpdateList(String raw) {
           AppUpdateInfo.fromCacheJson(Map<String, dynamic>.from(item)))
       .toList(growable: false);
 }
-

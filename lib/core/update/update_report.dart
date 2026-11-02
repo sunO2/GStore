@@ -123,18 +123,37 @@ List<CheckLogEntry> deriveCoreCheckLogs(CoreCheckReport report) {
     }
   }
   for (final update in report.updates) {
+    final platform = update.latestDownload.platform?.trim();
+    final platformLabel =
+        platform == null || platform.isEmpty ? '自动匹配' : platform;
+    logs.add(CheckLogEntry(
+      level: CheckLogLevel.info,
+      text: '开始检测应用：${update.appId}',
+      time: time,
+    ));
+    logs.add(CheckLogEntry(
+      level: CheckLogLevel.installed,
+      text: '应用 ${update.appName}：安装版本 ${update.installedVersion}',
+      time: time,
+    ));
     logs.add(CheckLogEntry(
       level: CheckLogLevel.update,
-      text: '${update.appName}：发现更新 ${update.latestVersion}',
+      text: '应用 ${update.appName} 发现新版本：${update.latestVersion}',
+      time: time,
+    ));
+    logs.add(CheckLogEntry(
+      level: CheckLogLevel.info,
+      text: '应用 ${update.appName}：选择平台 $platformLabel',
       time: time,
     ));
   }
   logs.add(CheckLogEntry(
     level: CheckLogLevel.update,
-    text: '检测完成：发现 ${report.updates.length} 个可更新应用',
+    text: '检测完成：共 ${report.total} 个应用，更新 ${report.updates.length} 个，'
+        '跳过 ${report.skipped.length} 个',
     time: time,
   ));
-  if (report.updates.isEmpty) {
+  if (report.updates.isEmpty && report.skipped.isEmpty) {
     logs.add(CheckLogEntry(
       level: CheckLogLevel.none,
       text: '所有已添加应用均已是最新版本',
@@ -142,6 +161,24 @@ List<CheckLogEntry> deriveCoreCheckLogs(CoreCheckReport report) {
     ));
   }
   return List<CheckLogEntry>.unmodifiable(logs);
+}
+
+/// Persisted update state used to paint the last known result on startup.
+typedef CachedUpdateSnapshot = ({
+  List<AppUpdateInfo> updates,
+  List<CheckLogEntry> logs,
+  DateTime? lastCheckedAt,
+});
+
+/// Decodes the serialized `CheckLogEntry` array.
+List<CheckLogEntry> decodeCheckLogs(String raw) {
+  final decoded = jsonDecode(raw);
+  if (decoded is! List) return const <CheckLogEntry>[];
+  return decoded
+      .whereType<Map>()
+      .map((item) => CheckLogEntry.fromJson(Map<String, dynamic>.from(item)))
+      .where((entry) => entry.text.isNotEmpty)
+      .toList(growable: false);
 }
 
 /// Decodes the serialized `UpdateSkip` array.
@@ -153,4 +190,3 @@ List<UpdateSkip> decodeUpdateSkips(String raw) {
       .map((item) => UpdateSkip.fromJson(Map<String, dynamic>.from(item)))
       .toList(growable: false);
 }
-

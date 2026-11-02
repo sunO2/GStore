@@ -78,9 +78,9 @@ class AppThemeConfig {
     this.primaryColor,
     this.secondaryColor,
     this.tertiaryColor,
-    this.fontStyle = AppFontStyle.default_,
+    this.fontStyle = AppFontStyle.compact,
     this.radiusStyle = AppRadiusStyle.default_,
-    this.borderStyle = AppBorderStyle.default_,
+    this.borderStyle = AppBorderStyle.light,
   });
 
   /// 默认配置（使用动态色）
@@ -102,9 +102,9 @@ class AppThemeConfig {
       tertiaryColor: json['tertiaryColor'] != null
           ? Color(int.parse(json['tertiaryColor'], radix: 16))
           : null,
-      fontStyle: AppFontStyle.values[json['fontStyle'] ?? 0],
+      fontStyle: AppFontStyle.values[json['fontStyle'] ?? AppFontStyle.compact.index],
       radiusStyle: AppRadiusStyle.values[json['radiusStyle'] ?? 0],
-      borderStyle: AppBorderStyle.values[json['borderStyle'] ?? 0],
+      borderStyle: AppBorderStyle.values[json['borderStyle'] ?? AppBorderStyle.light.index],
     );
   }
 

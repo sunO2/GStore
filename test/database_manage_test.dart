@@ -10,8 +10,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
 void _ffiInit() {
-  open.overrideFor(OperatingSystem.linux,
-      () => DynamicLibrary.open('libsqlite3.so.0'));
+  open.overrideFor(
+      OperatingSystem.linux, () => DynamicLibrary.open('libsqlite3.so.0'));
 }
 
 void main() {
@@ -27,7 +27,8 @@ void main() {
 
   setUp(() async {
     docsDir = await Directory.systemTemp.createTemp('dbm_docs');
-    gstoreDir = Directory('${docsDir.path}/gstore')..createSync(recursive: true);
+    gstoreDir = Directory('${docsDir.path}/gstore')
+      ..createSync(recursive: true);
     dbDir = await Directory.systemTemp.createTemp('dbm_sqlite');
   });
 
@@ -58,6 +59,7 @@ void main() {
   (ProviderContainer, DatabaseManageNotifier) makeContainer({
     Directory? docs,
     Directory? databases,
+    Directory? coreData,
   }) {
     final notifier = DatabaseManageNotifier();
     final container = ProviderContainer(overrides: [
@@ -67,6 +69,8 @@ void main() {
     container.read(databaseManageProvider);
     notifier.debugDocsDir = docs ?? Directory('${docsDir.path}/none');
     notifier.debugDatabasesDir = databases ?? dbDir;
+    notifier.debugCoreDataDir =
+        coreData ?? Directory('${docsDir.path}/no-core');
     return (container, notifier);
   }
 
@@ -119,9 +123,10 @@ void main() {
         options: sqflite.OpenDatabaseOptions(
           version: 1,
           onCreate: (db, v) async {
+            await db
+                .execute('CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT)');
             await db.execute(
-                'CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT)');
-            await db.execute('INSERT INTO t1 (name) VALUES (\'a\'), (\'b\'), (\'c\')');
+                'INSERT INTO t1 (name) VALUES (\'a\'), (\'b\'), (\'c\')');
             // 虚拟表应被过滤
             await db.execute('CREATE VIRTUAL TABLE t_fts USING fts5(name)');
           },
@@ -134,8 +139,10 @@ void main() {
     await notifier.reload();
     expect(container.read(databaseManageProvider).dbs, isNotEmpty);
 
-    final entry =
-        container.read(databaseManageProvider).dbs.firstWhere((e) => e.fileName == 't.db');
+    final entry = container
+        .read(databaseManageProvider)
+        .dbs
+        .firstWhere((e) => e.fileName == 't.db');
     await notifier.loadTables(entry);
     final state = container.read(databaseManageProvider);
     expect(state.tables.any((t) => t.name == 't_fts'), isFalse);
@@ -163,8 +170,10 @@ void main() {
     final (container, notifier) = makeContainer(docs: docsDir);
     addTearDown(container.dispose);
     await notifier.reload();
-    final entry =
-        container.read(databaseManageProvider).dbs.firstWhere((e) => e.fileName == 'apps.db');
+    final entry = container
+        .read(databaseManageProvider)
+        .dbs
+        .firstWhere((e) => e.fileName == 'apps.db');
     await notifier.loadTables(entry);
     await notifier.loadRows('category');
     final state = container.read(databaseManageProvider);
@@ -188,8 +197,8 @@ void main() {
       path,
       version: 1,
       onCreate: (db, v) async {
-        await db.execute(
-            'CREATE TABLE apps (appId TEXT PRIMARY KEY, name TEXT)');
+        await db
+            .execute('CREATE TABLE apps (appId TEXT PRIMARY KEY, name TEXT)');
         await db.execute('INSERT INTO apps VALUES (\'a\', \'x\')');
       },
     );
@@ -216,5 +225,40 @@ void main() {
     } finally {
       await resident.close();
     }
+  });
+  test('发现 Rust 核心库并以只读方式浏览', () async {
+    final coreDir = Directory('${docsDir.path}/gstore_core/data')
+      ..createSync(recursive: true);
+    final path = '${coreDir.path}/$kRustCoreDbFileName';
+    final db = await sqflite.databaseFactory.openDatabase(path,
+        options: sqflite.OpenDatabaseOptions(
+          version: 6,
+          onCreate: (db, v) async {
+            await db.execute(
+                'CREATE TABLE config_entry (key TEXT PRIMARY KEY, value TEXT)');
+            await db
+                .execute("INSERT INTO config_entry VALUES ('theme', 'dark')");
+          },
+        ));
+    await db.close();
+
+    final (container, notifier) = makeContainer(coreData: coreDir);
+    addTearDown(container.dispose);
+    await notifier.reload();
+
+    final entry = container
+        .read(databaseManageProvider)
+        .dbs
+        .firstWhere((e) => e.fileName == kRustCoreDbFileName);
+    expect(entry.displayName, 'Rust 核心库');
+    expect(entry.managed, isTrue);
+    expect(entry.version, 6);
+
+    await notifier.loadTables(entry);
+    final state = container.read(databaseManageProvider);
+    final table = state.tables.firstWhere((t) => t.name == 'config_entry');
+    expect(table.readonly, isTrue, reason: 'Rust 核心库表只能浏览，不能从 Dart 管理页删除');
+    expect(table.displayName, '配置项');
+    expect(table.count, 1);
   });
 }

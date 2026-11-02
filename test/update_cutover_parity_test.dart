@@ -72,7 +72,8 @@ Map<String, dynamic> _goldenReport() =>
     (_golden()['report'] as Map).cast<String, dynamic>();
 
 int get _checkedAtMillis => (_inputFixture()['checkedAt'] as num).toInt();
-DateTime get _checkedAt => DateTime.fromMillisecondsSinceEpoch(_checkedAtMillis);
+DateTime get _checkedAt =>
+    DateTime.fromMillisecondsSinceEpoch(_checkedAtMillis);
 
 /// Builds the legacy lane's input from the SAME committed INPUT fixture the
 /// Rust generator consumes, ordered exactly like `AddedAppsService::list`
@@ -212,15 +213,32 @@ class _FixtureUpdateManager extends UpdateManagerService {
         text: '已添加应用共 ${_fixture.length} 个',
         time: _checkedAt,
       ),
-      for (final update in _fixture)
+      for (final update in _fixture) ...[
         CheckLogEntry(
-          level: CheckLogLevel.update,
-          text: '${update.appName}：发现更新 ${update.latestVersion}',
+          level: CheckLogLevel.info,
+          text: '开始检测应用：${update.appId}',
           time: _checkedAt,
         ),
+        CheckLogEntry(
+          level: CheckLogLevel.installed,
+          text: '应用 ${update.appName}：安装版本 ${update.installedVersion}',
+          time: _checkedAt,
+        ),
+        CheckLogEntry(
+          level: CheckLogLevel.update,
+          text: '应用 ${update.appName} 发现新版本：${update.latestVersion}',
+          time: _checkedAt,
+        ),
+        CheckLogEntry(
+          level: CheckLogLevel.info,
+          text: '应用 ${update.appName}：选择平台 '
+              '${update.latestDownload.platform?.trim().isNotEmpty == true ? update.latestDownload.platform : '自动匹配'}',
+          time: _checkedAt,
+        ),
+      ],
       CheckLogEntry(
         level: CheckLogLevel.update,
-        text: '检测完成：发现 ${_fixture.length} 个可更新应用',
+        text: '检测完成：共 ${_fixture.length} 个应用，更新 ${_fixture.length} 个，跳过 0 个',
         time: _checkedAt,
       ),
     ];
@@ -369,8 +387,8 @@ Future<UpdateState> _runNotifierCheck(UpdateManagerService manager) async {
 Map<String, Object?> _canonicalFromPrefs(SharedPreferences prefs) {
   final results =
       jsonDecode(prefs.getString('update_results_v1') ?? '[]') as List<dynamic>;
-  final logs =
-      jsonDecode(prefs.getString('update_check_logs_v1') ?? '[]') as List<dynamic>;
+  final logs = jsonDecode(prefs.getString('update_check_logs_v1') ?? '[]')
+      as List<dynamic>;
   final preferred =
       jsonDecode(prefs.getString('update_preferred_apk') ?? 'null');
   return <String, Object?>{
@@ -400,7 +418,8 @@ Map<String, Object?> _canonicalFromManager(
   final logs = <Map<String, dynamic>>[
     for (final entry in manager.checkLog) entry.toJson(),
   ];
-  final preferred = jsonDecode(prefs.getString('update_preferred_apk') ?? 'null');
+  final preferred =
+      jsonDecode(prefs.getString('update_preferred_apk') ?? 'null');
   return <String, Object?>{
     'candidates': results,
     'installedVersions': <String, Object?>{

@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
@@ -12,6 +13,8 @@ import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/library_api_seam.dart';
 
 /// 登录流程修复单测（P2/P3/P4）
 ///
@@ -73,12 +76,27 @@ class _FakeRestClient implements GithubRestClient {
       '登录测试未使用: ${invocation.memberName}');
 }
 
+class _TokenSyncBackend extends FakeChannelApiBackend
+    implements GithubTokenSyncBackend {
+  _TokenSyncBackend() : super(FakeLibraryApi());
+
+  String? token;
+  int calls = 0;
+
+  @override
+  Future<void> setGithubToken({String? token}) async {
+    this.token = token;
+    calls++;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late _FakeAuthApi authApi;
   late _FakeRestClient restClient;
   late UserManager manager;
+  late _TokenSyncBackend tokenSync;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -90,6 +108,8 @@ void main() {
 
     authApi = _FakeAuthApi();
     restClient = _FakeRestClient();
+    tokenSync = _TokenSyncBackend();
+    RustChannelFacade.installBackend(tokenSync);
 
     // 注入依赖：UserManager.initialize() 经 ModuleManager 取 authApi / restClient
     ModuleManager.instance.bind<GithubAuthApi>(authApi);
@@ -101,6 +121,7 @@ void main() {
   });
 
   tearDown(() async {
+    RustChannelFacade.resetBackend();
     DioClient.instance.authorization = null;
     await ModuleManager.instance.clear();
   });
@@ -128,6 +149,22 @@ void main() {
 
       expect(userInfo?.login, 'test-user');
       expect(await manager.getToken(), 'longenough-token-12345');
+      expect(tokenSync.token, 'longenough-token-12345',
+          reason: '登录成功后必须把 token 同步给 Rust 渠道');
+      expect(tokenSync.calls, 1);
+    });
+
+    test('logout 清空 Rust 侧 token', () async {
+      authApi.responses.add(AuthLoginResponse(null, 5, accessToken: 'longenough-token-12345'));
+      restClient.userToReturn = const UserInfo(login: 'test-user', avatarUrl: 'a.png');
+      await manager
+          .startLoginOfTimer('device-code', 1, dio.CancelToken())
+          .timeout(const Duration(seconds: 3));
+
+      await manager.logout();
+
+      expect(tokenSync.token, isNull);
+      expect(tokenSync.calls, 2);
     });
   });
 

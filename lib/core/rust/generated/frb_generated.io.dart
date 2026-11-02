@@ -384,6 +384,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<TaskEvent> dco_decode_StreamSink_task_event_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<UpdateProgressDto>
+      dco_decode_StreamSink_update_progress_dto_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -465,6 +469,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UpdateRulesDto dco_decode_box_autoadd_update_rules_dto(dynamic raw);
+
+  @protected
+  CachedUpdateStateDto dco_decode_cached_update_state_dto(dynamic raw);
 
   @protected
   CatalogMaterializeResult dco_decode_catalog_materialize_result(dynamic raw);
@@ -828,6 +835,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UpdateProgressDto dco_decode_update_progress_dto(dynamic raw);
+
+  @protected
   UpdateReport dco_decode_update_report(dynamic raw);
 
   @protected
@@ -1142,6 +1152,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<UpdateProgressDto>
+      sse_decode_StreamSink_update_progress_dto_Sse(
+          SseDeserializer deserializer);
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
@@ -1235,6 +1250,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   UpdateRulesDto sse_decode_box_autoadd_update_rules_dto(
+      SseDeserializer deserializer);
+
+  @protected
+  CachedUpdateStateDto sse_decode_cached_update_state_dto(
       SseDeserializer deserializer);
 
   @protected
@@ -1651,6 +1670,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UpdateProgressDto sse_decode_update_progress_dto(
+      SseDeserializer deserializer);
+
+  @protected
   UpdateReport sse_decode_update_report(SseDeserializer deserializer);
 
   @protected
@@ -1966,6 +1989,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       RustStreamSink<TaskEvent> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_StreamSink_update_progress_dto_Sse(
+      RustStreamSink<UpdateProgressDto> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
@@ -2062,6 +2089,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_update_rules_dto(
       UpdateRulesDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_cached_update_state_dto(
+      CachedUpdateStateDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_catalog_materialize_result(
@@ -2497,6 +2528,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_update_progress_dto(
+      UpdateProgressDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_update_report(UpdateReport self, SseSerializer serializer);

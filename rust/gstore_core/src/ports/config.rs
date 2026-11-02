@@ -51,13 +51,28 @@ impl CoreConfig {
         })
     }
 
+    /// Replaces the configured GitHub token.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidArgument`] for an empty (but present) token.
+    pub fn with_github_token(mut self, github_token: Option<String>) -> Result<Self, Error> {
+        if let Some(token) = &github_token {
+            if token.trim().is_empty() {
+                return Err(Error::InvalidArgument(
+                    "github_token must not be empty".to_string(),
+                ));
+            }
+        }
+        self.github_token = github_token;
+        Ok(self)
+    }
+
     /// Sets the F-Droid source URLs.
     ///
     /// # Errors
     /// Returns [`Error::InvalidArgument`] for an empty source or a malformed
     /// HTTP(S) URL.
-    pub fn with_fdroid_sources(mut self, sources: Vec<String>) -> Result<Self, Error> {
-        for source in &sources {
+    pub fn with_fdroid_sources(mut self, sources: Vec<String>) -> Result<Self, Error> {        for source in &sources {
             if source.trim().is_empty() {
                 return Err(Error::InvalidArgument(
                     "fdroid source must not be empty".to_string(),

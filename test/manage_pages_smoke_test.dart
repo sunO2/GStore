@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/page/about/about_page.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/download_clean_page.dart';
 import 'package:gstore/page/cache_manage/logic.dart';
@@ -33,8 +34,7 @@ void main() {
     });
 
     testWidgets('缓存管理页可挂载并展示标题（Riverpod）', (tester) async {
-      final downloadsDir = Directory('${tmpDir.path}/downloads')
-        ..createSync();
+      final downloadsDir = Directory('${tmpDir.path}/downloads')..createSync();
       final service = CacheManageService()
         ..debugCacheDir = tmpDir
         ..debugDownloadsDir = downloadsDir;
@@ -59,8 +59,7 @@ void main() {
     });
 
     testWidgets('已下载文件清理页可挂载（Riverpod ConsumerState）', (tester) async {
-      final downloadsDir = Directory('${tmpDir.path}/downloads2')
-        ..createSync();
+      final downloadsDir = Directory('${tmpDir.path}/downloads2')..createSync();
       final service = CacheManageService()
         ..debugCacheDir = tmpDir
         ..debugDownloadsDir = downloadsDir;
@@ -132,8 +131,7 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(find.text('历史日志应可见'), findsOneWidget,
-          reason: '进入页面时应立即显示已存在的日志');
+      expect(find.text('历史日志应可见'), findsOneWidget, reason: '进入页面时应立即显示已存在的日志');
       expect(tester.takeException(), isNull);
     });
 
@@ -153,6 +151,19 @@ void main() {
 
       expect(find.text('开源许可'), findsOneWidget);
       expect(find.textContaining('本项目依赖以下开源软件'), findsOneWidget);
+    });
+    testWidgets('关于页可挂载并展示版本与入口', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(home: AboutPage()),
+      );
+      await tester.pump();
+
+      expect(find.text('关于'), findsOneWidget);
+      expect(find.text('GStore'), findsOneWidget);
+      expect(find.text('项目主页'), findsOneWidget);
+      expect(find.text('查看日志'), findsOneWidget);
+      expect(find.text('数据库管理'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }

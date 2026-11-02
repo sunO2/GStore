@@ -147,6 +147,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const SettingsPage(),
     ),
     GoRoute(
+      path: AppRoute.about,
+      builder: (context, state) => const AboutPage(),
+    ),
+    GoRoute(
       path: AppRoute.themeSettings,
       builder: (context, state) => const ThemeSettingsPage(),
     ),

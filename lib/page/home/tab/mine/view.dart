@@ -8,7 +8,6 @@ import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/perf/perf_target_store.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -35,9 +34,6 @@ class _MinePageState extends ConsumerState<MinePage>
 
   /// 工具卡片展开状态（默认展开）
   bool _toolsExpanded = true;
-
-  /// 性能监控「上次选择的第三方应用」展示名（无则为 null）。
-  String? _perfLastTargetLabel;
 
   /// 备份逻辑控制器（页面私有实例；操作区监听其 ChangeNotifier 驱动重建）
   late final BackupLogic _backupLogic;
@@ -89,7 +85,6 @@ class _MinePageState extends ConsumerState<MinePage>
     _backupLogic = BackupLogic();
     _backupLogic.addListener(_reloadBackupArea);
     _checkWebDavConfig();
-    _loadPerfLastTarget();
 
     // 监听 webdav 模块上下线：下线隐藏备份入口，上线恢复
     _webdavModuleOnline = ModuleManager.instance.isModuleEnabled('webdav');
@@ -238,19 +233,9 @@ class _MinePageState extends ConsumerState<MinePage>
     }
   }
 
-  /// 读取性能监控最近选择的第三方应用，驱动入口副标题文案。
-  Future<void> _loadPerfLastTarget() async {
-    try {
-      final target = await const SharedPrefsPerfTargetStore().load();
-      if (!mounted || target == null) return;
-      setState(() => _perfLastTargetLabel = target.label);
-    } catch (e) {
-      appLog.error('MinePage: 读取性能监控最近目标失败（忽略） - $e');
-    }
-  }
-
   /// 从主题获取卡片的形状（包含圆角和边框）
-  ShapeBorder get _cardShape {    final theme = Theme.of(context);
+  ShapeBorder get _cardShape {
+    final theme = Theme.of(context);
     final cardTheme = theme.cardTheme;
     // 如果主题有定义卡片形状，使用它；否则使用默认的
     return cardTheme.shape ??
@@ -433,7 +418,8 @@ class _MinePageState extends ConsumerState<MinePage>
                     color: Theme.of(context).colorScheme.primaryContainer,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(TablerIcons.user_filled, size: AppTypography.iconLG),
+                  child: const Icon(TablerIcons.user_filled,
+                      size: AppTypography.iconLG),
                 ),
                 imageUrl: user.avatarUrl ?? '',
               ),
@@ -477,29 +463,31 @@ class _MinePageState extends ConsumerState<MinePage>
           // AI 助手入口随 agent_tools 模块上下线显隐（隐藏时其下方 Divider 一并隐藏）
           if (_agentModuleOnline) ...[
             ListTile(
-              leading: const Icon(TablerIcons.sparkles,
-                  size: AppTypography.iconMD),
+              leading:
+                  const Icon(TablerIcons.sparkles, size: AppTypography.iconMD),
               title: const Text('AI 助手'),
-              trailing:
-                  const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
+              trailing: const Icon(TablerIcons.chevron_right,
+                  size: AppTypography.iconSM),
               onTap: () => context.push(AppRoute.agent),
             ),
             const Divider(height: 1),
           ],
           ListTile(
-            leading: const Icon(TablerIcons.brand_android, size: AppTypography.iconMD),
-            title: const Text('已安装应用'),
-            trailing:
-                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => context.push(AppRoute.installedApps),
+            leading: const Icon(TablerIcons.settings_filled,
+                size: AppTypography.iconMD),
+            title: const Text('设置'),
+            trailing: const Icon(TablerIcons.chevron_right,
+                size: AppTypography.iconSM),
+            onTap: () => context.push(AppRoute.settings),
           ),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(TablerIcons.settings_filled, size: AppTypography.iconMD),
-            title: const Text('设置'),
-            trailing:
-                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => context.push(AppRoute.settings),
+            leading:
+                const Icon(TablerIcons.info_circle, size: AppTypography.iconMD),
+            title: const Text('关于'),
+            trailing: const Icon(TablerIcons.chevron_right,
+                size: AppTypography.iconSM),
+            onTap: () => context.push(AppRoute.about),
           ),
         ],
       ),
@@ -565,6 +553,16 @@ class _MinePageState extends ConsumerState<MinePage>
                 children: [
                   ListTile(
                     contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.brand_android,
+                        size: AppTypography.iconMD),
+                    title: const Text('已安装应用'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.installedApps),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
                     leading: const Icon(TablerIcons.history,
                         size: AppTypography.iconMD),
                     title: const Text('应用快照'),
@@ -608,38 +606,13 @@ class _MinePageState extends ConsumerState<MinePage>
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(TablerIcons.api,
-                        size: AppTypography.iconMD),
+                    leading:
+                        const Icon(TablerIcons.api, size: AppTypography.iconMD),
                     title: const Text('请求调试'),
                     subtitle: const Text('集合 / 历史 / 环境 / 改写规则'),
                     trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
                     onTap: () => context.push(AppRoute.requestDebug),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(TablerIcons.bug,
-                        size: AppTypography.iconMD),
-                    title: const Text('查看日志'),
-                    trailing: const Icon(TablerIcons.chevron_right,
-                        size: AppTypography.iconSM),
-                    onTap: () => context.push(AppRoute.logViewer),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(TablerIcons.gauge,
-                        size: AppTypography.iconMD),
-                    title: const Text('性能监控'),
-                    subtitle: Text(
-                      _perfLastTargetLabel == null
-                          ? '帧率 / CPU / 内存 / 电池 / 温度'
-                          : '上次: $_perfLastTargetLabel',
-                    ),
-                    trailing: const Icon(TablerIcons.chevron_right,
-                        size: AppTypography.iconSM),
-                    onTap: () => context.push(AppRoute.perfMonitor),
                   ),
                 ],
               ),
@@ -1248,8 +1221,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
                               : const Icon(TablerIcons.device_floppy),
-                          label: Text(
-                              state.isExporting ? '导出中...' : '导出到本地'),
+                          label: Text(state.isExporting ? '导出中...' : '导出到本地'),
                         ),
                       ),
                       const SizedBox(width: AppSpacing.md),
@@ -1265,8 +1237,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
                               : const Icon(TablerIcons.folder_open),
-                          label: Text(
-                              state.isImporting ? '导入中...' : '从本地恢复'),
+                          label: Text(state.isImporting ? '导入中...' : '从本地恢复'),
                         ),
                       ),
                     ],
@@ -1301,23 +1272,21 @@ class _MinePageState extends ConsumerState<MinePage>
                             children: [
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed:
-                                      (state.isUploadingWebDav ||
-                                              taskBusy ||
-                                              !_webdavModuleOnline)
-                                          ? null
-                                          : () => _backupLogic.uploadToWebDav(
-                                              context,
-                                              compressed: true),
-                                  icon:
-                                      (state.isUploadingWebDav || taskBusy)
-                                          ? const SizedBox(
-                                              width: 16,
-                                              height: 16,
-                                              child: AppLoading(
-                                                  size: AppLoadingSize.small),
-                                            )
-                                          : const Icon(TablerIcons.cloud_upload),
+                                  onPressed: (state.isUploadingWebDav ||
+                                          taskBusy ||
+                                          !_webdavModuleOnline)
+                                      ? null
+                                      : () => _backupLogic.uploadToWebDav(
+                                          context,
+                                          compressed: true),
+                                  icon: (state.isUploadingWebDav || taskBusy)
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: AppLoading(
+                                              size: AppLoadingSize.small),
+                                        )
+                                      : const Icon(TablerIcons.cloud_upload),
                                   label: Text(
                                       (state.isUploadingWebDav || taskBusy)
                                           ? '上传中...'
@@ -1327,13 +1296,12 @@ class _MinePageState extends ConsumerState<MinePage>
                               const SizedBox(width: AppSpacing.md),
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed:
-                                      (state.isImporting ||
-                                              taskBusy ||
-                                              !_webdavModuleOnline)
-                                          ? null
-                                          : () => _backupLogic
-                                              .downloadFromWebDav(context),
+                                  onPressed: (state.isImporting ||
+                                          taskBusy ||
+                                          !_webdavModuleOnline)
+                                      ? null
+                                      : () => _backupLogic
+                                          .downloadFromWebDav(context),
                                   icon: (state.isImporting || taskBusy)
                                       ? const SizedBox(
                                           width: 16,
@@ -1342,10 +1310,9 @@ class _MinePageState extends ConsumerState<MinePage>
                                               size: AppLoadingSize.small),
                                         )
                                       : const Icon(TablerIcons.cloud_download),
-                                  label: Text(
-                                      (state.isImporting || taskBusy)
-                                          ? '下载中...'
-                                          : '从网盘恢复'),
+                                  label: Text((state.isImporting || taskBusy)
+                                      ? '下载中...'
+                                      : '从网盘恢复'),
                                 ),
                               ),
                             ],

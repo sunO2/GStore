@@ -10,10 +10,13 @@
 /// single subscription contract.
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/core_bootstrap.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_backends.dart';
 import 'package:gstore/core/update/update_log.dart';
@@ -27,7 +30,11 @@ export 'package:gstore/core/update/update_report.dart';
 class UpdateFacade {
   UpdateFacade({UpdateBackend? frb})
       : _frb = frb ?? FrbUpdateBackend(),
-        _frbInjected = frb != null;
+        _frbInjected = frb != null {
+    // Startup cache restore reads the Rust-owned `update_prefs`, so the first
+    // frame can paint the last check result without waiting for a new check.
+    _state.cachedStateLoader = _loadCachedState;
+  }
 
   static UpdateFacade instance = UpdateFacade();
 
@@ -61,6 +68,14 @@ class UpdateFacade {
         'CoreBootstrap has not pushed platform facts + inventory',
       );
     }
+  }
+
+  Future<CachedUpdateSnapshot?> _loadCachedState() async {
+    final backend = backendOverride ?? _frb;
+    if (backend is UpdateCachedStateSource) {
+      return (backend as UpdateCachedStateSource).cachedState();
+    }
+    return null;
   }
 
   UpdateBackend _coreBackend() {
@@ -146,6 +161,41 @@ class UpdateFacade {
     final backend = _coreBackend();
     _state.beginFacadeCheck();
     try {
+      if (backend is UpdateProgressBackend) {
+        final progressBackend = backend as UpdateProgressBackend;
+        final updates = await progressBackend.checkWithProgress(
+          force: force,
+          onProgress: _mirrorProgress,
+        );
+        final report = switch (backend) {
+          final UpdateReportSource source => source.lastReport,
+          _ => null,
+        };
+        if (report != null) {
+          final derived = deriveCoreCheckLogs(report);
+          final keepStreamed = _state.checkLog.isNotEmpty;
+          final logs = keepStreamed ? _state.checkLog : derived;
+          if (!keepStreamed) {
+            for (final entry in derived) {
+              onLog?.call(entry.level, entry.text);
+            }
+          }
+          onCheckList?.call(
+            <String>[for (final update in report.updates) update.appName],
+          );
+          _state.adoptFacadeCheck(
+            updates: report.updates,
+            logs: logs,
+            checkedAt: report.checkedAt,
+            total: report.total,
+            preserveLogs: keepStreamed,
+          );
+        } else {
+          _adopt(updates, onLog: onLog, onCheckList: onCheckList);
+        }
+        return;
+      }
+
       final updates = await backend.check(force: force);
       final report = switch (backend) {
         final UpdateReportSource source => source.lastReport,
@@ -178,6 +228,33 @@ class UpdateFacade {
       _state.failFacadeCheck(typed.toString());
       throw typed;
     }
+  }
+
+  void _mirrorProgress(rust.UpdateProgressDto event) {
+    List<String>? names;
+    final rawNames = event.namesJson;
+    if (rawNames != null && rawNames.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawNames);
+        if (decoded is List) {
+          names = decoded.map((value) => value.toString()).toList();
+        }
+      } catch (_) {
+        names = null;
+      }
+    }
+    _state.mirrorFacadeProgress(
+      total: event.total.toInt(),
+      index: event.index.toInt(),
+      appId: event.appId,
+      appName: event.appName,
+      iconUrl: event.iconUrl,
+      logLevel: event.logLevel,
+      logText: event.logText,
+      checkList: names,
+      finished: event.finished,
+      isResult: event.isResult,
+    );
   }
 
   void _adopt(
@@ -227,8 +304,7 @@ class UpdateFacade {
     return result;
   }
 
-  Future<bool> hasUpdate(String appId) async =>
-      _coreBackend().hasUpdate(appId);
+  Future<bool> hasUpdate(String appId) async => _coreBackend().hasUpdate(appId);
 
   Future<int> count() async => _coreBackend().count();
 

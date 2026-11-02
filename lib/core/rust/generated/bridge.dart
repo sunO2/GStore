@@ -12,9 +12,9 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'script_pack.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build_inner`, `build`, `channel_key`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `import_err`, `init_inner`, `inner_cache`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `mirrors_from`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build_inner`, `build`, `channel_key`, `check_log_level_code`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `failed`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `github_config`, `import_err`, `init_inner`, `inner_cache`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `mirrors_from`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `terminal`, `update_progress_dto`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `FdroidSourceSpec`, `HostDriverResolver`, `HostRepoPort`, `HttpMetadataPort`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_app_icons`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_app_icons`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `config_value_for_test`, `events_recording_config_for_test`, `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`, `reset_config_store_for_test`, `run`, `shares_config_store_with_global_for_test`, `watch_recording_config_for_test`
 
 /// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
@@ -327,6 +327,12 @@ abstract class ChannelApi implements RustOpaqueInterface {
   /// under key `fdroid_sources` so mirrors survive restarts. URLs are validated
   /// before anything is stored; an invalid URL is a typed error.
   Future<void> setFdroidSources({required List<String> sources});
+
+  /// Persists (or clears) the GitHub token and rebinds channel drivers.
+  ///
+  /// Called immediately after login/logout so GitHub channel requests switch
+  /// from anonymous to authenticated (and back) without restarting the app.
+  Future<void> setGithubToken({String? token});
 
   /// Removes a channel registration and its driver binding.
   Future<void> unregister({required String key});
@@ -909,12 +915,23 @@ abstract class UpdateApi implements RustOpaqueInterface {
   /// Whether the cached results are still inside the one-hour window.
   Future<bool> cacheValid();
 
+  /// Returns the persisted result/log snapshot for startup cache restore.
+  Future<CachedUpdateStateDto> cachedState();
+
   /// Checks every added app, honoring the one-hour cache unless `force`.
   Future<UpdateReport> check({required bool force});
 
   /// Checks one app, preferring the cache; returns serialized
   /// `AppUpdateInfo` or `None`.
   Future<String?> checkApp({required String appId, String? channelCode});
+
+  /// Streams per-app progress while running a full check.
+  ///
+  /// Emits start/app-start/app-result events, then one terminal event carrying
+  /// the same report as [`Self::check`] (or a typed error). The Dart facade
+  /// mirrors these events into the shared update page state so logs, the
+  /// progress wheel and the current app icon update in real time.
+  Stream<UpdateProgressDto> checkWithProgress({required bool force});
 
   /// Number of cached updatable apps.
   Future<PlatformInt64> count();
@@ -979,6 +996,36 @@ class AddedAppEntry {
           addTime == other.addTime &&
           sortOrder == other.sortOrder &&
           isEnabled == other.isEnabled;
+}
+
+/// Persisted update cache snapshot used by the Dart startup restore path.
+///
+/// The Rust core owns the authoritative cache; this DTO mirrors the same
+/// `update_prefs` values the legacy Dart `UpdateCache` read from
+/// SharedPreferences.
+class CachedUpdateStateDto {
+  final PlatformInt64? lastCheckedAt;
+  final String updatesJson;
+  final String logsJson;
+
+  const CachedUpdateStateDto({
+    this.lastCheckedAt,
+    required this.updatesJson,
+    required this.logsJson,
+  });
+
+  @override
+  int get hashCode =>
+      lastCheckedAt.hashCode ^ updatesJson.hashCode ^ logsJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CachedUpdateStateDto &&
+          runtimeType == other.runtimeType &&
+          lastCheckedAt == other.lastCheckedAt &&
+          updatesJson == other.updatesJson &&
+          logsJson == other.logsJson;
 }
 
 /// Result of materializing the repository into the core catalog.
@@ -2788,6 +2835,86 @@ class TagGroup {
           runtimeType == other.runtimeType &&
           key == other.key &&
           tags == other.tags;
+}
+
+/// One progressive event of an update check (FRB stream item).
+class UpdateProgressDto {
+  final PlatformInt64 total;
+  final PlatformInt64 index;
+  final String appId;
+  final String appName;
+  final String? iconUrl;
+  final String? logLevel;
+  final String? logText;
+  final bool isResult;
+  final String? namesJson;
+  final bool finished;
+  final String? error;
+  final PlatformInt64 checkedAt;
+  final String updatesJson;
+  final String skippedJson;
+  final String eventsJson;
+  final bool usedCache;
+
+  const UpdateProgressDto({
+    required this.total,
+    required this.index,
+    required this.appId,
+    required this.appName,
+    this.iconUrl,
+    this.logLevel,
+    this.logText,
+    required this.isResult,
+    this.namesJson,
+    required this.finished,
+    this.error,
+    required this.checkedAt,
+    required this.updatesJson,
+    required this.skippedJson,
+    required this.eventsJson,
+    required this.usedCache,
+  });
+
+  @override
+  int get hashCode =>
+      total.hashCode ^
+      index.hashCode ^
+      appId.hashCode ^
+      appName.hashCode ^
+      iconUrl.hashCode ^
+      logLevel.hashCode ^
+      logText.hashCode ^
+      isResult.hashCode ^
+      namesJson.hashCode ^
+      finished.hashCode ^
+      error.hashCode ^
+      checkedAt.hashCode ^
+      updatesJson.hashCode ^
+      skippedJson.hashCode ^
+      eventsJson.hashCode ^
+      usedCache.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UpdateProgressDto &&
+          runtimeType == other.runtimeType &&
+          total == other.total &&
+          index == other.index &&
+          appId == other.appId &&
+          appName == other.appName &&
+          iconUrl == other.iconUrl &&
+          logLevel == other.logLevel &&
+          logText == other.logText &&
+          isResult == other.isResult &&
+          namesJson == other.namesJson &&
+          finished == other.finished &&
+          error == other.error &&
+          checkedAt == other.checkedAt &&
+          updatesJson == other.updatesJson &&
+          skippedJson == other.skippedJson &&
+          eventsJson == other.eventsJson &&
+          usedCache == other.usedCache;
 }
 
 /// Serialized result of one update check.

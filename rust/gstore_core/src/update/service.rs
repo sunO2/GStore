@@ -18,7 +18,7 @@
 //! [`InventoryStore::is_stale`]: crate::inventory::InventoryStore::is_stale
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use rusqlite::{Transaction, TransactionBehavior};
@@ -140,6 +140,24 @@ pub struct UpdateCheckReport {
     pub events: Vec<CoreEvent>,
 }
 
+/// One progressive event emitted while a batch update check runs.
+///
+/// `names` is only populated by the first event so the UI can pre-fill the
+/// wheel with the full candidate list before any network call finishes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateProgress {
+    pub index: usize,
+    pub total: usize,
+    pub app_id: String,
+    pub app_name: String,
+    pub icon_url: Option<String>,
+    pub log_level: Option<CheckLogLevel>,
+    pub log_text: Option<String>,
+    /// Whether this event is a completed per-app result (not a start line).
+    pub is_result: bool,
+    pub names: Option<Vec<String>>,
+}
+
 /// Update checking, caching, and persistence service.
 pub struct UpdateService {
     db: DbHandle,
@@ -164,9 +182,26 @@ struct OneCheck {
     update: Option<AppUpdateInfo>,
     event: Option<CoreEvent>,
     skip_reason: Option<&'static str>,
-    log_level: CheckLogLevel,
-    log_text: String,
+    log_lines: Vec<(CheckLogLevel, String)>,
     outcome: Option<CheckOutcome>,
+    app_name: Option<String>,
+    icon_url: Option<String>,
+}
+
+impl OneCheck {
+    fn with_identity(mut self, name: &str, icon: Option<&str>) -> Self {
+        self.app_name = Some(name.trim().to_string()).filter(|value| !value.is_empty());
+        self.icon_url = icon
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        self
+    }
+
+    fn with_extra_log(mut self, level: CheckLogLevel, text: String) -> Self {
+        self.log_lines.push((level, text));
+        self
+    }
 }
 
 impl UpdateService {
@@ -205,6 +240,17 @@ impl UpdateService {
     ///
     /// `force` skips the one-hour cache and always re-checks.
     pub fn check_all(&self, force: bool) -> Result<UpdateCheckReport, Error> {
+        self.check_all_with_progress(force, |_| {})
+    }
+
+    pub fn check_all_with_progress<F>(
+        &self,
+        force: bool,
+        mut on_progress: F,
+    ) -> Result<UpdateCheckReport, Error>
+    where
+        F: FnMut(UpdateProgress),
+    {
         let now = (self.clock)();
         if !force {
             let cached = self.list()?;
@@ -223,7 +269,7 @@ impl UpdateService {
                 }
             }
         }
-        self.run_batch(now, force)
+        self.run_batch(now, force, &mut on_progress)
     }
 
     /// Forces a full update check.
@@ -276,6 +322,17 @@ impl UpdateService {
                 info
             })
             .collect())
+    }
+
+    /// Persisted log lines from the last check.
+    pub fn cached_logs(&self) -> Result<Vec<CheckLogEntry>, Error> {
+        let Some(raw) = self.read_pref(KEY_LOGS)? else {
+            return Ok(Vec::new());
+        };
+        if raw.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
     }
 
     /// Removes `app_id` from the cache once the installed version caught up.
@@ -347,7 +404,15 @@ impl UpdateService {
         Ok((self.clock)().saturating_sub(last) < UPDATE_CACHE_TTL_MS)
     }
 
-    fn run_batch(&self, now: i64, force: bool) -> Result<UpdateCheckReport, Error> {
+    fn run_batch<F>(
+        &self,
+        now: i64,
+        force: bool,
+        on_progress: &mut F,
+    ) -> Result<UpdateCheckReport, Error>
+    where
+        F: FnMut(UpdateProgress),
+    {
         let facts = self.required_facts()?;
         let max_age = self.rules.effective_update()?.max_inventory_age_secs;
         if !force && self.inventory.is_stale(&facts.source_id, max_age, now)? {
@@ -359,19 +424,96 @@ impl UpdateService {
 
         let added = self.added.list()?;
         let total = added.len();
+        let cached: HashMap<String, (String, Option<String>)> = self
+            .list()?
+            .into_iter()
+            .map(|info| (info.app_id, (info.app_name, info.icon_url)))
+            .collect();
+        let identities: HashMap<String, (String, Option<String>)> = added
+            .iter()
+            .filter_map(|app| {
+                self.catalog_identity(&app.channel_id, &app.app_id)
+                    .map(|identity| (app.app_id.clone(), identity))
+            })
+            .collect();
+        let names: Vec<String> = added
+            .iter()
+            .map(|app| {
+                cached
+                    .get(&app.app_id)
+                    .map(|(name, _)| name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| {
+                        identities
+                            .get(&app.app_id)
+                            .map(|(name, _)| name.clone())
+                    })
+                    .unwrap_or_else(|| app.app_id.clone())
+            })
+            .collect();
         let mut logs = vec![log_entry(CheckLogLevel::Info, "开始检测应用更新...", now)];
         logs.push(log_entry(
             CheckLogLevel::Info,
             &format!("已添加应用共 {total} 个"),
             now,
         ));
+        on_progress(UpdateProgress {
+            index: 0,
+            total,
+            app_id: String::new(),
+            app_name: String::new(),
+            icon_url: None,
+            log_level: Some(CheckLogLevel::Info),
+            log_text: Some("开始检测应用更新...".to_string()),
+            is_result: false,
+            names: Some(names),
+        });
+        on_progress(UpdateProgress {
+            index: 0,
+            total,
+            app_id: String::new(),
+            app_name: String::new(),
+            icon_url: None,
+            log_level: Some(CheckLogLevel::Info),
+            log_text: Some(format!("已添加应用共 {total} 个")),
+            is_result: false,
+            names: None,
+        });
 
         let mut updates = Vec::new();
         let mut skipped = Vec::new();
         let mut events = Vec::new();
         let mut outcomes = Vec::new();
 
-        for app in &added {
+        for (index, app) in added.iter().enumerate() {
+            let cached_name = cached
+                .get(&app.app_id)
+                .map(|(name, _)| name.clone())
+                .filter(|name| !name.trim().is_empty());
+            let cached_icon = cached
+                .get(&app.app_id)
+                .and_then(|(_, icon)| icon.clone());
+            let identity = identities.get(&app.app_id);
+            let start_name = cached_name
+                .clone()
+                .or_else(|| identity.map(|(name, _)| name.clone()))
+                .unwrap_or_else(|| app.app_id.clone());
+            let start_icon = cached_icon
+                .clone()
+                .or_else(|| identity.and_then(|(_, icon)| icon.clone()));
+            let start_text = format!("开始检测应用：{start_name}");
+            logs.push(log_entry(CheckLogLevel::Info, &start_text, now));
+            on_progress(UpdateProgress {
+                index,
+                total,
+                app_id: app.app_id.clone(),
+                app_name: start_name.clone(),
+                icon_url: start_icon.clone(),
+                log_level: Some(CheckLogLevel::Info),
+                log_text: Some(start_text),
+                is_result: false,
+                names: None,
+            });
             if app.app_id.trim().is_empty() {
                 skipped.push(UpdateSkip {
                     channel_id: app.channel_id.clone(),
@@ -386,11 +528,19 @@ impl UpdateService {
                     app_id: app.app_id.clone(),
                     reason: "unknown_channel".to_string(),
                 });
-                logs.push(log_entry(
-                    CheckLogLevel::Skip,
-                    &format!("{}：渠道不可用", app.app_id),
-                    now,
-                ));
+                let unknown_text = format!("应用 {start_name}：渠道不可用，跳过检测");
+                logs.push(log_entry(CheckLogLevel::Skip, &unknown_text, now));
+                on_progress(UpdateProgress {
+                    index,
+                    total,
+                    app_id: app.app_id.clone(),
+                    app_name: start_name.clone(),
+                    icon_url: start_icon.clone(),
+                    log_level: Some(CheckLogLevel::Skip),
+                    log_text: Some(unknown_text),
+                    is_result: true,
+                    names: None,
+                });
                 continue;
             };
             let one = self.check_one(
@@ -401,7 +551,40 @@ impl UpdateService {
                 &facts,
                 max_age,
             )?;
-            logs.push(log_entry(one.log_level, &one.log_text, now));
+            let result_name = one
+                .app_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| {
+                    one.update
+                        .as_ref()
+                        .map(|update| update.app_name.clone())
+                        .filter(|name| !name.trim().is_empty())
+                })
+                .unwrap_or_else(|| start_name.clone());
+            let result_icon = one
+                .icon_url
+                .clone()
+                .or_else(|| {
+                    one.update
+                        .as_ref()
+                        .and_then(|update| update.icon_url.clone())
+                })
+                .or_else(|| start_icon.clone());
+            for (level, text) in one.log_lines.clone() {
+                logs.push(log_entry(level, &text, now));
+                on_progress(UpdateProgress {
+                    index,
+                    total,
+                    app_id: app.app_id.clone(),
+                    app_name: result_name.clone(),
+                    icon_url: result_icon.clone(),
+                    log_level: Some(level),
+                    log_text: Some(text),
+                    is_result: true,
+                    names: None,
+                });
+            }
             if let Some(reason) = one.skip_reason {
                 skipped.push(UpdateSkip {
                     channel_id: app.channel_id.clone(),
@@ -420,17 +603,37 @@ impl UpdateService {
             }
         }
 
-        logs.push(log_entry(
-            CheckLogLevel::Update,
-            &format!("检测完成：发现 {} 个可更新应用", updates.len()),
-            now,
-        ));
-        if updates.is_empty() {
-            logs.push(log_entry(
-                CheckLogLevel::None,
-                "所有已添加应用均已是最新版本",
-                now,
-            ));
+        let summary = format!(
+            "检测完成：共 {total} 个应用，更新 {} 个，跳过 {} 个",
+            updates.len(),
+            skipped.len()
+        );
+        logs.push(log_entry(CheckLogLevel::Update, &summary, now));
+        on_progress(UpdateProgress {
+            index: total.saturating_sub(1),
+            total,
+            app_id: String::new(),
+            app_name: String::new(),
+            icon_url: None,
+            log_level: Some(CheckLogLevel::Update),
+            log_text: Some(summary),
+            is_result: true,
+            names: None,
+        });
+        if updates.is_empty() && skipped.is_empty() {
+            let latest = "所有已添加应用均已是最新版本";
+            logs.push(log_entry(CheckLogLevel::None, latest, now));
+            on_progress(UpdateProgress {
+                index: total.saturating_sub(1),
+                total,
+                app_id: String::new(),
+                app_name: String::new(),
+                icon_url: None,
+                log_level: Some(CheckLogLevel::None),
+                log_text: Some(latest.to_string()),
+                is_result: true,
+                names: None,
+            });
         }
 
         self.persist(now, &updates, &logs, &outcomes)?;
@@ -462,7 +665,7 @@ impl UpdateService {
                     None,
                     None,
                     "channel_error",
-                    &format!("{app_id}：渠道检测失败 - {error}"),
+                    &format!("应用 {app_id}：渠道检测失败 - {error}"),
                     serde_json::json!({
                         "reason": "channel_error",
                         "appId": app_id,
@@ -491,14 +694,14 @@ impl UpdateService {
                 None,
                 check.latest_version.clone(),
                 "no_package",
-                &format!("{display_name}：无有效包名"),
+                &format!("应用 {display_name}：无有效包名，跳过检测"),
                 serde_json::json!({
                     "reason": "no_package",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            ).with_identity(&display_name, check.icon.as_deref()));
         }
 
         if self
@@ -511,14 +714,14 @@ impl UpdateService {
                 None,
                 check.latest_version.clone(),
                 "inventory_stale",
-                &format!("{display_name}（{package_name}）：设备清单已过期，跳过"),
+                &format!("应用 {display_name}：设备清单已过期，跳过检测"),
                 serde_json::json!({
                     "reason": "inventory_stale",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            ).with_identity(&display_name, check.icon.as_deref()));
         }
 
         let Some(installed) = self.inventory.get(&package_name)? else {
@@ -528,14 +731,14 @@ impl UpdateService {
                 None,
                 check.latest_version.clone(),
                 "inventory_missing",
-                &format!("{display_name}（{package_name}）：清单中不存在，跳过"),
+                &format!("应用 {display_name}：应用未安装，跳过检测"),
                 serde_json::json!({
                     "reason": "inventory_missing",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            ).with_identity(&display_name, check.icon.as_deref()));
         };
 
         let installed_version = installed.version_name;
@@ -546,14 +749,14 @@ impl UpdateService {
                 Some(installed_version),
                 check.latest_version.clone(),
                 "no_installed_version",
-                &format!("{display_name}：已安装但无法获取版本号"),
+                &format!("应用 {display_name}：已安装但无法获取版本号，跳过检测"),
                 serde_json::json!({
                     "reason": "no_installed_version",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            ).with_identity(&display_name, check.icon.as_deref()));
         }
 
         let latest_version = check.latest_version.clone().unwrap_or_default();
@@ -564,14 +767,14 @@ impl UpdateService {
                 Some(installed_version.clone()),
                 Some(latest_version),
                 "no_channel_version",
-                &format!("{display_name}：渠道无版本信息（已安装 {installed_version}）"),
+                &format!("应用 {display_name}：渠道无版本信息（安装版本 {installed_version}），跳过检测"),
                 serde_json::json!({
                     "reason": "no_channel_version",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            ).with_identity(&display_name, check.icon.as_deref()));
         }
 
         if compare_versions(&latest_version, &installed_version) != Ordering::Greater {
@@ -581,14 +784,19 @@ impl UpdateService {
                 Some(installed_version.clone()),
                 Some(latest_version),
                 "up_to_date",
-                &format!("{display_name}：已是最新版本"),
+                &format!("应用 {display_name}：安装版本 {installed_version}"),
                 serde_json::json!({
                     "reason": "up_to_date",
                     "appId": app_id,
                     "channelKey": channel_code,
                 })
                 .to_string(),
-            ));
+            )
+            .with_extra_log(
+                CheckLogLevel::None,
+                format!("应用 {display_name} 已是最新版本：{installed_version}"),
+            )
+            .with_identity(&display_name, check.icon.as_deref()));
         }
 
         let fallback = match check.latest_download.clone() {
@@ -602,14 +810,14 @@ impl UpdateService {
                         Some(installed_version.clone()),
                         Some(latest_version.clone()),
                         "no_download",
-                        &format!("{display_name}：有更新但无可下载文件"),
+                        &format!("应用 {display_name}：安装版本 {installed_version}，发现新版本 {latest_version}，但无可下载文件，跳过检测"),
                         serde_json::json!({
                             "reason": "no_download",
                             "appId": app_id,
                             "channelKey": channel_code,
                         })
                         .to_string(),
-                    ));
+                    ).with_identity(&display_name, check.icon.as_deref()));
                 }
             },
         };
@@ -621,6 +829,31 @@ impl UpdateService {
             preferred.as_deref(),
         );
 
+        let identity_icon = check
+            .icon
+            .clone()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let platform = download
+            .platform
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("自动匹配");
+        let log_lines = vec![
+            (
+                CheckLogLevel::Installed,
+                format!("应用 {display_name}：安装版本 {installed_version}"),
+            ),
+            (
+                CheckLogLevel::Update,
+                format!("应用 {display_name} 发现新版本：{latest_version}"),
+            ),
+            (
+                CheckLogLevel::Info,
+                format!("应用 {display_name}：选择平台 {platform}"),
+            ),
+        ];
         let info = AppUpdateInfo {
             channel_id: channel_code.to_string(),
             app_id: app_id.to_string(),
@@ -645,8 +878,7 @@ impl UpdateService {
             update: Some(info),
             event: Some(event),
             skip_reason: None,
-            log_level: CheckLogLevel::Update,
-            log_text: format!("{display_name}：发现更新 {latest_version}"),
+            log_lines,
             outcome: Some(CheckOutcome {
                 app_id: app_id.to_string(),
                 channel_key: channel_code.to_string(),
@@ -655,6 +887,8 @@ impl UpdateService {
                 status: "update_available",
                 payload_json,
             }),
+            app_name: Some(display_name),
+            icon_url: identity_icon,
         })
     }
 
@@ -726,10 +960,42 @@ impl UpdateService {
         crate::migration::update_pref(&conn, key).map_err(db_error)
     }
 
-    fn last_checked_at(&self) -> Result<Option<i64>, Error> {
+    /// Persisted time of the last completed check (used by startup cache
+    /// restore, including an all-up-to-date result with zero updates).
+    pub fn last_checked_at(&self) -> Result<Option<i64>, Error> {
         Ok(self
             .read_pref(KEY_LAST_CHECKED)?
             .and_then(|raw| raw.parse::<i64>().ok()))
+    }
+
+    fn catalog_identity(
+        &self,
+        channel_code: &str,
+        app_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        let conn = self.db.reader().ok()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, icon FROM channel_apps WHERE app_id = ?1 \
+                 ORDER BY CASE WHEN channel_key = ?2 THEN 0 ELSE 1 END, add_time DESC \
+                 LIMIT 1",
+            )
+            .ok()?;
+        let (name, icon) = stmt
+            .query_row(rusqlite::params![app_id, channel_code], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .ok()?;
+        let name = name.trim().to_string();
+        let icon = icon.trim().to_string();
+        Some((
+            if name.is_empty() {
+                app_id.to_string()
+            } else {
+                name
+            },
+            (!icon.is_empty()).then_some(icon),
+        ))
     }
 
     fn preferred_apk(&self, channel_code: &str, app_id: &str) -> Result<Option<String>, Error> {
@@ -760,8 +1026,7 @@ fn rejection(
         update: None,
         event: None,
         skip_reason: Some(reason),
-        log_level: level_for_reason(reason),
-        log_text: log_text.to_string(),
+        log_lines: vec![(level_for_reason(reason), log_text.to_string())],
         outcome: Some(CheckOutcome {
             app_id: app_id.to_string(),
             channel_key: channel_code.to_string(),
@@ -770,6 +1035,8 @@ fn rejection(
             status: status_for_reason(reason),
             payload_json,
         }),
+        app_name: None,
+        icon_url: None,
     }
 }
 

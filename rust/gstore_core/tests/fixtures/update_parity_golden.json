@@ -66,18 +66,48 @@
         "time": 1710000000000
       },
       {
-        "level": "update",
-        "text": "Alpha：发现更新 2.0.0",
+        "level": "info",
+        "text": "开始检测应用：owner/alpha",
+        "time": 1710000000000
+      },
+      {
+        "level": "installed",
+        "text": "应用 Alpha：安装版本 1.0.0",
         "time": 1710000000000
       },
       {
         "level": "update",
-        "text": "Beta：发现更新 4.0.0",
+        "text": "应用 Alpha 发现新版本：2.0.0",
+        "time": 1710000000000
+      },
+      {
+        "level": "info",
+        "text": "应用 Alpha：选择平台 arm64-v8a",
+        "time": 1710000000000
+      },
+      {
+        "level": "info",
+        "text": "开始检测应用：owner/beta",
+        "time": 1710000000000
+      },
+      {
+        "level": "installed",
+        "text": "应用 Beta：安装版本 3.1.0",
         "time": 1710000000000
       },
       {
         "level": "update",
-        "text": "检测完成：发现 2 个可更新应用",
+        "text": "应用 Beta 发现新版本：4.0.0",
+        "time": 1710000000000
+      },
+      {
+        "level": "info",
+        "text": "应用 Beta：选择平台 universal",
+        "time": 1710000000000
+      },
+      {
+        "level": "update",
+        "text": "检测完成：共 2 个应用，更新 2 个，跳过 0 个",
         "time": 1710000000000
       }
     ],

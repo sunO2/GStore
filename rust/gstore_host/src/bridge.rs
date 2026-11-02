@@ -3096,7 +3096,7 @@ struct ChannelApiInner {
     registry: Arc<ChannelRegistry<SqliteChannelStore>>,
     pack: PackStore,
     secrets: FileSecretStore,
-    config: CoreConfig,
+    config: RwLock<CoreConfig>,
     http: Arc<dyn HttpPort>,
     script_http: Arc<dyn ScriptHttp>,
     metadata: Arc<dyn MetadataPort>,
@@ -3172,11 +3172,21 @@ impl ChannelApiInner {
             .read()
             .map_err(|_| invalid_arg("fdroid sources lock poisoned"))?;
         let sources = enabled_source_urls(&specs);
-        self.config
-            .clone()
-            .with_fdroid_sources(sources)
+        let base = self
+            .config
+            .read()
+            .map_err(|_| invalid_arg("channel config lock poisoned"))?
+            .clone();
+        base.with_fdroid_sources(sources)
             .map(|config| config.with_fdroid_asset_bases(fdroid_asset_bases(&specs)))
             .map_err(core_err)
+    }
+
+    fn github_config(&self) -> Result<CoreConfig, String> {
+        self.config
+            .read()
+            .map(|config| config.clone())
+            .map_err(|_| invalid_arg("channel config lock poisoned"))
     }
 }
 
@@ -3484,7 +3494,7 @@ impl ChannelApi {
                 registry,
                 pack,
                 secrets,
-                config,
+                config: RwLock::new(config),
                 http,
                 script_http,
                 metadata,
@@ -3527,22 +3537,23 @@ impl ChannelApi {
     ) -> Result<Option<Arc<dyn ChannelDriver>>, String> {
         let key = record.key.clone();
         let meta = record.meta.clone();
+        let github_config = self.inner.github_config()?;
         let driver: Option<Arc<dyn ChannelDriver>> = match record.kind() {
             ChannelKind::LocalDb => Some(Arc::new(
                 LocalDbDriver::new(key, meta.clone(), self.inner.db.clone())
                     .with_metadata(self.inner.metadata.clone())
-                    .with_github(self.inner.config.clone(), self.inner.http.clone()),
+                    .with_github(github_config.clone(), self.inner.http.clone()),
             )),
             ChannelKind::GStore => Some(Arc::new(
                 GStoreDriver::new(key, meta.clone(), self.inner.db.clone())
                     .with_metadata(self.inner.metadata.clone())
-                    .with_github(self.inner.config.clone(), self.inner.http.clone()),
+                    .with_github(github_config.clone(), self.inner.http.clone()),
             )),
             ChannelKind::Github => Some(Arc::new(GitHubDriver::new(
                 key,
                 meta,
                 self.inner.db.clone(),
-                self.inner.config.clone(),
+                github_config.clone(),
                 self.inner.http.clone(),
                 self.inner.metadata.clone(),
             ))),
@@ -3550,7 +3561,7 @@ impl ChannelApi {
                 key,
                 meta,
                 self.inner.db.clone(),
-                self.inner.config.clone(),
+                github_config.clone(),
                 self.inner.http.clone(),
             ))),
             ChannelKind::Fdroid => Some(Arc::new(FdroidDriver::new(
@@ -3929,6 +3940,46 @@ impl ChannelApi {
         let changed = self.driver(&key)?.do_update(None).map_err(core_err)?;
         push_channel_changed(&channel_key, kind);
         Ok(changed)
+    }
+
+    /// Persists (or clears) the GitHub token and rebinds channel drivers.
+    ///
+    /// Called immediately after login/logout so GitHub channel requests switch
+    /// from anonymous to authenticated (and back) without restarting the app.
+    pub fn set_github_token(&self, token: Option<String>) -> Result<(), String> {
+        let token = token.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        match &token {
+            Some(value) => self
+                .inner
+                .secrets
+                .set("core_config.github_token", value)
+                .map_err(core_err)?,
+            None => {
+                self.inner
+                    .secrets
+                    .remove("core_config.github_token")
+                    .map_err(core_err)?;
+            }
+        }
+        {
+            let mut config = self
+                .inner
+                .config
+                .write()
+                .map_err(|_| invalid_arg("channel config lock poisoned"))?;
+            *config = config
+                .clone()
+                .with_github_token(token)
+                .map_err(core_err)?;
+        }
+        self.bind_registry_drivers()
     }
 
     /// Replaces the active F-Droid source set and rebinds the F-Droid driver.
@@ -4314,7 +4365,7 @@ use gstore_core::catalog::refresh::{catalog_changed_event, refresh_catalog};
 use gstore_core::catalog::repo::{CatalogRepo, RepoEntry, RepoStatus};
 use gstore_core::catalog::service::CatalogService;
 use gstore_core::library::{LibraryDriverResolver, LibraryService};
-use gstore_core::update::service::{UpdateCheckReport, UpdateService};
+use gstore_core::update::service::{CheckLogLevel, UpdateCheckReport, UpdateProgress, UpdateService};
 
 fn validate_core_write_domain(domain: &str) -> Result<(), String> {
     if core_migration::is_core_write_domain(domain) {
@@ -5113,6 +5164,117 @@ pub struct UpdateReport {
     pub events_json: String,
 }
 
+/// Persisted update cache snapshot used by the Dart startup restore path.
+///
+/// The Rust core owns the authoritative cache; this DTO mirrors the same
+/// `update_prefs` values the legacy Dart `UpdateCache` read from
+/// SharedPreferences.
+#[derive(Debug, Clone)]
+pub struct CachedUpdateStateDto {
+    pub last_checked_at: Option<i64>,
+    pub updates_json: String,
+    pub logs_json: String,
+}
+
+/// One progressive event of an update check (FRB stream item).
+#[derive(Debug, Clone)]
+pub struct UpdateProgressDto {
+    pub total: i64,
+    pub index: i64,
+    pub app_id: String,
+    pub app_name: String,
+    pub icon_url: Option<String>,
+    pub log_level: Option<String>,
+    pub log_text: Option<String>,
+    pub is_result: bool,
+    pub names_json: Option<String>,
+    pub finished: bool,
+    pub error: Option<String>,
+    pub checked_at: i64,
+    pub updates_json: String,
+    pub skipped_json: String,
+    pub events_json: String,
+    pub used_cache: bool,
+}
+
+fn check_log_level_code(level: CheckLogLevel) -> &'static str {
+    match level {
+        CheckLogLevel::Info => "info",
+        CheckLogLevel::Installed => "installed",
+        CheckLogLevel::Update => "update",
+        CheckLogLevel::None => "none",
+        CheckLogLevel::Skip => "skip",
+        CheckLogLevel::Error => "error",
+    }
+}
+
+fn update_progress_dto(progress: UpdateProgress) -> UpdateProgressDto {
+    UpdateProgressDto {
+        total: i64::try_from(progress.total).unwrap_or(i64::MAX),
+        index: i64::try_from(progress.index).unwrap_or(i64::MAX),
+        app_id: progress.app_id,
+        app_name: progress.app_name,
+        icon_url: progress.icon_url,
+        log_level: progress.log_level.map(check_log_level_code).map(str::to_string),
+        log_text: progress.log_text,
+        is_result: progress.is_result,
+        names_json: progress
+            .names
+            .and_then(|names| serde_json::to_string(&names).ok()),
+        finished: false,
+        error: None,
+        checked_at: 0,
+        updates_json: String::new(),
+        skipped_json: String::new(),
+        events_json: String::new(),
+        used_cache: false,
+    }
+}
+
+impl UpdateProgressDto {
+    fn terminal(report: UpdateReport) -> Self {
+        Self {
+            total: report.total,
+            index: report.total,
+            app_id: String::new(),
+            app_name: String::new(),
+            icon_url: None,
+            log_level: None,
+            log_text: None,
+            is_result: false,
+            names_json: None,
+            finished: true,
+            error: None,
+            checked_at: report.checked_at,
+            updates_json: report.updates_json,
+            skipped_json: report.skipped_json,
+            events_json: report.events_json,
+            used_cache: report.used_cache,
+        }
+    }
+
+    fn failed(message: String) -> Self {
+        Self {
+            total: 0,
+            index: 0,
+            app_id: String::new(),
+            app_name: String::new(),
+            icon_url: None,
+            log_level: None,
+            log_text: None,
+            is_result: false,
+            names_json: None,
+            finished: true,
+            error: Some(message),
+            checked_at: 0,
+            updates_json: String::new(),
+            skipped_json: String::new(),
+            events_json: String::new(),
+            used_cache: false,
+        }
+    }
+}
+
 fn encode_update_report(report: UpdateCheckReport) -> Result<UpdateReport, String> {
     let updates_json = serde_json::to_string(&report.updates)
         .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?;
@@ -5172,6 +5334,30 @@ impl UpdateApi {
         encode_update_report(report)
     }
 
+    /// Streams per-app progress while running a full check.
+    ///
+    /// Emits start/app-start/app-result events, then one terminal event carrying
+    /// the same report as [`Self::check`] (or a typed error). The Dart facade
+    /// mirrors these events into the shared update page state so logs, the
+    /// progress wheel and the current app icon update in real time.
+    pub fn check_with_progress(
+        &self,
+        force: bool,
+        sink: crate::frb_generated::StreamSink<UpdateProgressDto>,
+    ) {
+        let result = self.service.check_all_with_progress(force, |progress| {
+            let _ = sink.add(update_progress_dto(progress));
+        });
+        let terminal = match result {
+            Ok(report) => match encode_update_report(report) {
+                Ok(report) => UpdateProgressDto::terminal(report),
+                Err(error) => UpdateProgressDto::failed(error),
+            },
+            Err(error) => UpdateProgressDto::failed(core_err(error)),
+        };
+        let _ = sink.add(terminal);
+    }
+
     /// Checks one app, preferring the cache; returns serialized
     /// `AppUpdateInfo` or `None`.
     pub fn check_app(
@@ -5196,6 +5382,20 @@ impl UpdateApi {
         let updates = self.service.list().map_err(core_err)?;
         serde_json::to_string(&updates)
             .map_err(|error| core_err(CoreError::Serialization(error.to_string())))
+    }
+
+    /// Returns the persisted result/log snapshot for startup cache restore.
+    pub fn cached_state(&self) -> Result<CachedUpdateStateDto, String> {
+        let updates = self.service.list().map_err(core_err)?;
+        let logs = self.service.cached_logs().map_err(core_err)?;
+        let last_checked_at = self.service.last_checked_at().map_err(core_err)?;
+        Ok(CachedUpdateStateDto {
+            last_checked_at,
+            updates_json: serde_json::to_string(&updates)
+                .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?,
+            logs_json: serde_json::to_string(&logs)
+                .map_err(|error| core_err(CoreError::Serialization(error.to_string())))?,
+        })
     }
 
     /// Drops `app_id` from the cache once the installed version caught up.
@@ -7131,6 +7331,77 @@ function main(method, params) {
         assert_eq!(value["payload"]["kind"], "js_local");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Given a live channel facade with no GitHub token, When the token is
+    /// applied and later cleared, Then the secret store and in-memory config
+    /// both follow and the channel drivers are rebound without error.
+    #[test]
+    fn set_github_token_updates_secret_and_live_config() {
+        let _serial = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let harness = harness("github_token_sync");
+        assert!(harness
+            .api
+            .inner
+            .github_config()
+            .expect("config")
+            .github_token()
+            .is_none());
+
+        harness
+            .api
+            .set_github_token(Some("  token-abc  ".to_string()))
+            .expect("set token");
+        assert_eq!(
+            harness
+                .api
+                .inner
+                .github_config()
+                .expect("config")
+                .github_token(),
+            Some("token-abc")
+        );
+        assert_eq!(
+            harness
+                .api
+                .inner
+                .secrets
+                .get("core_config.github_token")
+                .expect("secret get")
+                .as_deref(),
+            Some("token-abc")
+        );
+        harness.api.get("github".to_string()).expect("driver rebound");
+
+        harness.api.set_github_token(None).expect("clear token");
+        assert!(harness
+            .api
+            .inner
+            .github_config()
+            .expect("config")
+            .github_token()
+            .is_none());
+        assert!(harness
+            .api
+            .inner
+            .secrets
+            .get("core_config.github_token")
+            .expect("secret get")
+            .is_none());
+
+        harness
+            .api
+            .set_github_token(Some("   ".to_string()))
+            .expect("blank token clears");
+        assert!(harness
+            .api
+            .inner
+            .github_config()
+            .expect("config")
+            .github_token()
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&harness.root);
     }
 
     /// Given a `channel_apps` F-Droid row migrated before the source list was

@@ -12,6 +12,9 @@ import 'package:gstore/core/service/legacy_write_guard.dart';
 
 import 'state.dart';
 
+/// Rust 核心库文件名（位于 `<support>/gstore_core/data/`）。
+const String kRustCoreDbFileName = 'gstore_core.db';
+
 /// 删除判定结果。
 class _DeleteGuard {
   const _DeleteGuard.allowed([this.hint])
@@ -53,6 +56,10 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
   @visibleForTesting
   Directory? debugDatabasesDir;
 
+  /// 测试注入：Rust 核心库所在目录（`<support>/gstore_core/data`）。
+  @visibleForTesting
+  Directory? debugCoreDataDir;
+
   Future<Directory> _docsDir() async {
     if (debugDocsDir != null) return debugDocsDir!;
     return getApplicationDocumentsDirectory();
@@ -64,6 +71,18 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     return Directory(base);
   }
 
+  /// Rust 核心库目录；平台目录不可用时返回 null（不影响 Dart 库扫描）。
+  Future<Directory?> _coreDataDir() async {
+    if (debugCoreDataDir != null) return debugCoreDataDir;
+    try {
+      final support = await getApplicationSupportDirectory();
+      return Directory(p.join(support.path, 'gstore_core', 'data'));
+    } catch (e) {
+      appLog.warning('DatabaseManage: 读取 Rust 核心库目录失败 - $e');
+      return null;
+    }
+  }
+
   // ---------- 库发现 ----------
 
   /// 已知库的展示元数据（fileName → 展示名/描述/是否受管）。
@@ -72,6 +91,11 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'added_apps.db': ('我的应用', '已添加应用引用 + 标签', false),
     'channel_apps.db': ('渠道收藏', '各渠道添加的应用记录', false),
     'fdroid_repo.db': ('F-Droid 仓库', 'F-Droid 源与索引缓存', false),
+    kRustCoreDbFileName: (
+      'Rust 核心库',
+      'Rust core 数据库（更新 / 渠道 / 下载 / 配置）· 只读',
+      true,
+    ),
   };
 
   /// 展示用表中文名（表名 → 中文）。
@@ -83,6 +107,13 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'added_apps': '已添加应用',
     'added_app_tags': '应用标签',
     'channel_added_app': '渠道已添加应用',
+    'config_entry': '配置项',
+    'download_task': '下载任务',
+    'update_state': '更新状态',
+    'update_log': '更新日志',
+    'installed_app': '已安装应用',
+    'platform_facts': '设备信息',
+    'channel_apps': '渠道应用',
   };
 
   /// 受管只读主表：不允许行级删除（属 App 运行时管理的数据）。
@@ -109,6 +140,12 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
       final dbDir = await _sqfliteDir();
       if (!p.equals(dbDir.path, docs.path)) {
         await _scanDir(dbDir, found, seen);
+      }
+
+      // 3. Rust 核心库（gstore_core.db）：只读展示，不参与 Dart 写路径
+      final coreDir = await _coreDataDir();
+      if (coreDir != null) {
+        await _scanDir(coreDir, found, seen);
       }
 
       found.sort((a, b) => a.fileName.compareTo(b.fileName));
@@ -215,7 +252,8 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
             name: name,
             count: count,
             displayName: _knownTable[name],
-            readonly: _readonlyTables.containsKey(name),
+            readonly: db.fileName == kRustCoreDbFileName ||
+                _readonlyTables.containsKey(name),
           ));
         }
         state = state.copyWith(tables: tables);
@@ -323,6 +361,12 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
   /// 删除前守卫：返回是否允许 + 提示。
   Future<_DeleteGuard> _guardDelete(
       String table, Map<String, Object?> row) async {
+    // Rust 核心库由 Rust 拥有：管理页只提供浏览，禁止行级删除。
+    if (state.selectedDb?.fileName == kRustCoreDbFileName) {
+      return const _DeleteGuard.blocked(
+        'Rust 核心数据库由 Rust 管理，请在应用内通过对应功能修改',
+      );
+    }
     // 受管只读主表
     final readonlyReason = _readonlyTables[table];
     if (readonlyReason != null) {
@@ -338,6 +382,13 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     final rowid = row['_rowid_'];
     if (dbPath == null || rowid == null) return false;
     if (state.busy) return false;
+    if (state.selectedDb?.fileName == kRustCoreDbFileName) {
+      await AppDialogs.showWarningDialog(
+        title: '无法删除',
+        message: 'Rust 核心数据库由 Rust 管理，请在应用内通过对应功能修改。',
+      );
+      return false;
+    }
     state = state.copyWith(busy: true);
     try {
       // 跨域原始删除：按表名映射到拥有该域的 Rust 标记（未知表不设防）

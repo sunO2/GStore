@@ -17,6 +17,7 @@ class AppRoute {
   static String appSnapshotList = "/GStore/appSnapshotList";
   static String itTools = "/GStore/itTools";
   static String settings = "/GStore/settings";
+  static String about = "/GStore/about";
   static String themeSettings = "/GStore/themeSettings";
   static String backup = "/GStore/backup";
   static String webdavConfig = "/GStore/webdavConfig";

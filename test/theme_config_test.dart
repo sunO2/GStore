@@ -50,6 +50,31 @@ void main() {
   });
 
   group('theme grouped config', () {
+    test('default theme uses compact font and light border', () async {
+      const defaults = AppThemeConfig.default_;
+      expect(defaults.fontStyle, AppFontStyle.compact);
+      expect(defaults.radiusStyle, AppRadiusStyle.default_);
+      expect(defaults.borderStyle, AppBorderStyle.light);
+
+      final parsed = AppThemeConfig.fromJson(<String, dynamic>{});
+      expect(parsed.fontStyle, AppFontStyle.compact);
+      expect(parsed.borderStyle, AppBorderStyle.light);
+      expect(parsed.fontScale, 0.9);
+      expect(parsed.borderWidth, 0.5);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await _settle();
+      expect(
+        container.read(themeProvider).config.fontStyle,
+        AppFontStyle.compact,
+      );
+      expect(
+        container.read(themeProvider).config.borderStyle,
+        AppBorderStyle.light,
+      );
+    });
+
     test('theme mode uses theme.mode wire key and survives reload', () async {
       expect(ConfigKeys.themeMode, 'theme.mode');
       expect(ConfigKeys.themeConfig, 'theme.config');

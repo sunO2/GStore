@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -121,6 +122,7 @@ class UserManager {
       // 设置全局授权头
       DioClient.instance.authorization = token;
       debugPrint('UserManager: 已设置授权头');
+      await _syncGithubTokenToRust(token);
 
       // 尝试读取用户信息
       final userInfoJson = await _secureStorage.read(key: _userInfoKey);
@@ -272,6 +274,7 @@ class UserManager {
           await saveToken(auth.accessToken!);
           _setUserInfo(user);
           await _secureStorage.write(key: _userInfoKey, value: user.toJson());
+          await _syncGithubTokenToRust(auth.accessToken);
           completer.complete(user);
         } else {
           DioClient.instance.authorization = null;
@@ -362,6 +365,14 @@ class UserManager {
       appLog.error('UserManager: ❌ 未知错误 - 获取设备码失败 - $e');
       AppDialogs.showError('发生未知错误: $e', title: '获取验证码失败');
       return AuthDeviceResponse();
+    }
+  }
+
+  Future<void> _syncGithubTokenToRust(String? token) async {
+    try {
+      await RustChannelFacade.instance.setGithubToken(token: token);
+    } catch (e) {
+      appLog.error('UserManager: 同步 GitHub Token 到 Rust 失败 - $e');
     }
   }
 
@@ -497,6 +508,7 @@ class UserManager {
 
       // 清除 Dio 的授权头
       DioClient.instance.authorization = null;
+      await _syncGithubTokenToRust(null);
 
       // 取消任何进行中的登录
       cancelLogin();
