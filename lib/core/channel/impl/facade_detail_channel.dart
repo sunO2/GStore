@@ -6,7 +6,6 @@
 /// `StandardDetailChannel` needs an `IChannel` handle this lane does not have.
 library;
 
-import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/core.dart';
