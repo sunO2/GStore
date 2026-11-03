@@ -255,6 +255,8 @@ jobs:
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt
 
       - name: Cache Flutter pub
         uses: actions/cache@v6
@@ -372,15 +374,15 @@ jobs:
         run: flutter pub get
 
       - name: Build release APK (arm64)
-        run: flutter build apk --release --target-platform android-arm64
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
 
       - name: APK budget gate
-        run: bash scripts/qa/apk-budget.sh --apk build/app/outputs/flutter-apk/app-release.apk
+        run: bash scripts/qa/apk-budget.sh --apk build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 
       - name: Upload APK artifact (CI-only; not committed)
         uses: actions/upload-artifact@v4
         with:
           name: gstore-wave01-arm64-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           if-no-files-found: error
           retention-days: 7
