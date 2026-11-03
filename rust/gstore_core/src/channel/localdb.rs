@@ -21,7 +21,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rusqlite::{Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{Map, Value};
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
@@ -29,8 +29,8 @@ use super::github_releases::{apply_repo_extra, GitHubReleases};
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
-    AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
-    DetailSection, detail_labels, insert_info_tag, summary_labels,
+    detail_labels, insert_info_tag, summary_labels, AppDetail, AppDownload, AppSummary, AppUpdate,
+    ChannelKey, ChannelKind, ChannelMeta, DetailSection,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -102,6 +102,27 @@ impl LocalDbDriver {
         };
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|error| Error::Io(format!("localdb row: {error}")))
+    }
+
+    pub(crate) fn list_page(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<AppSummary>, usize), Error> {
+        let conn = self.reader()?;
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM apps", [], |row| row.get(0))
+            .map_err(|error| Error::Io(format!("localdb count: {error}")))?;
+        let mut statement = conn
+            .prepare(&format!("{APP_COLUMNS} ORDER BY rowid LIMIT ?1 OFFSET ?2"))
+            .map_err(|error| Error::Io(format!("localdb prepare: {error}")))?;
+        let rows = statement
+            .query_map(params![i64::from(limit), i64::from(offset)], row_to_summary)
+            .map_err(|error| Error::Io(format!("localdb query: {error}")))?;
+        let page = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| Error::Io(format!("localdb row: {error}")))?;
+        Ok((page, usize::try_from(total).unwrap_or(usize::MAX)))
     }
 
     fn load_app(&self, app_id: &str) -> Result<Option<AppSummary>, Error> {
@@ -362,25 +383,14 @@ pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>)
         .as_ref()
         .filter(|categories| !categories.is_empty())
     {
-        extra.insert(
-            "categories".to_string(),
-            serde_json::json!(categories),
-        );
-        insert_info_tag(
-            &mut extra,
-            "categories",
-            "分类",
-            categories.join(" / "),
-        );
+        extra.insert("categories".to_string(), serde_json::json!(categories));
+        insert_info_tag(&mut extra, "categories", "分类", categories.join(" / "));
     }
     if let Some(repo) = source.repo {
         apply_repo_extra(&mut extra, repo);
     }
     if let Some(readme_text) = readme.as_deref().filter(|value| !value.trim().is_empty()) {
-        extra.insert(
-            "readme".to_string(),
-            Value::String(readme_text.to_string()),
-        );
+        extra.insert("readme".to_string(), Value::String(readme_text.to_string()));
     }
 
     AppDetail {
@@ -745,7 +755,10 @@ mod tests {
 
         let info = driver.get_app_info("com.example.icon", false).unwrap();
 
-        assert_eq!(info.icon, "", "without owner/repo there is no fallback path");
+        assert_eq!(
+            info.icon, "",
+            "without owner/repo there is no fallback path"
+        );
     }
 
     #[test]

@@ -49,17 +49,11 @@ impl CatalogService {
 
     /// Returns one page of [`CatalogService::list`] plus the unpaged total.
     ///
-    /// `offset` past the end and `limit == 0` both yield an empty page. Because
-    /// the slice is taken from the same `rowid`-ordered list, concatenating
-    /// pages reproduces [`CatalogService::list`] exactly.
+    /// The page is read with SQL `LIMIT/OFFSET` (never by loading the whole
+    /// table), so a page cost does not grow with the catalog size. `offset`
+    /// past the end and `limit == 0` both yield an empty page.
     pub fn list_page(&self, offset: u32, limit: u32) -> Result<(Vec<AppSummary>, usize), Error> {
-        let all = self.list()?;
-        let total = all.len();
-        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
-        let end = start
-            .saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
-            .min(total);
-        Ok((all[start..end].to_vec(), total))
+        self.driver.list_page(offset, limit)
     }
 
     /// Searches by keyword: FTS5 `"word"*` first, then `LIKE %word%` without
