@@ -90,7 +90,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: clippy, rustfmt
 
@@ -254,7 +254,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
 
       - name: Cache Flutter pub
         uses: actions/cache@v6
@@ -316,7 +316,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
       - name: Set up Rust toolchain (arm64 Android target)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           targets: aarch64-linux-android
 
@@ -357,9 +357,9 @@ jobs:
           set -euo pipefail
           TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
           LINKER="$TOOLCHAIN/bin/aarch64-linux-android21-clang"
+          source rust/android_env.sh
+          android_env "$NDK_PATH" aarch64-linux-android 21
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
-          export CC_aarch64_linux_android="$LINKER"
-          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
           cargo build --manifest-path rust/gstore_host/Cargo.toml \
             --release --target aarch64-linux-android
           SO="rust/gstore_host/target/aarch64-linux-android/release/libgstore_host.so"

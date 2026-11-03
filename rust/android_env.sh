@@ -114,7 +114,11 @@ android_env() {
     export "AR_${target_env}=$ar"
     export "CARGO_TARGET_${target_upper}_LINKER=$clang"
     export LIBCLANG_PATH="$libclang_dir"
-    export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sysroot --target=${clang_triple}${api} -I${clang_include}"
+    # -resource-dir 覆盖 libclang 默认内建头目录：CI runner 的系统 libclang
+    # 版本与 NDK sysroot 不一致时，-I 会与系统 stdint.h 撞 include guard，
+    # 导致 NDK 的 stdint.h 被跳过（unknown type name 'uint32_t'）。
+    local clang_resdir="${clang_include%/include}"
+    export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sysroot --target=${clang_triple}${api} -resource-dir ${clang_resdir}"
     # bindgen 也识别 target 专属变量；同时设置，避免调用方断言的 target 与全局不一致。
     export "BINDGEN_EXTRA_CLANG_ARGS_${target_env}=$BINDGEN_EXTRA_CLANG_ARGS"
 

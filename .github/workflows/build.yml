@@ -29,7 +29,7 @@ jobs:
 
       # ── Rust Android 模块构建所需工具链 ──────────────────────────────────
       - name: Set up Rust toolchain (Android targets)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           # build_android_rust.sh 会为这 4 个 target 构建宿主 + qr/analyzer/repo/download/proxy 模块
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
