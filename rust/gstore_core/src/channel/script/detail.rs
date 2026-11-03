@@ -160,6 +160,26 @@ impl ScriptDetail {
         self.call_main("versionOptions", &params)
     }
 
+    /// `getAppDetail({appId})`, mapped to the typed [`AppDetail`].
+    ///
+    /// This is the detail page's initial-load counterpart of
+    /// [`Self::switch_version_detail`]: a pack's `getAppDetail` and
+    /// `switchVersion` replies share one shape, so the conversion lives once in
+    /// [`convert::detail`]. Running it on the page-scoped runtime means the
+    /// initial page and every later switch read the SAME `detail.js` code path
+    /// (never the entry channel's divergent `getAppDetail` copy).
+    ///
+    /// A JSON `null` result (unimplemented method / `{ok:false}` / a JS throw)
+    /// and a non-object payload both degrade to `Ok(None)`, matching Dart's
+    /// `decoded is! Map` check so the caller keeps the prefill.
+    pub fn get_app_detail(&self, app_id: &str) -> Result<Option<AppDetail>, Error> {
+        let params = dispatch::params(&[("appId", JsonValue::String(app_id.to_owned()))]);
+        match self.call_main("getAppDetail", &params)? {
+            Some(value) if value.is_object() => convert::detail(&value).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// `switchVersion({appId, env, version, build?})`.
     pub fn switch_version(
         &self,

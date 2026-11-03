@@ -3,6 +3,7 @@ import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailInfoView.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/page/detail/state.dart';
@@ -149,10 +150,10 @@ class StandardDetailChannel implements IDetailChannel {
     final effectivePackageName = (baseDetail.packageName?.isNotEmpty ?? false)
         ? baseDetail.packageName!
         : request.packageName;
-    final effectiveBase = (effectivePackageName != null &&
-            effectivePackageName.isNotEmpty)
-        ? baseDetail.copyWith(packageName: effectivePackageName)
-        : baseDetail;
+    final effectiveBase =
+        (effectivePackageName != null && effectivePackageName.isNotEmpty)
+            ? baseDetail.copyWith(packageName: effectivePackageName)
+            : baseDetail;
     return effectiveBase;
   }
 
@@ -217,8 +218,12 @@ class StandardDetailChannel implements IDetailChannel {
       throw Exception(result.error ?? 'Failed to load app detail');
     }
     final detail = result.data!;
-    state.detailInfo = detail;
+    state.detailInfo = detail is AppDetailInfoView
+        ? _ProgressiveDetailInfo(detail.inner)
+        : detail;
     state.downloads = detail.downloads;
+    state.readmeLoading = true;
+    await _loadReadme(state);
     await _checkInstalledState(state, detail.packageName.trim());
   }
 
@@ -268,7 +273,8 @@ class StandardDetailChannel implements IDetailChannel {
   }
 
   /// 检测安装状态（packageName 就绪后调用；插件失败已容忍，不影响加载流程）。
-  Future<void> _checkInstalledState(DetailState state, String? packageToCheck) async {
+  Future<void> _checkInstalledState(
+      DetailState state, String? packageToCheck) async {
     if (packageToCheck == null || packageToCheck.isEmpty) {
       appLog.error('StandardDetailChannel: 无法检测安装状态 - 没有可用的包名');
       return;
@@ -277,7 +283,8 @@ class StandardDetailChannel implements IDetailChannel {
       final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
       if (isInstalled == true) {
         state.installInfo = await InstalledApps.getAppInfo(packageToCheck);
-        appLog.info('StandardDetailChannel: ✓ 应用已安装 - ${state.installInfo?.packageName}');
+        appLog.info(
+            'StandardDetailChannel: ✓ 应用已安装 - ${state.installInfo?.packageName}');
       } else {
         appLog.info('StandardDetailChannel: ✗ 应用未安装 - "$packageToCheck"');
       }
@@ -322,7 +329,8 @@ class StandardDetailChannel implements IDetailChannel {
             extra: extra,
             // metadata versionName 优先（APK 提取，更准确）；否则 releases 首项
             // （_loadDownloads 兜底 inner.version ?? downloads.first.version）
-            version: metaVersion?.isNotEmpty == true ? metaVersion : inner.version,
+            version:
+                metaVersion?.isNotEmpty == true ? metaVersion : inner.version,
             sections: sections,
           );
         });
@@ -369,16 +377,16 @@ class StandardDetailChannel implements IDetailChannel {
   Future<void> _loadReadme(DetailState state) async {
     state.readmeLoading = true;
     try {
-      final result = await channel.fetchReadme(request.appId);
-      if (result.success && result.data != null) {
-        final readme = result.data!;
+      final readme = await ChannelManager.instance
+          .fetchReadmeByCode(channelCode, request.appId);
+      if (readme != null && readme.isNotEmpty) {
         state.readme = readme;
         _updateDetailInfo((inner) {
           final extra = Map<String, dynamic>.from(inner.extra);
           extra['readme'] = readme;
           final sections = [...inner.sections];
           // 与原 _buildSections 语义一致：README 非空才声明区块
-          if (readme.isNotEmpty && !sections.contains(DetailSection.readme)) {
+          if (!sections.contains(DetailSection.readme)) {
             sections.add(DetailSection.readme);
           }
           return inner.copyWith(extra: extra, sections: sections);
@@ -460,7 +468,8 @@ class StandardDetailChannel implements IDetailChannel {
   Future<void> startDownload(DownloadInfo info) async {
     final callbacks = _callbacks;
     if (callbacks == null) {
-      appLog.warning('StandardDetailChannel: startDownload 未 bind（callbacks 未注入），跳过');
+      appLog.warning(
+          'StandardDetailChannel: startDownload 未 bind（callbacks 未注入），跳过');
       return;
     }
 
@@ -477,12 +486,15 @@ class StandardDetailChannel implements IDetailChannel {
       return;
     }
 
-    appLog.info('StandardDetailChannel: startDownload - name=${info.name} url=$downloadUrl');
+    appLog.info(
+        'StandardDetailChannel: startDownload - name=${info.name} url=$downloadUrl');
   }
 
   /// 版本/环境切换选项（标准渠道不支持，默认 null）
   @override
-  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env}) async => null;
+  Future<Map<String, dynamic>?> versionOptions(String appId,
+          {String? env}) async =>
+      null;
 
   /// 切换版本/环境（标准渠道不支持，默认 null）
   @override
@@ -491,7 +503,8 @@ class StandardDetailChannel implements IDetailChannel {
     required String env,
     required String version,
     Map<String, dynamic>? build,
-  }) async => null;
+  }) async =>
+      null;
 
   /// 指定版本历史构建（标准渠道不支持，默认 null）
   @override
@@ -499,7 +512,8 @@ class StandardDetailChannel implements IDetailChannel {
     required String appId,
     required String version,
     required String env,
-  }) async => null;
+  }) async =>
+      null;
 
   /// 更新下载区（标准渠道无代理数据，默认 no-op）
   @override

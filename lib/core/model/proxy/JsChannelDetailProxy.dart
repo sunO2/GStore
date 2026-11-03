@@ -36,8 +36,18 @@ class JsChannelDetailProxy extends ChannelDetailProxy {
   String get icon => data['icon']?.toString() ?? '';
 
   @override
-  String get description =>
-      data['description']?.toString() ?? data['des']?.toString() ?? '';
+  String get description {
+    final description = data['description']?.toString() ?? '';
+    final des = data['des']?.toString() ?? '';
+    // Older pingan packs put the query appId into description while the real
+    // intro stayed in des. Prefer des when description is just the appId.
+    if (description.isEmpty ||
+        description == appId ||
+        (packageName.isNotEmpty && description == packageName)) {
+      return des.isNotEmpty ? des : description;
+    }
+    return description;
+  }
 
   @override
   String? get version => data['version']?.toString();

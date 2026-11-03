@@ -190,9 +190,30 @@ abstract class GithubTokenSyncBackend {
   Future<void> setGithubToken({String? token});
 }
 
+/// Optional capability: progressive README fetch for facade channels.
+abstract interface class ChannelReadmeSource {
+  Future<String?> fetchReadme({required String key, required String appId});
+}
+
+/// Optional capability: detail-page initial load through the pack's
+/// `detail.js` — the same implementation `scriptSwitchVersion` uses.
+///
+/// Backends that do not implement it fall back to
+/// [ChannelApiBackend.getAppDetail] (the entry-channel lane).
+abstract interface class ScriptDetailAppDetailSource {
+  Future<rust.ChannelAppDetailInfo?> scriptGetAppDetail({
+    required String key,
+    required String appId,
+  });
+}
+
 /// Production backend: lazily initialises the generated `ChannelApi`.
 class FrbChannelApiBackend
-    implements ChannelApiBackend, GithubTokenSyncBackend {
+    implements
+        ChannelApiBackend,
+        GithubTokenSyncBackend,
+        ChannelReadmeSource,
+        ScriptDetailAppDetailSource {
   FrbChannelApiBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   /// Optional explicit directories; when omitted, app support subdirectories
@@ -382,6 +403,17 @@ class FrbChannelApiBackend
             appId: appId,
             forceRefresh: forceRefresh,
           ));
+
+  @override
+  Future<String?> fetchReadme({required String key, required String appId}) =>
+      _call((api) => api.fetchReadme(key: key, appId: appId));
+
+  @override
+  Future<rust.ChannelAppDetailInfo?> scriptGetAppDetail({
+    required String key,
+    required String appId,
+  }) =>
+      _call((api) => api.scriptGetAppDetail(key: key, appId: appId));
 
   @override
   Future<rust.ScriptVersionOptions?> scriptVersionOptions({
@@ -619,6 +651,33 @@ class RustChannelFacade {
         forceRefresh: forceRefresh,
       );
 
+  /// Progressive README fetch; null when the backend has no optional capability.
+  Future<String?> fetchReadme(
+      {required String key, required String appId}) async {
+    final backend = _backend;
+    if (backend is ChannelReadmeSource) {
+      return (backend as ChannelReadmeSource)
+          .fetchReadme(key: key, appId: appId);
+    }
+    return null;
+  }
+
+  /// Detail-page initial load through the pack's `detail.js`.
+  ///
+  /// Falls back to [ChannelApiBackend.getAppDetail] when the backend does not
+  /// implement [ScriptDetailAppDetailSource] (tests / alternative lanes).
+  Future<rust.ChannelAppDetailInfo?> scriptGetAppDetail({
+    required String key,
+    required String appId,
+  }) async {
+    final backend = _backend;
+    if (backend is ScriptDetailAppDetailSource) {
+      return (backend as ScriptDetailAppDetailSource)
+          .scriptGetAppDetail(key: key, appId: appId);
+    }
+    return backend.getAppDetail(key: key, appId: appId, forceRefresh: false);
+  }
+
   /// Runs a pack's `detail.js` `versionOptions`; see
   /// [ChannelApiBackend.scriptVersionOptions].
   Future<rust.ScriptVersionOptions?> scriptVersionOptions({
@@ -711,7 +770,8 @@ class RustChannelFacade {
     required bool forceRefresh,
   }) async {
     try {
-      return await _backend.getAllCategories(key: key, forceRefresh: forceRefresh);
+      return await _backend.getAllCategories(
+          key: key, forceRefresh: forceRefresh);
     } on ChannelApiException catch (error) {
       if (error.code == 'unsupported') {
         return const <rust.ChannelCategoryInfo>[];

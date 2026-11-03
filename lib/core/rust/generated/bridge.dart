@@ -191,6 +191,9 @@ abstract class ChannelApi implements RustOpaqueInterface {
   /// Exports an installed pack as a flat zip at `path`; returns bytes written.
   Future<BigInt> exportPack({required String key, required String path});
 
+  /// Progressive detail block: README only.
+  Future<String?> fetchReadme({required String key, required String appId});
+
   /// Reads one registered channel.
   Future<ChannelEntry> get_({required String key});
 
@@ -277,6 +280,19 @@ abstract class ChannelApi implements RustOpaqueInterface {
   ///
   /// A missing/non-array result degrades to an empty list.
   Future<List<ChannelDetailAction>> scriptDetailMenu(
+      {required String key, required String appId});
+
+  /// Runs a pack's `detail.js` `getAppDetail({appId})` and returns the typed
+  /// detail page.
+  ///
+  /// This is the detail page's INITIAL load path. It runs on a per-call
+  /// [`ScriptDetail`] (the same runtime `script_switch_version` uses), so the
+  /// first render and every later version/build switch read one implementation
+  /// (`detail.js`) instead of the entry channel's separate `getAppDetail`
+  /// copy. Returns `Ok(None)` when the pack answers JSON null / `{ok:false}`
+  /// (unimplemented or no detail); an unknown/uninstalled pack is a typed
+  /// `not_found`.
+  Future<ChannelAppDetailInfo?> scriptGetAppDetail(
       {required String key, required String appId});
 
   /// Runs a pack's `detail.js` `switchVersion({appId, env, version, build?})`

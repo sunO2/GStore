@@ -11,6 +11,7 @@ import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailInfoView.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/page/detail/state.dart';
 import 'package:installed_apps/installed_apps.dart';
@@ -55,6 +56,9 @@ class FacadeDetailChannel implements IDetailChannel {
       final detail = result.data!;
       state.detailInfo = detail;
       state.downloads = detail.downloads;
+      // README 最后请求：详情/下载列表先注入，长 README 不阻塞首屏。
+      state.readmeLoading = true;
+      await _loadReadme(state);
       await _checkInstalledState(state, detail.packageName.trim());
     } catch (e) {
       state.errorMessage = '加载详情失败: $e';
@@ -64,6 +68,30 @@ class FacadeDetailChannel implements IDetailChannel {
       state.downloadsLoading = false;
       state.readmeLoading = false;
       state.statisticsLoading = false;
+    }
+  }
+
+  Future<void> _loadReadme(DetailState state) async {
+    try {
+      final readme =
+          await ChannelManager.instance.fetchReadmeByCode(channelCode, appId);
+      if (readme == null || readme.isEmpty) return;
+      state.readme = readme;
+      final detail = state.detailInfo;
+      if (detail is AppDetailInfoView) {
+        final inner = detail.inner;
+        final extra = Map<String, dynamic>.from(inner.extra)
+          ..['readme'] = readme;
+        final sections = [...inner.sections];
+        if (!sections.contains(DetailSection.readme)) {
+          sections.add(DetailSection.readme);
+        }
+        state.detailInfo = AppDetailInfoView(
+          inner.copyWith(extra: extra, sections: sections),
+        );
+      }
+    } catch (e) {
+      appLog.error('FacadeDetailChannel: 加载 README 失败（独立降级） - $e');
     }
   }
 
@@ -91,7 +119,8 @@ class FacadeDetailChannel implements IDetailChannel {
   Future<void> startDownload(DownloadInfo info) async {}
 
   @override
-  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env}) async =>
+  Future<Map<String, dynamic>?> versionOptions(String appId,
+          {String? env}) async =>
       null;
 
   @override

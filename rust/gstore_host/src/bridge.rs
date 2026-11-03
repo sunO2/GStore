@@ -4102,6 +4102,13 @@ impl ChannelApi {
             .map(ChannelAppDetailInfo::from)
     }
 
+    /// Progressive detail block: README only.
+    pub fn fetch_readme(&self, key: String, app_id: String) -> Result<Option<String>, String> {
+        self.driver(&key)?
+            .fetch_readme(&app_id)
+            .map_err(core_err)
+    }
+
     /// Adds/saves an app through the channel driver.
     pub fn add_app(&self, key: String, app: ChannelAppInfo) -> Result<(), String> {
         let channel_key = self.channel_key(&key)?;
@@ -4198,6 +4205,27 @@ impl ChannelApi {
                 version: current_version.as_deref(),
             })?;
             Ok(outcome.and_then(|value| ScriptVersionOptions::from_value(&value)))
+        })
+    }
+
+    /// Runs a pack's `detail.js` `getAppDetail({appId})` and returns the typed
+    /// detail page.
+    ///
+    /// This is the detail page's INITIAL load path. It runs on a per-call
+    /// [`ScriptDetail`] (the same runtime `script_switch_version` uses), so the
+    /// first render and every later version/build switch read one implementation
+    /// (`detail.js`) instead of the entry channel's separate `getAppDetail`
+    /// copy. Returns `Ok(None)` when the pack answers JSON null / `{ok:false}`
+    /// (unimplemented or no detail); an unknown/uninstalled pack is a typed
+    /// `not_found`.
+    pub fn script_get_app_detail(
+        &self,
+        key: String,
+        app_id: String,
+    ) -> Result<Option<ChannelAppDetailInfo>, String> {
+        self.with_script_detail(&key, |detail| {
+            let detail = detail.get_app_detail(&app_id)?;
+            Ok(detail.map(ChannelAppDetailInfo::from))
         })
     }
 
@@ -6902,6 +6930,25 @@ function main(method, params) {
       packOnly: 'keep-me',
     } };
   }
+  if (method === 'getAppDetail') {
+    return { ok: true, data: {
+      appId: params.appId,
+      name: 'Demo',
+      icon: 'icon.png',
+      description: 'detail.js intro',
+      version: '1.0.0',
+      packageName: 'com.example.demo',
+      sections: ['downloads', 'screenshots'],
+      screenshots: ['https://js.test/shot-1.png'],
+      downloads: [{
+        url: 'https://js.test/demo-1.0.0.apk',
+        name: 'demo-1.0.0.apk',
+        version: '1.0.0',
+        extra: { size: { icon: 'sd_card', text: '10 MB' } },
+      }],
+      extra: { env: 'sit' },
+    } };
+  }
   if (method === 'switchVersion') {
     return { ok: true, data: {
       appId: params.appId,
@@ -7030,6 +7077,51 @@ function main(method, params) {
         drop(harness);
     }
 
+    /// Given a pack whose `detail.js` answers `getAppDetail`, When the detail
+    /// page's initial load runs, Then `script_get_app_detail` reads detail.js
+    /// (sections/screenshots/download tags present) instead of entry.js.
+    #[test]
+    fn channel_api_script_get_app_detail_uses_detail_js() {
+        let harness = harness("script_detail_init");
+        let api = &harness.api;
+        let pack = harness.root.join("detail_init.zip");
+        write_detail_pack(&pack, SCRIPT_DETAIL_JS);
+        api.import_pack(pack.to_string_lossy().into_owned())
+            .expect("import detail pack");
+
+        let detail = api
+            .script_get_app_detail(
+                "js_detail_init".to_string(),
+                "com.example.demo".to_string(),
+            )
+            .expect("initial detail")
+            .expect("initial detail present");
+        assert_eq!(detail.description, "detail.js intro");
+        assert_eq!(detail.version.as_deref(), Some("1.0.0"));
+        assert!(
+            detail.sections.contains(&"downloads".to_string()),
+            "{:?}",
+            detail.sections
+        );
+        assert!(
+            detail.sections.contains(&"screenshots".to_string()),
+            "{:?}",
+            detail.sections
+        );
+        assert_eq!(detail.downloads.len(), 1);
+        assert!(
+            detail.downloads[0]
+                .extra_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("sd_card"),
+            "{:?}",
+            detail.downloads[0].extra_json
+        );
+
+        drop(harness);
+    }
+
     #[test]
     fn channel_api_script_unknown_pack_not_found() {
         let harness = harness("script_unknown_pack");
@@ -7057,6 +7149,14 @@ function main(method, params) {
             )
             .expect_err("unknown pack must be typed");
         assert!(switch_err.starts_with("not_found:"), "{switch_err}");
+
+        let init_err = api
+            .script_get_app_detail(
+                "js_does_not_exist".to_string(),
+                "com.example.demo".to_string(),
+            )
+            .expect_err("unknown pack must be typed");
+        assert!(init_err.starts_with("not_found:"), "{init_err}");
 
         let history_err = api
             .script_build_history(

@@ -517,6 +517,28 @@ class ChannelManager {
     return channel.getAppDetail(appId, forceRefresh: forceRefresh);
   }
 
+  /// Progressive README fetch for the detail page; failures degrade to null.
+  Future<String?> fetchReadmeByCode(String code, String appId) async {
+    if (_facadeEligibleCode(code)) {
+      try {
+        return await RustChannelFacade.instance.fetchReadme(
+          key: code,
+          appId: appId,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+    final channel = getChannelByCode(code);
+    if (channel == null) return null;
+    try {
+      final result = await channel.fetchReadme(appId);
+      return result.success ? result.data : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 按渠道 code 保存应用到渠道（发现页「添加」用）。
   ///
   /// 门面路径把 [AppSummary] 映射为 FRB `ChannelAppInfo` 后写 core 的
@@ -764,8 +786,8 @@ class ChannelManager {
     if (_facadeEligibleType(from)) {
       final fromType = from ?? _defaultChannelType;
       try {
-        final updated =
-            await RustChannelFacade.instance.checkUpdate(key: _rustChannelKey(from));
+        final updated = await RustChannelFacade.instance
+            .checkUpdate(key: _rustChannelKey(from));
         return ChannelResult.success(data: updated, from: fromType);
       } catch (e) {
         return ChannelResult.failure(from: fromType, error: e.toString());
@@ -812,8 +834,7 @@ class ChannelManager {
 
     if (CoreFlags.channels) {
       for (var channel in enabledChannels) {
-        results[channel.info.type] =
-            await checkUpdate(from: channel.info.type);
+        results[channel.info.type] = await checkUpdate(from: channel.info.type);
       }
       return results;
     }
