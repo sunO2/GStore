@@ -55,13 +55,14 @@ ignore = [
   "RUSTSEC-2026-0340",
   "RUSTSEC-2026-0343",
   # --- zip ------------------------------------------------------------------
-  # reason: all three affect ZipArchive::extract()/ZipStreamReader::extract();
+  # reason: these affect ZipArchive::extract()/ZipStreamReader::extract();
   #         no `.extract(` call site exists (readers use ZipArchive::new +
   #         by_index).  Fix needs zip >= 9.0.0 (major bump).
   # review: 2027-01-31.
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0429",
   # --- anyhow (unsound, not reachable here) ----------------------------------
   # reason: Error::downcast_mut() unsoundness; this tree has zero downcast_mut()
   #         call sites (grep -rn downcast_mut rust/ --include='*.rs' = 0).  Fix

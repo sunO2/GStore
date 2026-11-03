@@ -278,6 +278,19 @@ review_date = "2027-01-31"
 plan_ref = "Todo 2 / G-A2"
 
 [[suppressed]]
+id = "RUSTSEC-2026-0429"
+crate = "zip"
+kind = "vulnerability"
+severity = "high (CVSS 7.5, denial-of-service)"
+affected_versions = "< 9.0.0"
+applies_to = ["gstore_core@2.6.1", "gstore_host@2.6.1", "gstore_mod_analyzer@2.4.2", "gstore_mod_repo@2.4.2"]
+fix_version = "9.0.0"
+in_build_graph = true
+reason = "Affects ZipArchive::extract() on a symlink entry; no `.extract(` call site exists (readers use ZipArchive::new + by_index). Fix needs zip >= 9.0.0 (major bump)."
+review_date = "2027-01-31"
+plan_ref = "Todo 2 / G-A2"
+
+[[suppressed]]
 id = "RUSTSEC-2026-0190"
 crate = "anyhow"
 kind = "unsound"
