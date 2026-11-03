@@ -197,7 +197,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('默认收起：基础行（包名/当前版本/开发者/渠道）存在，统计 chips 不存在', (tester) async {
+  testWidgets('默认展示基础行与统计 chips；无项目主页时无展开按钮', (tester) async {
     final info = _FakeDetailInfo(
       versionValue: '1.0.24',
       developerValue: 'OpenSource Team',
@@ -216,11 +216,13 @@ void main() {
     expect(find.text('OpenSource Team'), findsOneWidget);
     expect(find.text('渠道'), findsOneWidget);
     expect(find.text('github'), findsOneWidget);
-    // 展开内容不可见：统计 chips 与项目主页
-    expect(find.byIcon(TablerIcons.star_filled), findsNothing);
-    expect(find.text('项目主页'), findsNothing);
-    // 存在可展开内容 → 展开按钮可见
-    expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
+    // 统计 chips 默认可见
+    expect(find.byIcon(TablerIcons.star_filled), findsOneWidget);
+    expect(find.text('1.2k'), findsOneWidget);
+    expect(find.byIcon(TablerIcons.arrows_split), findsOneWidget);
+    expect(find.text('56'), findsOneWidget);
+    // 没有可展开链接 → 无展开按钮
+    expect(find.byIcon(TablerIcons.chevron_down), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -255,7 +257,8 @@ void main() {
     await tester.tap(find.byIcon(TablerIcons.chevron_up));
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(TablerIcons.star_filled), findsNothing);
+    // 统计 chips 常显；只有项目主页随展开态收起
+    expect(find.byIcon(TablerIcons.star_filled), findsOneWidget);
     expect(find.text('项目主页'), findsNothing);
     expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -271,14 +274,10 @@ void main() {
 
     await _pumpAppInfo(tester, info);
 
-    // buildStatTags() 为空但 statistics 非空 → 兜底生成 tags → 可展开
-    expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
-
-    await tester.tap(find.byIcon(TablerIcons.chevron_down));
-    await tester.pumpAndSettle();
-
-    // 展开后可见下载量/评分 chips
-    expect(find.byIcon(TablerIcons.cloud_download), findsOneWidget);
+    // buildStatTags() 为空但 statistics 非空 → 兜底生成 tags，默认可见
+    expect(find.byIcon(TablerIcons.chevron_down), findsNothing);
+    // 下载量由下载文件区展示，应用信息区不再重复
+    expect(find.byIcon(TablerIcons.cloud_download), findsNothing);
     expect(find.byIcon(TablerIcons.star_filled), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -318,6 +317,76 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('extra infoTags / categories / license 渲染为信息标签', (tester) async {
+    final info = _SplitDetailInfo(
+      packageNameValue: 'com.example.app',
+      channelIdValue: 'gstore',
+      extraValue: const {
+        'infoTags': [
+          {'key': 'custom', 'label': '自定义', 'value': '扩展值'},
+        ],
+        'categories': ['工具', '效率'],
+        'license': 'MIT',
+      },
+    );
+
+    await _pumpAny(tester, info);
+
+    expect(find.text('自定义 扩展值'), findsOneWidget);
+    expect(find.text('分类 工具 / 效率'), findsOneWidget);
+    expect(find.text('许可证 MIT'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('超长信息标签限制宽度并省略，不溢出布局', (tester) async {
+    final info = _SplitDetailInfo(
+      packageNameValue: 'com.example.app',
+      extraValue: const {
+        'infoTags': [
+          {
+            'key': 'long',
+            'label': '超长标签',
+            'value': '这是一个非常非常长的标签值，用来验证窄屏下不会横向溢出布局',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 260,
+            child: SingleChildScrollView(child: AppInfoSection(info: info)),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('超长标签'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('脚本构建信息渲染为构建者/构建号/安装次数/环境标签', (tester) async {
+    final info = _SplitDetailInfo(
+      packageNameValue: 'com.example.app',
+      extraValue: const {
+        'builtBy': 'ci-bot',
+        'num': 35,
+        'installTimes': 12000,
+        'env': 'sit',
+      },
+    );
+
+    await _pumpAny(tester, info);
+
+    expect(find.text('构建者 ci-bot'), findsOneWidget);
+    expect(find.text('构建号 #35'), findsOneWidget);
+    expect(find.text('安装次数 1.2万'), findsOneWidget);
+    expect(find.text('环境 sit'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('仅渠道非空 → 不 shrink，显示渠道行（回归）', (tester) async {
     final info = _FakeDetailInfo(
       packageNameValue: '',
@@ -334,7 +403,8 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('展开动画：AnimatedSize/AnimatedRotation 存在，展开完成后内容可见且箭头旋转', (tester) async {
+  testWidgets('展开动画：AnimatedSize/AnimatedRotation 存在，展开完成后内容可见且箭头旋转',
+      (tester) async {
     final info = _FakeDetailInfo(
       versionValue: '1.0.24',
       projectUrlValue: 'https://github.com/sunO2/GStore',
@@ -368,8 +438,7 @@ void main() {
 
   // ── e59d0c4 回归锁定：模型字段优先，extra 兜底 ──
 
-  testWidgets('回归①：extra 无键时回落模型字段——当前版本/包名/渠道行渲染（修复前红）',
-      (tester) async {
+  testWidgets('回归①：extra 无键时回落模型字段——当前版本/包名/渠道行渲染（修复前红）', (tester) async {
     final info = _SplitDetailInfo(
       packageNameValue: 'com.example.app',
       versionValue: '1.2.3',
@@ -387,8 +456,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('回归②：extra 有键（JS 渠道代理）→ 三行照常渲染（extra 路径不回归）',
-      (tester) async {
+  testWidgets('回归②：extra 有键（JS 渠道代理）→ 三行照常渲染（extra 路径不回归）', (tester) async {
     final proxy = JsChannelDetailProxy({
       'version': '2.0.0',
       'packageName': 'com.via.extra',

@@ -27,6 +27,7 @@ class _LabelsDetailInfo implements IDetailInfo {
     this.channelIdValue = '',
     this.packageNameValue = '',
     this.projectUrlValue,
+    this.extraValue = const {},
   });
 
   final List<AppLabel> labelsValue;
@@ -38,6 +39,7 @@ class _LabelsDetailInfo implements IDetailInfo {
   final String channelIdValue;
   final String packageNameValue;
   final String? projectUrlValue;
+  final Map<String, dynamic> extraValue;
 
   @override
   List<AppLabel> get labels => labelsValue;
@@ -71,6 +73,7 @@ class _LabelsDetailInfo implements IDetailInfo {
   List<DetailSection> get sections => sectionsValue;
   @override
   Map<String, dynamic> get extra => {
+        ...extraValue,
         if (readmeValue != null) 'readme': readmeValue,
       };
   @override
@@ -132,7 +135,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('icon is optional: known name renders its icon, null renders none',
+    testWidgets(
+        'icon is optional: known name renders its icon, null renders none',
         (tester) async {
       final info = _LabelsDetailInfo(
         labelsValue: const [
@@ -152,8 +156,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets(
-        'display-only regions are sourced from labels, not fixed keys',
+    testWidgets('display-only regions are sourced from labels, not fixed keys',
         (tester) async {
       // 固定键值（version/developer/channel）与 labels 冲突：labels 必须胜出
       final info = _LabelsDetailInfo(
@@ -172,17 +175,59 @@ void main() {
       // labels 的值出现
       expect(find.text('1.2.3'), findsOneWidget);
       expect(find.text('LABEL-DEV'), findsOneWidget);
-      // 固定键的旧值/旧标签不得出现（证明 labels 取代固定键）
+      // labels 未覆盖的基础字段由模型补齐：包名/渠道仍然可见
+      expect(find.text('com.fixed.pkg'), findsOneWidget);
+      expect(find.text('FIXED-CHANNEL'), findsOneWidget);
+      // labels 已覆盖的字段不再用固定键旧值覆盖
       expect(find.text('9.9.9'), findsNothing);
       expect(find.text('FIXED-DEV'), findsNothing);
-      expect(find.text('FIXED-CHANNEL'), findsNothing);
-      expect(find.text('com.fixed.pkg'), findsNothing);
       expect(find.text('当前版本'), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
 
   group('empty labels keep structured sections safe', () {
+    testWidgets(
+        'download-backed info tags render only platform (size/count moved to downloads)',
+        (tester) async {
+      final info = _LabelsDetailInfo(
+        packageNameValue: 'com.example.app',
+        downloadsValue: [
+          DownloadInfo(
+            url: 'https://x/app.apk',
+            name: 'app.apk',
+            size: 1024,
+            platform: 'arm64-v8a',
+            downloadCount: 12000,
+            publishedAt: DateTime(2025, 1, 2),
+          ),
+        ],
+      );
+
+      await _pump(tester, AppInfoSection(info: info));
+
+      expect(find.text('平台 arm64-v8a'), findsOneWidget);
+      expect(find.text('安装包 1.0 KB'), findsNothing);
+      expect(find.text('下载量 1.2万'), findsNothing);
+      expect(find.text('发布 2025-01-02'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('下载区头部显示仓库最近更新时间（文件无发布时间时兜底）', (tester) async {
+      final info = _LabelsDetailInfo(
+        packageNameValue: 'com.example.app',
+        extraValue: const {'pushedAt': '2025-01-02T00:00:00Z'},
+        downloadsValue: [
+          DownloadInfo(url: 'https://x/app.apk', name: 'app.apk'),
+        ],
+      );
+
+      await _pump(tester, DownloadsSection(info: info));
+
+      expect(find.textContaining('更新于'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets(
         'empty labels: AppInfoSection falls back + structured downloads/readme render, no error',
         (tester) async {

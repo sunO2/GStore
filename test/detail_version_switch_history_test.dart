@@ -92,10 +92,12 @@ class _FakeChannelApiBackend implements ChannelApiBackend {
       title: '切换版本',
       envs: ['sit', 'prod'],
       versions: [
-        rust.ScriptVersionOption(version: '3.0.0', envs: ['sit'], buildCount: 3),
+        rust.ScriptVersionOption(
+            version: '3.0.0', envs: ['sit'], buildCount: 3),
         rust.ScriptVersionOption(
             version: '2.0.0', envs: ['sit', 'prod'], buildCount: 2),
-        rust.ScriptVersionOption(version: '1.0.0', envs: ['sit'], buildCount: 1),
+        rust.ScriptVersionOption(
+            version: '1.0.0', envs: ['sit'], buildCount: 1),
       ],
       currentEnv: 'sit',
       // The latest version, NOT the current one the channel asked for.
@@ -200,7 +202,8 @@ class _FakeChannelApiBackend implements ChannelApiBackend {
 /// Only `releaseDetail` is retained by the channel (`dispose`).
 class _NoopScriptBackend implements ScriptApiBackend {
   @override
-  Future<void> releaseDetail({required String key, required String appId}) async {}
+  Future<void> releaseDetail(
+      {required String key, required String appId}) async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
@@ -232,6 +235,9 @@ class _CapturingCallbacks implements DetailCallbacks {
 
   @override
   void showError(String message, {String? title}) => errors.add(message);
+
+  @override
+  Future<void> setActionBusy({required bool visible, String? label}) async {}
 
   @override
   Future<void> showVersionPicker({
@@ -303,14 +309,14 @@ void main() {
   }
 
   /// Drives load → open version picker → switch version → open build history.
-  test('load → picker preselects current → switch → history uses switched version',
+  test(
+      'load → picker preselects current → switch → history uses switched version',
       () async {
     final (channel, _, callbacks) = build();
 
     // --- load: the pack's getAppDetail reports the entry version 1.0.0 / env sit
     await channel.load();
-    expect(channel.getActions().map((a) => a.label).toList(),
-        ['切换版本', '历史构建']);
+    expect(channel.getActions().map((a) => a.label).toList(), ['切换版本', '历史构建']);
 
     // --- open the version picker (tap 切换版本)
     await channel.getActions().first.onTap();
@@ -357,7 +363,8 @@ void main() {
     expect(callbacks.errors, isEmpty);
   });
 
-  test('cancel/resume: reopen the picker after a switch preselects the switched version',
+  test(
+      'cancel/resume: reopen the picker after a switch preselects the switched version',
       () async {
     final (channel, _, callbacks) = build();
     await channel.load();
@@ -380,7 +387,8 @@ void main() {
     );
   });
 
-  test('stale_state: a second switch updates the tracked version for the next history',
+  test(
+      'stale_state: a second switch updates the tracked version for the next history',
       () async {
     final (channel, _, callbacks) = build();
     await channel.load();
@@ -409,5 +417,18 @@ void main() {
       (callbacks.buildHistoryCalls.single['builds'] as List).single,
       {'num': 10, 'ipaName': '1.0.0.apk'},
     );
+  });
+  test('历史构建第二次打开复用页面级缓存，不再请求 scriptBuildHistory', () async {
+    final (channel, _, callbacks) = build();
+    await channel.load();
+
+    await channel.getActions()[1].onTap();
+    await channel.getActions()[1].onTap();
+
+    final historyCalls = facade.calls
+        .where((call) => call['method'] == 'scriptBuildHistory')
+        .length;
+    expect(historyCalls, 1);
+    expect(callbacks.buildHistoryCalls, hasLength(2));
   });
 }

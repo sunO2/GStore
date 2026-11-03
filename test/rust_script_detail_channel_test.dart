@@ -269,9 +269,32 @@ class _FakeFacadeBackend implements ChannelApiBackend {
   }
 }
 
-/// Minimal [ScriptApiBackend]: only `releaseDetail` (retained for `dispose`).
-class _NoopScriptBackend implements ScriptApiBackend {
+/// [ScriptDetailAppDetailSource] fake: the production backend's detail.js lane.
+class _DetailLaneFacadeBackend extends _FakeFacadeBackend
+    implements ScriptDetailAppDetailSource {
+  _DetailLaneFacadeBackend({super.replies});
+
+  final List<Map<String, Object?>> scriptGetAppDetailCalls = [];
+
   @override
+  Future<rust.ChannelAppDetailInfo?> scriptGetAppDetail({
+    required String key,
+    required String appId,
+  }) async {
+    final params = <String, Object?>{'appId': appId};
+    scriptGetAppDetailCalls.add({
+      'key': key,
+      'params': jsonEncode(params),
+    });
+    final raw = _raw('getAppDetail', jsonEncode(params));
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) return null;
+    return _FakeFacadeBackend._detailFromJson(decoded, raw);
+  }
+}
+
+/// Minimal [ScriptApiBackend]: only `releaseDetail` (retained for `dispose`).
+class _NoopScriptBackend implements ScriptApiBackend {  @override
   Future<void> releaseDetail({required String key, required String appId}) async {}
 
   @override
@@ -535,6 +558,106 @@ void main() {
           reason: 'prefill then full detail');
       expect(state.detailInfo!.name, 'Full App');
       expect(state.isLoadingDetail, isFalse);
+    });
+  });
+
+  group('RustScriptDetailChannel.load — detail.js lane', () {
+    test('capability backend: initial load reads detail.js, intro/screenshots/tags render',
+        () async {
+      final backend = _DetailLaneFacadeBackend(replies: {
+        'getAppDetail': jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'Detail App',
+          'description': '平安口袋银行介绍',
+          'sections': ['downloads', 'screenshots'],
+          'screenshots': ['https://example.com/shot.png'],
+          'downloads': [
+            {
+              'url': 'https://example.com/a.apk',
+              'name': 'a.apk',
+              'version': '1.0',
+              'extra': {
+                'size': {'icon': 'sd_card', 'text': '10 MB'},
+              },
+            },
+          ],
+          'extra': {
+            'env': 'sit',
+            'builtBy': 'ci-bot',
+            'num': 7,
+            'installTimes': 12000,
+            'versionOptions': {
+              'envs': ['sit', 'prod'],
+              'versions': [
+                {'version': '1.0.0', 'envs': ['sit'], 'buildCount': 3},
+              ],
+              'currentEnv': 'sit',
+              'currentVersion': '1.0.0',
+            },
+          },
+        }),
+        'detailMenu': 'null',
+      });
+      final (channel, state, cb) = build(backend);
+
+      await channel.load();
+
+      expect(backend.scriptGetAppDetailCalls, hasLength(1));
+      expect(
+        backend.runCalls.map((c) => c['method']),
+        isNot(contains('getAppDetail')),
+        reason: 'the detail.js lane must not fall back to the entry lane',
+      );
+      expect(cb.refreshCalls, hasLength(2));
+      expect(state.errorMessage, isEmpty);
+
+      final info = state.detailInfo!;
+      expect(info.readme, '平安口袋银行介绍');
+      expect(info.screenshots, isNotEmpty);
+      expect(info.downloads.single.extra, isNotNull);
+      expect(info.downloads.single.extra!['size']!.text, '10 MB');
+      expect(info.extra['builtBy'], 'ci-bot');
+      expect(info.extra['num'], 7);
+      expect(info.extra['installTimes'], 12000);
+      expect(info.extra['env'], 'sit');
+
+      backend.runCalls.clear();
+      final options = await channel.versionOptions('com.example.one', env: 'sit');
+      expect((options!['versions'] as List).single['version'], '1.0.0');
+      expect(
+        backend.runCalls,
+        isEmpty,
+        reason: 'detail.extra.versionOptions must seed the page cache',
+      );
+    });
+
+    test('backend without the capability falls back to getAppDetail', () async {
+      final backend = _FakeFacadeBackend(reply: 'null');
+      final (channel, state, _) = build(backend);
+
+      await channel.load();
+
+      expect(backend.runCalls.first['method'], 'getAppDetail');
+      expect(state.detailInfo, isNotNull);
+    });
+
+    test('detail.js returns null → entry lane fallback keeps the page', () async {
+      final backend = _DetailLaneFacadeBackend(replies: {
+        'getAppDetail': 'null',
+        'detailMenu': 'null',
+      });
+      final (channel, state, _) = build(backend);
+
+      await channel.load();
+
+      expect(backend.scriptGetAppDetailCalls, hasLength(1));
+      expect(
+        backend.runCalls.map((c) => c['method']),
+        contains('getAppDetail'),
+        reason: 'a pack without detail.js getAppDetail keeps the entry-lane data',
+      );
+      expect(state.errorMessage, isEmpty);
+      expect(state.detailInfo, isNotNull);
     });
   });
 
@@ -977,6 +1100,11 @@ void main() {
         (c) => c['method'] == 'buildHistory',
       );
       expect(
+        backend.runCalls.where((c) => c['method'] == 'versionOptions'),
+        isEmpty,
+        reason: 'tracked version/env must skip the redundant versionOptions call',
+      );
+      expect(
         (jsonDecode(bhCall['params']! as String) as Map)['version'],
         'B',
         reason: 'must use the tracked current version, not the latest/entry A',
@@ -1028,10 +1156,17 @@ void main() {
       final voCall = backend.runCalls.singleWhere(
         (c) => c['method'] == 'versionOptions',
       );
+      final voParams =
+          jsonDecode(voCall['params']! as String) as Map<String, dynamic>;
       expect(
-        (jsonDecode(voCall['params']! as String) as Map)['currentVersion'],
+        voParams['currentVersion'],
         'A',
         reason: 'the picker must be told the tracked current version (A)',
+      );
+      expect(
+        voParams['env'],
+        'sit',
+        reason: 'the picker must query the tracked env, not the pack default',
       );
       expect(cb.versionPickerCalls, hasLength(1));
     });

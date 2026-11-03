@@ -642,8 +642,9 @@ async function getAppDetail(appId, version) {
     detail.version = group.version || '';
     _currentVersion = detail.version; // 记录当前版本
     _currentBuildNum = detail.extra.num || null; // 记录当前构建 num
-    detail.description = appId; // 查询用 appId
     detail.des = detail.des || appId;
+    // 详情响应携带版本选项：build-list 已在本次请求中拿到，页面无需再发一次。
+    detail.extra.versionOptions = buildVersionOptions(r.bl, cred.env, detail.version);
     detail.downloads = await buildDownloads([group], cred, authOk);
     // S3 渐进推送：真实下载项填充下载区（与最终 return 同一数组引用）；
     // await+try/catch：推送失败绝不影响主链。
@@ -655,6 +656,31 @@ async function getAppDetail(appId, version) {
     host.log.error('getAppDetail 失败: ' + safeStr(e));
     return { ok: false, data: null, error: safeStr(e) };
   }
+}
+
+// 由全量 build-list 派生版本选项：getVersionOptions 与详情响应共用。
+// 详情请求已经拿到 buildList，就地派生后经 detail.extra.versionOptions 回传，
+// 页面首次打开版本选择器即可命中缓存，无需再发一次 build-list。
+function buildVersionOptions(bl, targetEnv, currentVersion) {
+  var list = ((bl && Array.isArray(bl.buildList)) ? bl.buildList : []).filter(isAndroidGroup);
+  var versionMap = {};
+  for (var j = 0; j < list.length; j++) {
+    var group = list[j], version = group.version || '';
+    if (!version) continue;
+    var rec = versionMap[version];
+    if (!rec) { rec = { envs: [], buildCount: 0, latestTime: 0 }; versionMap[version] = rec; }
+    if (rec.envs.indexOf(targetEnv) < 0) rec.envs.push(targetEnv);
+    // 构建次数：真实接口 __v 为 0 基构建计数（__v=34 → 35 次构建），
+    // 优先使用 __v + 1，无 __v 字段时回退 builds.length（build-list 每组仅最新 1 条）。
+    var v = group.__v;
+    rec.buildCount = (v !== undefined && v !== null && v !== '')
+        ? (Number(v) + 1)
+        : (rec.buildCount || 0) + (Array.isArray(group.builds) ? group.builds.length : 0);
+    var t = toTime(group.publishedAt); if (t > rec.latestTime) rec.latestTime = t;
+  }
+  var versions = Object.keys(versionMap).map(function (v) { return { version: v, envs: versionMap[v].envs, buildCount: versionMap[v].buildCount }; });
+  versions.sort(function (a, b) { return versionMap[b.version].latestTime - versionMap[a.version].latestTime; });
+  return { envs: ALL_ENVS.slice(), versions: versions, currentEnv: targetEnv, currentVersion: currentVersion || (versions.length > 0 ? versions[0].version : '') };
 }
 
 // 版本选项：按 env 单次拉取（不再遍历 5 env 全量）。
@@ -675,25 +701,7 @@ async function getVersionOptions(appId, env, currentVersion) {
       host.log.error('versionOptions env=' + targetEnv + ' 失败');
       return { ok: false, data: null, error: 'build-list 请求失败' };
     }
-    var list = (bl.buildList || []).filter(isAndroidGroup);
-    var versionMap = {};
-    for (var j = 0; j < list.length; j++) {
-      var group = list[j], version = group.version || '';
-      if (!version) continue;
-      var rec = versionMap[version];
-      if (!rec) { rec = { envs: [], buildCount: 0, latestTime: 0 }; versionMap[version] = rec; }
-      if (rec.envs.indexOf(targetEnv) < 0) rec.envs.push(targetEnv);
-      // 构建次数：真实接口 __v 为 0 基构建计数（__v=34 → 35 次构建），
-      // 优先使用 __v + 1，无 __v 字段时回退 builds.length（build-list 每组仅最新 1 条）。
-      var v = group.__v;
-      rec.buildCount = (v !== undefined && v !== null && v !== '')
-          ? (Number(v) + 1)
-          : (rec.buildCount || 0) + (Array.isArray(group.builds) ? group.builds.length : 0);
-      var t = toTime(group.publishedAt); if (t > rec.latestTime) rec.latestTime = t;
-    }
-    var versions = Object.keys(versionMap).map(function (v) { return { version: v, envs: versionMap[v].envs, buildCount: versionMap[v].buildCount }; });
-    versions.sort(function (a, b) { return versionMap[b.version].latestTime - versionMap[a.version].latestTime; });
-    return { ok: true, data: { envs: ALL_ENVS.slice(), versions: versions, currentEnv: targetEnv, currentVersion: currentVersion || (versions.length > 0 ? versions[0].version : '') } };
+    return { ok: true, data: buildVersionOptions(bl, targetEnv, currentVersion) };
   } catch (e) {
     host.log.error('getVersionOptions 失败: ' + safeStr(e));
     return { ok: false, data: null, error: safeStr(e) };
@@ -752,6 +760,7 @@ async function switchVersion(appId, env, version, build) {
     if (env) cred.env = env;
     _currentEnv = cred.env;
     _currentVersion = version || ''; // 记录当前版本
+    detail.extra.versionOptions = buildVersionOptions(bl, cred.env, _currentVersion);
     _currentBuildNum = (selBuild && toNumOrNull(selBuild.num)) || (detail.extra && detail.extra.num) || null; // 记录当前构建 num
     // 一次性凭证检测（会话缓存，失败忽略不阻塞）
     var authOk = groupNeedsAuth(group) ? await ensureAuthChecked(cred, 'switchVersion') : true;

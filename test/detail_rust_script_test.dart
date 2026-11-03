@@ -137,7 +137,8 @@ class _FakeScriptBackend implements ScriptApiBackend {
   final List<Map<String, Object?>> calls = [];
 
   @override
-  Future<void> releaseDetail({required String key, required String appId}) async {
+  Future<void> releaseDetail(
+      {required String key, required String appId}) async {
     calls.add({'method': 'releaseDetail', 'key': key, 'appId': appId});
   }
 
@@ -172,6 +173,9 @@ class _CapturingCallbacks implements DetailCallbacks {
 
   @override
   void showError(String message, {String? title}) => errors.add(message);
+
+  @override
+  Future<void> setActionBusy({required bool visible, String? label}) async {}
 
   @override
   Future<void> showVersionPicker({
@@ -426,8 +430,7 @@ void main() {
       final (channel, _, _) = build();
 
       expect(
-        await channel.switchVersion(
-            appId: 'a', env: 'sit', version: '1'),
+        await channel.switchVersion(appId: 'a', env: 'sit', version: '1'),
         isNull,
       );
     });
@@ -464,12 +467,15 @@ void main() {
     });
   });
 
-  group('detailMenu actions — top-level for version/history, facade for the rest', () {
+  group(
+      'detailMenu actions — top-level for version/history, facade for the rest',
+      () {
     test('jsswitchVersion / jsBuildHistory onTap use the facade, no run()',
         () async {
       facade
         ..detailResult = typedDetail(
-          extraJson: jsonEncode({'appId': 'com.example.one', 'downloads': <Object?>[]}),
+          extraJson: jsonEncode(
+              {'appId': 'com.example.one', 'downloads': <Object?>[]}),
         )
         ..detailMenuResult = const [
           rust.ChannelDetailAction(action: '切换版本', jscall: 'jsswitchVersion'),
@@ -478,7 +484,8 @@ void main() {
         ..versionOptionsResult = const rust.ScriptVersionOptions(
           envs: ['sit', 'prod'],
           versions: [
-            rust.ScriptVersionOption(version: '2.0', envs: ['sit'], buildCount: 3),
+            rust.ScriptVersionOption(
+                version: '2.0', envs: ['sit'], buildCount: 3),
           ],
           currentEnv: 'sit',
           currentVersion: '2.0',
@@ -496,7 +503,7 @@ void main() {
       await channel.getActions()[1].onTap();
 
       final methods = facade.calls.map((c) => c['method']).toList();
-      expect(methods, ['scriptVersionOptions', 'scriptVersionOptions', 'scriptBuildHistory']);
+      expect(methods, ['scriptVersionOptions', 'scriptBuildHistory']);
       expect(methods, isNot(contains('run')),
           reason: 'no pack jscall may be run from the detail page');
       expect(callbacks.versionPickerCalls, hasLength(1));
@@ -509,7 +516,8 @@ void main() {
         () async {
       facade
         ..detailResult = typedDetail(
-          extraJson: jsonEncode({'appId': 'com.example.one', 'downloads': <Object?>[]}),
+          extraJson: jsonEncode(
+              {'appId': 'com.example.one', 'downloads': <Object?>[]}),
         )
         ..detailMenuResult = const [
           rust.ChannelDetailAction(action: '切换版本', jscall: 'jsswitchVersion'),
@@ -534,7 +542,8 @@ void main() {
       await channel.getActions().first.onTap();
       await channel.getActions()[1].onTap();
       expect(facade.actionCalls, hasLength(1),
-          reason: 'jsswitchVersion/jsBuildHistory must not call scriptDetailAction');
+          reason:
+              'jsswitchVersion/jsBuildHistory must not call scriptDetailAction');
     });
   });
 
@@ -561,7 +570,8 @@ void main() {
       expect(state.detailInfo, isNotNull);
     });
 
-    test('dispose releases the detail runtime via ScriptApi.releaseDetail', () async {
+    test('dispose releases the detail runtime via ScriptApi.releaseDetail',
+        () async {
       final (channel, _, _) = build();
 
       await channel.dispose();

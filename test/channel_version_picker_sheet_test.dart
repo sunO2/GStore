@@ -200,11 +200,12 @@ void main() {
     expect(historyCalls.first.version, '1.2.0');
     expect(historyCalls.first.env, 'sit');
 
-    // 构建列表显示（num/时间/大小/更新日志）
+    // 构建列表显示（num/时间/大小/构建者/更新日志）
     expect(find.text('构建 #12'), findsOneWidget);
     expect(find.text('构建 #11'), findsOneWidget);
     expect(find.textContaining('08-01 10:30'), findsOneWidget);
     expect(find.textContaining('1.0 MB'), findsOneWidget);
+    expect(find.text('构建者 ci'), findsNWidgets(2));
     expect(find.text('修复崩溃'), findsOneWidget);
 
     // 点某项 → onBuildSelect

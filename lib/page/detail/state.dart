@@ -154,6 +154,33 @@ class DetailState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 入库状态是否已从 core 读取完成（避免按钮闪烁）。
+  bool _libraryChecked = false;
+  bool get libraryChecked => _libraryChecked;
+  set libraryChecked(bool v) {
+    if (_libraryChecked == v) return;
+    _libraryChecked = v;
+    notifyListeners();
+  }
+
+  /// 当前应用是否已在库中（added_apps 成员关系）。
+  bool _libraryAdded = false;
+  bool get libraryAdded => _libraryAdded;
+  set libraryAdded(bool v) {
+    if (_libraryAdded == v) return;
+    _libraryAdded = v;
+    notifyListeners();
+  }
+
+  /// 正在执行「加入渠道并入库」。
+  bool _libraryBusy = false;
+  bool get libraryBusy => _libraryBusy;
+  set libraryBusy(bool v) {
+    if (_libraryBusy == v) return;
+    _libraryBusy = v;
+    notifyListeners();
+  }
+
   /// 获取当前显示的名称（优先使用详情，否则使用请求）
   String get displayName => detailInfo?.name ?? request?.name ?? '';
 

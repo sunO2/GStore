@@ -166,6 +166,18 @@ fn real_pack_get_app_detail_returns_rich_detail_through_rust_host() {
     );
     assert_eq!(value["screenshots"].as_array().map(Vec::len), Some(2), "{run}");
 
+    // The same build-list request also yields the version options, so the page
+    // picker needs no extra round-trip.
+    let version_options = &value["extra"]["versionOptions"];
+    assert_eq!(version_options["currentEnv"], "sit", "{run}");
+    assert_eq!(version_options["currentVersion"], "1.9.0", "{run}");
+    assert_eq!(
+        version_options["versions"].as_array().map(Vec::len),
+        Some(1),
+        "{run}"
+    );
+    assert_eq!(version_options["versions"][0]["buildCount"], 7, "{run}");
+
     // The pack made exactly the two expected requests, in order.
     assert_eq!(calls.len(), 2, "expected 2 HTTP calls, got {calls:?}");
     assert!(calls[0].contains("/sunflower/i/build-list"), "{calls:?}");

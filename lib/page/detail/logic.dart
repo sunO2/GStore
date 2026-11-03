@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -40,10 +41,7 @@ import 'widgets/more_actions_sheet.dart' as mas;
 /// - [shutdown]：页面销毁时调用（等价原 GetX onClose）。channel 清理 /
 ///   Timer / 流订阅均在 [shutdown] 完成。
 class DetailLogic
-    with
-        DetailBrowserMixin,
-        DetailMetadataMixin,
-        DetailVersionPickerMixin
+    with DetailBrowserMixin, DetailMetadataMixin, DetailVersionPickerMixin
     implements DetailCallbacks {
   final StreamController<DownloadTask> counterController =
       StreamController<DownloadTask>.broadcast();
@@ -99,7 +97,13 @@ class DetailLogic
   ScriptUiBinding? _scriptUiBinding;
 
   static const List<String> _fallbackPresetTags = [
-    '工具', '游戏', '社交', '影音', '阅读', '效率', '系统',
+    '工具',
+    '游戏',
+    '社交',
+    '影音',
+    '阅读',
+    '效率',
+    '系统',
   ];
 
   /// 页面挂载后初始化（view initState → microtask 调用，等价原 GetX onReady）。
@@ -115,7 +119,113 @@ class DetailLogic
     );
     _channelManager = ModuleManager.instance.get<ChannelManager>();
     _initializeFromArguments();
+    unawaited(_refreshLibraryStatus());
     await _initAndLoad();
+  }
+
+  /// GStore 详情页：检查当前应用是否已在库中。
+  Future<void> _refreshLibraryStatus() async {
+    final req = request;
+    if (req == null) return;
+    final code = req.channelCode ?? req.channel.code;
+    if (code != 'gstore') {
+      state.libraryChecked = true;
+      return;
+    }
+    try {
+      final added = await AddedAppsFacade.instance.isAdded(code, req.appId);
+      if (_shutDown) return;
+      state
+        ..libraryAdded = added
+        ..libraryChecked = true;
+    } catch (e) {
+      if (_shutDown) return;
+      appLog.warning('DetailLogic: 读取入库状态失败 - $e');
+      state.libraryChecked = true;
+    }
+  }
+
+  /// 将当前 GStore 应用加入渠道并写入库关系。
+  Future<void> addToLibrary() async {
+    final req = request;
+    if (req == null || state.libraryBusy || state.libraryAdded) return;
+    final code = req.channelCode ?? req.channel.code;
+    if (code != 'gstore') return;
+
+    state.libraryBusy = true;
+    try {
+      final detail = state.detailInfo;
+      final packageName = detail?.packageName ?? req.packageName;
+      final ownerRepo = _githubOwnerRepo(detail?.projectUrl) ??
+          _githubOwnerRepoFromAppId(req.appId);
+      final extra = <String, dynamic>{
+        if (packageName != null && packageName.isNotEmpty)
+          'packageName': packageName,
+      };
+      final categories = _categoriesFromExtra(detail?.extra);
+      final summary = AppSummary(
+        appId: detail?.appId ?? req.appId,
+        packageName: packageName,
+        name: detail?.appName ?? req.name,
+        user: ownerRepo?.$1 ?? '',
+        repositories: ownerRepo?.$2 ?? '',
+        icon: detail?.icon ?? req.icon ?? '',
+        des: detail?.description ?? req.description ?? '',
+        category: categories,
+        extra: extra.isEmpty ? null : extra,
+      );
+      await AddedAppsFacade.instance.add(code, req.appId, appInfo: summary);
+      await AddedAppsFacade.instance.notifyAppsChanged();
+      if (_shutDown) return;
+      state
+        ..libraryAdded = true
+        ..libraryChecked = true;
+      AppDialogs.showSuccess('已加入渠道并入库：${summary.name}');
+    } catch (e) {
+      if (_shutDown) return;
+      appLog.error('DetailLogic: 加入渠道并入库失败 - $e');
+      AppDialogs.showError('加入失败：$e');
+    } finally {
+      if (!_shutDown) state.libraryBusy = false;
+    }
+  }
+
+  (String, String)? _githubOwnerRepo(String? url) {
+    if (url == null || url.isEmpty) return null;
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        (uri.host != 'github.com' && uri.host != 'www.github.com')) {
+      return null;
+    }
+    final parts = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    if (parts.length < 2) return null;
+    return (parts[0], parts[1]);
+  }
+
+  (String, String)? _githubOwnerRepoFromAppId(String appId) {
+    final parts = appId.split('/').where((part) => part.isNotEmpty).toList();
+    if (parts.length != 2) return null;
+    return (parts[0], parts[1]);
+  }
+
+  List<String>? _categoriesFromExtra(Map<String, dynamic>? extra) {
+    final raw = extra?['categories'] ?? extra?['category'];
+    if (raw is List) {
+      final values = raw
+          .map((value) => value.toString().trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false);
+      return values.isEmpty ? null : values;
+    }
+    if (raw is String && raw.trim().isNotEmpty) {
+      final values = raw
+          .split(',')
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false);
+      return values.isEmpty ? null : values;
+    }
+    return null;
   }
 
   /// 本页是否受该目录变更影响：
@@ -301,7 +411,11 @@ class DetailLogic
     unawaited(() async {
       try {
         final task = await service.download(
-          appId, appName, version, downloadUrl, fileName,
+          appId,
+          appName,
+          version,
+          downloadUrl,
+          fileName,
           downloadSize: download.size ?? downloadSize,
         );
         state.currentDownload = task;
@@ -334,7 +448,8 @@ class DetailLogic
       AppDialogs.showWarning('安装模块未启用');
       return;
     }
-    if (defaultTargetPlatform == TargetPlatform.android && task.fileName.endsWith('.apk')) {
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        task.fileName.endsWith('.apk')) {
       await manager.installApk(task.filePath);
     }
   }
@@ -366,6 +481,10 @@ class DetailLogic
     setContext(context);
     final req = request;
     if (req == null) return;
+    final prefetchChannel = detailChannel;
+    if (prefetchChannel is RustScriptDetailChannel) {
+      unawaited(prefetchChannel.prefetchVersionOptions());
+    }
     final code = req.channelCode ?? req.channel.code;
     final manager = _channelManager;
     String canonicalId = req.appId;
@@ -453,7 +572,8 @@ class DetailLogic
     final app = state.installInfo;
     final ctx = uiContext;
     if (app == null || ctx == null) return;
-    final sourceDirs = await ApkSourceService.instance.getSourceDirs(app.packageName);
+    final sourceDirs =
+        await ApkSourceService.instance.getSourceDirs(app.packageName);
     String? sourceDir;
     if (sourceDirs.isNotEmpty) {
       sourceDir = sourceDirs.first;
@@ -480,8 +600,7 @@ class DetailLogic
   // ==================== DetailCallbacks 留在 logic 的薄委托实现 ====================
 
   @override
-  Future<void> refreshDetail(
-      {required Map<String, dynamic> detailData}) async {
+  Future<void> refreshDetail({required Map<String, dynamic> detailData}) async {
     state.detailInfo = JsChannelDetailProxy(detailData);
     _applyInstalledInfo(detailData);
   }
@@ -574,7 +693,11 @@ class DetailLogic
 
       try {
         final task = await service.download(
-          appId, appName, version, downloadUrl, fileName,
+          appId,
+          appName,
+          version,
+          downloadUrl,
+          fileName,
           downloadSize: download.size,
         );
 
@@ -688,9 +811,7 @@ class DetailLogic
     final req = request;
     if (req != null) {
       final code = req.channelCode ?? req.channel.code;
-      _channelManager
-          ?.getChannelByCode(code)
-          ?.releaseDetailChannel(req.appId);
+      _channelManager?.getChannelByCode(code)?.releaseDetailChannel(req.appId);
     }
     final dc = detailChannel;
     if (dc is RustScriptDetailChannel) {

@@ -266,8 +266,7 @@ class _ReadmeImage extends StatelessWidget {
 
   /// 图片加载成功日志（含缓存命中，imageBuilder 为成功路径）
   void _logLoadSuccess() {
-    appLog.info('README 图片加载成功',
-        data: {'url': url, 'proxiedUrl': _proxiedUrl});
+    appLog.info('README 图片加载成功', data: {'url': url, 'proxiedUrl': _proxiedUrl});
   }
 
   /// 图片加载失败日志
@@ -405,6 +404,73 @@ class _StatTagChip extends StatelessWidget {
   }
 }
 
+/// 应用信息区的一条轻量标签（来自 `extra.infoTags` / 下载项 / 渠道扩展字段）。
+class _InfoTag {
+  const _InfoTag({
+    required this.key,
+    required this.label,
+    required this.value,
+    this.icon,
+  });
+
+  final String key;
+  final String label;
+  final String value;
+  final IconData? icon;
+}
+
+/// 通用信息标签 chip（与统计 chip 区分：使用主题 surface 色，不占用统计语义色）。
+class _InfoTagChip extends StatelessWidget {
+  const _InfoTagChip({required this.tag});
+
+  final _InfoTag tag;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: scheme.onSurfaceVariant,
+          fontWeight: AppTypography.weightMedium,
+        );
+    return Tooltip(
+      message: '${tag.label} ${tag.value}',
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return Container(
+            constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+            padding: AppSpacing.horizontalMD_verticalXS,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: AppRadius.allMD,
+              border: AppBorders.all(context, color: scheme.outlineVariant),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (tag.icon != null) ...[
+                  Icon(tag.icon,
+                      size: AppTypography.iconXS,
+                      color: scheme.onSurfaceVariant),
+                  const SizedBox(width: AppSpacing.xs),
+                ],
+                Flexible(
+                  child: Text(
+                    '${tag.label} ${tag.value}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    softWrap: true,
+                    style: textStyle,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 /// 应用信息 Section（可折叠）
 ///
 /// 展示应用基础信息（包名/当前版本/开发者/渠道，字段非空才渲染），
@@ -431,40 +497,43 @@ class _AppInfoSectionState extends State<AppInfoSection> {
     final info = widget.info;
     final extra = info.extra;
 
-    // 动态标签优先：渠道 typed DTO 的 `labels`（version/developer/package/
-    // channel/downloads…）是信息区的**数据源**，按列表顺序逐条渲染（icon 可选）。
-    // labels 为空（legacy 渠道代理 / 测试替身）时回落到固定键推导，保持既有行为。
-    // 统计 chips 仍由 StatTag 工厂提供，故 StatTag 不再是信息区内容的唯一来源。
+    // labels 仍保持渠道返回顺序；若 labels 缺少基础字段，再用模型/extra 补齐，
+    // 避免“有 labels 就完全丢掉渠道/包名”的信息缺口。
     final labels = info.labels;
     final hasLabels = labels.isNotEmpty;
+    final labelKeys = labels.map((label) => label.key).toSet();
 
-    // —— 固定键兜底（仅 labels 为空时使用）——
-    // 模型字段优先，extra 兜底（e59d0c4 回归修复：GitHub/LocalDb 渐进路径
-    // 的 extra 为纯存储 map，不含 version/packageName/channelId 镜像）
     final version = (info.version?.isNotEmpty == true)
         ? info.version
         : extra['version']?.toString();
-    final developer = extra['developer']?.toString();
-    final projectUrl = extra['projectUrl']?.toString();
+    final developer = info.developer ?? extra['developer']?.toString();
+    final projectUrl = info.projectUrl ?? extra['projectUrl']?.toString();
+    final webSite =
+        extra['webSite']?.toString() ?? extra['website']?.toString();
     final chFromExtra = extra['channelId']?.toString() ?? '';
     final channelId = info.channelId.isNotEmpty ? info.channelId : chFromExtra;
     final pkgFromExtra = extra['packageName']?.toString() ?? '';
     final packageName =
         info.packageName.isNotEmpty ? info.packageName : pkgFromExtra;
-    var tags = info.buildStatTags();
-    if (tags.isEmpty) {
-      tags = info.statistics?.buildStatTags() ?? const [];
+
+    final infoTags = _buildInfoTags(info);
+    var statTags = info.buildStatTags();
+    if (statTags.isEmpty) {
+      statTags = info.statistics?.buildStatTags() ?? const [];
     }
+    // 安装包大小/下载量已由下载文件列表展示，信息区不再重复。
+    statTags =
+        statTags.where((tag) => tag.tooltip != '下载量').toList(growable: false);
 
     final hasBasicRows = hasLabels ||
         packageName.isNotEmpty ||
         version != null ||
         developer != null ||
         channelId.isNotEmpty;
-    final hasExpandable = projectUrl != null || tags.isNotEmpty;
+    final hasTags = infoTags.isNotEmpty || statTags.isNotEmpty;
+    final hasExpandable = projectUrl != null || webSite != null;
 
-    // 全空（无基础行且无可展开内容）→ 不渲染
-    if (!hasBasicRows && !hasExpandable) {
+    if (!hasBasicRows && !hasTags && !hasExpandable) {
       return const SizedBox.shrink();
     }
 
@@ -489,15 +558,15 @@ class _AppInfoSectionState extends State<AppInfoSection> {
             )
           : null,
       children: [
-        // 动态标签（列表顺序）优先；labels 为空时回落到固定键基础行
-        if (hasLabels)
+        if (hasLabels) ...[
           for (final label in labels)
-            _InfoRow(
-              icon: _labelIcon(label.icon),
-              label: label.label,
-              value: label.value,
-            )
-        else ...[
+            if (!_isSuppressedDetailLabel(label.key, label.label))
+              _InfoRow(
+                icon: _labelIcon(label.icon),
+                label: label.label,
+                value: label.value,
+              ),
+        ] else ...[
           if (packageName.isNotEmpty)
             _InfoRow(
               icon: TablerIcons.package,
@@ -523,8 +592,60 @@ class _AppInfoSectionState extends State<AppInfoSection> {
               value: channelId,
             ),
         ],
-        // 展开区：AnimatedSize 平滑展开/收起（展开内容保持原列表语义，收起时
-        // 仅占零高度占位，宽度撑满保证仅高度方向动画）
+        // labels 已存在但缺字段时补齐，不覆盖 labels 的顺序与值。
+        if (hasLabels) ...[
+          if (!labelKeys.contains('package') && packageName.isNotEmpty)
+            _InfoRow(
+              icon: TablerIcons.package,
+              label: '包名',
+              value: packageName,
+            ),
+          if (!labelKeys.contains('version') && version != null)
+            _InfoRow(
+              icon: TablerIcons.tag,
+              label: '当前版本',
+              value: version,
+            ),
+          if (!labelKeys.contains('developer') &&
+              developer != null &&
+              developer.isNotEmpty)
+            _InfoRow(
+              icon: TablerIcons.user,
+              label: '开发者',
+              value: developer,
+            ),
+          if (!labelKeys.contains('channel') && channelId.isNotEmpty)
+            _InfoRow(
+              icon: TablerIcons.building_store,
+              label: '渠道',
+              value: channelId,
+            ),
+        ],
+        // 信息标签：额外字段、下载项派生字段、渠道扩展 infoTags。
+        if (infoTags.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: AppSpacing.sm),
+            child: Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final tag in infoTags) _InfoTagChip(tag: tag),
+              ],
+            ),
+          ),
+        // 统计 chips 默认可见（不再藏在展开区）。
+        if (statTags.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: AppSpacing.sm),
+            child: Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final tag in statTags) _StatTagChip(tag: tag),
+              ],
+            ),
+          ),
+        // 展开区只放长文本/链接，避免短标签和无意义折叠。
         AnimatedSize(
           duration: AppAnimation.medium,
           curve: AppAnimation.curve,
@@ -541,13 +662,12 @@ class _AppInfoSectionState extends State<AppInfoSection> {
                         value: projectUrl,
                         valueColor: primary,
                       ),
-                    if (tags.isNotEmpty)
-                      Wrap(
-                        spacing: AppSpacing.sm,
-                        runSpacing: AppSpacing.xs,
-                        children: [
-                          for (final tag in tags) _StatTagChip(tag: tag),
-                        ],
+                    if (webSite != null)
+                      _InfoRow(
+                        icon: TablerIcons.world,
+                        label: '官网',
+                        value: webSite,
+                        valueColor: primary,
                       ),
                   ],
                 )
@@ -555,6 +675,110 @@ class _AppInfoSectionState extends State<AppInfoSection> {
         ),
       ],
     );
+  }
+
+  bool _isSuppressedDetailLabel(String key, String label) {
+    final normalizedKey = key.trim().toLowerCase();
+    final normalizedLabel = label.trim();
+    return normalizedKey == 'size' ||
+        normalizedKey == 'downloadcount' ||
+        normalizedKey == 'downloads' ||
+        normalizedKey == 'pushedat' ||
+        normalizedKey == 'publishedat' ||
+        normalizedKey == 'updatedat' ||
+        normalizedLabel == '安装包' ||
+        normalizedLabel == '下载量' ||
+        normalizedLabel == '最近更新' ||
+        normalizedLabel == '更新时间' ||
+        normalizedLabel == '发布';
+  }
+
+  List<_InfoTag> _buildInfoTags(IDetailInfo info) {
+    final out = <_InfoTag>[];
+    final seen = <String>{};
+    final extra = info.extra;
+
+    void add(String key, String label, String? value, {IconData? icon}) {
+      final text = value?.trim() ?? '';
+      if (key.isEmpty || label.isEmpty || text.isEmpty) return;
+      if (_isSuppressedDetailLabel(key, label)) return;
+      if (!seen.add('$label:$text')) return;
+      out.add(_InfoTag(key: key, label: label, value: text, icon: icon));
+    }
+
+    final rawTags = extra['infoTags'];
+    if (rawTags is List) {
+      for (final raw in rawTags) {
+        if (raw is! Map) continue;
+        final label = raw['label']?.toString() ?? '';
+        final value = raw['value']?.toString() ?? '';
+        final key = raw['key']?.toString() ?? label;
+        final icon = _labelIcon(raw['icon']?.toString());
+        add(key, label, value, icon: icon);
+      }
+    }
+
+    final categories = extra['categories'] ?? extra['category'];
+    if (categories is List) {
+      add(
+          'categories',
+          '分类',
+          categories
+              .map((value) => value.toString())
+              .where((v) => v.isNotEmpty)
+              .join(' / '),
+          icon: TablerIcons.category);
+    } else if (categories != null) {
+      add('categories', '分类', categories.toString(),
+          icon: TablerIcons.category);
+    }
+
+    add('license', '许可证', extra['license']?.toString(),
+        icon: TablerIcons.file_text);
+    add('language', '语言', extra['language']?.toString(),
+        icon: TablerIcons.language);
+    add('openIssues', 'Issues', extra['openIssues']?.toString(),
+        icon: TablerIcons.message_circle);
+    add('builtBy', '构建者', extra['builtBy']?.toString(), icon: TablerIcons.user);
+    final buildNum = extra['num'];
+    if (buildNum != null && buildNum.toString().trim().isNotEmpty) {
+      add('buildNum', '构建号', '#${buildNum.toString()}', icon: TablerIcons.tag);
+    }
+    final installTimes = extra['installTimes'];
+    if (installTimes is num) {
+      add('installTimes', '安装次数', formatFileCount(installTimes.toInt()),
+          icon: TablerIcons.cloud_download);
+    }
+    add('env', '环境', extra['env']?.toString(), icon: TablerIcons.world);
+
+    final permissions = info.permissions;
+    if (permissions != null && permissions.isNotEmpty) {
+      add('permissions', '权限', '${permissions.length} 项',
+          icon: TablerIcons.shield);
+    }
+    final screenshots = info.screenshots;
+    if (screenshots != null && screenshots.isNotEmpty) {
+      add('screenshots', '截图', '${screenshots.length} 张',
+          icon: TablerIcons.photo);
+    }
+
+    final download = _latestDownload(info.downloads);
+    if (download != null) {
+      add('platform', '平台', download.platform, icon: TablerIcons.device_mobile);
+    }
+
+    return out;
+  }
+
+  DownloadInfo? _latestDownload(List<DownloadInfo> downloads) {
+    if (downloads.isEmpty) return null;
+    var best = downloads.first;
+    for (final item in downloads.skip(1)) {
+      final bestAt = best.publishedAt?.millisecondsSinceEpoch ?? 0;
+      final itemAt = item.publishedAt?.millisecondsSinceEpoch ?? 0;
+      if (itemAt > bestAt) best = item;
+    }
+    return best;
   }
 }
 
@@ -1225,6 +1449,22 @@ class DownloadsSection extends StatelessWidget {
     );
   }
 
+  DateTime? _updatedAt(List<DownloadInfo> downloads) {
+    for (final download in downloads) {
+      if (download.publishedAt != null) return download.publishedAt;
+    }
+    final raw = info.extra['pushedAt'] ??
+        info.extra['updatedAt'] ??
+        info.extra['updateTime'];
+    if (raw is num) {
+      return DateTime.fromMillisecondsSinceEpoch(raw.toInt());
+    }
+    if (raw is String) {
+      return DateTime.tryParse(raw);
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (loading) return _buildLoadingSkeleton(context);
@@ -1261,6 +1501,7 @@ class DownloadsSection extends StatelessWidget {
       );
     }
 
+    final updatedAt = _updatedAt(filteredDownloads);
     return SectionCard(
       title: '下载文件',
       icon: TablerIcons.download,
@@ -1279,9 +1520,9 @@ class DownloadsSection extends StatelessWidget {
               ),
         ),
       ),
-      trailing: filteredDownloads.first.publishedAt != null
+      trailing: updatedAt != null
           ? Text(
-              '更新于 ${_formatDate(filteredDownloads.first.publishedAt!)}',
+              '更新于 ${_formatDate(updatedAt)}',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontSize: AppTypography.sizeXXS,
                     color: colorScheme.onSurfaceVariant,
@@ -1412,7 +1653,7 @@ class _DownloadItem extends StatelessWidget {
                             ],
                           ),
                         ],
-                        
+
                         // 不可下载原因提示（脚本渠道：未配置凭证/认证失败）
                         if (!download.downloadable &&
                             download.note?.isNotEmpty == true) ...[
@@ -1433,9 +1674,8 @@ class _DownloadItem extends StatelessWidget {
                                       .textTheme
                                       .bodySmall
                                       ?.copyWith(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .error,
+                                        color:
+                                            Theme.of(context).colorScheme.error,
                                         fontSize: AppTypography.sizeXXS,
                                       ),
                                 ),
@@ -1449,9 +1689,8 @@ class _DownloadItem extends StatelessWidget {
                   // 下载按钮（不可下载时禁用：脚本未生成下载地址，如未配置凭证/认证失败）
                   if (onTap != null)
                     InkWell(
-                      onTap: download.downloadable
-                          ? () => onTap!(download)
-                          : null,
+                      onTap:
+                          download.downloadable ? () => onTap!(download) : null,
                       borderRadius: AppRadius.allXL,
                       child: Container(
                         padding: AppSpacing.allSM,
@@ -1477,12 +1716,12 @@ class _DownloadItem extends StatelessWidget {
                   // extra 标签（优先，带 icon）
                   if (download.extra != null)
                     ...download.extra!.entries.map((e) => _buildInfoChip(
-                      context,
-                      _iconFromName(e.value.iconName) ?? TablerIcons.info_circle,
-                      e.value.text,
-                      _colorForTag(e.key, Theme.of(context).colorScheme),
-                    )),
-                  
+                          context,
+                          _iconFromName(e.value.iconName) ??
+                              TablerIcons.info_circle,
+                          e.value.text,
+                          _colorForTag(e.key, Theme.of(context).colorScheme),
+                        )),
                 ],
               ),
             ],
@@ -1495,17 +1734,28 @@ class _DownloadItem extends StatelessWidget {
   /// Material 图标名 → IconData 映射（未知返回 null）
   IconData? _iconFromName(String? name) {
     switch (name) {
-      case 'sd_card': return TablerIcons.device_sd_card;
-      case 'sd_storage': return TablerIcons.device_sd_card;
-      case 'phone_android': return TablerIcons.device_mobile;
-      case 'build': return TablerIcons.tool;
-      case 'cloud': return TablerIcons.cloud_filled;
-      case 'download': return TablerIcons.download;
-      case 'cloud_download': return TablerIcons.cloud_download;
-      case 'schedule': return TablerIcons.clock;
-      case 'label': return TablerIcons.tag;
-      case 'install': return TablerIcons.download;
-      default: return null;
+      case 'sd_card':
+        return TablerIcons.device_sd_card;
+      case 'sd_storage':
+        return TablerIcons.device_sd_card;
+      case 'phone_android':
+        return TablerIcons.device_mobile;
+      case 'build':
+        return TablerIcons.tool;
+      case 'cloud':
+        return TablerIcons.cloud_filled;
+      case 'download':
+        return TablerIcons.download;
+      case 'cloud_download':
+        return TablerIcons.cloud_download;
+      case 'schedule':
+        return TablerIcons.clock;
+      case 'label':
+        return TablerIcons.tag;
+      case 'install':
+        return TablerIcons.download;
+      default:
+        return null;
     }
   }
 
@@ -1561,8 +1811,7 @@ class _DownloadItem extends StatelessWidget {
       ),
     );
   }
-
-  }
+}
 
 /// 动态标签图标名（`AppLabel.icon`）→ IconData。
 ///
@@ -1618,7 +1867,8 @@ class _InfoRow extends StatelessWidget {
         children: [
           if (icon != null) ...[
             Icon(icon,
-                size: AppTypography.iconXS, color: colorScheme.onSurfaceVariant),
+                size: AppTypography.iconXS,
+                color: colorScheme.onSurfaceVariant),
             const SizedBox(width: AppSpacing.sm),
           ],
           Text(
@@ -1734,9 +1984,8 @@ class PermissionsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final raw = info.extra['permissions'];
-    final permissions = raw is List
-        ? raw.map((e) => e.toString()).toList()
-        : null;
+    final permissions =
+        raw is List ? raw.map((e) => e.toString()).toList() : null;
     if (permissions == null || permissions.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -1750,7 +1999,8 @@ class PermissionsSection extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(TablerIcons.shield_lock, size: AppTypography.sizeSM),
+                  const Icon(TablerIcons.shield_lock,
+                      size: AppTypography.sizeSM),
                   SizedBox(width: AppSpacing.sm),
                   Expanded(
                     child: Text(

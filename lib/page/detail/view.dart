@@ -303,9 +303,44 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 ),
               ],
             ),
+            _buildLibraryAction(context, logic, state),
           ],
         );
       }),
+    );
+  }
+
+  /// GStore 详情页的入库动作：仅 gstore 渠道展示，放在头部卡片内。
+  Widget _buildLibraryAction(
+    BuildContext context,
+    DetailLogic logic,
+    DetailState state,
+  ) {
+    final request = state.request;
+    if (request == null) return const SizedBox.shrink();
+    final code = request.channelCode ?? request.channel.code;
+    if (code != 'gstore' || !state.libraryChecked) {
+      return const SizedBox.shrink();
+    }
+    if (state.libraryAdded) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.lg),
+      child: SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed:
+              state.libraryBusy ? null : () => unawaited(logic.addToLibrary()),
+          icon: state.libraryBusy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: AppLoading(size: AppLoadingSize.small),
+                )
+              : const Icon(TablerIcons.circle_plus_filled),
+          label: Text(state.libraryBusy ? '加入中…' : '加入渠道并入库'),
+        ),
+      ),
     );
   }
 
@@ -374,8 +409,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         final count = data.received;
         // 防止除零错误
         final hasTotal = total > 0;
-        final progress =
-            hasTotal ? (count / total).clamp(0.0, 1.0) : null;
+        final progress = hasTotal ? (count / total).clamp(0.0, 1.0) : null;
         final percent =
             hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
         return FloatingActionButton(
@@ -459,8 +493,8 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     // 避免"加载完成后区块才凭空出现"的闪烁。List 而非 Set：基础区块显式过滤
     // 下载/README 后各区块单实例，顺序由固定拼装保证。
     final sectionTypes = <DetailSection>[
-      ...detail.sections.where((s) =>
-          s != DetailSection.downloads && s != DetailSection.readme),
+      ...detail.sections.where(
+          (s) => s != DetailSection.downloads && s != DetailSection.readme),
       if (state.downloadsLoading || detail.downloads.isNotEmpty)
         DetailSection.downloads,
       if (state.readmeLoading ||

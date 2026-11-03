@@ -538,7 +538,7 @@ class _VersionRow extends StatelessWidget {
   }
 }
 
-/// 历史构建行：num / 时间 / 大小 / 更新日志
+/// 历史构建行：num / 时间 / 大小 / 构建者 / 更新日志
 class _BuildRow extends StatelessWidget {
   const _BuildRow({required this.option, required this.onTap});
 
@@ -589,14 +589,36 @@ class _BuildRow extends StatelessWidget {
                   ),
               ],
             ),
-            if (option.changelog != null && option.changelog!.isNotEmpty)
+            if ((option.changelog?.isNotEmpty ?? false) ||
+                (option.builtBy?.isNotEmpty ?? false))
               Padding(
                 padding: AppSpacing.onlyTopXS,
-                child: Text(
-                  option.changelog!,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+                child: Row(
+                  children: [
+                    if (option.changelog?.isNotEmpty ?? false)
+                      Expanded(
+                        child: Text(
+                          option.changelog!,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    if (option.builtBy?.isNotEmpty ?? false) ...[
+                      if (option.changelog?.isNotEmpty ?? false)
+                        const SizedBox(width: AppSpacing.sm),
+                      Flexible(
+                        child: Text(
+                          '构建者 ${option.builtBy}',
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
           ],

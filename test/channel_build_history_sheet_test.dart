@@ -78,11 +78,12 @@ void main() {
     expect(find.text('历史构建 · 1.2.0'), findsOneWidget);
     expect(find.text('uat'), findsOneWidget);
 
-    // 构建列表：num/时间/大小/更新日志
+    // 构建列表：num/时间/大小/构建者/更新日志
     expect(find.text('构建 #12'), findsOneWidget);
     expect(find.text('构建 #11'), findsOneWidget);
     expect(find.textContaining('08-01 10:30'), findsOneWidget);
     expect(find.textContaining('1.0 MB'), findsOneWidget);
+    expect(find.text('构建者 ci'), findsNWidgets(2));
     expect(find.text('修复崩溃'), findsOneWidget);
     expect(find.text('新增功能'), findsOneWidget);
 

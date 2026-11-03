@@ -16,7 +16,8 @@ import 'package:gstore/page/detail/state.dart';
 /// While `CoreFlags.jsChannel` is on there is no Dart `JsChannel`, so
 /// `DetailLogic` cannot resolve `js_*` through `ChannelManager`. This channel
 /// resolves the pack through the unified channel entry instead: every data read
-/// (`getAppDetail` and the four detail-page methods) goes through
+/// (`getAppDetail` on the pack's `detail.js` runtime, plus the four detail-page
+/// methods) goes through
 /// [RustChannelFacade] — the typed FRB `ChannelApi` surface — and the typed
 /// results are adapted to the `Map<String, dynamic>` shape the page's
 /// `JsChannelDetailProxy` already consumes, so the page renders identically.
@@ -92,6 +93,13 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// [getActions] 返回的操作项缓存（[load] 时从脚本 detailMenu 刷新）。
   List<DetailAction> _actions = const [];
 
+  /// Page-scoped version options cache: one script runtime is created per FRB
+  /// call, so the pack's own module-level cache cannot survive across calls.
+  final Map<String, Map<String, dynamic>> _versionOptionsCache = {};
+
+  /// Page-scoped build history cache keyed by `version|env`.
+  final Map<String, Map<String, dynamic>> _buildHistoryCache = {};
+
   @override
   void bind(DetailState state, DetailCallbacks callbacks) {
     _boundState = state;
@@ -113,25 +121,40 @@ class RustScriptDetailChannel implements IDetailChannel {
       state.statisticsLoading = true;
 
       try {
-        final detail = await _facade.getAppDetail(
+        var detail = await _facade.scriptGetAppDetail(
           key: channelKey,
           appId: appId,
-          forceRefresh: false,
         );
-        final map = detailToMap(detail);
+        if (detail == null) {
+          // A pack may implement only the entry lane; keep the pre-existing
+          // (entry.js) behaviour instead of dropping the detail page.
+          debugPrint(
+            '[RustScriptDetailChannel] detail.js has no getAppDetail for '
+            '$channelKey/$appId; falling back to the entry lane',
+          );
+          detail = await _facade.getAppDetail(
+            key: channelKey,
+            appId: appId,
+            forceRefresh: false,
+          );
+        }
+        final map = _normalizeDetailMap(detailToMap(detail));
         await callbacks.refreshDetail(detailData: map);
         // 记录 pack 的当前版本/环境（pack `getAppDetail` :642-643 设
         // `detail.version`/内部 `_currentVersion`；:539 设 `_currentEnv` =
         // `cred.env`，后者经 buildDetailFromGroup 落进 detail 的 `extra.env`）。
-        _currentVersion = detail.version;
-        _currentEnv = (map['extra'] as Map?)?['env']?.toString();
+          _currentVersion = detail.version;
+          _currentEnv = (map['extra'] as Map?)?['env']?.toString();
+          _cacheHistoryFromDetail(map);
+          _cacheVersionOptionsFromDetail(map);
       } on ChannelApiException catch (error) {
-        // "The script has no detail for this app". The Rust host folds
-        // undefined (no `getAppDetail` case), `{ok:false}` and a JS throw into
-        // the typed `not_found`, so this is NOT a failure: keep the prefill
-        // already rendered (the page shows the basic info, never a full-page
-        // error) and emit a non-fatal signal only. A non-`not_found` typed
-        // failure propagates to the outer catch and sets `errorMessage`.
+        // "The script has no detail for this app". A JSON null / `{ok:false}` /
+        // a JS throw from `detail.js` falls back to the entry lane above; an
+        // unknown pack (or one without `detail.js`) surfaces as the typed
+        // `not_found` here. Neither is a failure: keep the prefill already
+        // rendered (the page shows the basic info, never a full-page error) and
+        // emit a non-fatal signal only. A non-`not_found` typed failure
+        // propagates to the outer catch and sets `errorMessage`.
         if (error.code != 'not_found') rethrow;
         debugPrint(
           '[RustScriptDetailChannel] no detail from $channelKey for $appId '
@@ -256,8 +279,26 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// `getVersionOptions` 缺省回退最新版本 :696），故传 `currentVersion` 给
   /// `versionOptions` 无效果，必须在此显式覆盖，否则选择器预选错位到最新版本。
   Future<void> _openVersionPicker() async {
-    final options =
-        await versionOptions(appId, currentVersion: _currentVersion);
+    final willFetch =
+        !_versionOptionsCache.containsKey(_versionOptionsCacheKey(_currentEnv));
+    if (willFetch) {
+      await _boundCallbacks?.setActionBusy(
+        visible: true,
+        label: '正在加载版本…',
+      );
+    }
+    Map<String, dynamic>? options;
+    try {
+      options = await versionOptions(
+        appId,
+        env: _currentEnv,
+        currentVersion: _currentVersion,
+      );
+    } finally {
+      if (willFetch) {
+        await _boundCallbacks?.setActionBusy(visible: false);
+      }
+    }
     if (options == null) return;
     final currentVersion = _currentVersion;
     if (currentVersion != null && currentVersion.isNotEmpty) {
@@ -276,12 +317,36 @@ class RustScriptDetailChannel implements IDetailChannel {
   /// 仍会给出入口/最新版本 → 历史构建列表陈旧的根因。仅在未跟踪到时才回退到
   /// `versionOptions` 的 `currentVersion`/`currentEnv`。
   Future<void> _openBuildHistory() async {
-    final options = await versionOptions(appId);
-    if (options == null) return;
-    final version =
-        _currentVersion ?? options['currentVersion']?.toString() ?? '';
-    final env = _currentEnv ?? options['currentEnv']?.toString() ?? '';
-    final history = await buildHistory(appId: appId, version: version, env: env);
+    var version = _currentVersion ?? '';
+    var env = _currentEnv ?? '';
+    final needsOptions = version.isEmpty || env.isEmpty;
+    final willFetchHistory =
+        !_buildHistoryCache.containsKey(_buildHistoryKey(version, env));
+    final willWait = needsOptions || willFetchHistory;
+    if (willWait) {
+      await _boundCallbacks?.setActionBusy(
+        visible: true,
+        label: needsOptions ? '正在加载版本…' : '正在加载构建历史…',
+      );
+    }
+    Map<String, dynamic>? history;
+    try {
+      if (needsOptions) {
+        final options = await versionOptions(appId, env: _currentEnv);
+        if (options == null) return;
+        if (version.isEmpty) {
+          version = options['currentVersion']?.toString() ?? '';
+        }
+        if (env.isEmpty) {
+          env = options['currentEnv']?.toString() ?? '';
+        }
+      }
+      history = await buildHistory(appId: appId, version: version, env: env);
+    } finally {
+      if (willWait) {
+        await _boundCallbacks?.setActionBusy(visible: false);
+      }
+    }
     if (history == null) return;
     final builds = ((history['builds'] as List?) ?? <Object?>[])
         .map((entry) => Map<String, dynamic>.from(entry as Map))
@@ -310,6 +375,9 @@ class RustScriptDetailChannel implements IDetailChannel {
   @override
   Future<Map<String, dynamic>?> versionOptions(String appId,
       {String? env, String? currentVersion}) async {
+    final cacheKey = _versionOptionsCacheKey(env);
+    final cached = _versionOptionsCache[cacheKey];
+    if (cached != null) return Map<String, dynamic>.from(cached);
     final options = await _facade.scriptVersionOptions(
       key: channelKey,
       appId: appId,
@@ -317,7 +385,27 @@ class RustScriptDetailChannel implements IDetailChannel {
       currentVersion: currentVersion,
     );
     if (options == null) return null;
-    return versionOptionsToMap(options);
+    final map = versionOptionsToMap(options);
+    _versionOptionsCache[cacheKey] = map;
+    return Map<String, dynamic>.from(map);
+  }
+
+  /// Warms [versionOptions] when the "更多" panel opens.
+  ///
+  /// The detail response normally already seeds the cache; this covers packs
+  /// that do not return `extra.versionOptions`, without blocking the panel.
+  Future<void> prefetchVersionOptions() async {
+    if (_versionOptionsCache
+        .containsKey(_versionOptionsCacheKey(_currentEnv))) {
+      return;
+    }
+    try {
+      await versionOptions(appId, env: _currentEnv);
+    } catch (e) {
+      debugPrint(
+        '[RustScriptDetailChannel] versionOptions prefetch failed: $e',
+      );
+    }
   }
 
   /// 切换版本/环境（脚本 detail.js 的 `switchVersion`）→ 解码后的详情 Map；
@@ -342,7 +430,10 @@ class RustScriptDetailChannel implements IDetailChannel {
     // `extra.version`，由 buildDetailFromGroup 落），故回退到传入的 `version` 参数。
     _currentVersion = detail.version ?? version;
     _currentEnv = env;
-    return detailToMap(detail);
+    final map = _normalizeDetailMap(detailToMap(detail));
+    _cacheHistoryFromDetail(map);
+    _cacheVersionOptionsFromDetail(map);
+    return map;
   }
 
   /// 指定版本历史构建（脚本 detail.js 的 `buildHistory`）→ `{builds: [...]}`；
@@ -353,15 +444,105 @@ class RustScriptDetailChannel implements IDetailChannel {
     required String version,
     required String env,
   }) async {
+    final cacheKey = _buildHistoryKey(version, env);
+    final cached = _buildHistoryCache[cacheKey];
+    if (cached != null) {
+      return <String, dynamic>{
+        'builds': List<Object?>.from(cached['builds'] as List? ?? const []),
+      };
+    }
     final builds = await _facade.scriptBuildHistory(
       key: channelKey,
       appId: appId,
       env: env,
       version: version,
     );
-    return <String, dynamic>{
+    final map = <String, dynamic>{
       'builds': [for (final build in builds) buildToMap(build)],
     };
+    _buildHistoryCache[cacheKey] = map;
+    return <String, dynamic>{
+      'builds': List<Object?>.from(map['builds'] as List)
+    };
+  }
+
+  /// Normalize script detail text: old pingan packs put the query appId in
+  /// `description` while the real intro stayed in `des`; script detail also
+  /// often has no `readme`, so surface the description as the intro section.
+  ///
+  /// The pack's channel-specific fields (`builtBy`, `num`, `installTimes`,
+  /// `env`, ...) live in the nested `extra` object, while the page's
+  /// `IDetailInfo.extra` contract is flat. Promote them without overwriting the
+  /// typed top-level keys; the nested map is kept for `versionHistory` reads.
+  Map<String, dynamic> _normalizeDetailMap(Map<String, dynamic> detail) {
+    final nested = detail['extra'];
+    if (nested is Map) {
+      nested.forEach((key, value) {
+        detail.putIfAbsent(key.toString(), () => value);
+      });
+    }
+    final appId = detail['appId']?.toString() ?? '';
+    final packageName = detail['packageName']?.toString() ?? '';
+    final des = detail['des']?.toString() ?? '';
+    var description = detail['description']?.toString() ?? '';
+    if (description.isEmpty ||
+        description == appId ||
+        (packageName.isNotEmpty && description == packageName)) {
+      if (des.isNotEmpty) description = des;
+    }
+    if (description.trim().isNotEmpty) {
+      detail['description'] = description;
+      final sections = detail['sections'];
+      final hasDetailSection = sections is List &&
+          sections.any(
+              (section) => section == 'readme' || section == 'screenshots');
+      final readme = detail['readme']?.toString() ?? '';
+      if (hasDetailSection && readme.trim().isEmpty) {
+        detail['readme'] = description;
+      }
+    }
+    return detail;
+  }
+
+  String _versionOptionsCacheKey(String? env) =>
+      (env == null || env.isEmpty) ? '__default__' : env;
+
+  String _buildHistoryKey(String version, String env) =>
+      '$version|${env.isEmpty ? 'sit' : env}';
+
+  void _cacheHistoryFromDetail(Map<String, dynamic> detail) {
+    final version = _currentVersion;
+    final env = _currentEnv;
+    if (version == null || version.isEmpty) return;
+    final extra = detail['extra'];
+    if (extra is! Map) return;
+    final history = extra['versionHistory'];
+    if (history is! List || history.isEmpty) return;
+    _buildHistoryCache[_buildHistoryKey(version, env ?? '')] =
+        <String, dynamic>{
+      'builds': [
+        for (final item in history)
+          item is Map ? Map<String, dynamic>.from(item) : item,
+      ],
+    };
+  }
+
+  void _cacheVersionOptionsFromDetail(Map<String, dynamic> detail) {
+    final extra = detail['extra'];
+    if (extra is! Map) return;
+    final raw = extra['versionOptions'];
+    if (raw is! Map) return;
+    final options = Map<String, dynamic>.from(raw);
+    final versions = raw['versions'];
+    if (versions is List) {
+      options['versions'] =
+          versions.map((entry) {
+            return entry is Map
+                ? Map<String, dynamic>.from(entry)
+                : entry;
+          }).toList();
+    }
+    _versionOptionsCache[_versionOptionsCacheKey(_currentEnv)] = options;
   }
 
   /// The host replaces the detail's downloads directly; no channel-side cache.
@@ -374,4 +555,3 @@ class RustScriptDetailChannel implements IDetailChannel {
     await _api.releaseDetail(key: channelKey, appId: appId);
   }
 }
-
