@@ -274,10 +274,11 @@ impl AggregationService {
                 .or_default()
                 .push(row.app_id.clone());
         }
-        let mut channels: BTreeMap<
-            String,
-            (Option<std::sync::Arc<dyn crate::channel::ChannelDriver>>, BTreeMap<String, String>),
-        > = BTreeMap::new();
+        type ChannelIcons = (
+            Option<std::sync::Arc<dyn crate::channel::ChannelDriver>>,
+            BTreeMap<String, String>,
+        );
+        let mut channels: BTreeMap<String, ChannelIcons> = BTreeMap::new();
         for (channel_id, app_ids) in &page_ids {
             let driver = (self.channels)(channel_id);
             let icons = match driver.as_deref() {

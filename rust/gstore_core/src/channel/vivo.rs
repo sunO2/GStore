@@ -448,7 +448,7 @@ impl VivoDriver {
         );
         extra.insert("readme".to_string(), Value::String(description.clone()));
         extra.insert("detailData".to_string(), Value::Object(object.clone()));
-        if let Some(category) = string_field(&object, &["categoryName", "category"]) {
+        if let Some(category) = string_field(object, &["categoryName", "category"]) {
             extra.insert("category".to_string(), Value::String(category.clone()));
             insert_info_tag(&mut extra, "category", "分类", category);
         }

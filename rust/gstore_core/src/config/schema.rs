@@ -532,7 +532,7 @@ mod tests {
 
     use super::*;
 
-    fn wire_set<'a>(predicate: impl Fn(&ConfigEntry) -> bool) -> BTreeSet<String> {
+    fn wire_set(predicate: impl Fn(&ConfigEntry) -> bool) -> BTreeSet<String> {
         entries()
             .iter()
             .filter(|entry| predicate(entry))
