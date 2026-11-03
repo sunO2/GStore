@@ -138,6 +138,29 @@ def host_abi_version():
     return "2"
 
 
+def module_min_host_abi(module):
+    """Per-module minimum host ABI: a module may require less than the current
+    contract ABI (proxy needs 3, download needs 5)."""
+    if min_abi_override:
+        return str(min_abi_override)
+    src = os.path.join(repo_root, "rust", f"gstore_mod_{module}", "src", "lib.rs")
+    if os.path.isfile(src):
+        with open(src, encoding="utf-8") as f:
+            m = re.search(
+                r"(?:MODULE_MIN_HOST_ABI|PROXY_MIN_HOST_ABI|MIN_HOST_ABI)\s*:\s*u32\s*=\s*(\d+)",
+                f.read(),
+            )
+        if m:
+            return m.group(1)
+    abi_rs = os.path.join(repo_root, "rust", "gstore_contract", "src", "abi.rs")
+    if os.path.isfile(abi_rs):
+        with open(abi_rs, encoding="utf-8") as f:
+            m = re.search(r"MIN_HOST_ABI\s*:\s*u32\s*=\s*(\d+)", f.read())
+        if m:
+            return m.group(1)
+    return host_abi_version()
+
+
 def scan_so(source_dir):
     """扫描 <dir>/<abi>/libgstore_mod_*.so → {module: {abi: path}}。"""
     found = {}
@@ -177,14 +200,13 @@ def write_text(path, text):
         f.write(text)
 
 
-min_abi = host_abi_version()
 modules = {}
 for name, abis in sorted(scan_so(module_dir).items()):
     version = module_version(name)
     sanitized = sanitize_version(version)
     if not ASSET_RE.match(sanitized):
         raise SystemExit(f"ERROR: sanitized version invalid: {version!r} -> {sanitized!r}")
-    entry = {"version": version, "min_host_abi": min_abi, "abi": {}}
+    entry = {"version": version, "min_host_abi": module_min_host_abi(name), "abi": {}}
     for abi in sorted(abis):
         asset = f"libgstore_mod_{name}_{sanitized}-{abi}.so"
         sha, size = sha256_size(abis[abi])
@@ -206,7 +228,7 @@ for name, abis in sorted(scan_so(builtin_dir).items()):
 write_json(builtin_path, builtin)
 
 print(f"✓ v2 清单已生成: {manifest_path}")
-print(f"  模块: {', '.join(modules.keys()) or '(无)'}  min_host_abi={min_abi}")
+print(f"  模块: {', '.join(modules.keys()) or '(无)'}")
 for name, data in modules.items():
     for abi in sorted(data.get("abi", {})):
         e = data["abi"][abi]
