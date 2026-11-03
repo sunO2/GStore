@@ -14,6 +14,7 @@ class GStoreAppRow extends StatelessWidget {
     required this.isBusy,
     required this.onAdd,
     required this.onRemove,
+    this.onTap,
   });
 
   final AppSummary app;
@@ -21,6 +22,9 @@ class GStoreAppRow extends StatelessWidget {
   final bool isBusy;
   final VoidCallback onAdd;
   final VoidCallback onRemove;
+
+  /// 点击左侧应用信息区域进入详情；右侧加入/移除按钮保持独立动作。
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -38,36 +42,47 @@ class GStoreAppRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            AppIcon(
-              url: app.icon,
-              width: 44,
-              height: 44,
-              borderRadius: AppRadius.sm,
-            ),
-            const SizedBox(width: AppSpacing.md),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    app.name.isEmpty ? app.appId : app.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleSmall,
-                  ),
-                  if (app.des.isNotEmpty) ...[
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      app.des,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: AppRadius.allMD,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    AppIcon(
+                      url: app.icon,
+                      width: 44,
+                      height: 44,
+                      borderRadius: AppRadius.sm,
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            app.name.isEmpty ? app.appId : app.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          if (app.des.isNotEmpty) ...[
+                            const SizedBox(height: AppSpacing.xs),
+                            Text(
+                              app.des,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   ],
-                ],
+                ),
               ),
             ),
             const SizedBox(width: AppSpacing.sm),

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
 
 import 'logic.dart';
 import 'gstore_catalog_update.dart';
@@ -109,9 +111,9 @@ class _GStoreBrowsePageState extends State<GStoreBrowsePage> {
 
     setState(() => _updating = true);
     try {
-      final download =
-          await CatalogFacade.instance.repoDownload(url: url);
+      final download = await CatalogFacade.instance.repoDownload(url: url);
       await CatalogFacade.instance.repoMaterialize();
+      BadgeService.instance.clearBadge(BadgeKey.dbUpdate);
       await _refreshStatus();
       await _load(reset: true);
       if (!mounted) return;
@@ -205,8 +207,8 @@ class _GStoreBrowsePageState extends State<GStoreBrowsePage> {
   Future<void> _loadAdded(Iterable<AppSummary> apps) async {
     final checks = await Future.wait(apps.map((app) async {
       try {
-        final added =
-            await AddedAppsFacade.instance.isAdded(GStoreBrowsePage.channelCode, app.appId);
+        final added = await AddedAppsFacade.instance
+            .isAdded(GStoreBrowsePage.channelCode, app.appId);
         return (app.appId, added);
       } catch (_) {
         return (app.appId, false);
@@ -222,6 +224,24 @@ class _GStoreBrowsePageState extends State<GStoreBrowsePage> {
         }
       }
     });
+  }
+
+  /// 打开应用详情；返回后刷新「已加入」状态（详情页可能完成入库）。
+  Future<void> _openDetail(AppSummary app) async {
+    await context.push(
+      AppRoute.appDetail,
+      extra: AppDetailRequest(
+        appId: app.appId,
+        name: app.name,
+        packageName: app.packageName,
+        icon: app.icon,
+        description: app.des,
+        channel: ChannelType.gstore,
+        channelCode: GStoreBrowsePage.channelCode,
+      ),
+    );
+    if (!mounted) return;
+    await _loadAdded(_apps);
   }
 
   Future<void> _add(AppSummary app) async {
@@ -242,7 +262,8 @@ class _GStoreBrowsePageState extends State<GStoreBrowsePage> {
       final discovery = widget.discovery;
       if (discovery != null && mounted) {
         unawaited(
-          discovery.showTagPickerForApp(context, GStoreBrowsePage.channelCode, app),
+          discovery.showTagPickerForApp(
+              context, GStoreBrowsePage.channelCode, app),
         );
       }
     } catch (e) {
@@ -362,6 +383,7 @@ class _GStoreBrowsePageState extends State<GStoreBrowsePage> {
           isBusy: _busyIds.contains(app.appId),
           onAdd: () => unawaited(_add(app)),
           onRemove: () => unawaited(_remove(app)),
+          onTap: () => unawaited(_openDetail(app)),
         );
       },
     );

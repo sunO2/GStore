@@ -97,6 +97,29 @@ class CatalogUrlSetting {
     return proxied;
   }
 
+  /// 读取远端最新 release 的版本号（不下载数据库）。
+  ///
+  /// 返回 null 表示未配置仓库、网络失败、缺少 release/版本字段，调用方应
+  /// 静默忽略；直链配置没有 release 版本概念，同样返回 null。
+  static Future<({String version, String? downloadUrl})?> checkLatestRelease() async {
+    final configured = await read();
+    if (configured.isEmpty) return null;
+    final repo = _looksLikeDirectFile(configured)
+        ? null
+        : _parseGitHubRepo(configured);
+    if (repo == null) return null;
+    final json = await _fetchReleases(repo.owner, repo.repo);
+    if (json == null) return null;
+    final release = _latestRelease(json);
+    if (release == null) return null;
+    final rawVersion = release['name'] ?? release['tag_name'];
+    final version = rawVersion?.toString().trim() ?? '';
+    if (version.isEmpty) return null;
+    final rawUrl = _downloadUrlFromRelease(json);
+    final downloadUrl = rawUrl == null ? null : applyProxyIfNeeded(rawUrl, getProxy());
+    return (version: version, downloadUrl: downloadUrl);
+  }
+
   /// 确保拿到一个可用地址：已配置直接返回；否则弹层录入并保存。
   ///
   /// 取消 / 空输入 / 保存失败返回 null。
@@ -128,22 +151,23 @@ class CatalogUrlSetting {
     }
   }
 
-  /// 从 releases JSON 数组解析首个 release 的下载地址（不硬编码文件名）。
-  static String? _downloadUrlFromRelease(String json) {
-    dynamic decoded;
+  static Map? _latestRelease(String json) {
     try {
-      decoded = jsonDecode(json);
+      final decoded = jsonDecode(json);
+      if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+        return decoded.first as Map;
+      }
     } catch (error) {
       debugPrint('[GStore] releases JSON 解析失败: $error');
-      return null;
     }
-    if (decoded is! List || decoded.isEmpty) {
-      debugPrint('[GStore] releases 为空，无法解析目录地址');
-      return null;
-    }
-    final release = decoded.first;
-    if (release is! Map) {
-      debugPrint('[GStore] release 结构异常，无法解析目录地址');
+    return null;
+  }
+
+  /// 从 releases JSON 数组解析首个 release 的下载地址（不硬编码文件名）。
+  static String? _downloadUrlFromRelease(String json) {
+    final release = _latestRelease(json);
+    if (release == null) {
+      debugPrint('[GStore] releases 为空或结构异常，无法解析目录地址');
       return null;
     }
     debugPrint('[GStore] 最新 release 版本: ${release['name']}');

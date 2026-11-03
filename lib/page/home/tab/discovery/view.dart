@@ -99,7 +99,21 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         // GStore 目录浏览入口（本地 catalog，可加入 GStore 渠道）
         TextButton.icon(
           onPressed: () => _openGStoreBrowse(context),
-          icon: const Icon(TablerIcons.database, size: AppTypography.iconMD),
+          icon: StreamBuilder<Map<String, int>>(
+            stream: BadgeService.instance.badgesStream,
+            initialData: BadgeService.instance.badges,
+            builder: (context, snapshot) {
+              final count = snapshot.data?[BadgeKey.dbUpdate.code] ?? 0;
+              return AppBadge(
+                count: count,
+                showCount: false,
+                child: const Icon(
+                  TablerIcons.database,
+                  size: AppTypography.iconMD,
+                ),
+              );
+            },
+          ),
           label: const Text('GStore'),
         ),
 
@@ -136,7 +150,8 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                 value: DisplayMode.added,
                 child: Row(
                   children: [
-                    Icon(TablerIcons.circle_check_filled, size: AppTypography.iconMD),
+                    Icon(TablerIcons.circle_check_filled,
+                        size: AppTypography.iconMD),
                     SizedBox(width: AppSpacing.sm),
                     Text('已添加'),
                   ],
@@ -146,8 +161,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                 value: DisplayMode.notAdded,
                 child: Row(
                   children: [
-                    Icon(TablerIcons.circle_plus,
-                        size: AppTypography.iconMD),
+                    Icon(TablerIcons.circle_plus, size: AppTypography.iconMD),
                     SizedBox(width: AppSpacing.sm),
                     Text('未添加'),
                   ],
@@ -414,7 +428,8 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
 
   /// 应用 Grid
   Widget _buildAppGrid(BuildContext context, DiscoveryState state) {
-    debugPrint('DiscoveryView: _buildAppGrid rebuilding - selectedChannel=${state.selectedChannel}');
+    debugPrint(
+        'DiscoveryView: _buildAppGrid rebuilding - selectedChannel=${state.selectedChannel}');
     if (state.isLoading) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
     }

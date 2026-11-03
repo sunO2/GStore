@@ -3,11 +3,15 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_facade.dart';
@@ -52,16 +56,15 @@ class UpdateManager extends ConsumerWidget {
           if (state.updateList.isNotEmpty)
             IconButton(
               tooltip: state.showLog ? '查看更新列表' : '检测日志',
-              icon: Icon(
-                  state.showLog ? TablerIcons.list : TablerIcons.receipt),
+              icon:
+                  Icon(state.showLog ? TablerIcons.list : TablerIcons.receipt),
               onPressed: logic.toggleLogView,
             ),
           IconButton(
             tooltip: '检查更新',
             icon: const Icon(TablerIcons.refresh),
-            onPressed: state.isLoading
-                ? null
-                : () => logic.checkUpdates(force: true),
+            onPressed:
+                state.isLoading ? null : () => logic.checkUpdates(force: true),
           ),
           const SizedBox(width: AppSpacing.xs),
         ],
@@ -84,8 +87,7 @@ class UpdateManager extends ConsumerWidget {
           return _buildUpdateList(context, logic, state);
         }
         if (state.errorMessage != null && state.updateList.isEmpty) {
-          return _buildEmpty(context, state.errorMessage!,
-              hasError: true);
+          return _buildEmpty(context, state.errorMessage!, hasError: true);
         }
         return _buildEmpty(context, '所有已添加应用均已是最新版本');
       }),
@@ -98,8 +100,8 @@ class UpdateManager extends ConsumerWidget {
     final percent =
         total > 0 ? (state.checkedCount / total).clamp(0.0, 1.0) : 0.0;
     // 完成态判定：无更新完成（checkFinished）或有更新时手动切到日志页（showLog）
-    final finished = state.checkFinished ||
-        (state.updateList.isNotEmpty && state.showLog);
+    final finished =
+        state.checkFinished || (state.updateList.isNotEmpty && state.showLog);
     final hasUpdates = state.updateList.isNotEmpty;
     return Column(
       children: [
@@ -265,10 +267,24 @@ class _UpdateListBody extends ConsumerWidget {
             selectedApkName: state.selectedApkName[info.appId],
             onUpdate: () => logic.updateApp(info),
             onSelectApk: (dl) => logic.selectApk(info, dl),
+            onTap: () => _openDetail(context, info),
           ),
         );
       },
     );
+  }
+
+  void _openDetail(BuildContext context, AppUpdateInfo info) {
+    final request = AppDetailRequest(
+      appId: info.appId,
+      name: info.appName,
+      packageName: info.packageName,
+      icon: info.iconUrl,
+      description: info.detail?.description,
+      channel: ChannelType.fromCode(info.channelId) ?? ChannelType.custom,
+      channelCode: info.channelId,
+    );
+    context.push(AppRoute.appDetail, extra: request);
   }
 }
 
@@ -285,6 +301,9 @@ class _UpdateTile extends StatelessWidget {
   /// 用户换选候选 APK 回调
   final void Function(DownloadInfo download) onSelectApk;
 
+  /// 点击条目进入详情页。
+  final VoidCallback onTap;
+
   const _UpdateTile({
     required this.info,
     required this.isUpdating,
@@ -292,6 +311,7 @@ class _UpdateTile extends StatelessWidget {
     required this.onUpdate,
     required this.selectedApkName,
     required this.onSelectApk,
+    required this.onTap,
   });
 
   @override
@@ -303,84 +323,88 @@ class _UpdateTile extends StatelessWidget {
       info.detail?.downloads ?? const <DownloadInfo>[],
     );
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        AppSpacing.md,
-        AppSpacing.lg,
-        AppSpacing.md,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              // 图标
-              _AppIcon(url: info.iconUrl, name: info.appName),
-              const SizedBox(width: AppSpacing.md),
-              // 名称 + 版本信息
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            info.appName,
-                            style: Theme.of(context).textTheme.titleMedium,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: AppRadius.allMD,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.md,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                // 图标
+                _AppIcon(url: info.iconUrl, name: info.appName),
+                const SizedBox(width: AppSpacing.md),
+                // 名称 + 版本信息
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              info.appName,
+                              style: Theme.of(context).textTheme.titleMedium,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: AppSpacing.xs),
-                        _ChannelTag(
-                          channelName: info.channelName,
-                          color: scheme.secondaryContainer,
-                          textColor: scheme.onSecondaryContainer,
-                        ),
+                          const SizedBox(width: AppSpacing.xs),
+                          _ChannelTag(
+                            channelName: info.channelName,
+                            color: scheme.secondaryContainer,
+                            textColor: scheme.onSecondaryContainer,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        '${info.installedVersion} → ${info.latestVersion}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
+                      ),
+                      if (isUpdating && download != null) ...[
+                        const SizedBox(height: AppSpacing.sm),
+                        _buildDownloadProgress(context, download!),
                       ],
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      '${info.installedVersion} → ${info.latestVersion}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppColors.textSecondary,
-                          ),
-                    ),
-                    if (isUpdating && download != null) ...[
-                      const SizedBox(height: AppSpacing.sm),
-                      _buildDownloadProgress(context, download!),
                     ],
-                  ],
-                ),
-              ),
-              const SizedBox(width: AppSpacing.md),
-              // 更新按钮
-              if (isUpdating)
-                const AppLoading(size: AppLoadingSize.small)
-              else
-                FilledButton.tonal(
-                  onPressed: onUpdate,
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
                   ),
-                  child: const Text('更新'),
                 ),
-            ],
-          ),
-          // APK 候选展开选择（候选 >1 才显示入口）
-          if (candidates.length > 1) ...[
-            const SizedBox(height: AppSpacing.xs),
-            _ApkSelector(
-              candidates: candidates,
-              selectedName: selectedApkName,
-              defaultName: info.latestDownload.name,
-              onSelect: onSelectApk,
+                const SizedBox(width: AppSpacing.md),
+                // 更新按钮
+                if (isUpdating)
+                  const AppLoading(size: AppLoadingSize.small)
+                else
+                  FilledButton.tonal(
+                    onPressed: onUpdate,
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                    child: const Text('更新'),
+                  ),
+              ],
             ),
+            // APK 候选展开选择（候选 >1 才显示入口）
+            if (candidates.length > 1) ...[
+              const SizedBox(height: AppSpacing.xs),
+              _ApkSelector(
+                candidates: candidates,
+                selectedName: selectedApkName,
+                defaultName: info.latestDownload.name,
+                onSelect: onSelectApk,
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -459,7 +483,9 @@ class _ApkSelectorState extends State<_ApkSelector> {
                   duration: AppAnimation.fast,
                   curve: AppAnimation.curve,
                   child: Icon(
-                    _expanded ? TablerIcons.chevron_up : TablerIcons.chevron_down,
+                    _expanded
+                        ? TablerIcons.chevron_up
+                        : TablerIcons.chevron_down,
                     size: AppTypography.iconSM,
                     color: scheme.onSurfaceVariant,
                   ),
@@ -503,8 +529,8 @@ class _ApkSelectorState extends State<_ApkSelector> {
                         index: i,
                         child: _ApkOption(
                           download: widget.candidates[i],
-                          selected: widget.candidates[i].name ==
-                              _effectiveSelected,
+                          selected:
+                              widget.candidates[i].name == _effectiveSelected,
                           onTap: () {
                             if (widget.candidates[i].name !=
                                 _effectiveSelected) {
@@ -557,12 +583,11 @@ class _StaggeredRevealState extends State<_StaggeredReveal>
   @override
   Widget build(BuildContext context) {
     final totalMs = AppAnimation.medium.inMilliseconds;
-    final start = (widget.index * AppAnimation.stagger.inMilliseconds) /
-        totalMs;
+    final start =
+        (widget.index * AppAnimation.stagger.inMilliseconds) / totalMs;
     final animation = CurvedAnimation(
       parent: _controller,
-      curve: Interval(start.clamp(0.0, 1.0), 1.0,
-          curve: AppAnimation.curve),
+      curve: Interval(start.clamp(0.0, 1.0), 1.0, curve: AppAnimation.curve),
     );
     return FadeTransition(
       opacity: animation,
@@ -612,9 +637,8 @@ class _ApkOption extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: selected
-                          ? scheme.onSurface
-                          : scheme.onSurfaceVariant,
+                      color:
+                          selected ? scheme.onSurface : scheme.onSurfaceVariant,
                     ),
               ),
             ),
@@ -661,7 +685,8 @@ class _AppIcon extends StatelessWidget {
           width: size,
           height: size,
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: const Icon(TablerIcons.brand_android, color: AppColors.textSecondary),
+          child: const Icon(TablerIcons.brand_android,
+              color: AppColors.textSecondary),
         ),
       ),
     );
@@ -960,9 +985,9 @@ class _CheckLogViewState extends State<_CheckLogView> {
               Text(
                 entry.timeText,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.outline,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
+                  color: Theme.of(context).colorScheme.outline,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
               ),
               const SizedBox(width: AppSpacing.sm),
               Expanded(

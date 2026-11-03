@@ -10,11 +10,15 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core_flags.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/page/home/tab/discovery/gstore_browse_page.dart';
 
 import 'support/added_apps_read_seams.dart';
@@ -107,8 +111,7 @@ void main() {
     await tester.pumpWidget(_host(const GStoreBrowsePage()));
     await tester.pumpAndSettle();
 
-    expect(catalog.pageRequests, [(0, 25)],
-        reason: 'first page must be 0..25');
+    expect(catalog.pageRequests, [(0, 25)], reason: 'first page must be 0..25');
     expect(find.text('App 0'), findsOneWidget);
 
     // 滚到底部触发下一页
@@ -194,5 +197,51 @@ void main() {
     expect(find.text('已加入'), findsOneWidget,
         reason: 'the row must flip to the added state');
     expect(find.text('加入'), findsNothing);
+  });
+
+  testWidgets('tapping a row opens the detail route with a gstore request',
+      (tester) async {
+    AddedAppsFacade.backendOverride = _RecordingAdded();
+    CatalogFacade.backendOverride = _FakeCatalog([
+      const AppSummary(
+        appId: 'com.catalog',
+        name: 'Catalog App',
+        user: '',
+        repositories: '',
+        icon: 'icons/catalog.png',
+        des: 'A catalog app',
+      ),
+    ]);
+
+    Object? extra;
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const GStoreBrowsePage(),
+        ),
+        GoRoute(
+          path: AppRoute.appDetail,
+          builder: (context, state) {
+            extra = state.extra;
+            return const Scaffold(body: Text('详情占位页'));
+          },
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Catalog App'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('详情占位页'), findsOneWidget);
+    expect(extra, isA<AppDetailRequest>());
+    final request = extra! as AppDetailRequest;
+    expect(request.appId, 'com.catalog');
+    expect(request.channel, ChannelType.gstore);
+    expect(request.channelCode, 'gstore');
   });
 }

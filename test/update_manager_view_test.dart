@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/service/badge_service.dart';
@@ -106,5 +109,52 @@ void main() {
     expect(find.text('检测完成：所有应用均已是最新版本'), findsWidgets);
     expect(find.textContaining('正在检测更新'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+  testWidgets('点击更新条目进入详情页并传递 AppDetailRequest', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final fake = UpdateManagerService();
+    fake.debugSetState(
+      updateList: [_sampleInfo()],
+      lastCheckedAt: DateTime.now(),
+    );
+    ModuleManager.instance.bind<UpdateManagerService>(fake);
+    ModuleManager.instance.bind<BadgeService>(BadgeService());
+
+    Object? extra;
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const UpdateManager(),
+        ),
+        GoRoute(
+          path: AppRoute.appDetail,
+          builder: (context, state) {
+            extra = state.extra;
+            return const Scaffold(body: Text('详情占位页'));
+          },
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp.router(
+          routerConfig: router,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('示例应用'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('详情占位页'), findsOneWidget);
+    expect(extra, isA<AppDetailRequest>());
+    final request = extra! as AppDetailRequest;
+    expect(request.appId, 'com.example.app');
+    expect(request.channelCode, 'github');
   });
 }

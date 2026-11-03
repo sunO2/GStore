@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:gstore/core/catalog/catalog_update_checker.dart';
 import 'package:gstore/core/core.dart';
 
 /// 红点键（未来可扩展：新增枚举值即可）
@@ -81,6 +82,22 @@ class BadgeService {
     // 这里仅触发一次懒检测（锁+时间窗防重），随后订阅同步
     await UpdateFacade.instance.ensureChecked();
     _subscribeUpdateFacade();
+    unawaited(_checkDbUpdateBadge());
+  }
+
+  Future<void> _checkDbUpdateBadge() async {
+    try {
+      final info = await CatalogUpdateChecker.check();
+      if (info == null) return;
+      final hasUpdate = compareVersion(info.current, info.latest) == 1;
+      setBadge(BadgeKey.dbUpdate, hasUpdate ? 1 : 0);
+      appLog.info(
+        'BadgeService: 数据库更新红点 = $hasUpdate '
+        '(${info.current} -> ${info.latest})',
+      );
+    } catch (e) {
+      appLog.error('BadgeService: 检测数据库更新红点失败 - $e');
+    }
   }
 
   /// 是否已订阅 UpdateManager
