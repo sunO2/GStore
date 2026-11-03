@@ -306,6 +306,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Free disk space (Flutter+Rust Android build needs ~20GB)
+        run: |
+          echo "=== Before ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/lib/node_modules 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          echo "=== After ==="
+          df -h /
+
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
