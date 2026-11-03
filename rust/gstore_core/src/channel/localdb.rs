@@ -22,14 +22,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, Row};
+use serde_json::{Map, Value};
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
-use super::github_releases::GitHubReleases;
+use super::github_releases::{apply_repo_extra, GitHubReleases};
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelKind, ChannelMeta,
-    DetailSection, detail_labels, summary_labels,
+    DetailSection, detail_labels, insert_info_tag, summary_labels,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -136,6 +137,28 @@ impl LocalDbDriver {
         };
         api.fetch_releases(&app.user, &app.repositories)
             .unwrap_or_default()
+    }
+
+    pub(crate) fn github_repo(&self, app: &AppSummary) -> Option<Map<String, Value>> {
+        if app.user.is_empty() || app.repositories.is_empty() {
+            return None;
+        }
+        let api = self.api.as_ref()?;
+        let url = GitHubReleases::repo_url(&app.user, &app.repositories);
+        api.get_value(&url)
+            .ok()
+            .and_then(|(_, value)| value.as_object().cloned())
+    }
+
+    pub(crate) fn github_readme(&self, app: &AppSummary) -> Option<String> {
+        if app.user.is_empty() || app.repositories.is_empty() {
+            return None;
+        }
+        let api = self.api.as_ref()?;
+        api.fetch_readme(&app.user, &app.repositories)
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
     }
 
     fn fts_search(&self, word: &str) -> Vec<AppSummary> {
@@ -294,6 +317,10 @@ pub(crate) struct CatalogDetailSource<'a> {
     pub downloads: Vec<AppDownload>,
     /// Latest GitHub release version, when it resolved.
     pub release_version: Option<String>,
+    /// GitHub repository payload for stats/license/language/topics, when fetched.
+    pub repo: Option<&'a Map<String, Value>>,
+    /// GitHub README content, when fetched.
+    pub readme: Option<String>,
 }
 
 pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>) -> AppDetail {
@@ -305,10 +332,11 @@ pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>)
 
     // Dart `_fetchReadmeInternal` with no GitHub client falls back to the row
     // README and then to `des`.
-    let readme = app
+    let readme = source
         .readme
         .clone()
-        .or_else(|| (!app.des.is_empty()).then(|| app.des.clone()));
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| app.readme.clone().filter(|value| !value.trim().is_empty()));
     // Dart `LocalDbChannel.getAppDetail`: `metadataVersionName ?? latestVersion`.
     let version = version_name.or(source.release_version);
 
@@ -328,6 +356,32 @@ pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>)
         developer.as_deref(),
         app.package_name.as_deref(),
     );
+    let mut extra = app.extra.clone().unwrap_or_default();
+    if let Some(categories) = app
+        .category
+        .as_ref()
+        .filter(|categories| !categories.is_empty())
+    {
+        extra.insert(
+            "categories".to_string(),
+            serde_json::json!(categories),
+        );
+        insert_info_tag(
+            &mut extra,
+            "categories",
+            "分类",
+            categories.join(" / "),
+        );
+    }
+    if let Some(repo) = source.repo {
+        apply_repo_extra(&mut extra, repo);
+    }
+    if let Some(readme_text) = readme.as_deref().filter(|value| !value.trim().is_empty()) {
+        extra.insert(
+            "readme".to_string(),
+            Value::String(readme_text.to_string()),
+        );
+    }
 
     AppDetail {
         app_id: app.app_id.clone(),
@@ -341,7 +395,7 @@ pub(crate) fn build_app_detail(app: AppSummary, source: CatalogDetailSource<'_>)
         channel: source.kind,
         sections,
         downloads: source.downloads,
-        extra: app.extra.unwrap_or_default(),
+        extra,
         labels,
     }
 }
@@ -388,11 +442,14 @@ impl ChannelDriver for LocalDbDriver {
     }
 
     fn get_app_detail(&self, app_id: &str, _force_refresh: bool) -> Result<AppDetail, Error> {
-        let app = self
+        let mut app = self
             .load_app(app_id)?
             .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))?;
+        // README is fetched progressively after the detail payload.
+        app.readme = None;
         let metadata = self.metadata_for(&app)?;
         let (downloads, release_version) = self.github_release(&app);
+        let repo = self.github_repo(&app);
         Ok(build_app_detail(
             app,
             CatalogDetailSource {
@@ -400,6 +457,8 @@ impl ChannelDriver for LocalDbDriver {
                 metadata: metadata.as_ref(),
                 downloads,
                 release_version,
+                repo: repo.as_ref(),
+                readme: None,
             },
         ))
     }
@@ -419,7 +478,10 @@ impl ChannelDriver for LocalDbDriver {
             .load_app(app_id)?
             .ok_or_else(|| Error::NotFound(format!("app not found: {app_id}")))?;
         let fallback = (!app.des.is_empty()).then_some(app.des.clone());
-        Ok(app.readme.filter(|value| !value.is_empty()).or(fallback))
+        Ok(self
+            .github_readme(&app)
+            .or_else(|| app.readme.filter(|value| !value.is_empty()))
+            .or(fallback))
     }
 
     fn fetch_statistics(

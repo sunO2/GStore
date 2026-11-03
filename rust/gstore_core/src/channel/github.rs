@@ -24,7 +24,7 @@ use rusqlite::Row;
 use serde_json::{Map, Value};
 
 use super::driver::{ChannelCategory, ChannelConfig, ChannelDriver};
-use super::github_releases::{api_error, optional_string, GitHubReleases};
+use super::github_releases::{api_error, apply_repo_extra, optional_string, GitHubReleases};
 use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
@@ -357,7 +357,6 @@ impl ChannelDriver for GitHubDriver {
             .as_object()
             .ok_or_else(|| api_error(status, &url, "expected a JSON object".to_string()))?;
         let (downloads, version) = self.api.fetch_releases(&info.user, &info.repositories)?;
-        let readme = self.api.fetch_readme(&info.user, &info.repositories)?;
 
         let mut sections = Vec::new();
         if repo.get("stargazers_count").is_some() || repo.get("forks").is_some() {
@@ -367,25 +366,11 @@ impl ChannelDriver for GitHubDriver {
             sections.push(DetailSection::Version);
         }
         sections.push(DetailSection::Downloads);
-        if readme.as_deref().is_some_and(|value| !value.is_empty()) {
-            sections.push(DetailSection::Readme);
-        }
 
-        // `AppDetail` has no readme/statistics fields; the shared Dart detail view
-        // reads `extra["readme"]` and `extra["apiData"]`, so emit both here.
+        // README is deliberately fetched by `fetch_readme` after the detail
+        // payload so a long README cannot block the first screen.
         let mut extra = info.extra.clone().unwrap_or_default();
-        if let Some(readme_text) = readme.as_deref().filter(|value| !value.is_empty()) {
-            extra.insert("readme".to_string(), Value::String(readme_text.to_string()));
-        }
-        let mut api_data = Map::new();
-        for key in ["stargazers_count", "watchers_count", "forks_count"] {
-            if let Some(value) = repo.get(key) {
-                api_data.insert(key.to_string(), value.clone());
-            }
-        }
-        if !api_data.is_empty() {
-            extra.insert("apiData".to_string(), Value::Object(api_data));
-        }
+        apply_repo_extra(&mut extra, repo);
 
         let developer = (!info.user.is_empty()).then(|| info.user.clone());
         let labels = detail_labels(

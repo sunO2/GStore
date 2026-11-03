@@ -200,6 +200,47 @@ pub(crate) fn label_downloads(value: Option<i64>) -> Option<Label> {
     })
 }
 
+/// Appends one generic display tag into `extra["infoTags"]`.
+///
+/// Channel drivers can use this for fields that do not deserve a dedicated DTO
+/// member. The Dart detail page reads the same shape generically, so adding a
+/// tag never requires a new FRB type or a per-channel UI branch.
+pub fn insert_info_tag(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    label: &str,
+    value: impl Into<String>,
+) {
+    let value = value.into();
+    let value = value.trim();
+    if key.trim().is_empty() || label.trim().is_empty() || value.is_empty() {
+        return;
+    }
+
+    let tags = extra
+        .entry("infoTags".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(items) = tags.as_array_mut() else {
+        *tags = serde_json::Value::Array(vec![serde_json::json!({
+            "key": key,
+            "label": label,
+            "value": value,
+        })]);
+        return;
+    };
+    if items
+        .iter()
+        .any(|item| item.get("key").and_then(serde_json::Value::as_str) == Some(key))
+    {
+        return;
+    }
+    items.push(serde_json::json!({
+        "key": key,
+        "label": label,
+        "value": value,
+    }));
+}
+
 /// The labels derivable from an [`AppSummary`]'s own fields.
 pub fn summary_labels(
     user: &str,

@@ -59,7 +59,7 @@ use super::sealed;
 use crate::db::DbHandle;
 use crate::dto::{
     AppDetail, AppDownload, AppSummary, AppUpdate, ChannelKey, ChannelMeta, DetailSection,
-    detail_labels, label_downloads, summary_labels,
+    detail_labels, insert_info_tag, label_downloads, summary_labels,
 };
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
@@ -448,6 +448,10 @@ impl VivoDriver {
         );
         extra.insert("readme".to_string(), Value::String(description.clone()));
         extra.insert("detailData".to_string(), Value::Object(object.clone()));
+        if let Some(category) = string_field(&object, &["categoryName", "category"]) {
+            extra.insert("category".to_string(), Value::String(category.clone()));
+            insert_info_tag(&mut extra, "category", "分类", category);
+        }
 
         let developer = (!developer.is_empty()).then_some(developer);
         let mut labels = detail_labels(version.as_deref(), developer.as_deref(), Some(&package_name));

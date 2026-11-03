@@ -422,19 +422,20 @@ fn localdb_github_parity_localdb_list_search_category_and_detail() {
         Some("https://github.com/acme/alpha")
     );
     assert!(detail.downloads.is_empty());
-    assert_eq!(
-        detail.sections,
-        vec![DetailSection::Downloads, DetailSection::Readme]
-    );
+    assert_eq!(detail.sections, vec![DetailSection::Downloads]);
     assert_eq!(
         detail.extra.get("stars"),
         Some(&json!(5)),
         "LocalDb detail carries the row's extra object"
     );
-
+    assert_eq!(
+        driver.fetch_readme("com.example.alpha").unwrap().as_deref(),
+        Some("# Alpha\nbody"),
+        "README is fetched progressively after the initial detail"
+    );
     let beta = driver.get_app_detail("com.example.beta", false).unwrap();
     assert_eq!(beta.project_url, None);
-    assert!(beta.sections.contains(&DetailSection::Readme));
+    assert!(!beta.sections.contains(&DetailSection::Readme));
 
     assert_eq!(
         driver.get_app_info("missing", false).unwrap_err().code(),
@@ -943,18 +944,16 @@ fn localdb_github_parity_github_detail_maps_typed_json() {
         vec![
             DetailSection::Statistics,
             DetailSection::Version,
-            DetailSection::Downloads,
-            DetailSection::Readme
+            DetailSection::Downloads
         ]
     );
 
     let calls = http.calls();
-    assert_eq!(calls.len(), 4);
+    assert_eq!(calls.len(), 3);
     let expected = [
         "https://api.github.com/repos/acme/detail",
         "https://api.github.com/repos/acme/detail",
         "https://api.github.com/repos/acme/detail/releases?per_page=1",
-        "https://api.github.com/repos/acme/detail/contents/README.md",
     ];
     for (call, url) in calls.iter().zip(expected) {
         assert_github_request(call, url);

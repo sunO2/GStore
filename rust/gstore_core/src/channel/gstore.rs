@@ -181,6 +181,14 @@ fn merge_refreshed(
             package_name = Some(value);
         }
     }
+    if let Some(package_name) = package_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        extra
+            .entry("packageName".to_string())
+            .or_insert_with(|| Value::String(package_name.to_string()));
+    }
     (name, icon, package_name, extra)
 }
 
@@ -268,6 +276,7 @@ impl ChannelDriver for GStoreDriver {
         };
         let metadata = self.catalog.metadata_for(&app)?;
         let (downloads, release_version) = self.catalog.github_release(&app);
+        let repo = self.catalog.github_repo(&app);
         let mut detail = build_app_detail(
             app.clone(),
             CatalogDetailSource {
@@ -275,6 +284,8 @@ impl ChannelDriver for GStoreDriver {
                 metadata: metadata.as_ref(),
                 downloads,
                 release_version,
+                repo: repo.as_ref(),
+                readme: None,
             },
         );
         if metadata.is_some() {
@@ -282,7 +293,7 @@ impl ChannelDriver for GStoreDriver {
             detail.name = name;
             detail.icon = icon;
             detail.package_name = package_name;
-            detail.extra = extra.clone();
+            detail.extra.extend(extra.clone());
             let mut persisted = extra;
             persisted.remove("sourceId");
             let extra = (!persisted.is_empty()).then(|| Value::Object(persisted).to_string());
@@ -316,9 +327,10 @@ impl ChannelDriver for GStoreDriver {
 
     fn fetch_readme(&self, app_id: &str) -> Result<Option<String>, Error> {
         if let Some(app) = self.find_stored(app_id)? {
-            return Ok(app
-                .readme
-                .filter(|value| !value.is_empty())
+            return Ok(self
+                .catalog
+                .github_readme(&app)
+                .or_else(|| app.readme.filter(|value| !value.is_empty()))
                 .or_else(|| (!app.des.is_empty()).then_some(app.des)));
         }
         self.catalog.fetch_readme(app_id)

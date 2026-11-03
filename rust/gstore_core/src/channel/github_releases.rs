@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::dto::AppDownload;
+use crate::dto::{AppDownload, insert_info_tag};
 use crate::error::Error;
 use crate::ports::config::CoreConfig;
 use crate::ports::http::{HttpOptions, HttpPort, HttpResponse};
@@ -23,6 +23,51 @@ use crate::ports::http::{HttpOptions, HttpPort, HttpResponse};
 const GITHUB_API: &str = "https://api.github.com";
 const ACCEPT: &str = "application/vnd.github+json";
 const USER_AGENT: &str = "GStore-App/1.0";
+
+/// Copies GitHub repository metadata that both the GitHub channel and the
+/// GStore catalog fallback expose through the generic detail `extra` map.
+pub(crate) fn apply_repo_extra(
+    extra: &mut Map<String, Value>,
+    repo: &Map<String, Value>,
+) {
+    let mut api_data = Map::new();
+    for key in ["stargazers_count", "watchers_count", "forks_count"] {
+        if let Some(value) = repo.get(key) {
+            api_data.insert(key.to_string(), value.clone());
+        }
+    }
+    if !api_data.is_empty() {
+        extra.insert("apiData".to_string(), Value::Object(api_data));
+    }
+    if let Some(license) = repo
+        .get("license")
+        .and_then(|value| value.get("spdx_id"))
+        .and_then(Value::as_str)
+    {
+        insert_info_tag(extra, "license", "许可证", license);
+    }
+    if let Some(language) = repo.get("language").and_then(Value::as_str) {
+        insert_info_tag(extra, "language", "语言", language);
+    }
+    if let Some(pushed_at) = repo.get("pushed_at").and_then(Value::as_str) {
+        extra.insert(
+            "pushedAt".to_string(),
+            Value::String(pushed_at.to_string()),
+        );
+    }
+    if let Some(issues) = repo.get("open_issues_count").and_then(Value::as_i64) {
+        insert_info_tag(extra, "openIssues", "Issues", issues.to_string());
+    }
+    if let Some(topics) = repo.get("topics").and_then(Value::as_array) {
+        let topics = topics
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        insert_info_tag(extra, "topics", "主题", topics);
+    }
+}
 
 /// GitHub REST fetcher bound to a [`CoreConfig`] and [`HttpPort`].
 pub struct GitHubReleases {

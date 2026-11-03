@@ -244,10 +244,16 @@ fn catalog_query_parity() {
     );
     assert_eq!(
         detail.sections,
-        vec![DetailSection::Downloads, DetailSection::Readme]
+        vec![DetailSection::Downloads]
     );
     assert!(detail.downloads.is_empty());
-    assert!(detail.extra.is_empty());
+    assert_eq!(
+        detail.extra["categories"],
+        serde_json::json!(["HOOK", "TOOLS"])
+    );
+    assert!(detail.extra["infoTags"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
     assert!(service
         .get_app_detail("com.example.missing")
         .unwrap()
@@ -550,11 +556,16 @@ fn catalog_query_missing_optional_columns() {
 
     let detail = service.get_app_detail("seven.col").unwrap().unwrap();
     assert_eq!(detail.description, "no readme here");
-    assert_eq!(detail.extra, serde_json::Map::new());
+    assert_eq!(
+        detail.extra["categories"],
+        serde_json::json!(["TOOLS"])
+    );
+    assert!(detail.extra["infoTags"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
     assert_eq!(
         detail.sections,
-        vec![DetailSection::Downloads, DetailSection::Readme],
-        "des is the readme fallback when the readme column is absent"
+        vec![DetailSection::Downloads]
     );
     assert_eq!(service.categories().unwrap().len(), 1);
 }
