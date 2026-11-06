@@ -1,11 +1,9 @@
-import 'dart:async';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
-import 'package:gstore/core/routers.dart';
 
 /// 下载通知服务
 /// 职责：

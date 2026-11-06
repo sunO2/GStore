@@ -1,8 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/agent/agent_service.dart';
 
 /// 测试用 WebDAV 服务（绑定后走正常路径；降级路径不触碰它）
 class FakeWebDavService implements IWebDavService {

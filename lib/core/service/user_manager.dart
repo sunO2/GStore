@@ -1,11 +1,9 @@
-import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
-import 'package:gstore/core/design/design_tokens.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:gstore/http/github/dio_client.dart';

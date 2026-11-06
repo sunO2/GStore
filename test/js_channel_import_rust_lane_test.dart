@@ -161,7 +161,7 @@ void main() {
         );
 
         expect(result, isA<ScriptLaneChannelImport>());
-        final pack = (result as ScriptLaneChannelImport).pack;
+        final pack = (result).pack;
         expect(pack.key, 'js_vivo');
         expect(pack.name, 'vivo 渠道');
 

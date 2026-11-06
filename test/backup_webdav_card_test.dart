@@ -1,18 +1,12 @@
 import 'dart:ffi' hide Size;
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/design/app_dialogs.dart';
-import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
-import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
-import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/view.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';

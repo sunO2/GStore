@@ -4,7 +4,6 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 

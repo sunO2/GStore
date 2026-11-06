@@ -49,8 +49,7 @@ class AppCardWidget extends StatelessWidget {
                                 Theme.of(context).colorScheme.primaryContainer,
                             borderRadius: AppRadius.allLG,
                           ),
-                          child: app.appInfo.icon != null &&
-                                  app.appInfo.icon!.isNotEmpty
+                          child: app.appInfo.icon.isNotEmpty
                               ? AppIcon(
                                   url: app.appInfo.icon,
                                   width: 64,
@@ -111,7 +110,7 @@ class AppCardWidget extends StatelessWidget {
           Hero(
             tag: "app_name_${app.appInfo.appId}",
             child: Text(
-              app.appInfo.name ?? "",
+              app.appInfo.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: AppTypography.labelMedium.copyWith(
@@ -121,7 +120,7 @@ class AppCardWidget extends StatelessWidget {
             ),
           ),
           // 一行描述（增强信息量）
-          if (app.appInfo.des?.isNotEmpty ?? false)
+          if (app.appInfo.des.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(
                 top: 2,
@@ -129,7 +128,7 @@ class AppCardWidget extends StatelessWidget {
                 right: AppSpacing.sm,
               ),
               child: Text(
-                app.appInfo.des!,
+                app.appInfo.des,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,

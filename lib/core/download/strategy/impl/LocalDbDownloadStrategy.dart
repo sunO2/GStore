@@ -1,8 +1,5 @@
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/download/core/download_request.dart';
-import 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/core.dart';
 
 /// LocalDbChannel 下载策略

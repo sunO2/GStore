@@ -1,9 +1,6 @@
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/core/download_request.dart';
-import 'package:gstore/core/download/strategy/IDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailInfo.dart';
 
 /// 下载策略管理器
 /// 单例模式，管理所有渠道的下载策略

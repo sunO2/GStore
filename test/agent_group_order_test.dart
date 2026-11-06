@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/agent/agent_service.dart';
 
 /// 模拟 _groupTimeline 的分组顺序逻辑
 /// older 序列：U(用户) A(agent) T(工具) 交替

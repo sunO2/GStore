@@ -3,9 +3,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/exception/AppException.dart';
 
 /// 应用配置类
 /// 单例模式，集中管理所有配置项

@@ -1,6 +1,4 @@
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/data/metadata_repository.dart';
-import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/github_client.dart';
 
 /// 元数据提交服务

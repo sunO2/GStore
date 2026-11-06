@@ -14,7 +14,6 @@ import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_geo_manifest.dart';
 import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
-import 'package:gstore/page/proxy/proxy_capture_ca_gate.dart';
 import 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';

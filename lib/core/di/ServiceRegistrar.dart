@@ -3,13 +3,7 @@
 library;
 
 import 'package:dio/dio.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/IChannel.dart';
-import 'package:gstore/core/config/AppConfig.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/di/ServiceContainer.dart';
-import 'package:gstore/core/error/ErrorHandler.dart';
-import 'package:gstore/core/security/UrlValidator.dart';
 
 /// 服务注册器
 /// 集中管理所有服务的注册逻辑

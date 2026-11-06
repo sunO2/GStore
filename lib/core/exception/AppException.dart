@@ -82,12 +82,10 @@ class NetworkException extends AppException {
     String? method,
   }) {
     String message;
-    String? code;
     int? statusCode;
 
     if (error is Exception) {
       try {
-        final dioError = error;
         // 简化处理，实际项目中可以使用 dio_error_handler 等库
         message = '网络请求失败: $error';
         statusCode = 500; // 默认值

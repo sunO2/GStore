@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/router/app_router.dart';
 import 'package:markdown/markdown.dart' as md;
 
 /// 检测 markdown 文本中是否存在**未闭合的围栏代码块**。

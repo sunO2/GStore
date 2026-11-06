@@ -1,8 +1,6 @@
-import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/download/DownloadStrategyManager.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/install/install_facade.dart';

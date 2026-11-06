@@ -179,11 +179,6 @@ class ValidationResult {
   /// 错误消息（验证失败时）
   final String? errorMessage;
 
-  const ValidationResult._({
-    required this.isValid,
-    this.errorMessage,
-  });
-
   /// 创建成功结果
   const ValidationResult.success() : isValid = true, errorMessage = null;
 

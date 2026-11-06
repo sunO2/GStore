@@ -14,7 +14,6 @@
 /// 真机安装路径 **UNVERIFIED**（本仓库无 adb 设备），仅经静态分支审查。
 library;
 
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 

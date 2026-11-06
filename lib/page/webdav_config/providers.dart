@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/webdav/webdav_config.dart';
 
 /// WebDAV 配置页 UI 状态（不含输入框 controller——由页面持有）。
 class WebDavConfigUiState {

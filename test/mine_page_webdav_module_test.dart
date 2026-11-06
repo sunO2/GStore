@@ -7,12 +7,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
-import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
 
 /// 我的页 webdav 模块上下线响应测试

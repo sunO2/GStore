@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
@@ -9,7 +8,6 @@ import 'package:gstore/core/design/channel_build_history_sheet.dart';
 import 'package:gstore/core/design/channel_version_picker_sheet.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
-import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/page/detail/state.dart';

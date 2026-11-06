@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:app_installer/app_installer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show Color;
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
@@ -9,19 +8,16 @@ import 'package:genkit_google_genai/genkit_google_genai.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_inline_cards.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
 import 'package:gstore/core/agent/agent_http_client.dart';
-import 'package:gstore/core/agent/agent_session_store.dart';
 import 'package:http/http.dart' as http;
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
 import 'package:gstore/core/agent/js_channel_method_runner.dart';
 import 'package:gstore/core/agent/openai_reasoning_model.dart';
-import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/think_parser.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/snapshot/snapshot_service.dart';
@@ -31,21 +27,14 @@ import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart' as mt;
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/app_modules.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/state.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_state_store.dart';
-import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
-import 'package:gstore/core/utils/unit.dart';
-import 'package:gstore/core/webdav/webdav_config.dart';
-import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
@@ -2246,7 +2235,7 @@ class AgentService {
       });
 
       final stream = _ai!.generateStream<dynamic, void>(
-        model: _getModelRef(_model!) as ModelRef<dynamic>,
+        model: _getModelRef(_model!),
         messages: _requestMessages,
         toolNames: toolsEnabled && _modelToolNames.isNotEmpty
             ? _modelToolNames
@@ -2287,7 +2276,7 @@ class AgentService {
         _notifyMessages();
       }
       final response = await stream.onResult;
-      _messages = List.of(response.messages ?? _messages);
+      _messages = List.of(response.messages);
       // 补取思考内容（与 chat 一致）
       _backfillReasoning(response);
       final msg = _activeStreamMsg;
@@ -2418,20 +2407,6 @@ class AgentService {
     current.toolDetail = step;
     current.text = step;
     _notifyMessages();
-  }
-
-  /// 推送工具阶段通知（B2：退出页面后仍可见执行进度；页面内对话时消息卡已展示，跳过）
-  void _publishToolStepNotification(String title, String step) {
-    if (!_notifyOnlyWhenBackground) return;
-    try {
-      AgentNotificationService.instance.init();
-      AgentNotificationService.instance.onToolProgress(
-        title: 'AI 助手 · $title',
-        message: step,
-      );
-    } catch (e) {
-      appLog.error('AgentService: 工具阶段通知失败 - $e');
-    }
   }
 
   /// 推送工具终态通知（B2：退出页面后仍可见结果；页面内对话时消息卡已展示，跳过）
@@ -2655,9 +2630,9 @@ class AgentService {
                 extraInfo = '  vivoId=${app.repositories}';
               }
               results.add(
-                  '• ${app.name ?? '未知'} (appId=${app.appId})'
+                  '• ${app.name} (appId=${app.appId})'
                   '$extraInfo\n'
-                  '  简介: ${app.des ?? '无'}\n'
+                  '  简介: ${app.des}\n'
                   '  渠道: ${channel.code}');
             }
           }
@@ -3092,7 +3067,7 @@ class AgentService {
             result.data!.appId,
             appInfo: result.data,
           );
-          return '已添加 ${result.data!.name ?? appId} 到我的应用';
+          return '已添加 ${result.data!.name} 到我的应用';
 
         case 'remove':
           if (appId.isEmpty || channel.isEmpty) {
@@ -3910,7 +3885,7 @@ class AgentService {
       });
 
       final stream = ai.generateStream<dynamic, void>(
-        model: model as ModelRef<dynamic>,
+        model: model,
         messages: requestMessages,
         toolNames: toolsEnabled ? _modelToolNames : null,
         maxTurns: 12,
@@ -3972,7 +3947,7 @@ class AgentService {
 
       // 获取最终响应，更新消息历史
       final response = await stream.onResult;
-      _messages = List.of(response.messages ?? _messages);
+      _messages = List.of(response.messages);
       // 补取思考内容（OpenAI 兼容端点的 reasoning_content 只在最终响应里）
       _backfillReasoning(response);
 

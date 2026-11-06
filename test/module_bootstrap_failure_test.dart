@@ -88,7 +88,7 @@ void main() {
 
       // 终态：failed，且携带**原始**异常（cause 不丢失）。
       expect(firstFailure, isNotNull);
-      expect(firstFailure!.cause, same(boom));
+      expect(firstFailure.cause, same(boom));
       expect(states.last.phase, ModuleBootstrapPhase.failed,
           reason: '抛异常路径也必须发布终态 failed（横幅不再 downloading）');
       expect(states.last.error, same(boom), reason: 'failed 状态必须保留原始错误对象');
@@ -142,7 +142,7 @@ void main() {
       await pumpEventQueue();
 
       expect(failure, isNotNull);
-      expect(failure!.cause, isA<TimeoutException>(),
+      expect(failure.cause, isA<TimeoutException>(),
           reason: '超时后的 cause 应为 TimeoutException');
       expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)),
           reason: '必须在短超时内终止，而非永久挂起');

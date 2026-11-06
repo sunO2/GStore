@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:gstore/core/catalog/catalog_update_checker.dart';
 import 'package:gstore/core/core.dart';

@@ -17,8 +17,9 @@ const String kRustCoreDbFileName = 'gstore_core.db';
 
 /// 删除判定结果。
 class _DeleteGuard {
-  const _DeleteGuard.allowed([this.hint])
+  const _DeleteGuard.allowed()
       : allowed = true,
+        hint = null,
         blockedReason = null;
 
   const _DeleteGuard.blocked(this.blockedReason)

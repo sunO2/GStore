@@ -1,15 +1,7 @@
-import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/channel.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/event/database_event.dart';
-import 'package:gstore/core/model/AppIdentity.dart';
-import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 
 /// 应用聚合管理器

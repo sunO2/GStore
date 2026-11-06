@@ -1,7 +1,6 @@
 import 'package:json_annotation/json_annotation.dart';
 import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 
 part 'BackupData.g.dart';
 

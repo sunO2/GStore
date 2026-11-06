@@ -2,7 +2,6 @@
 /// 用于不同渠道的应用详情页面展示
 library;
 
-import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/StatTag.dart';
 

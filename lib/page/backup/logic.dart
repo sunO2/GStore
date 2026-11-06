@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
@@ -9,7 +7,6 @@ import 'package:file_picker/file_picker.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/page/backup/state.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';

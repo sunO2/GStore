@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 
 /// 全局日志管理器
 /// 用于在整个应用中记录和查看日志

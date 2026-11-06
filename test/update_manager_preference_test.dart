@@ -1,8 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_backends.dart';
 import 'package:gstore/core/update/update_facade.dart';
-import 'package:gstore/core/update/update_report.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// A backend without the Rust preference capability.

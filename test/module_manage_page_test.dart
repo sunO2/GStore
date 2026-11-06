@@ -9,7 +9,6 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/routers.dart';

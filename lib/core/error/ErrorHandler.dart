@@ -3,8 +3,6 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/exception/AppException.dart';
-import 'package:gstore/core/config/AppConfig.dart';
 import 'package:gstore/core/core.dart';
 
 /// 错误处理优先级

@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
-import 'package:gstore/core/agent/agent_model_store.dart';
-import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/agent/openai_model_catalog.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';

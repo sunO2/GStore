@@ -2,10 +2,8 @@
 /// 提供统一的资源释放接口，防止内存泄漏
 library;
 
-import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/exception/AppException.dart';
 
 /// 可释放资源接口
 /// 所有需要手动释放资源的类都应该实现此接口

@@ -20,7 +20,6 @@ mixin AppUpdateCheckMixin {
   /// 宿主渠道需提供（来自 IChannel）
   ChannelInfo get info;
 
-  @override
   Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(
     String appId,
   ) async {

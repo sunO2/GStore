@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart'
@@ -12,7 +11,6 @@ import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 
 import 'download_status_utils.dart';
 

@@ -1,9 +1,6 @@
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/download/core/download_request.dart';
-import 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailInfo.dart';
 
 /// GitHubChannel 下载策略
 /// 处理 GitHub API 渠道的下载逻辑

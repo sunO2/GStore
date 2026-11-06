@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -6,9 +5,6 @@ import 'package:installed_apps/app_info.dart' as ia;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/impl/GitHubChannel.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';

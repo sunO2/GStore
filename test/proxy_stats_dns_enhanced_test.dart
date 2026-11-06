@@ -12,7 +12,6 @@
 // * DNS 近期查询 / 映射去除 20 条硬截断（展开 + 总数）、展示应答、复制；
 // * 空统计显式空态。
 
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,7 +19,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
-import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_dns_facade.dart';
 import 'package:gstore/page/proxy/proxy_dns_page.dart';
 import 'package:gstore/page/proxy/proxy_requests_facade.dart';

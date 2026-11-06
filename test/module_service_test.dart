@@ -3,8 +3,6 @@ import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
-import 'package:gstore/core/module/module_proxy.dart';
 
 /// 构造最小 DownloadTask
 DownloadTask _task(String appid, String appName, String version, String fileName,

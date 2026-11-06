@@ -14,17 +14,13 @@
 /// (see `test/applist_reads_via_facade_test.dart`). No new global seam.
 library;
 
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/aggregate/added_app_types.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/home/tab/applist/logic.dart';
 import 'package:gstore/page/home/tab/applist/view.dart';
 

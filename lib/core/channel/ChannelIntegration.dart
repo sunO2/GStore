@@ -142,10 +142,10 @@ Future<void> example2_SpecifyChannel() async {
   final manager = ChannelManager.instance;
 
   // 从本地数据库获取
-  var localResult = await manager.getAllApps(from: ChannelType.localDb);
+  await manager.getAllApps(from: ChannelType.localDb);
 
   // 从 GitHub API 获取
-  var githubResult = await manager.getAllApps(from: ChannelType.github);
+  await manager.getAllApps(from: ChannelType.github);
 }
 
 /// 示例 3: 自动降级（优先本地，失败则尝试 GitHub）

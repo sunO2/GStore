@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:dio/dio.dart' as dio;
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
@@ -7,7 +6,6 @@ import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';

@@ -1,15 +1,7 @@
-import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:gstore/core/channel/IChannel.dart';
-import 'package:gstore/core/channel/model/ChannelInfo.dart';
-import 'package:gstore/core/channel/model/ChannelResult.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/AppSummary.dart';
-import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/GitHubChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -20,7 +12,6 @@ import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/core/service/legacy_write_guard.dart';
 
 /// GitHub API 渠道实现
@@ -1333,17 +1324,6 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     return null;
   }
 
-  AppSummary _createNotFoundApp(String appId) {
-    return AppSummary(
-      appId: appId,
-      name: '',
-      user: '',
-      repositories: '',
-      icon: '',
-      des: '应用不存在',
-      category: null,
-    );
-  }
 }
 
 /// 解析 GitHub contents API 响应（JSON: {content: base64, encoding}）→ markdown 文本

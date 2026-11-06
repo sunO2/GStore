@@ -20,7 +20,6 @@ library;
 import 'dart:async';
 
 import 'module.dart';
-import 'module_event.dart';
 
 /// 模块注册中心（单例）
 class ModuleManager {

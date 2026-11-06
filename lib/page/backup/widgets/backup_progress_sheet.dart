@@ -35,7 +35,6 @@ class _BackupProgressSheetState extends State<BackupProgressSheet> {
 
   bool _running = true;
   bool _success = false;
-  bool _failed = false;
 
   @override
   void initState() {
@@ -72,7 +71,6 @@ class _BackupProgressSheetState extends State<BackupProgressSheet> {
         _logs.clear();
         _running = true;
         _success = false;
-        _failed = false;
       });
     }
     try {
@@ -87,7 +85,6 @@ class _BackupProgressSheetState extends State<BackupProgressSheet> {
       setState(() {
         _logs.add((text: '失败: $e', isError: true));
         _running = false;
-        _failed = true;
       });
       _scrollToBottom();
     }

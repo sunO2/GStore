@@ -257,9 +257,7 @@ class _MinePageState extends ConsumerState<MinePage>
       if (radius is BorderRadius) {
         // 取左上角的圆角作为基准，然后缩小到约 50%
         final topLeft = radius.topLeft;
-        if (topLeft is Radius) {
-          return topLeft.x * 0.5;
-        }
+        return topLeft.x * 0.5;
       }
     }
     return AppRadius.sm; // 默认值
@@ -1365,9 +1363,7 @@ class _ColorPresetButton extends StatelessWidget {
       final radius = shape.borderRadius;
       if (radius is BorderRadius) {
         final topLeft = radius.topLeft;
-        if (topLeft is Radius) {
-          smallRadius = topLeft.x * 0.5;
-        }
+        smallRadius = topLeft.x * 0.5;
       }
       themeBorder = shape.side;
     }

@@ -33,7 +33,6 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
 
   // 缓存数据
   List<AppSummary>? _cachedApps;
-  List<db.AppCategory>? _cachedCategories;
 
   // 数据库
   ChannelDatabase? _database;
@@ -684,7 +683,6 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
   @override
   Future<void> clearCache() async {
     _cachedApps = null;
-    _cachedCategories = null;
     appLog.info('VivoChannel: 缓存已清除');
   }
 
@@ -749,13 +747,6 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
       List<String> categories = [];
       if (map['categoryName'] != null) {
         categories = [map['categoryName'].toString()];
-      }
-
-      // 构造下载 URL
-      String downloadUrl = '';
-      final dlRaw = map['download_url'] ?? map['downloadUrl'];
-      if (dlRaw != null) {
-        downloadUrl = dlRaw.toString();
       }
 
       return AppSummary(

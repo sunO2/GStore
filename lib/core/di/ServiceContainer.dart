@@ -179,7 +179,7 @@ class ServiceContainer {
 
     // 如果当前容器没有，从父容器查找
     if (descriptor == null && _parent != null) {
-      return _parent!.getService<T>();
+      return _parent.getService<T>();
     }
 
     if (descriptor == null) {
@@ -260,7 +260,7 @@ class ServiceContainer {
   List<Type> getRegisteredTypes() {
     final types = _services.keys.toList();
     if (_parent != null) {
-      types.addAll(_parent!.getRegisteredTypes());
+      types.addAll(_parent.getRegisteredTypes());
     }
     return types.toSet().toList();
   }
@@ -281,7 +281,7 @@ class ServiceContainer {
 
     if (_parent != null) {
       debugPrint('\n父容器服务:');
-      _parent!.printRegisteredServices();
+      _parent.printRegisteredServices();
     }
 
     debugPrint('==================================');

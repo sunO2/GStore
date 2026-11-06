@@ -15,7 +15,6 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_backends.dart';
 import 'package:gstore/core/update/update_facade.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';

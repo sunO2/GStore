@@ -2,11 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/compent/app_label_chips.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/core/design/app_components.dart';
-import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 
 import 'gstore_browse_page.dart';

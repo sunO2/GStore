@@ -263,7 +263,7 @@ void main() {
 
     expect(result, isA<ScriptLaneChannelImport>(),
         reason: 'flag on 的导入必须走 Rust ScriptApi 通道');
-    expect((result as ScriptLaneChannelImport).pack.key, 'js_flipped');
+    expect((result).pack.key, 'js_flipped');
     expect(backend.importedKeys, <String>['js_flipped'],
         reason: '真实 ScriptApi.import 必须被调用一次');
     expect(

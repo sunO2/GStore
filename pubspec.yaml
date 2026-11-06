@@ -30,7 +30,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-#  flutter_bmflocation: ^3.6.0
   retrofit: ^4.4.0
   logger: ^2.4.0  # for logging purpose
   json_annotation: ^4.9.0
@@ -38,13 +37,8 @@ dependencies:
   go_router: ^14.6.2
   flutter_markdown_plus: ^1.0.12
   markdown: ^7.2.0
-  yaml: ^3.1.2
   async: ^2.11.0
 
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
   http: ^1.2.2
   cached_network_image: ^3.4.1
 
@@ -69,7 +63,6 @@ dependencies:
   sqflite: ^2.4.1
   flutter_secure_storage: ^9.2.4
   file_picker: ^8.1.6
-  permission_handler: ^11.3.1
   archive: ^3.6.1
 
 
@@ -103,11 +96,6 @@ dev_dependencies:
   retrofit_generator: '>=8.0.0 <10.0.0' # for Dart 3.3 use ^9.0.0
   build_runner: ^2.3.3
   json_serializable: ^6.8.0
-  flutter_svg_provider: ^1.0.7
-  permission_handler: ^11.3.1
-  path_provider: ^2.1.4
-  app_installer: ^1.2.0
-  jovial_svg: ^1.1.22
   floor_generator: ^1.4.2
 
   # Rust FFI
@@ -118,6 +106,10 @@ dev_dependencies:
   dart_pubspec_licenses: ^3.0.12
 
 # Rust FFI 配置
+  sqlite3: any
+  flutter_secure_storage_platform_interface: any
+  path_provider_platform_interface: any
+  fake_async: any
 flutter_rust_bridge:
   # Rust 输入（模块路径）
   rust_input: gstore_host::bridge

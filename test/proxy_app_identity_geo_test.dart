@@ -2,7 +2,6 @@
 //
 // 全部密闭式：注入假 loader / iconSaver / cleaner / facade，不触碰原生通道。
 
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';

@@ -10,7 +10,6 @@ import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_facade.dart';
-import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/page/update/logic.dart';
 import 'package:gstore/page/update/state.dart';

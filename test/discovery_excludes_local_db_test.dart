@@ -2,7 +2,6 @@
 /// 渠道 code（侧栏 / 加载 / 搜索选择器）；`gstore` 作为可写渠道在 flag on 时可见。
 library;
 
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';

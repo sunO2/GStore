@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 
@@ -64,7 +63,7 @@ class _HorizontalAppCard extends StatelessWidget {
                     width: 48,
                     height: 48,
                     color: scheme.primaryContainer,
-                    child: (app.appInfo.icon?.isNotEmpty ?? false)
+                    child: app.appInfo.icon.isNotEmpty
                         ? AppIcon(
                             url: app.appInfo.icon,
                             width: 48,
@@ -81,7 +80,7 @@ class _HorizontalAppCard extends StatelessWidget {
             ),
             const Spacer(),
             Text(
-              app.appInfo.name ?? '',
+              app.appInfo.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
@@ -90,7 +89,7 @@ class _HorizontalAppCard extends StatelessWidget {
             ),
             const SizedBox(height: 2),
             Text(
-              app.appInfo.des ?? '',
+              app.appInfo.des,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(

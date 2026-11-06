@@ -2,14 +2,9 @@
 /// 提供统一的缓存接口，支持内存缓存和磁盘缓存
 library;
 
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:gstore/core/config/AppConfig.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/exception/AppException.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
 /// 缓存条目
@@ -95,9 +90,6 @@ class CacheManager {
   /// 缓存统计
   final CacheStats _stats = CacheStats();
 
-  /// SharedPreferences 实例
-  SharedPreferences? _prefs;
-
   /// 数据库实例（用于磁盘缓存）
   Database? _cacheDb;
 
@@ -114,9 +106,6 @@ class CacheManager {
     this.config = config ?? AppConfig();
 
     try {
-      // 初始化 SharedPreferences
-      _prefs = await SharedPreferences.getInstance();
-
       // 初始化磁盘缓存数据库
       await _initCacheDb();
 
@@ -236,7 +225,6 @@ class CacheManager {
 
   /// 清理过期的内存缓存
   void _cleanupExpiredMemoryCache() {
-    final now = DateTime.now();
     final expiredKeys = <String>[];
 
     for (final entry in _memoryCache.entries) {

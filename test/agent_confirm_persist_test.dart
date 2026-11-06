@@ -1,8 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/module/module_manager.dart';
 
 /// 确认工具持久化回归测试（多选框选择后重启不应残留 running 待确认）
 ///

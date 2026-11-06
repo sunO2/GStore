@@ -10,7 +10,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailInfoView.dart';
-import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 
 rust.ChannelAppDetailInfo _detail({required List<rust.ChannelLabel> labels}) =>

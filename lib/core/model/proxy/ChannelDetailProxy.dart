@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';

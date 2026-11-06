@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
@@ -6,7 +5,6 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
-import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;

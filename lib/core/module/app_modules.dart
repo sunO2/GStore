@@ -9,11 +9,9 @@
 /// 由 ModuleManager 拓扑排序按依赖顺序初始化（类似 Linux 包管理器）。
 library;
 
-import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/aggregate/aggregate_service_adapter.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
@@ -21,13 +19,9 @@ import 'package:gstore/core/agent/tools/perf_control_tools.dart';
 import 'package:gstore/core/agent/tools/perf_tools.dart';
 import 'package:gstore/core/agent/tools/perf_tunables_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
-import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/download/rust/rust_download_service.dart';
-import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
-import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/perf/battery_history_recorder.dart'
     show batteryHistoryRecorder;
 import 'package:gstore/core/perf/perf_control_session.dart';
@@ -35,11 +29,7 @@ import 'package:gstore/core/perf/perf_profile_store.dart';
 import 'package:gstore/core/perf/perf_profiles_coordinator.dart';
 import 'package:gstore/core/perf/privileged_shell.dart';
 import 'package:gstore/core/rust/perf/PerfModule.dart';
-import 'package:gstore/core/service/backup_service.dart';
-import 'package:gstore/core/service/badge_service.dart';
-import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/core/service/install_resume_bridge.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'interfaces/service_interfaces.dart';

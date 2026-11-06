@@ -728,7 +728,7 @@ void main() {
       }
 
       expect(failure, isNotNull);
-      expect(failure!.cause, same(boom),
+      expect(failure.cause, same(boom),
           reason: '处理器异常的原始错误必须作为拒绝 cause 保留，便于诊断');
       expect(ensureCalls, 0, reason: '处理器异常按拒绝处理，不触发 ensure');
       expect(delays, isEmpty, reason: '处理器异常按拒绝处理，零退避');
@@ -749,7 +749,7 @@ void main() {
       }
 
       expect(failure, isNotNull);
-      expect(failure!.cause, isNull, reason: '纯用户拒绝不应携带 cause');
+      expect(failure.cause, isNull, reason: '纯用户拒绝不应携带 cause');
       expect(ensureCalls, 0);
       expect(delays, isEmpty);
     });

@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
@@ -10,15 +8,12 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/aggregate/added_apps_facade.dart';
 import 'package:gstore/core/catalog/catalog_facade.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/rust_channel_facade.dart';
 import 'package:gstore/core/config/migration/config_migration_tool.dart';
 import 'package:gstore/core/config/migration/config_restore_adapter.dart';
 import 'package:gstore/core/config/rust/config_api.dart' show ConfigExportValue;
-import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
-import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_api.dart';

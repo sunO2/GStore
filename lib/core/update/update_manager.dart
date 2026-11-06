@@ -11,12 +11,9 @@
 /// 及其私有助手）已在核心接管 update 域后删除。
 library;
 
-import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_log.dart';
 
 /// 更新检测状态
 class UpdateManagerService {

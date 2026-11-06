@@ -4,7 +4,6 @@
 // **不访问任何外部网络**。zip fixture 在测试内用 `archive` 现场构造。
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart' as crypto;

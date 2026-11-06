@@ -82,7 +82,7 @@ class AppDetailRequest {
       }
     }
 
-    final map = aggregatedInfo as Map;
+    final map = aggregatedInfo;
     return AppDetailRequest(
       appId: map['appId']?.toString() ?? '',
       name: map['name']?.toString() ?? 'Unknown',

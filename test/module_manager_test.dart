@@ -1,8 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_event.dart';
-import 'package:gstore/core/module/module_manager.dart';
-import 'package:gstore/core/module/module_proxy.dart';
 
 /// 测试接口
 abstract class ITestService {
