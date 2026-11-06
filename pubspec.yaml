@@ -142,7 +142,7 @@ flutter:
      - assets/app/db/
      - assets/channels/
      - assets/lcrules/
-     - assets/it_tools/
+     - assets/licenses/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -37,8 +37,8 @@ import 'package:gstore/core/rust/ModuleManifestClient.dart';
 /// 任何失败都不触碰当前目录与标记（fail-closed）。
 ///
 /// 回退链（[ensureExtracted]）：当前目录 → `it_tools.prev`（上次可用远端）→
-/// 随包资产（`source=asset`）。远端更新始终在后台/按需进行，绝不在
-/// `ensureExtracted` 的同步返回路径上阻塞。
+/// 随包资产（`source=asset`）→ 远端下载。随包资产按需构建、默认不随 APK
+/// 分发，因此首次进入且无缓存时需要网络。
 ///
 /// `file://` + ES module 的真机白屏兜底（改用 `InAppLocalhostServer` 托管）
 /// 详见 `document/development/12-开发者工具箱-IT-Tools离线内嵌.md` §8；
@@ -97,8 +97,9 @@ class ItToolsService {
 
   /// 确保离线包已落地到本地，返回**当前使用目录**。
   ///
-  /// 同步返回路径**不联网**：优先复用当前目录；当前不可用时回滚
-  /// `it_tools.prev`；仍无则解压随包资产。远端更新在后台进行
+  /// 优先复用当前目录；当前不可用时回滚 `it_tools.prev`；仍无则解压
+  /// 随包资产（仅开发/完整包存在）。资产缺失时同步下载远端包，因此首次
+  /// 进入且无本地缓存时需要网络。后台更新由 [updateFromRemote] 负责
   /// （用 [debugDisableAutoUpdate] 可在测试中关闭）。
   static Future<Directory> ensureExtracted() async {
     final docs = await _docsDir();
@@ -123,10 +124,19 @@ class ItToolsService {
       }
     }
 
-    // 3) 随包资产兜底
-    await _installAsset(current);
-    _scheduleBackgroundUpdate();
-    return current;
+    // 3) 随包资产兜底；未随包时同步下载远端包（首次需要网络）。
+    try {
+      await _installAsset(current);
+      _scheduleBackgroundUpdate();
+      return current;
+    } catch (assetError) {
+      debugPrint('ItToolsService: 随包资产不可用，尝试远端下载 - $assetError');
+      final result = await updateFromRemote();
+      if (await _isUsable(current)) return current;
+      throw StateError(
+        '离线包不可用（随包资产缺失，远端下载失败: ${result.reason ?? 'unknown'}）',
+      );
+    }
   }
 
   /// 按需触发一次远端更新。返回结构化结果，**绝不抛异常**。

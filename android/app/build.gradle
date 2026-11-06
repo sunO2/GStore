@@ -43,6 +43,13 @@ android {
         }
     }
 
+    // 压缩 APK 内的 .so（安装时解压）：显著减小下载体积，但安装后占用增加。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     // 可选「精简包」开关：CI 通过 ORG_GRADLE_PROJECT_gstoreSlimModules=true 传入，
     // Gradle 会映射为同名项目属性 gstoreSlimModules。开启后打包时排除可下载的原生
     // 模块库 libgstore_mod_*.so，但保留 FFI 宿主 libgstore_host.so 及其它所有 .so。
