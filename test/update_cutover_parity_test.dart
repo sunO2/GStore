@@ -9,7 +9,6 @@ import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_facade.dart';
 import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
@@ -104,6 +103,16 @@ AppUpdateInfo _legacyUpdate({
   required Map<String, dynamic> update,
 }) {
   final download = update['download'] as Map<String, dynamic>;
+  final preferred =
+      ((_inputFixture()['preferredApk'] as Map?) ?? const <String, String>{})
+          .cast<String, String>();
+  final downloadName = download['name'] as String;
+  final preferredName = preferred['$channelId:${update['appId']}'];
+  final selectionSource = preferredName == null
+      ? 'abi'
+      : (preferredName.toLowerCase() == downloadName.toLowerCase()
+          ? 'preference'
+          : 'abi_fallback');
   return AppUpdateInfo(
     channelId: channelId,
     appId: update['appId'] as String,
@@ -112,6 +121,7 @@ AppUpdateInfo _legacyUpdate({
     packageName: update['packageName'] as String,
     installedVersion: _installedVersionFor(update['packageName'] as String),
     latestVersion: update['latestVersion'] as String,
+    selectionSource: selectionSource,
     checkedAt: _checkedAt,
     latestDownload: DownloadInfo(
       url: download['url'] as String,
@@ -144,10 +154,8 @@ String _installedVersionFor(String packageName) {
 Future<void> _seedPreferredApk() async {
   final preferred =
       (_inputFixture()['preferredApk'] as Map).cast<String, String>();
-  for (final entry in preferred.entries) {
-    final parts = entry.key.split(':');
-    await UpdateCache.savePreferredApk(parts[0], parts[1], entry.value);
-  }
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('update_preferred_apk', jsonEncode(preferred));
 }
 
 /// A report-backed core fake: replays the committed golden candidates and hands
@@ -183,7 +191,7 @@ _ReportCoreBackend _goldenCoreBackend({
 /// Fixture lane: reproduces the deleted Dart engine's canonical state +
 /// persistence (the same four prefs keys) without touching channels.
 ///
-/// The engine and its `UpdateCache` writers were removed in this increment, so
+/// The engine and its legacy cache writers were removed in this increment, so
 /// the fixture reproduces the four-key output directly. The parity diff below
 /// therefore still compares a legacy-shaped canonical document against the real
 /// Rust golden.
@@ -231,8 +239,14 @@ class _FixtureUpdateManager extends UpdateManagerService {
         ),
         CheckLogEntry(
           level: CheckLogLevel.info,
-          text: '应用 ${update.appName}：选择平台 '
-              '${update.latestDownload.platform?.trim().isNotEmpty == true ? update.latestDownload.platform : '自动匹配'}',
+          text: '应用 ${update.appName}：选择文件 '
+              '${update.latestDownload.name}'
+              '（平台 ${update.latestDownload.platform?.trim().isNotEmpty == true ? update.latestDownload.platform : '自动匹配'}'
+              '，来源：${switch (update.selectionSource) {
+            'preference' => '记忆偏好',
+            'abi_fallback' => '设备架构（偏好未命中）',
+            _ => '设备架构',
+          }}）',
           time: _checkedAt,
         ),
       ],

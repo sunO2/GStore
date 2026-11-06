@@ -829,8 +829,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
               _parsePlatformFromAssetName(asset['name']?.toString() ?? '');
           final assetDownloadCount = asset['download_count'] as int?;
           final downloadInfo = DownloadInfo(
-            url: applyProxyIfNeeded(
-                asset['browser_download_url']?.toString() ?? '', getProxy()),
+            // 渠道层不再套代理：原始 GitHub URL 交给下载服务入口统一兜底
+            // （RustDownloadService → resolveDownloadUrl），避免渠道/策略/服务
+            // 多处重复处理代理前缀。
+            url: asset['browser_download_url']?.toString() ?? '',
             name: asset['name']?.toString() ?? '',
             size: assetSize,
             downloadCount: assetDownloadCount,

@@ -5183,7 +5183,8 @@ pub struct UpdateReport {
     pub checked_at: i64,
     pub total: i64,
     pub used_cache: bool,
-    /// JSON array of `AppUpdateInfo` (camelCase, no `detail`).
+    /// JSON array of `AppUpdateInfo` (camelCase). Candidate downloads are
+    /// included in `downloads`; `detail` is omitted.
     pub updates_json: String,
     /// JSON array of `UpdateSkip`.
     pub skipped_json: String,
@@ -5446,6 +5447,43 @@ impl UpdateApi {
     /// Whether the cached results are still inside the one-hour window.
     pub fn cache_valid(&self) -> Result<bool, String> {
         self.service.is_cache_valid().map_err(core_err)
+    }
+
+    /// Persists the preferred APK file name for one channel/app.
+    ///
+    /// An empty `file_name` removes the preference. This never triggers a
+    /// network update check.
+    pub fn set_preferred_apk(
+        &self,
+        channel_code: String,
+        app_id: String,
+        file_name: String,
+    ) -> Result<(), String> {
+        self.service
+            .set_preferred_apk(&channel_code, &app_id, &file_name)
+            .map_err(core_err)
+    }
+
+    /// Removes the persisted preferred APK for one channel/app.
+    pub fn clear_preferred_apk(
+        &self,
+        channel_code: String,
+        app_id: String,
+    ) -> Result<(), String> {
+        self.service
+            .clear_preferred_apk(&channel_code, &app_id)
+            .map_err(core_err)
+    }
+
+    /// Returns the persisted preferred APK file name, if any.
+    pub fn preferred_apk_name(
+        &self,
+        channel_code: String,
+        app_id: String,
+    ) -> Result<Option<String>, String> {
+        self.service
+            .preferred_apk(&channel_code, &app_id)
+            .map_err(core_err)
     }
 }
 

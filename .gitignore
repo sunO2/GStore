@@ -55,6 +55,8 @@ rust/target/
 
 # 仓库根目录构建/证据产物（spike 证据 target/spike-evidence/ 不入库）
 /target/
+# 本地构建/发布的 APK 产物（体积大，不入库）
+/dist/
 
 # GStore-Repositorys 临时克隆
 /git.temp/

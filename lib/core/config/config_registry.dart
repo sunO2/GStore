@@ -103,6 +103,10 @@ class ConfigKeys {
   static const String downloadMultiSegmentEnabled =
       'download.multi_segment.enabled';
 
+  /// 下载是否自动套用 GitHub 代理前缀（默认开启）
+  static const String downloadAutoProxyEnabled =
+      'download.auto_proxy.enabled';
+
   /// 仅在 Wi-Fi 下下载
   static const String downloadWifiOnly = 'download.wifi_only';
 
@@ -270,7 +274,7 @@ class ConfigKeys {
   /// 代理日志保留级别：debug / info / warn / error
   static const String proxyLogLevel = 'proxy.log_level';
 
-  /// 全部运行时 wire key（与 Rust 注册表 53 个条目一一对应）。
+  /// 全部运行时 wire key（与 Rust 注册表 54 个条目一一对应）。
   ///
   /// 静态守卫（`test/config_keys_grouped_test.dart`）用它检查：都有 `.`、
   /// 无重复、模块前缀都在 [ConfigModules.all] 内、且每个 key 都存在于 Rust
@@ -279,6 +283,7 @@ class ConfigKeys {
     themeConfig,
     themeMode,
     downloadMultiSegmentEnabled,
+    downloadAutoProxyEnabled,
     downloadWifiOnly,
     downloadMaxConcurrent,
     downloadDefaultConnections,
@@ -461,6 +466,16 @@ const List<ConfigEntry> _appCoreConfigEntries = <ConfigEntry>[
     category: 'download',
     description: '多段下载开关（关闭后单连接下载）',
     descriptionEn: 'Multi-segment download toggle (off = single connection)',
+  ),
+  ConfigEntry(
+    key: ConfigKeys.downloadAutoProxyEnabled,
+    type: ConfigValueType.bool,
+    defaultValue: true,
+    agentAccessible: true,
+    category: 'download',
+    description: '下载自动套用 GitHub 代理（关闭后下载服务不再自动添加代理前缀）',
+    descriptionEn:
+        'Automatically apply the GitHub proxy to downloads (off = no automatic prefix)',
   ),
   ConfigEntry(
     key: ConfigKeys.downloadWifiOnly,

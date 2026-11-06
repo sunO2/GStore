@@ -10,7 +10,7 @@
 ///     tables `added_apps` + `added_app_tags`);
 ///   - `<legacyRoot>/gstore/apps.db` — `DbManager.init()` (the catalog copy);
 ///   - `<legacyRoot>/channels/*.zip` — `ChannelLoader` local channel packs;
-///   - `SharedPreferences` keys `update_*` — `UpdateCache` (exported to
+///   - `SharedPreferences` keys `update_*` — legacy update prefs (exported to
 ///     `<files>/migration/update_prefs.json` before the import).
 /// * the **core-owned artifacts** live under the core files directory:
 ///   - `<files>/migration/cutover_v6.done` — the one-time marker;

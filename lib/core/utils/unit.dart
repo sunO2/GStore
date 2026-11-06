@@ -70,6 +70,7 @@ bool isGithubUrl(String url) {
       url.startsWith('http://github.com/') ||
       url.startsWith('https://raw.githubusercontent.com/') ||
       url.startsWith('https://api.github.com/') ||
+      url.startsWith('https://codeload.github.com/') ||
       url.startsWith('https://objects.githubusercontent.com/') ||
       url.startsWith('https://user-images.githubusercontent.com/') ||
       url.startsWith('https://avatars.githubusercontent.com/') ||

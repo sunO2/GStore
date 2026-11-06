@@ -46,8 +46,8 @@ class UpdateState {
   /// 检测是否已完成（无更新时停留在检测页展示日志）
   final bool checkFinished;
 
-  /// 用户为各应用选择的 APK 文件名（appId → 文件名；空 = 未选/默认规则）
-  /// 默认选中 = 现规则结果（latestDownload）或有偏好时相似度匹配结果
+  /// 用户为各应用选择的 APK 文件名（`{channelId}:{appId}` → 文件名；空 = 未选/默认规则）
+  /// 默认选中 = core 重新投影后的 latestDownload（或用户本次选择）
   final Map<String, String> selectedApkName;
 
   /// 是否显示检测日志页（有更新时手动切换：true=日志页 / false=更新列表）
@@ -94,17 +94,14 @@ class UpdateState {
     return UpdateState(
       updateList: updateList ?? this.updateList,
       isLoading: isLoading ?? this.isLoading,
-      errorMessage: clearErrorMessage
-          ? null
-          : errorMessage ?? this.errorMessage,
+      errorMessage:
+          clearErrorMessage ? null : errorMessage ?? this.errorMessage,
       checkedCount: checkedCount ?? this.checkedCount,
       totalCount: totalCount ?? this.totalCount,
-      updatingAppId: clearUpdatingAppId
-          ? null
-          : updatingAppId ?? this.updatingAppId,
-      currentDownload: clearCurrentDownload
-          ? null
-          : currentDownload ?? this.currentDownload,
+      updatingAppId:
+          clearUpdatingAppId ? null : updatingAppId ?? this.updatingAppId,
+      currentDownload:
+          clearCurrentDownload ? null : currentDownload ?? this.currentDownload,
       checkingAppName: checkingAppName ?? this.checkingAppName,
       checkingIconUrl: checkingIconUrl ?? this.checkingIconUrl,
       checkList: checkList ?? this.checkList,

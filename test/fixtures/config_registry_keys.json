@@ -85,6 +85,23 @@
     "example": null
   },
   {
+    "key": "download.auto_proxy.enabled",
+    "value_type": "bool",
+    "revision": 0,
+    "sensitive": false,
+    "agent_accessible": true,
+    "visibility": "owner",
+    "default_json": true,
+    "description_zh": "下载自动套用 GitHub 代理（关闭后下载服务不再自动添加代理前缀）",
+    "description_en": "Automatically apply the GitHub proxy to downloads (off = no automatic prefix)",
+    "category": "download",
+    "unit": null,
+    "min": null,
+    "max": null,
+    "enum_values": [],
+    "example": null
+  },
+  {
     "key": "download.default_connections",
     "value_type": "int",
     "revision": 0,

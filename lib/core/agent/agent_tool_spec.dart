@@ -12,6 +12,7 @@
 /// - 按需详情 = 模型调用元工具 `toolProtocol` 取 [AgentToolSpec.protocol]
 library;
 
+import 'agent_inline_cards.dart';
 import 'agent_tool_module.dart';
 
 /// 工具分组（决定提示词目录的编排顺序）
@@ -208,6 +209,20 @@ class AgentToolCatalog {
       for (final s in groupOf(g)) {
         buf.writeln(s.renderBriefLine());
       }
+    }
+    return buf.toString().trimRight();
+  }
+
+  /// 常驻“工具索引”（仅分组 + 工具名，无简介）。
+  ///
+  /// 用于紧凑提示词：完整描述已由 function-calling schema 下发；
+  /// 模型需要参数细节时再调用 `loadProtocol`。
+  static String compactDirectory() {
+    final buf = StringBuffer();
+    for (final g in groups) {
+      final names = groupOf(g).map((s) => s.name).join(', ');
+      if (names.isEmpty) continue;
+      buf.writeln('▸ $g: $names');
     }
     return buf.toString().trimRight();
   }
@@ -445,7 +460,7 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
     name: 'configManager',
     group: AgentToolGroup.manage,
     label: '配置管理',
-    brief: '应用配置读取/修改；action=list/get/set/clear。',
+    brief: '应用配置读取/修改；action=list/get/set/clear。查询单个开关用 get。',
     params: [
       AgentToolParam(name: 'action', description: 'list/get/set/clear', required: true),
       AgentToolParam(name: 'key', description: '配置键（get/set/clear 必填）'),
@@ -457,7 +472,35 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 3. JSON 类型配置的 value 传 JSON 对象字符串（可只传部分字段）。
 4. 敏感配置读取时脱敏，但可以设置。
 5. 修改后相关功能自动生效。
-6. 失败要说明原因（未知键/类型错误/不允许 Agent 修改）并重新 list 确认可用项。''',
+6. 失败要说明原因（未知键/类型错误/不允许 Agent 修改）并重新 list 确认可用项。
+7. 查询单个开关状态时优先用 get（传具体 key）；若用户希望看到可操作控件，改用 showConfigControl。''',
+  ),
+  AgentToolSpec(
+    name: 'showConfigControl',
+    group: AgentToolGroup.interact,
+    label: '展示配置控件',
+    brief: '展示配置控件卡片；key 可用配置键或中文别名（分段下载/并发下载/自动更新策略/主题模式）；由你判断是否需要。',
+    params: [
+      AgentToolParam(
+        name: 'key',
+        description: '配置 key（白名单内的开关/数值/枚举配置）',
+        required: true,
+      ),
+      AgentToolParam(
+        name: 'type',
+        description: '可选：switch/slider/segmented；省略时按配置类型自动选择',
+      ),
+    ],
+    protocol: '''
+1. 是否展示控件由你判断：用户想查看/调整某个配置，或明确希望看到可操作控件时调用；只需文字说明时可直接回答。
+2. key 必须是以下之一：
+   - 开关（switch）：download.multi_segment.enabled（多段下载/分段下载）、download.wifi_only（仅 Wi-Fi 下载）、update.silent_update（静默更新）、update.ignore_prerelease（忽略预发布版本）
+   - 滑块（slider）：download.max_concurrent（最大并发下载数 1-10）、download.max_retries（下载重试次数 0-5）、download.default_connections（默认连接数）、update.check_interval_hours（检查更新间隔 1-168）
+   - 分段选择（segmented）：update.auto_update_policy（never/wifi_only/always）、update.channel（stable/beta/dev）、theme.mode（0/1/2）
+3. type 可省略，UI 会按配置类型自动选择；传了就必须与配置类型匹配。
+4. 调用后 UI 会展示控件卡片；不要再用文字重复状态。
+5. 本工具只负责展示，不修改配置；配置修改仍用 configManager set。''',
+    enabled: kAgentInlineCardsEnabled,
   ),
   AgentToolSpec(
     name: 'backup',

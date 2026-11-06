@@ -264,7 +264,7 @@ class _UpdateListBody extends ConsumerWidget {
             info: info,
             isUpdating: state.updatingAppId == info.appId,
             download: state.currentDownload,
-            selectedApkName: state.selectedApkName[info.appId],
+            selectedApkName: state.selectedApkName[updateSelectionKey(info)],
             onUpdate: () => logic.updateApp(info),
             onSelectApk: (dl) => logic.selectApk(info, dl),
             onTap: () => _openDetail(context, info),
@@ -317,11 +317,10 @@ class _UpdateTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // 展开候选列表：仅 Android 可安装文件（.apk/.aab），且 detail 存在且候选 >1 时显示
-    // （缓存恢复 detail=null → 无候选）；zip/txt 等非安装文件不进入候选
-    final candidates = filterInstallableDownloads(
-      info.detail?.downloads ?? const <DownloadInfo>[],
-    );
+    // 展开候选列表：仅 Android 可安装文件（.apk/.aab），候选 >1 时显示
+    // （core 结果带 downloadCandidates；旧缓存无候选时回退 detail）
+    // zip/txt 等非安装文件不进入候选
+    final candidates = filterInstallableDownloads(info.downloads);
 
     return InkWell(
       onTap: onTap,
@@ -642,6 +641,25 @@ class _ApkOption extends StatelessWidget {
                     ),
               ),
             ),
+            // 架构/平台标识（如 arm64-v8a / universal / x86_64）
+            if (download.platform != null && download.platform!.isNotEmpty) ...[
+              const SizedBox(width: AppSpacing.xs),
+              Container(
+                padding: AppSpacing.horizontalXS_verticalXS,
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: AppRadius.allSM,
+                ),
+                child: Text(
+                  download.platform!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

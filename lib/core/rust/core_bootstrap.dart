@@ -285,16 +285,15 @@ class CoreBootstrap {
         '⏱️ core-bootstrap: critical-done elapsedMs=${criticalSw.elapsedMilliseconds}',
       );
 
+      _inventoryDirs = dirs;
+      _inventoryBackend = backend;
+      _inventoryProbe = probe;
       if (includeInventory) {
         await _pushInventoryAndCutover(
           dirs: dirs,
           backend: backend,
           probe: probe,
         );
-      } else {
-        _inventoryDirs = dirs;
-        _inventoryBackend = backend;
-        _inventoryProbe = probe;
       }
     } catch (error, stackTrace) {
       debugPrint('[CoreBootstrap] 核心自举失败（降级继续启动）: $error');
@@ -387,6 +386,36 @@ class CoreBootstrap {
       if (kDebugMode) {
         debugPrint('[CoreBootstrap] stack: $stackTrace');
       }
+    }
+  }
+
+  /// Re-enumerates installed apps and force-pushes a fresh inventory snapshot.
+  ///
+  /// [startInventory] is deliberately one-shot for startup. After an APK install
+  /// the update cache needs the new version immediately, so this pushes a new
+  /// sequence without re-running the cutover.
+  static Future<void> refreshInventory() async {
+    if (!_ready) return;
+    final probe = _inventoryProbe;
+    final backend = _inventoryBackend;
+    if (probe == null || backend == null) return;
+    try {
+      final apps = await probe.listInstalled();
+      final capturedAt = _nowMillis();
+      await backend.pushInventory(
+        rust.InventorySnapshotDto(
+          sourceId: kCoreSourceId,
+          seq: _nextSeq(capturedAt),
+          capturedAt: capturedAt,
+          apps: <rust.InstalledAppDto>[
+            for (final app in apps)
+              if (_installedApp(app) case final dto?) dto,
+          ],
+        ),
+      );
+      appLog.info('CoreBootstrap: 安装后清单已刷新（${apps.length} 个应用）');
+    } catch (error) {
+      appLog.error('CoreBootstrap: 安装后清单刷新失败 - $error');
     }
   }
 

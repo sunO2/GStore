@@ -34,8 +34,7 @@ class _FakeDownloadService implements IDownloadService {
   Stream<DownloadTask> watch(int id) => const Stream<DownloadTask>.empty();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 DownloadTask _task(
@@ -95,8 +94,33 @@ class _ThrowingInstallManager implements InstallManager {
   Future<int> consumeInstallRequests() async => 0;
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _CountingInstallManager implements InstallManager {
+  int installTaskCalls = 0;
+  int consumeCalls = 0;
+  String? lastModuleTaskId;
+
+  @override
+  Future<(InstallOutcome, InstallMethod)> installTask(
+    String moduleTaskId,
+    String filePath, {
+    bool force = false,
+  }) async {
+    installTaskCalls++;
+    lastModuleTaskId = moduleTaskId;
+    return (InstallOutcome.installed, InstallMethod.shizuku);
+  }
+
+  @override
+  Future<int> consumeInstallRequests() async {
+    consumeCalls++;
+    return 0;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
@@ -106,10 +130,13 @@ void main() {
 
   setUp(() {
     watcher = DownloadTaskWatcher.debug();
+    // 默认不访问核心 InstallFacade：按「未消费」处理（既有自动安装行为）。
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => null;
   });
 
   tearDown(() {
     watcher.dispose();
+    DownloadTaskWatcher.installStatusProbeForTest = null;
   });
 
   test('start subscribes exactly once', () {
@@ -122,7 +149,8 @@ void main() {
     expect(service.watchAllCalls, 1);
   });
 
-  test('repeating start with the identical implementation is a no-op', () async {
+  test('repeating start with the identical implementation is a no-op',
+      () async {
     final service = _FakeDownloadService();
     addTearDown(service.close);
     watcher.start(service);
@@ -205,15 +233,133 @@ void main() {
     await pumpEventQueue();
 
     expect(install.installTaskCalls, 1,
-        reason: 'a completed installAfterDownload task always installs via core');
+        reason:
+            'a completed installAfterDownload task always installs via core');
     expect(install.lastModuleTaskId, '9');
     expect(install.installApkCalls, 0,
         reason: 'the cutover removed the installApk fallback');
     expect(
-      printed.any((m) =>
-          m.contains('核心自动安装失败') && m.contains('installTask boom')),
+      printed
+          .any((m) => m.contains('核心自动安装失败') && m.contains('installTask boom')),
       isTrue,
       reason: 'the install error must be caught and reported, never unhandled',
     );
+  });
+
+  test('pending/installed 视为已消费：重启/重复 seed 不再自动安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'pending';
+
+    service.emit(_task(
+      11,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 0,
+        reason: 'pending/installed 是已消费状态，不得重放');
+    expect(install.consumeCalls, 0);
+  });
+
+  test('failed 是可重试状态：completed 会再次尝试安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+
+    service.emit(_task(
+      13,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 1, reason: 'failed 安装状态应允许用户重新下载后重试');
+    expect(install.lastModuleTaskId, '13');
+  });
+
+  test('重新进入下载态后 completed 会再次尝试自动安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    final completed = _task(
+      14,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    );
+    service.emit(completed);
+    await pumpEventQueue();
+    expect(install.installTaskCalls, 1);
+
+    service.emit(_task(
+      14,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+    service.emit(completed);
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 2, reason: '新一次下载应清除已消费标记并允许重试安装');
+  });
+
+  test('ensureAutoInstall 返回 installTask 的结果', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    final outcome = await watcher.ensureAutoInstall(_task(
+      15,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+
+    expect(outcome, InstallOutcome.installed);
+    expect(install.lastModuleTaskId, '15');
+    expect(install.consumeCalls, 1);
+  });
+
+  test('同一进程内重复收到 completed 只触发一次自动安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    final task = _task(
+      12,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    );
+    service.emit(task);
+    service.emit(task);
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 1, reason: '同一次 seed/重复事件的自动安装只允许触发一次');
+    expect(install.lastModuleTaskId, '12');
   });
 }

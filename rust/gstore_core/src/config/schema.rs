@@ -216,6 +216,14 @@ fn build_registry() -> Vec<ConfigEntry> {
                 "Multi-segment download toggle (off = single connection)",
             )
             .build(),
+        EntrySpec::new("download", "auto_proxy.enabled", ConfigValueType::Bool)
+            .default_json(json!(true))
+            .agent()
+            .docs(
+                "下载自动套用 GitHub 代理（关闭后下载服务不再自动添加代理前缀）",
+                "Automatically apply the GitHub proxy to downloads (off = no automatic prefix)",
+            )
+            .build(),
         EntrySpec::new("download", "wifi_only", ConfigValueType::Bool)
             .default_json(json!(false))
             .agent()

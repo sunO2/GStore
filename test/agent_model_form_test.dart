@@ -72,7 +72,12 @@ Future<void> tapRefresh(WidgetTester tester, {String apiKey = 'sk-test'}) async 
 void main() {
   setUp(() {
     // 每个用例从「未初始化配置」开始：既保证读到空缓存，也避免缓存串场
+    AgentModelStore.resetForTest();
     ConfigStore.instance.resetForTest();
+  });
+
+  tearDown(() {
+    AgentModelStore.resetForTest();
   });
 
   testWidgets('OpenAI 兼容：Base URL 排在模型名称之前，模型框右侧有拉取按钮', (tester) async {

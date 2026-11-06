@@ -30,6 +30,22 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   /// 测试可自由构造自建实例；生产统一走 [instance]
   FdroidRepoManager();
 
+  /// 配置变更订阅（监听 fdroid.sources / fdroid.last_source_id）
+  StreamSubscription<ConfigChangeEvent>? _configSub;
+
+  /// 配置变更防抖定时器（50ms 内多次写入只应用一次）
+  Timer? _configReloadTimer;
+
+  /// 当前源列表序列化签名（用于判断配置读回后是否真的发生变化）
+  String? _sourcesSignature;
+
+  /// 是否正在应用外部配置（防止重入）
+  bool _applyingExternalConfig = false;
+
+  /// 测试开关：置 true 时跳过向 Rust core 推送源配置（避免测试依赖 Rust）。
+  @visibleForTesting
+  bool debugSkipCorePush = false;
+
   FdroidSource? _currentSource;
 
   /// 当前激活的源
@@ -262,6 +278,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       // 把启用源推送给 Rust core 的 F-Droid 驱动（core 读不到 Dart 配置存储）。
       await _pushSourcesToCore();
 
+      // 启动配置已就绪后再挂监听，避免启动过程被自身写入反复触发。
+      _subscribeConfigChanges();
+
       appLog.info('FdroidRepoManager: 初始化完成，当前源: $currentSource');
     } catch (e) {
       appLog.error('FdroidRepoManager: 初始化失败 - $e');
@@ -414,7 +433,16 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     return (files: files, bytes: bytes, skipped: skipped);
   }
 
-  Future<void> _loadSources() async {
+  /// 当前源列表的稳定签名（JSON 序列化，用于比对配置读回前后是否一致）。
+  String _signatureForSources() =>
+      jsonEncode(_sources.map((s) => s.toJson()).toList());
+
+  /// 从配置读取源列表并替换内存中的 [_sources]（含 id 去重）。
+  ///
+  /// 返回读取前后签名是否发生变化。**不主动落盘**：调用方决定是否回写，
+  /// 避免外部配置变更路径产生「读配置 → 写配置」的自循环。
+  Future<bool> _readSourcesFromConfig() async {
+    final before = _sourcesSignature ?? _signatureForSources();
     try {
       // fdroidSources 为 json 类型：存储层读回 List（Map/List 已由存储层解码）。
       final raw = await ConfigService.instance.getRaw(ConfigKeys.fdroidSources);
@@ -430,19 +458,104 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
           ..addAll(loadedSources);
         // id 唯一是「id 作为存储槽位键」的前置不变量：历史配置可能有两个
         // `official`，必须改派重复项，否则两个源会共用一个库。
-        if (_dedupeSourceIds()) await _saveSources();
-        notifyListeners();
-        appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
+        _dedupeSourceIds();
       } else {
         _sources.clear();
-        notifyListeners();
         debugPrint('FdroidRepoManager: 没有保存的源配置');
       }
     } catch (e) {
       appLog.error('FdroidRepoManager: 加载源配置失败 - $e');
       _sources.clear();
-      notifyListeners();
     }
+    _sourcesSignature = _signatureForSources();
+    return before != _sourcesSignature;
+  }
+
+  Future<void> _loadSources() async {
+    final changed = await _readSourcesFromConfig();
+    if (changed) {
+      // 启动时若读回内容有变化（含 id 去重改派），回写配置以持久化规范化结果。
+      await _saveSources();
+      appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
+    }
+    notifyListeners();
+  }
+
+  /// 订阅全局配置变更（幂等）。
+  ///
+  /// 只关心源列表与当前源 id；50ms 防抖后统一应用，避免批量写入时反复刷新。
+  void _subscribeConfigChanges() {
+    if (_configSub != null) return;
+    _configSub = ConfigService.instance.onChange.listen(
+      (event) {
+        if (event.key != ConfigKeys.fdroidSources &&
+            event.key != ConfigKeys.lastSourceId) {
+          return;
+        }
+        _configReloadTimer?.cancel();
+        _configReloadTimer = Timer(const Duration(milliseconds: 50), () {
+          unawaited(_applyExternalConfig());
+        });
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        // 监听失败不能让管理器崩溃：仅记录，等待后续事件或重启恢复。
+        appLog.warning('FdroidRepoManager: 配置变更监听失败 - $error');
+        debugPrint('FdroidRepoManager: 配置变更监听失败 - $error\n$stackTrace');
+      },
+    );
+  }
+
+  /// 应用外部配置变更（不触发网络加载）。
+  ///
+  /// - 重新读取源列表；若变化则修正当前源并推送 Rust core
+  /// - 应用 `fdroid.last_source_id`（仅切换身份，不调用 [loadRepository]）
+  Future<void> _applyExternalConfig() async {
+    if (_applyingExternalConfig) return;
+    _applyingExternalConfig = true;
+    try {
+      final changed = await _readSourcesFromConfig();
+      if (changed) {
+        final current = _currentSource;
+        final stillExists = current != null &&
+            _firstWhereOrNull(_sources, (s) => s.id == current.id) != null;
+        if (current == null || !stillExists) {
+          _currentSource = _firstWhereOrNull(_sources, (s) => s.enabled) ??
+              (_sources.isNotEmpty ? _sources.first : null);
+        }
+        rust.FdroidRustRepoManager.setActiveSource(_currentSource);
+        if (!debugSkipCorePush) {
+          await _pushSourcesToCore();
+        }
+        notifyListeners();
+      }
+
+      final lastSourceId =
+          await ConfigService.instance.getT<String>(ConfigKeys.lastSourceId);
+      if (lastSourceId != null && lastSourceId.isNotEmpty) {
+        final source =
+            _firstWhereOrNull(_sources, (s) => s.id == lastSourceId);
+        if (source != null && source.id != _currentSource?.id) {
+          _currentSource = source;
+          rust.FdroidRustRepoManager.setActiveSource(source);
+          notifyListeners();
+          appLog.info('FdroidRepoManager: 外部配置切换当前源 → ${source.name}');
+        }
+      }
+    } catch (e) {
+      appLog.warning('FdroidRepoManager: 应用外部配置变更失败 - $e');
+    } finally {
+      _applyingExternalConfig = false;
+    }
+  }
+
+  /// 测试入口：启动配置监听（不需要 initialize / Rust / 路径提供者）。
+  @visibleForTesting
+  void debugStartConfigWatcher() => _subscribeConfigChanges();
+
+  /// 测试入口：立即执行一次外部配置应用。
+  @visibleForTesting
+  Future<void> debugReloadSourcesFromConfig() async {
+    await _applyExternalConfig();
   }
 
   /// 归一化存储读回值：
@@ -473,7 +586,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         sources.map((s) => s.toJson()).toList(),
         source: ConfigChangeSource.internal,
       );
+      _sourcesSignature = _signatureForSources();
       appLog.info('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
+      if (debugSkipCorePush) return;
       await _pushSourcesToCore();
     } catch (e) {
       appLog.error('FdroidRepoManager: 保存源配置失败 - $e');
@@ -1270,6 +1385,16 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       appLog.error('FdroidRepoManager: 获取应用失败 - $e');
       return null;
     }
+  }
+
+  /// 释放资源：取消配置防抖定时器与全局订阅。
+  @override
+  void dispose() {
+    _configReloadTimer?.cancel();
+    _configReloadTimer = null;
+    unawaited(_configSub?.cancel());
+    _configSub = null;
+    super.dispose();
   }
 
   /// 获取应用文档目录

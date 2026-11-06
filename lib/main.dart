@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:dynamic_color/dynamic_color.dart';
@@ -8,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/theme/theme_data_builder.dart';
-import 'package:gstore/core/logger/LogManager.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/compent/module_install_banner.dart';
@@ -19,18 +17,17 @@ import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/migration/config_migration_tool.dart';
+import 'package:gstore/core/core_flags.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
-import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/perf/battery_history_gate.dart';
 import 'package:gstore/core/router/app_router.dart';
-import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/service/proxy_connect_controller.dart';
 import 'package:gstore/core/service/proxy_connect_intent_bridge.dart';
+import 'package:gstore/core/service/proxy_settings_config_watcher.dart';
 import 'package:gstore/core/service/proxy_status_notification.dart';
 import 'package:gstore/core/service/proxy_vpn_service.dart';
 import 'package:gstore/core/rust/core_bootstrap.dart';
@@ -570,6 +567,12 @@ Future<void> _bootAfterFirstFrame(Stopwatch bootSw) async {
     await registerService();
     bootMark('register-service');
 
+    // 外部（Agent / 备份恢复 / 其他写入方）修改 proxy.* 时，重新推送给运行中的
+    // VPN 服务；仅监听四个代理设置键，100ms 防抖。启动时不主动 apply（VPN
+    // 通常未运行，连接路径会读取配置）。best-effort，失败不影响启动。
+    unawaited(ProxySettingsConfigWatcher.instance.start());
+    bootMark('proxy-settings-watcher');
+
     // 版本号只喂一行启动日志，故移出 registerService 之前的关键路径（平台通道
     // 往返真机 ≈62ms）；bootMark 标签保持不变，计时表仍可比。
     final appVersion = await AppVersionService.versionName() ?? 'unknown';
@@ -731,6 +734,9 @@ class _ManageSpaceRouterState extends State<_ManageSpaceRouter>
     // 热启动恢复：应用已在后台被 ManageSpaceActivity 带回前台，onNewIntent
     // 已在原生置位 → 回到 resumed 时消费并跳转
     if (state == AppLifecycleState.resumed) {
+      // Host/外部可能在后台更新了 Rust feature flags：恢复前台时补一次刷新，
+      // 避免 Dart 侧镜像长期陈旧（best-effort，失败静默）。
+      unawaited(CoreFlags.refresh().catchError((_) {}));
       _consumeOnResume();
     }
   }

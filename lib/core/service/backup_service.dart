@@ -1100,7 +1100,7 @@ class BackupService implements IBackupService {
         final agentModels = backupData.extras!['agent_models'];
         if (agentModels is List && agentModels.isNotEmpty) {
           try {
-            final store = await AgentModelStore.load();
+            final restoredModels = <AgentModel>[];
             for (final item in agentModels) {
               if (item is Map<String, dynamic>) {
                 final model = AgentModel(
@@ -1115,18 +1115,16 @@ class BackupService implements IBackupService {
                   baseUrl: item['baseUrl'] as String? ?? '',
                 );
                 if (model.id.isNotEmpty) {
-                  // add 已按 id 去重（同 id 更新、新 id 追加），
-                  // 同一备份恢复多次不会产生重复模型
-                  await store.add(model, select: false);
+                  restoredModels.add(model);
                 }
               }
             }
-            final selectedId = backupData.extras!['agent_selected_id'] as String?;
-            if (selectedId != null && store.models.any((m) => m.id == selectedId)) {
-              await store.select(selectedId);
-            } else if (store.models.isNotEmpty) {
-              await store.select(store.models.first.id);
-            }
+            final selectedId =
+                backupData.extras!['agent_selected_id'] as String?;
+            // 共享 store 按 id upsert（同 id 原位更新、新 id 追加），
+            // 同一备份恢复多次不会产生重复模型，只写一次配置。
+            final store = await AgentModelStore.load();
+            await store.restoreModels(restoredModels, selectedId: selectedId);
             appLog.info('BackupService: ✅ Agent 模型配置恢复完成');
           } catch (e) {
             appLog.error('BackupService: 恢复 Agent 配置失败 - $e');

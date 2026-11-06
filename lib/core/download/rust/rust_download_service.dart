@@ -7,6 +7,9 @@ import 'package:gstore/core/download/core_download_builder.dart';
 import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/download/download_module_unavailable_exception.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
+import 'package:gstore/core/download/download_url_resolver.dart';
+import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/download_push_stream.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -99,6 +102,18 @@ class RustDownloadService implements IDownloadService {
     _coreReady = null;
   }
 
+  /// 读取“下载自动套代理”开关（默认开启；读取失败按开启处理）。
+  Future<bool> _readAutoProxyEnabled() async {
+    try {
+      return await ConfigService.instance
+              .getT<bool>(ConfigKeys.downloadAutoProxyEnabled) ??
+          true;
+    } catch (error) {
+      debugPrint('RustDownloadService: 读取下载自动代理开关失败（按开启处理） - $error');
+      return true;
+    }
+  }
+
   @override
   Future<DownloadTask> download(
     String appid,
@@ -111,12 +126,19 @@ class RustDownloadService implements IDownloadService {
     String? saveFileName,
     bool forceDownload = false,
     bool installAfterDownload = true,
-  }) {
+  }) async {
+    // 下载服务入口兜底：GitHub 相关资源统一套代理前缀（幂等）。
+    // 渠道/策略层已套过代理时这里不会二次拼接；GStore catalog 等未处理的
+    // 原始 GitHub URL 也能自动加速。设置页可关闭该自动套代理行为。
+    final resolvedUrl = resolveDownloadUrl(
+      url,
+      autoProxy: await _readAutoProxyEnabled(),
+    );
     return _downloadViaCore(
       appid: appid,
       appName: appName,
       version: version,
-      url: url,
+      url: resolvedUrl,
       fileName: fileName,
       saveFileName: saveFileName,
       installAfterDownload: installAfterDownload,
@@ -134,9 +156,14 @@ class RustDownloadService implements IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
     bool installAfterDownload = true,
-  }) {
+  }) async {
     // 惰性 URL 解析：取一次当前有效地址（签名 URL 过期由上层重新构造请求）
-    final url = request.urlProvider?.call() ?? request.url;
+    // 先取原始 URL，再走下载服务入口的 GitHub 代理兜底。
+    final rawUrl = request.urlProvider?.call() ?? request.url;
+    final url = resolveDownloadUrl(
+      rawUrl,
+      autoProxy: await _readAutoProxyEnabled(),
+    );
     return _downloadViaCore(
       appid: appid,
       appName: appName,

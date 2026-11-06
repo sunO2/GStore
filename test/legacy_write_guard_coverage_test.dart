@@ -85,10 +85,8 @@ const List<_Writer> _writers = <_Writer>[
   // clearAll) plus the facade's legacy `setOrder`. The catalog domain is now
   // written only by the Rust core, so no Dart `catalog` writer remains here.
   // ----------------------------------------------------------------- update
-  // The update-engine increment deleted the Dart `UpdateCache` result/log/time
-  // writers (`saveCheckedAt` / `saveResults` / `saveLogs`); only the surviving
-  // preferred-APK writer remains a guarded legacy writer.
-  _Writer('lib/core/update/update_cache.dart', 'savePreferredApk', 'update'),
+  // Update state (results/logs/time/preferred APK) is Rust-owned; the legacy
+  // Dart `UpdateCache` writers are gone, so no Dart `update` writer remains.
   // --------------------------------------------------------------- download
   // Wave 6B closeout: the Dart download kernel + its Floor persistence were
   // removed and every panel/agent reader now routes through the Rust-only
@@ -247,9 +245,9 @@ void main() {
           reason: 'every legacy writer must call '
               'LegacyWriteGuard.assertAllowed(<domain>) before writing:\n'
               '${failures.join('\n')}');
-      // Todo 32 removed the two legacy update-config provider writers, so the
-      // exhaustive inventory baseline dropped from 17 to 15 entries.
-      expect(_writers.length, greaterThanOrEqualTo(15),
+      // Todo 32 removed two legacy update-config writers; the Rust-only update
+      // cutover removed the last update writer, so the baseline is 14 entries.
+      expect(_writers.length, greaterThanOrEqualTo(14),
           reason: 'the writer inventory must stay exhaustive');
     });
 
@@ -362,9 +360,10 @@ void main() {
       }
 
       expect(seen, expected);
-      // The pure-Rust cleanup deleted the Dart JS writers, so the `js_channel`
-      // domain no longer has any guarded Dart writer.
-      expect(expected.toSet(), <String>{'channel', 'catalog', 'update'});
+      // The pure-Rust cleanup deleted the Dart JS writers and the legacy
+      // update cache writer, so `js_channel` and `update` no longer have a
+      // guarded Dart writer.
+      expect(expected.toSet(), <String>{'channel', 'catalog'});
     });
   });
 

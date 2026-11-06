@@ -36,6 +36,21 @@ void main() {
     });
   });
 
+  group('AgentSkills.renderCompactBriefs', () {
+    test('仅含名称，且比完整目录更短', () {
+      final zh = AgentSkills.renderCompactBriefs(language: PromptLanguage.zh);
+      final en = AgentSkills.renderCompactBriefs(language: PromptLanguage.en);
+      expect(zh, contains('推荐应用'));
+      expect(en, contains('App Recommendation'));
+      expect(zh.length,
+          lessThan(AgentSkills.renderBriefs(language: PromptLanguage.zh).length));
+      expect(en.length,
+          lessThan(AgentSkills.renderBriefs(language: PromptLanguage.en).length));
+      // 不含触发场景
+      expect(zh, isNot(contains('用户询问')));
+    });
+  });
+
   group('AgentSkills.renderAll', () {
     test('默认渲染英文', () {
       final text = AgentSkills.renderAll();
@@ -72,7 +87,7 @@ void main() {
     });
 
     test('全部技能默认启用', () {
-      final all = AgentSkills.all;
+      const all = AgentSkills.all;
       expect(all.every((s) => s.enabled), true);
       expect(all.length, greaterThanOrEqualTo(10));
     });

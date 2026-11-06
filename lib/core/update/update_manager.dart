@@ -16,7 +16,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/update/app_update_info.dart';
-import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_log.dart';
 
 /// 更新检测状态
@@ -122,8 +121,11 @@ class UpdateManagerService {
   /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
   late final Future<void> cacheRestored = _restoreCache();
 
-  /// Rust 核心缓存读取接缝（由 `UpdateFacade` 注入）；为空时回退旧
-  /// SharedPreferences 缓存，保证测试/非 core 环境行为不变。
+  /// Rust 核心缓存读取接缝（由 `UpdateFacade` 注入）。
+  ///
+  /// Update state is Rust-owned; a missing loader means the core is not wired
+  /// (early startup / isolated tests), so there is intentionally no Dart
+  /// SharedPreferences fallback.
   Future<CachedUpdateSnapshot?> Function()? cachedStateLoader;
 
   /// 模块初始化时调用：启动恢复缓存结果（重启后立即展示上次检测出的可更新应用）
@@ -131,34 +133,27 @@ class UpdateManagerService {
     unawaited(cacheRestored);
   }
 
-  /// 从缓存恢复上次检测结果。
+  /// 从 Rust 缓存恢复上次检测结果（重启后立即显示上次结果）。
   ///
-  /// core 通道优先读取 Rust `update_prefs`（重启后立即显示上次结果）；
-  /// 旧 SharedPreferences 仅作为测试/非 core 环境的回退。
+  /// There is intentionally no Dart cache fallback: `update_prefs` is owned by
+  /// the Rust core, and reading a stale SharedPreferences copy would diverge
+  /// from the authoritative state.
   Future<void> _restoreCache() async {
+    final loader = cachedStateLoader;
+    if (loader == null) {
+      appLog.info('UpdateManager: 未绑定 Rust 缓存读取器，跳过缓存恢复');
+      return;
+    }
     try {
-      try {
-        final core = await cachedStateLoader?.call();
-        if (core != null) {
-          _applyRestored(
-            updates: core.updates,
-            logs: core.logs,
-            lastCheckedAt: core.lastCheckedAt,
-          );
-          return;
-        }
-      } catch (e) {
-        // core 尚未就绪（测试/早期启动）时继续走旧缓存回退，不阻塞首帧。
-        appLog.warning('UpdateManager: 读取 Rust 缓存失败，回退本地缓存 - $e');
-      }
-
-      final cached = await UpdateCache.loadResults();
-      final last = await UpdateCache.lastCheckedAt();
-      // 恢复上次检测日志（二次进入检测页直接可见）
-      final logs = await UpdateCache.loadLogs();
-      _applyRestored(updates: cached, logs: logs, lastCheckedAt: last);
+      final core = await loader();
+      if (core == null) return;
+      _applyRestored(
+        updates: core.updates,
+        logs: core.logs,
+        lastCheckedAt: core.lastCheckedAt,
+      );
     } catch (e) {
-      appLog.error('UpdateManager: 恢复缓存失败 - $e');
+      appLog.error('UpdateManager: 读取 Rust 缓存失败 - $e');
     }
   }
 
@@ -337,6 +332,20 @@ class UpdateManagerService {
     _notifyCheckLog();
     _isChecking = false;
     _notifyIsChecking();
+  }
+
+  /// 用户换选 APK 后同步共享状态中的默认下载项。
+  ///
+  /// 持久化偏好由 [UpdateFacade.setPreferredApk] 写入 Rust core；本方法只
+  /// 更新内存镜像，保证离开/重返更新页时仍显示本次选择（下一次 core 检测
+  /// 会再次按偏好重投影）。
+  void adoptPreferredDownload(AppUpdateInfo info) {
+    final index = _updateList.indexWhere(
+      (e) => e.channelId == info.channelId && e.appId == info.appId,
+    );
+    if (index < 0) return;
+    _updateList[index] = info;
+    _notifyUpdateList();
   }
 
   /// core 通道 markUpdated 成功后同步共享状态（红点/列表立即更新）。

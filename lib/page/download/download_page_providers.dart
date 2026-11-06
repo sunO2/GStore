@@ -637,6 +637,33 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     AppDialogs.showSuccess('已暂停 ${downloading.length} 个下载');
   }
 
+  /// 恢复所有已暂停/已取消任务（镜像 [pauseAll]，供下载页英雄卡使用）。
+  ///
+  /// 只处理 paused / cancelled（可继续的任务），不改动排队与失败任务的既有语义。
+  Future<void> resumeAll() async {
+    final tasks = await _allTasks();
+    final resumable = tasks
+        .where((t) =>
+            t.status == DownloadStatusEnum.paused ||
+            t.status == DownloadStatusEnum.cancelled)
+        .toList();
+    final service = ModuleManager.instance.get<IDownloadService>();
+    for (final item in resumable) {
+      final id = item.id;
+      if (id != null && service != null) {
+        unawaited(_runServiceAction(
+          '批量继续',
+          (target) => target.resume(id),
+          service: service,
+        ));
+      }
+    }
+    if (resumable.isNotEmpty) {
+      await loadTasks();
+      AppDialogs.showSuccess('已恢复 ${resumable.length} 个下载');
+    }
+  }
+
   /// 取消所有排队任务
   void cancelAllQueued() async {
     final tasks = await _allTasks();

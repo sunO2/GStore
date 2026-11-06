@@ -19,7 +19,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'rust/config_api.dart';
 
@@ -304,6 +304,7 @@ class ConfigService {
   ConfigRustApi? _api;
   Future<void>? _readyFuture;
   bool _hydrated = false;
+  bool _disposed = false;
 
   /// 配置变化事件流（全局；external/host 变更同样会到达）
   Stream<ConfigChangeEvent> get onChange => _changeController.stream;
@@ -338,6 +339,7 @@ class ConfigService {
     _api = null;
     _readyFuture = null;
     _hydrated = false;
+    _disposed = false;
   }
 
   /// 水合入口（幂等）。
@@ -379,8 +381,35 @@ class ConfigService {
       if (module != null) modules.add(module);
     }
     for (final module in modules) {
-      _globalSubs.add(api.watch(module).listen(_onGlobalEvent));
+      _listenModule(api, module);
     }
+  }
+
+  void _listenModule(ConfigRustApi api, String module, {int attempt = 0}) {
+    if (_disposed) return;
+    late StreamSubscription<ConfigChangeEvent> sub;
+    sub = api.watch(module).listen(
+      _onGlobalEvent,
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('ConfigService: watch($module) error: $error');
+        _globalSubs.remove(sub);
+        unawaited(sub.cancel());
+        _scheduleResubscribe(api, module, attempt);
+      },
+      onDone: () {
+        _globalSubs.remove(sub);
+        _scheduleResubscribe(api, module, attempt);
+      },
+    );
+    _globalSubs.add(sub);
+  }
+
+  void _scheduleResubscribe(ConfigRustApi api, String module, int attempt) {
+    if (_disposed || attempt >= 3) return;
+    final delay = Duration(seconds: 1 << attempt);
+    Future<void>.delayed(delay, () {
+      if (!_disposed) _listenModule(api, module, attempt: attempt + 1);
+    });
   }
 
   void _onGlobalEvent(ConfigChangeEvent raw) {
@@ -745,6 +774,7 @@ class ConfigService {
 
   /// 释放资源
   void dispose() {
+    _disposed = true;
     for (final sub in _globalSubs) {
       unawaited(sub.cancel());
     }

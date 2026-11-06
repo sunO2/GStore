@@ -8,8 +8,6 @@ import 'package:gstore/core/migration/migration_handoff.dart';
 import 'package:gstore/core/rust/CoreApiFacade.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart';
-import 'package:gstore/core/service/legacy_write_guard.dart';
-import 'package:gstore/core/update/update_cache.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Dedicated update-prefs migration coverage for Wave 2 Todo 9.
@@ -98,7 +96,8 @@ void main() {
   });
 
   group('exporter', () {
-    test('exports exactly the four UpdateCache keys, normalized to strings',
+    test(
+        'exports exactly the four legacy update-pref keys, normalized to strings',
         () async {
       SharedPreferences.setMockInitialValues(<String, Object>{
         'update_last_checked_at': 1700000000000,
@@ -122,8 +121,7 @@ void main() {
       expect(prefs['update_last_checked_at'], '1700000000000');
       expect(prefs['update_results_v1'], '[{"appId":"com.example"}]');
       expect(prefs['update_check_logs_v1'], '[]');
-      expect(prefs['update_preferred_apk'],
-          '{"github:com.example":"app.apk"}');
+      expect(prefs['update_preferred_apk'], '{"github:com.example":"app.apk"}');
       expect(prefs.values.every((Object? value) => value is String), isTrue);
       expect(File('${file.path}.tmp').existsSync(), isFalse,
           reason: 'atomic rename must not leave a .tmp sibling');
@@ -156,7 +154,8 @@ void main() {
   });
 
   group('ordered handoff', () {
-    test('runs migrate then channel_env then update_prefs and deletes after '
+    test(
+        'runs migrate then channel_env then update_prefs and deletes after '
         'each success', () async {
       final calls = <String>[];
       final result = await MigrationHandoff.start(
@@ -186,7 +185,8 @@ void main() {
       expect(File('${_channelFile(dir).path}.tmp').existsSync(), isFalse);
     });
 
-    test('a kill at update_prefs import retains the file and retry reuses it '
+    test(
+        'a kill at update_prefs import retains the file and retry reuses it '
         'byte-for-byte without re-exporting', () async {
       // A retained (sentinel) document that differs from SharedPreferences
       // proves the retry path never re-exports over it.
@@ -278,107 +278,6 @@ void main() {
     });
   });
 
-  group('flag-on routing', () {
-    tearDown(() {
-      CoreFlags.resetBackend();
-      LegacyWriteGuard.probeOverride = null;
-    });
-
-    test('no update marker keeps the Dart prefs authoritative', () async {
-      String? probed;
-      LegacyWriteGuard.probeOverride = (String domain) async {
-        probed = domain;
-        return false;
-      };
-
-      await UpdateCache.savePreferredApk('github', 'com.example', 'app.apk');
-
-      expect(probed, 'update',
-          reason: 'the marker probe runs even while coreWrites is false');
-      final prefs = await SharedPreferences.getInstance();
-      final stored =
-          jsonDecode(prefs.getString('update_preferred_apk')!) as Map;
-      expect(stored['github:com.example'], 'app.apk');
-    });
-
-    test('an update marker blocks the write while coreWrites stays false',
-        () async {
-      const seeded = '{"github:com.example":"old.apk"}';
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'update_preferred_apk': seeded,
-      });
-      final probed = <String>[];
-      LegacyWriteGuard.probeOverride = (String domain) async {
-        probed.add(domain);
-        return true;
-      };
-
-      await expectLater(
-        UpdateCache.savePreferredApk('github', 'com.example', 'new.apk'),
-        throwsA(isA<LegacyWriteBlocked>()),
-      );
-
-      expect(probed, <String>['update']);
-      final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('update_preferred_apk'), seeded,
-          reason: 'a blocked write must not touch the legacy map');
-    });
-
-    test('coreWrites on plus an update marker blocks the legacy write and '
-        'leaves the stored map unchanged', () async {
-      const seeded = '{"github:com.example":"old.apk"}';
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'update_preferred_apk': seeded,
-      });
-      CoreFlags.installBackend(
-        _FakeFlagsBackend(const CoreFlagsSnapshot(coreWrites: true)),
-      );
-      await CoreFlags.refresh();
-      String? probed;
-      LegacyWriteGuard.probeOverride = (String domain) async {
-        probed = domain;
-        return true;
-      };
-
-      await expectLater(
-        UpdateCache.savePreferredApk('github', 'com.example', 'new.apk'),
-        throwsA(
-          predicate(
-            (Object e) =>
-                e is LegacyWriteBlocked && e.domain == 'update',
-            'LegacyWriteBlocked(update)',
-          ),
-        ),
-      );
-
-      expect(probed, 'update');
-      final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('update_preferred_apk'), seeded,
-          reason: 'a blocked write must not touch the legacy map');
-    });
-
-    test('coreWrites on without the update marker allows the legacy write',
-        () async {
-      CoreFlags.installBackend(
-        _FakeFlagsBackend(const CoreFlagsSnapshot(coreWrites: true)),
-      );
-      await CoreFlags.refresh();
-      String? probed;
-      LegacyWriteGuard.probeOverride = (String domain) async {
-        probed = domain;
-        return false;
-      };
-
-      await UpdateCache.savePreferredApk('github', 'com.example', 'new.apk');
-
-      expect(probed, 'update');
-      final prefs = await SharedPreferences.getInstance();
-      final stored =
-          jsonDecode(prefs.getString('update_preferred_apk')!) as Map;
-      expect(stored['github:com.example'], 'new.apk');
-    });
-  });
-
   group('real native core', () {
     late Directory root;
     late String dataDir;
@@ -388,7 +287,8 @@ void main() {
 
     setUpAll(() async {
       RustBridge.debugForceUnavailable = false;
-      root = await Directory.systemTemp.createTemp('gstore_update_prefs_native_');
+      root =
+          await Directory.systemTemp.createTemp('gstore_update_prefs_native_');
       dataDir = '${root.path}/data';
       filesDir = '${root.path}/files';
       cacheDir = '${root.path}/cache';
@@ -412,7 +312,8 @@ void main() {
 
     test('imports the four keys idempotently and never arms core_writes',
         () async {
-      final doc = await _writeDocument(root, 'update_prefs.json', <String, Object?>{
+      final doc =
+          await _writeDocument(root, 'update_prefs.json', <String, Object?>{
         'version': 1,
         'exported_at': '2026-01-01T00:00:00.000Z',
         'prefs': _nativePrefs,
@@ -437,8 +338,8 @@ void main() {
     test(
       'snapshot exposes the four exact keys and values',
       () async {
-        final doc =
-            await _writeDocument(root, 'update_prefs_snapshot.json', <String, Object?>{
+        final doc = await _writeDocument(
+            root, 'update_prefs_snapshot.json', <String, Object?>{
           'version': 1,
           'prefs': _nativePrefs,
         });
@@ -451,8 +352,7 @@ void main() {
           snapshot,
           'select key,value from update_prefs order by key',
         ]);
-        expect(result.exitCode, 0,
-            reason: 'sqlite3 failed: ${result.stderr}');
+        expect(result.exitCode, 0, reason: 'sqlite3 failed: ${result.stderr}');
 
         final rows = const LineSplitter()
             .convert(result.stdout as String)
@@ -467,7 +367,10 @@ void main() {
 
         debugPrint('sqlite3 update_prefs rows: $rows');
         expect(rows, <List<String>>[
-          <String>['update_check_logs_v1', _nativePrefs['update_check_logs_v1']!],
+          <String>[
+            'update_check_logs_v1',
+            _nativePrefs['update_check_logs_v1']!
+          ],
           <String>[
             'update_last_checked_at',
             _nativePrefs['update_last_checked_at']!,
@@ -483,7 +386,8 @@ void main() {
     );
 
     test('malformed and older documents fail with typed errors', () async {
-      final older = await _writeDocument(root, 'update_prefs_v2.json', <String, Object?>{
+      final older =
+          await _writeDocument(root, 'update_prefs_v2.json', <String, Object?>{
         'version': 2,
         'prefs': _nativePrefs,
       });
@@ -491,20 +395,18 @@ void main() {
         api.importMigrationFile(kind: 'update_prefs', path: older.path),
         throwsA(
           predicate(
-            (Object e) =>
-                e.toString().contains('CORE_E_MIGRATION_VERSION'),
+            (Object e) => e.toString().contains('CORE_E_MIGRATION_VERSION'),
           ),
         ),
       );
 
-      final shape = await _writeDocument(root, 'update_prefs_no_shape.json',
-          <String, Object?>{'version': 1});
+      final shape = await _writeDocument(
+          root, 'update_prefs_no_shape.json', <String, Object?>{'version': 1});
       await expectLater(
         api.importMigrationFile(kind: 'update_prefs', path: shape.path),
         throwsA(
           predicate(
-            (Object e) =>
-                e.toString().contains('CORE_E_MIGRATION_SHAPE'),
+            (Object e) => e.toString().contains('CORE_E_MIGRATION_SHAPE'),
           ),
         ),
       );

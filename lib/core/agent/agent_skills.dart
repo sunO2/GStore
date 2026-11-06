@@ -234,6 +234,17 @@ class AgentSkills {
     return enabled.map((s) => s.renderBrief(language)).join('\n');
   }
 
+  /// 紧凑技能索引（仅名称，无触发场景）。
+  ///
+  /// 用于紧凑提示词：完整触发场景与步骤经 `loadProtocol` 按需读取。
+  static String renderCompactBriefs({PromptLanguage language = PromptLanguage.en}) {
+    final enabled = all.where((s) => s.enabled).toList();
+    final names = enabled
+        .map((s) => language == PromptLanguage.zh ? s.name : s.nameEn)
+        .join(' / ');
+    return language == PromptLanguage.zh ? '技能：$names' : 'Skills: $names';
+  }
+
   /// 按名称（中/英文）查找技能
   static AgentSkill? byKey(String key) {
     for (final s in all) {

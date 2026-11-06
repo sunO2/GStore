@@ -126,6 +126,11 @@ List<CheckLogEntry> deriveCoreCheckLogs(CoreCheckReport report) {
     final platform = update.latestDownload.platform?.trim();
     final platformLabel =
         platform == null || platform.isEmpty ? '自动匹配' : platform;
+    final sourceLabel = switch (update.selectionSource) {
+      'preference' => '记忆偏好',
+      'abi_fallback' => '设备架构（偏好未命中）',
+      _ => '设备架构',
+    };
     logs.add(CheckLogEntry(
       level: CheckLogLevel.info,
       text: '开始检测应用：${update.appId}',
@@ -143,7 +148,8 @@ List<CheckLogEntry> deriveCoreCheckLogs(CoreCheckReport report) {
     ));
     logs.add(CheckLogEntry(
       level: CheckLogLevel.info,
-      text: '应用 ${update.appName}：选择平台 $platformLabel',
+      text: '应用 ${update.appName}：选择文件 ${update.latestDownload.name}'
+          '（平台 $platformLabel，来源：$sourceLabel）',
       time: time,
     ));
   }

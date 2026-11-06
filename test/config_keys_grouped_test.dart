@@ -81,6 +81,8 @@ void main() {
     expect(ConfigKeys.catalogUrl, 'catalog.source_url');
     expect(ConfigKeys.downloadMultiSegmentEnabled,
         'download.multi_segment.enabled');
+    expect(ConfigKeys.downloadAutoProxyEnabled,
+        'download.auto_proxy.enabled');
     expect(ConfigKeys.downloadMaxRetries, 'download.max_retries');
     expect(ConfigKeys.updateAutoUpdatePolicy, 'update.auto_update_policy');
     expect(ConfigKeys.webdavPassword, 'webdav.password');
@@ -109,9 +111,9 @@ void main() {
   });
 
   test('runtime keys match the committed Rust registry exactly', () {
-    expect(ConfigKeys.all.length, 53,
-        reason: 'Rust 注册表应恰好有 53 个条目');
-    expect(rust.length, 53, reason: 'fixture 与 Rust 注册表条目数不一致');
+    expect(ConfigKeys.all.length, 54,
+        reason: 'Rust 注册表应恰好有 54 个条目');
+    expect(rust.length, 54, reason: 'fixture 与 Rust 注册表条目数不一致');
     expect(ConfigKeys.all.toSet(), rustByKey.keys.toSet(),
         reason: 'ConfigKeys 与 Rust 注册表 key 集合不一致');
     for (final key in ConfigKeys.all) {

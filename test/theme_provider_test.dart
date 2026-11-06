@@ -8,17 +8,23 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:gstore/core/theme/theme_state_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() async {
     ConfigStore.instance.resetForTest();
+    ThemeStateStore.instance.resetForTest();
     await ConfigStore.instance.initialize(storages: [
       MemoryConfigStorage(),
       MemoryConfigStorage(),
     ]);
     ConfigRegistry.registerAll(ConfigService.instance);
+  });
+
+  tearDown(() {
+    ThemeStateStore.instance.resetForTest();
   });
 
   group('themeProvider（Riverpod 主题权威状态）', () {

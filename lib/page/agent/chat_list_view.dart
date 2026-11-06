@@ -21,8 +21,10 @@ import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 
+import 'inline_card_registry.dart';
 import 'step_text.dart';
 import 'user_bubble.dart';
+import 'widgets/agent_control_card.dart';
 
 /// 自绘 AI 对话消息列表。
 class AgentChatListView extends StatefulWidget {
@@ -191,9 +193,37 @@ class AgentChatListViewState extends State<AgentChatListView> {
       );
     }
     if (item.turnMsgs == null && first.isToolResult) {
+      // 仅当 Agent 显式调用 showConfigControl/showConfigSwitch 时渲染配置控件卡片。
+      final spec = controlForInlineCard(first);
+      if (spec != null) {
+        return _buildSingleControlCard(context, first, spec);
+      }
       return _ToolBubble(msg: first);
     }
-    return _TurnTimeline(turnMsgs: msgs);
+    return _TurnTimeline(turnMsgs: msgs, userText: item.userText);
+  }
+
+  Widget _buildSingleControlCard(
+    BuildContext context,
+    AgentMessage msg,
+    AgentInlineSwitchSpec spec,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 8, top: 4, bottom: 8),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.93,
+          ),
+          child: AgentControlCard(
+            key: ValueKey('agent-control-${msg.id}'),
+            spec: spec,
+            onShowDetail: () => _showToolDetailSheet(context, msg),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -291,6 +321,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
       if (opts != null) buf.write('|op=${opts.length}:${opts.join(',')}');
       buf.write(';');
     }
+    buf.write('|ut=${item.userText ?? ''}');
     return buf.toString();
   }
 
@@ -310,7 +341,10 @@ class _ChatItem {
   final AgentMessage? msg;
   final List<AgentMessage>? turnMsgs;
 
-  const _ChatItem({this.msg, this.turnMsgs});
+  /// 该回合对应的用户文本（用于控件兜底入口识别）。
+  final String? userText;
+
+  const _ChatItem({this.msg, this.turnMsgs, this.userText});
 
   String get key =>
       turnMsgs != null ? 'timeline_${turnMsgs!.first.id}' : msg!.id;
@@ -321,11 +355,15 @@ List<_ChatItem> _groupTimeline(List<AgentMessage> messages) {
   final result = <_ChatItem>[];
   var currentTurnId = '';
   var currentTurn = <AgentMessage>[];
+  var lastUserText = '';
 
   void flushTurn() {
     if (currentTurn.isNotEmpty) {
       currentTurn.sort((a, b) => a.seq.compareTo(b.seq));
-      result.add(_ChatItem(turnMsgs: List.of(currentTurn)));
+      result.add(_ChatItem(
+        turnMsgs: List.of(currentTurn),
+        userText: lastUserText,
+      ));
       currentTurn = [];
     }
     currentTurnId = '';
@@ -334,6 +372,7 @@ List<_ChatItem> _groupTimeline(List<AgentMessage> messages) {
   for (final msg in messages) {
     if (msg.isUser) {
       flushTurn();
+      lastUserText = msg.text;
       result.add(_ChatItem(msg: msg));
     } else {
       final turnId = msg.turnId ?? '';
@@ -400,10 +439,26 @@ class _WelcomeView extends StatelessWidget {
 class _TurnTimeline extends StatelessWidget {
   final List<AgentMessage> turnMsgs;
 
-  const _TurnTimeline({required this.turnMsgs});
+  /// 该回合对应的用户文本（用于控件兜底入口识别）。
+  final String? userText;
+
+  const _TurnTimeline({required this.turnMsgs, this.userText});
 
   @override
   Widget build(BuildContext context) {
+    final existingKeys = <String>{};
+    for (final m in turnMsgs) {
+      final spec = controlForInlineCard(m);
+      if (spec != null) existingKeys.add(spec.configKey);
+    }
+    final assistantText = turnMsgs
+        .where((m) => !m.isToolResult)
+        .map((m) => m.text)
+        .join('\n');
+    final manualSpecs = AgentInlineCards.controlsInText(
+      '${userText ?? ''}\n$assistantText',
+    ).where((s) => !existingKeys.contains(s.configKey)).toList();
+
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(
@@ -418,6 +473,22 @@ class _TurnTimeline extends StatelessWidget {
               for (var i = 0; i < turnMsgs.length; i++)
                 _buildStep(
                     context, turnMsgs[i], i == turnMsgs.length - 1, i + 1),
+              if (manualSpecs.isNotEmpty)
+                Padding(
+                  // 28 = 20px 轨道 + 8px 间距，与步骤内容左对齐
+                  padding: const EdgeInsets.only(left: 28, top: 4, bottom: 8),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final spec in manualSpecs)
+                        _ManualControlPrompt(
+                          key: ValueKey('manual-control-${spec.configKey}'),
+                          spec: spec,
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
@@ -477,7 +548,7 @@ class _TurnTimeline extends StatelessWidget {
               child: isTool
                   ? (msg.toolType == AgentToolType.confirm
                       ? _buildConfirmNode(context, msg)
-                      : _buildToolChip(context, msg))
+                      : _buildToolOrControl(context, msg))
                   : _buildText(context, msg),
             ),
           ),
@@ -623,6 +694,18 @@ class _TurnTimeline extends StatelessWidget {
     service.resolveConfirmation(msgId, choice);
   }
 
+  /// 工具节点：显式 `showConfigControl`/`showConfigSwitch` 消息渲染为配置控件卡片，
+  /// 其余保持原工具胶囊。
+  Widget _buildToolOrControl(BuildContext context, AgentMessage msg) {
+    final spec = controlForInlineCard(msg);
+    if (spec == null) return _buildToolChip(context, msg);
+    return AgentControlCard(
+      key: ValueKey('agent-control-${msg.id}'),
+      spec: spec,
+      onShowDetail: () => _showToolDetailDialog(context, msg),
+    );
+  }
+
   Widget _buildToolChip(BuildContext context, AgentMessage tool) {
     final scheme = Theme.of(context).colorScheme;
     final color = _timelineToolColor(tool.toolType);
@@ -669,34 +752,68 @@ class _TurnTimeline extends StatelessWidget {
   }
 
   void _showToolDetailDialog(BuildContext context, AgentMessage tool) {
-    final detailText = _buildToolDetailText(tool, _timelineToolLabel(tool.toolType));
+    _showToolDetailSheet(context, tool);
+  }
+}
 
-    AppSheet.show<void>(
-      context: context,
-      title: _timelineToolLabel(tool.toolType),
-      icon: Icon(_timelineToolIcon(tool.toolType)),
-      iconColor: _timelineToolColor(tool.toolType),
-      contentPadding: AppSpacing.onlyHorizontalXL,
-      content: SelectableText(
-        detailText,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      actions: [
-        TextButton.icon(
-          onPressed: () {
-            Clipboard.setData(ClipboardData(text: detailText));
-            AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
-          },
-          icon: const Icon(TablerIcons.copy, size: 16),
-          label: const Text('复制'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('关闭'),
-        ),
-      ],
+/// 模型只回了文字时的兜底入口：用户点一下才渲染控件卡片。
+class _ManualControlPrompt extends StatefulWidget {
+  final AgentInlineSwitchSpec spec;
+
+  const _ManualControlPrompt({super.key, required this.spec});
+
+  @override
+  State<_ManualControlPrompt> createState() => _ManualControlPromptState();
+}
+
+class _ManualControlPromptState extends State<_ManualControlPrompt> {
+  bool _shown = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_shown) {
+      return AgentControlCard(spec: widget.spec);
+    }
+    return ActionChip(
+      avatar: const Icon(Icons.tune, size: 16),
+      label: Text('显示控件：${widget.spec.title}'),
+      onPressed: () => setState(() => _shown = true),
     );
   }
+}
+
+/// 展示工具调用详情（统一底部弹层）。
+///
+/// 提取为顶层函数，供时间轴与独立工具消息（含配置控件卡片）共用，
+/// 保证内联卡片仍可查看原始工具调用参数与结果。
+void _showToolDetailSheet(BuildContext context, AgentMessage tool) {
+  final detailText = _buildToolDetailText(tool, _timelineToolLabel(tool.toolType));
+
+  AppSheet.show<void>(
+    context: context,
+    title: _timelineToolLabel(tool.toolType),
+    icon: Icon(_timelineToolIcon(tool.toolType)),
+    iconColor: _timelineToolColor(tool.toolType),
+    contentPadding: AppSpacing.onlyHorizontalXL,
+    content: SelectableText(
+      detailText,
+      style: Theme.of(context).textTheme.bodySmall,
+    ),
+    actions: [
+      TextButton.icon(
+        onPressed: () {
+          Clipboard.setData(ClipboardData(text: detailText));
+          AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
+        },
+        icon: const Icon(TablerIcons.copy, size: 16),
+        label: const Text('复制'),
+      ),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('关闭'),
+      ),
+    ],
+  );
 }
 
 /// 工具调用聚合容器（圆形卡片堆叠/展开动画）——简化版：单工具胶囊卡片

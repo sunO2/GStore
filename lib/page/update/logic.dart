@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/DownloadStrategyManager.dart';
+import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/install/install_facade.dart';
+import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
@@ -12,7 +15,6 @@ import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
-import 'package:gstore/core/update/update_cache.dart';
 
 import 'state.dart';
 
@@ -175,10 +177,12 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
     if (_disposed) return;
     if (manager.updateList.isEmpty) {
       // 无更新：停留检测页展示完整日志（完成提示由 manager 日志统一输出）
-      state = state.copyWith(checkFinished: true, showLog: false, isLoading: false);
+      state =
+          state.copyWith(checkFinished: true, showLog: false, isLoading: false);
     } else {
       // 有更新：显示更新列表（默认）；checkFinished 保持 false，避免进入完成态检测页
-      state = state.copyWith(checkFinished: false, showLog: false, isLoading: false);
+      state = state.copyWith(
+          checkFinished: false, showLog: false, isLoading: false);
     }
   }
 
@@ -202,45 +206,55 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   /// - 更新内存选中（立即生效，卡片勾选跟随）
   /// - 持久化偏好（channelId:appId → 文件名），下次检测/更新优先匹配该文件名
   Future<void> selectApk(AppUpdateInfo info, DownloadInfo download) async {
+    final key = updateSelectionKey(info);
     state = state.copyWith(
       selectedApkName: {
         ...state.selectedApkName,
-        info.appId: download.name,
+        key: download.name,
       },
     );
-    await UpdateCache.savePreferredApk(
-        info.channelId, info.appId, download.name);
+    try {
+      await _manager.setPreferredApk(
+        channelId: info.channelId,
+        appId: info.appId,
+        fileName: download.name,
+      );
+    } catch (e) {
+      // 持久化失败不影响内存选择（本会话内仍然生效）
+      appLog.error('UpdateNotifier: 保存 APK 偏好失败 - $e');
+    }
     // 保存完成后重断言：避免并发 _syncDefaultSelections 读到旧偏好覆盖本次选择
     if (!_disposed) {
       state = state.copyWith(
         selectedApkName: {
           ...state.selectedApkName,
-          info.appId: download.name,
+          key: download.name,
         },
       );
     }
+    // 同步内存镜像：离开/重返更新页时默认勾选仍指向本次选择。
+    _manager.adoptPreferredDownload(info.withLatestDownload(download));
   }
 
-  /// 检测结果同步后：为每个应用计算默认选中（仅初始化未设置项）
+  /// 检测结果同步后：修剪失效选择（不在此处计算默认项）。
+  ///
+  /// 默认项由 core 的 `latestDownload` 承担：Rust 已在 `list()` 中按记忆的
+  /// 偏好重新投影，因此这里只需移除不再存在的应用/文件，不复制匹配逻辑。
   Future<void> _syncDefaultSelections(List<AppUpdateInfo> list) async {
     if (_disposed) return;
-    final validIds = list.map((e) => e.appId).toSet();
+    final infosByKey = {
+      for (final info in list) updateSelectionKey(info): info
+    };
     final selected = Map<String, String>.from(state.selectedApkName)
-      ..removeWhere((k, _) => !validIds.contains(k));
-    for (final info in list) {
-      final current = selected[info.appId];
-      if (current != null && current.isNotEmpty) continue;
-      if (info.detail == null) continue;
-      final preferred =
-          await UpdateCache.preferredApkName(info.channelId, info.appId);
-      if (preferred == null || preferred.trim().isEmpty) continue;
-      // 与 UI 候选一致：先过滤 Android 可安装文件（.apk/.aab）再相似度匹配
-      final matched = pickClosestApk(
-        filterInstallableDownloads(info.detail!.downloads),
-        preferred,
-      );
-      if (matched != null) {
-        selected[info.appId] = matched.name;
+      ..removeWhere((k, _) => !infosByKey.containsKey(k));
+    for (final entry in selected.entries.toList()) {
+      final current = entry.value;
+      if (current.isEmpty) continue;
+      final info = infosByKey[entry.key]!;
+      final candidates = filterInstallableDownloads(info.downloads);
+      if (candidates.isNotEmpty && !candidates.any((d) => d.name == current)) {
+        // 候选已变化（版本更新等）：丢弃陈旧文件名，回退 latestDownload
+        selected.remove(entry.key);
       }
     }
     if (!_disposed) {
@@ -250,12 +264,12 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
 
   /// 确定本次更新下载的 APK：用户所选（须在候选列表中） ?? 默认规则结果
   DownloadInfo _resolveDownload(AppUpdateInfo info) {
-    final selectedName = state.selectedApkName[info.appId];
-    if (selectedName != null && selectedName.isNotEmpty && info.detail != null) {
-      return info.detail!.downloads.firstWhere(
-        (d) => d.name == selectedName,
-        orElse: () => info.latestDownload,
-      );
+    final selectedName = state.selectedApkName[updateSelectionKey(info)];
+    if (selectedName != null && selectedName.isNotEmpty) {
+      final candidates = filterInstallableDownloads(info.downloads);
+      for (final candidate in candidates) {
+        if (candidate.name == selectedName) return candidate;
+      }
     }
     return info.latestDownload;
   }
@@ -273,6 +287,8 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
       state = state.copyWith(clearUpdatingAppId: true);
       return;
     }
+    // 在任务开始前订阅全局 watcher，避免下载完成事件早于惰性订阅而漏掉自动安装。
+    DownloadTaskWatcher.instance.start(service);
 
     try {
       // 本次下载 = 用户所选（须匹配 detail.downloads） ?? 现规则结果（latestDownload
@@ -309,30 +325,126 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
         throw StateError('下载未完成（状态：${done.status}）');
       }
 
-      // 下载完成（内核下载服务已自动安装 APK）：
-      // 通知 UpdateManager 刷新状态（复核版本后从可更新列表移除，红点自动更新）
-      await _manager.markUpdated(info.appId);
-      // 同步页面列表（UpdateManager 订阅也会同步，这里双保险）
-      if (!_disposed) {
-        state = state.copyWith(
-          updateList: state.updateList
-              .where((e) => e.appId != info.appId)
-              .toList(),
-        );
+      // 下载完成后由 watcher/InstallManager 执行安装；安装失败时保留更新项，
+      // 不能把“下载完成”当成“已更新”。
+      if (ModuleManager.instance.get<InstallManager>() == null) {
+        AppDialogs.showWarning('安装模块未启用，已下载但不会自动安装');
+        return;
       }
-      AppDialogs.showSuccess('${info.appName} 已更新到 $version',
-          title: '更新完成');
+      final installOutcome = await _installDownloadedApk(done);
+      if (installOutcome == InstallOutcome.failed) {
+        AppDialogs.showError(
+          '${info.appName} 下载完成，但安装失败，请重试',
+          title: '安装失败',
+        );
+        return;
+      }
+
+      // Shizuku/已安装路径是同步结果；先刷新核心清单，markUpdated 才能看到新版本。
+      if (installOutcome == InstallOutcome.installed ||
+          installOutcome == InstallOutcome.alreadyInstalled) {
+        await CoreBootstrap.refreshInventory();
+      }
+
+      // 只有已安装版本真正追平 latestVersion，core 才会返回 true。
+      final marked = await _manager.markUpdated(info.appId);
+      if (!_disposed) {
+        if (marked) {
+          _removeUpdated(info);
+          AppDialogs.showSuccess('${info.appName} 已更新到 $version',
+              title: '更新完成');
+        } else {
+          AppDialogs.showInfo(
+            '${info.appName} 已下载，等待安装完成',
+            title: '安装中',
+          );
+          if (installOutcome != null) {
+            unawaited(_pollInstalledThenRemove(info, done));
+          }
+        }
+      }
     } catch (e) {
       appLog.error('UpdateNotifier: 更新 ${info.appName} 失败 - $e');
       if (!_disposed) {
-        AppDialogs.showError('${info.appName} 更新失败，请重试',
-            title: '更新失败');
+        AppDialogs.showError('${info.appName} 更新失败，请重试', title: '更新失败');
       }
     } finally {
       if (!_disposed) {
         state = state.copyWith(
             clearUpdatingAppId: true, clearCurrentDownload: true);
       }
+    }
+  }
+
+  /// 下载完成后按任务标记触发安装；安装模块不可用时明确提示并保留更新项。
+  Future<InstallOutcome?> _installDownloadedApk(DownloadTask task) async {
+    if (!task.installAfterDownload) {
+      appLog.warning('UpdateNotifier: 下载任务未标记自动安装，更新页强制安装');
+    }
+    final installTask = task.installAfterDownload
+        ? task
+        : task.copyWith(installAfterDownload: true);
+    return DownloadTaskWatcher.instance.ensureAutoInstall(
+      installTask,
+      forceRetry: true,
+    );
+  }
+
+  void _removeUpdated(AppUpdateInfo info) {
+    if (_disposed) return;
+    state = state.copyWith(
+      updateList: state.updateList
+          .where(
+              (e) => !(e.channelId == info.channelId && e.appId == info.appId))
+          .toList(),
+    );
+  }
+
+  /// 系统安装器返回后安装结果可能延迟落库；后台轮询安装状态/版本追平后移除。
+  Future<void> _pollInstalledThenRemove(
+    AppUpdateInfo info,
+    DownloadTask task,
+  ) async {
+    final moduleTaskId = task.id?.toString();
+    for (var attempt = 0; attempt < 30; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (_disposed) return;
+
+      var installed = false;
+      if (moduleTaskId != null) {
+        try {
+          final record = await InstallFacade.instance.get(moduleTaskId);
+          installed = record?.status == 'installed';
+          if (record?.status == 'failed' ||
+              record?.status == 'denied' ||
+              record?.status == 'timeout') {
+            if (!_disposed) {
+              AppDialogs.showError(
+                '${info.appName} 安装失败，请重试',
+                title: '安装失败',
+              );
+            }
+            return;
+          }
+        } catch (_) {
+          // 核心尚未就绪：继续轮询到 deadline。
+        }
+      }
+
+      if (installed) {
+        await CoreBootstrap.refreshInventory();
+        if (_disposed) return;
+      }
+
+      final marked = await _manager.markUpdated(info.appId);
+      if (_disposed) return;
+      if (!marked) continue;
+      _removeUpdated(info);
+      AppDialogs.showSuccess(
+        '${info.appName} 已更新到 ${info.latestVersion}',
+        title: '更新完成',
+      );
+      return;
     }
   }
 

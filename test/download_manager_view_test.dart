@@ -71,6 +71,7 @@ DownloadTask _item(
   int received = 500,
   int speedBps = 0,
   int? etaSec,
+  List<SegmentInfo>? segments,
 }) {
   return DownloadTask(
     id: id ?? appId.hashCode,
@@ -86,7 +87,7 @@ DownloadTask _item(
     speedBps: speedBps,
     etaSec: etaSec,
     error: null,
-    segments: null,
+    segments: segments,
     createdAt: DateTime.now(),
     updatedAt: DateTime.now(),
   );
@@ -137,7 +138,8 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('主操作按钮按状态渲染：LOADING→暂停/READY→继续/ERROR→重试/SUCCESS+.apk→安装/QUEUED→取消',
+  testWidgets(
+      '主操作按钮按状态渲染：LOADING→暂停/READY→继续/ERROR→重试/QUEUED→取消（已完成无操作）',
       (tester) async {
     _useTallView(tester);
 
@@ -166,11 +168,13 @@ void main() {
 
     await pumpPage(tester);
 
-    expect(find.text('暂停'), findsOneWidget);
-    expect(find.text('继续'), findsOneWidget);
-    expect(find.text('重试'), findsOneWidget);
-    expect(find.text('安装'), findsOneWidget);
-    expect(find.text('取消'), findsOneWidget);
+    // 圆形图标按钮：语义由 tooltip 提供
+    expect(find.byTooltip('暂停'), findsOneWidget);
+    expect(find.byTooltip('继续'), findsOneWidget);
+    expect(find.byTooltip('重试'), findsOneWidget);
+    // 列表项不再提供「安装」按钮
+    expect(find.text('安装'), findsNothing);
+    expect(find.byTooltip('取消'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -188,80 +192,9 @@ void main() {
 
     // 状态徽标
     expect(find.text('排队中'), findsOneWidget);
-    // 主操作按钮（cancel 映射为「取消」）
-    expect(find.text('取消'), findsOneWidget);
+    // 主操作（cancel 映射为圆形「取消」按钮）
+    expect(find.byTooltip('取消'), findsOneWidget);
     expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('删除确认：点删除图标弹出确认框，确认后调用 deleteDownload', (tester) async {
-    final item = _item(DownloadStatusEnum.paused,
-        appId: 'com.example.del', fileName: 'del.apk');
-    notifier.seed([
-      [item],
-    ]);
-
-    await pumpPage(tester);
-
-    // 点击行尾删除图标
-    await tester.tap(find.byTooltip('删除'));
-    // 统一底部弹层入场动画：首帧启动 ticker，第二帧完成滑入（首帧仍停在屏外）
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    // AppDialogs 统一弹层风格确认框出现
-    expect(find.text('删除下载'), findsOneWidget);
-    expect(find.textContaining('此操作不可恢复'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, '删除'), findsOneWidget);
-    expect(find.text('取消'), findsOneWidget);
-
-    // 确认删除
-    await tester.tap(find.widgetWithText(FilledButton, '删除'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(notifier.deleted, [item]);
-    expect(find.text('删除下载'), findsNothing);
-  });
-
-  testWidgets('Dismissible 滑动触发删除确认：取消不删除，确认后删除', (tester) async {
-    final item = _item(DownloadStatusEnum.completed,
-        appId: 'com.example.swipe', fileName: 'swipe.apk');
-    notifier.seed([
-      [item],
-    ]);
-
-    await pumpPage(tester);
-
-    // 左滑 → confirmDismiss 弹出确认框（timedDrag 慢速拖动，确保被 Dismissible 识别）
-    await tester.timedDrag(
-      find.byType(Dismissible),
-      const Offset(-500, 0),
-      const Duration(milliseconds: 500),
-    );
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('删除下载'), findsOneWidget);
-
-    // 取消 → 不删除，卡片弹回
-    await tester.tap(find.text('取消'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(notifier.deleted, isEmpty);
-
-    // 再次左滑 → 确认删除 → onDismissed 调用 deleteDownload
-    await tester.timedDrag(
-      find.byType(Dismissible),
-      const Offset(-500, 0),
-      const Duration(milliseconds: 500),
-    );
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('删除下载'), findsOneWidget);
-
-    await tester.tap(find.widgetWithText(FilledButton, '删除'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(notifier.deleted, [item]);
   });
 
   testWidgets('筛选 chips 渲染（全部/下载中/已完成/失败）且切换生效', (tester) async {
@@ -347,17 +280,19 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('下载信息弹窗：info 按钮显示文件名/链接/渠道，可复制链接', (tester) async {
+  testWidgets('点击条目打开下载详情 sheet：文件名/链接/渠道/复制链接', (tester) async {
     _useTallView(tester);
 
-    const longFileName = 'a-very-long-download-file-name-that-would-be-truncated-in-list.apk';
+    const longFileName =
+        'a-very-long-download-file-name-that-would-be-truncated-in-list.apk';
     final item = _item(
       DownloadStatusEnum.completed,
       appId: 'gkd-kit/gkd',
       appName: 'GKD',
       version: '1.2.3',
       fileName: longFileName,
-      downloadUrl: 'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.2.3/gkd.apk',
+      downloadUrl:
+          'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.2.3/gkd.apk',
     );
     notifier.seed([
       [item],
@@ -365,14 +300,16 @@ void main() {
 
     await pumpPage(tester);
 
-    // 点行尾 info 图标
-    await tester.tap(find.byTooltip('下载信息'));
+    // 点击条目（单文件组：卡片整行可点）→ 下载详情
+    // 列表条目已移除侧滑删除（Dismissible），点击条目进入详情
+    expect(find.byType(Dismissible), findsNothing);
+    await tester.tap(find.text('GKD'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
 
-    // 弹窗展示完整信息（文件名不截断；列表行 + 弹窗各一处）
-    expect(find.text('下载信息'), findsOneWidget);
-    expect(find.text(longFileName), findsNWidgets(2));
+    // 弹窗展示完整信息（列表项已不显示文件名，仅弹窗一处）
+    expect(find.text('下载详情'), findsOneWidget);
+    expect(find.text(longFileName), findsOneWidget);
     expect(find.text('下载链接'), findsOneWidget);
     expect(
       find.text(
@@ -387,7 +324,99 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('已完成但文件被外部删除：不显示安装，显示「已删除」徽标/按钮', (tester) async {
+  testWidgets('下载详情：进度环 + 统计网格 + 分段条', (tester) async {
+    _useTallView(tester);
+
+    final item = _item(
+      DownloadStatusEnum.downloading,
+      appId: 'com.example.segment',
+      appName: '分段应用',
+      fileName: 'segment.apk',
+      total: 8192,
+      received: 6144,
+      speedBps: 1024 * 1024,
+      etaSec: 12,
+      segments: const [
+        SegmentInfo(index: 0, startByte: 0, endByte: 4095, received: 4096),
+        SegmentInfo(index: 1, startByte: 4096, endByte: 8191, received: 2048),
+      ],
+    );
+    notifier.seed([
+      [item],
+    ]);
+
+    await pumpPage(tester);
+
+    // 点击条目 → 下载详情
+    await tester.tap(find.text('分段应用'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('下载详情'), findsOneWidget);
+    expect(find.text('环形进度'), findsOneWidget);
+    expect(find.text('分段进度'), findsOneWidget);
+    expect(find.byKey(const Key('download_detail_ring')), findsOneWidget);
+    expect(find.text('已下载'), findsOneWidget);
+    expect(find.text('下载速度'), findsOneWidget);
+    expect(find.text('1.0 MB/s'), findsWidgets);
+
+    // 切到「分段进度」Tab → 4 列宫格色条
+    await tester.tap(find.text('分段进度'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.textContaining('共 2 段'), findsOneWidget);
+    expect(find.byKey(const Key('download_detail_segments')), findsOneWidget);
+    expect(find.text('颜色越深 = 该段完成度越高'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('360dp 窄屏打开下载详情不溢出', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final item = _item(
+      DownloadStatusEnum.downloading,
+      appId: 'com.example.narrow.detail',
+      appName: '窄屏测试应用',
+      fileName: 'very-long-download-file-name-for-narrow-screen.apk',
+      total: 8192,
+      received: 4096,
+      speedBps: 1024 * 1024,
+      etaSec: 60,
+      segments: const [
+        SegmentInfo(index: 0, startByte: 0, endByte: 1023, received: 1024),
+        SegmentInfo(index: 1, startByte: 1024, endByte: 2047, received: 512),
+        SegmentInfo(index: 2, startByte: 2048, endByte: 3071, received: 1024),
+        SegmentInfo(index: 3, startByte: 3072, endByte: 4095, received: 0),
+        SegmentInfo(index: 4, startByte: 4096, endByte: 5119, received: 0),
+        SegmentInfo(index: 5, startByte: 5120, endByte: 6143, received: 0),
+        SegmentInfo(index: 6, startByte: 6144, endByte: 7167, received: 0),
+        SegmentInfo(index: 7, startByte: 7168, endByte: 8191, received: 0),
+      ],
+    );
+    notifier.seed([
+      [item],
+    ]);
+
+    await pumpPage(tester);
+
+    await tester.tap(find.text('窄屏测试应用'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('下载详情'), findsOneWidget);
+    expect(find.byKey(const Key('download_detail_ring')), findsOneWidget);
+
+    // 窄屏下切到分段 Tab，4 列宫格不溢出
+    await tester.tap(find.text('分段进度'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('download_detail_segments')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('已完成但文件被外部删除：不显示安装按钮，徽标显示「已删除」', (tester) async {
     _useTallView(tester);
 
     final item = _item(DownloadStatusEnum.completed,
@@ -396,20 +425,19 @@ void main() {
     // 模拟文件已被（缓存管理页等）删除：missingFileIds 命中该任务
     notifier.seed([
       [item],
-    ], missing: {id});
+    ], missing: {
+      id
+    });
 
     await pumpPage(tester);
 
-    // 不显示「安装」按钮
     expect(find.text('安装'), findsNothing);
-    // 徽标（组头）与主按钮位均显示「已删除」
-    expect(find.text('已删除'), findsNWidgets(2));
-    // 仍保留「重新下载」入口（行尾 refresh 图标）
-    expect(find.byTooltip('重新下载（清空已下分段，从 0 开始）'), findsOneWidget);
+    // 列表项不再有主按钮占位，仅状态徽标显示「已删除」
+    expect(find.text('已删除'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('已完成且文件存在：正常显示「已完成」徽标与「安装」按钮', (tester) async {
+  testWidgets('已完成且文件存在：显示「已完成」徽标（列表不再提供安装按钮）', (tester) async {
     _useTallView(tester);
 
     final item = _item(DownloadStatusEnum.completed,
@@ -422,7 +450,7 @@ void main() {
 
     // 徽标为「已完成」（筛选 chip「已完成」等也会命中该文本，故用 findsWidgets）
     expect(find.text('已完成'), findsWidgets);
-    expect(find.text('安装'), findsOneWidget);
+    expect(find.text('安装'), findsNothing);
     expect(find.text('已删除'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -443,10 +471,7 @@ void main() {
         _item(DownloadStatusEnum.paused,
             appId: 'com.example.multi', id: 2, fileName: 'b.apk'),
         _item(DownloadStatusEnum.paused,
-            appId: 'com.example.multi',
-            id: 3,
-            fileName: 'c.apk',
-            received: 0),
+            appId: 'com.example.multi', id: 3, fileName: 'c.apk', received: 0),
       ];
 
   testWidgets('多文件组默认收起：显示聚合进度/计数/合计速度，不显示文件行', (tester) async {
@@ -474,8 +499,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('多文件组收起：组内失败不会被折叠藏起来（徽标与摘要都反映失败）',
-      (tester) async {
+  testWidgets('多文件组收起：组内失败不会被折叠藏起来（徽标与摘要都反映失败）', (tester) async {
     _useTallView(tester);
     // 完成的那条排在组内第一条，旧实现（只看 items[0]）会把整组显示为「已完成」
     notifier.seed([
@@ -511,8 +535,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('多文件组收起且全部完成：摘要显示总大小/渠道，并给出「安装」快捷入口',
-      (tester) async {
+  testWidgets('多文件组收起且全部完成：摘要显示总大小/渠道（安装统一在详情页）', (tester) async {
     _useTallView(tester);
     notifier.seed([
       [
@@ -536,8 +559,8 @@ void main() {
     expect(find.text('1.0.0 · 共 2 个文件'), findsOneWidget);
     expect(find.text('3.0 MB'), findsOneWidget);
     expect(find.text('GitHub'), findsOneWidget);
-    // 收起态即可安装（组内唯一 apk），无需展开
-    expect(find.text('安装'), findsOneWidget);
+    // 列表不再提供安装按钮（安装统一在详情页操作）
+    expect(find.text('安装'), findsNothing);
     // 已全部完成 → 不再显示聚合进度条
     expect(find.byType(LinearProgressIndicator), findsNothing);
     expect(tester.takeException(), isNull);
@@ -569,6 +592,110 @@ void main() {
 
     expect(find.text('a.apk'), findsNothing);
     expect(find.text('0/3 已完成'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('列表上滑：实时吞吐卡随滚动连续收起，回到顶部恢复', (tester) async {
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    notifier.seed([
+      for (var i = 0; i < 8; i++)
+        [
+          _item(
+            DownloadStatusEnum.completed,
+            appId: 'com.example.$i',
+            fileName: 'f$i.apk',
+          ),
+        ],
+    ]);
+
+    await pumpPage(tester);
+
+    const stats = '活跃 0 · 排队 0 · 完成 8 · 失败 0';
+    expect(find.text(stats), findsOneWidget);
+
+    final scrollView = find.byType(CustomScrollView);
+    final hero = find.byKey(const Key('download_hero'));
+    final heroFullHeight = tester.getSize(hero).height;
+
+    // 小段上滑：卡片高度应随滚动减小（连续收起，而不是阈值切换）
+    await tester.drag(scrollView, const Offset(0, -80));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    final heroMidHeight = tester.getSize(hero).height;
+    expect(heroMidHeight, lessThan(heroFullHeight));
+    expect(find.text(stats), findsOneWidget);
+
+    // 继续上滑到阈值：收起为简化模式（统计行移除，卡片仍在）
+    await tester.drag(scrollView, const Offset(0, -200));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.text(stats), findsNothing);
+    expect(find.byKey(const Key('download_hero')), findsOneWidget);
+    expect(find.text('实时吞吐'), findsOneWidget);
+    expect(tester.getSize(hero).height, lessThan(heroMidHeight));
+
+    // 回到顶部 → 恢复完整模式
+    await tester.drag(scrollView, const Offset(0, 800));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.text(stats), findsOneWidget);
+    expect(tester.getSize(hero).height, heroFullHeight);
+    expect(tester.takeException(), isNull);
+  });
+
+  // -------------------------------------------------------------------------
+  // AppBar 下载设置入口
+  // -------------------------------------------------------------------------
+
+  testWidgets('AppBar 设置按钮打开统一「下载设置」弹层', (tester) async {
+    notifier.seed([]);
+
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('download_settings_button')));
+    // 页面存在无限循环的 AppLoading 动画，不能用 pumpAndSettle：
+    // 首帧启动弹层动画，第二帧完成滑入。
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('下载设置'), findsOneWidget);
+    expect(find.text('多段下载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('360dp 手机窄屏：英雄卡 + 筛选 + 下载卡不溢出', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    notifier.seed([
+      [
+        _item(
+          DownloadStatusEnum.downloading,
+          appId: 'com.example.narrow',
+          appName: '窄屏测试应用',
+          fileName: 'narrow.apk',
+          speedBps: 1024 * 1024,
+          etaSec: 30,
+        ),
+      ],
+      [
+        _item(
+          DownloadStatusEnum.completed,
+          appId: 'com.example.narrow.done',
+          appName: '已完成应用',
+          fileName: 'done.apk',
+        ),
+      ],
+    ]);
+
+    await pumpPage(tester);
+
+    expect(find.text('实时吞吐'), findsOneWidget);
+    expect(find.text('窄屏测试应用'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -26,6 +26,7 @@ import 'package:gstore/core/script/rust_script_detail_channel.dart';
 import 'package:gstore/core/script/rust_script_lane.dart';
 import 'package:gstore/core/script/script_ui_handler_registry.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
+import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 import 'state.dart';
@@ -382,12 +383,14 @@ class DetailLogic
     final channel = detailChannel;
     // 仅 UI 入口触发时委托脚本——脚本 download handler 回调直接走标准流程，防递归。
     if (!fromScript && channel != null && channel.drivesOwnDownloads) {
+      await _rememberDownloadSelection(download);
       await channel.startDownload(download);
       return;
     }
     final detail = state.detailInfo;
     final req = request;
     if (detail == null && req == null) return;
+    await _rememberDownloadSelection(download);
     final downloadUrl = download.url.trim();
     if (downloadUrl.isEmpty) {
       AppDialogs.showWarning(
@@ -439,6 +442,35 @@ class DetailLogic
         appLog.error('DetailLogic: startDownload 失败 - $e');
       }
     }());
+  }
+
+  /// 详情页下载即视为一次 APK 选择：写入 core 偏好，供后续更新匹配。
+  Future<void> _rememberDownloadSelection(DownloadInfo download) async {
+    if (download.url.trim().isEmpty || !isInstallableDownload(download)) return;
+    final req = request;
+    final detail = state.detailInfo;
+    final appId = req?.appId ?? detail?.appId ?? '';
+    final channelId = req?.channelCode ?? req?.channel.code ?? '';
+    if (appId.isEmpty || channelId.isEmpty) return;
+    try {
+      await UpdateFacade.instance.setPreferredApk(
+        channelId: channelId,
+        appId: appId,
+        fileName: download.name,
+      );
+      final cached = UpdateFacade.instance.cachedUpdate(appId);
+      if (cached != null && cached.channelId == channelId) {
+        for (final candidate in cached.downloads) {
+          if (candidate.name == download.name) {
+            UpdateFacade.instance
+                .adoptPreferredDownload(cached.withLatestDownload(candidate));
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      appLog.error('DetailLogic: 记录 APK 偏好失败 - $e');
+    }
   }
 
   /// 安装已下载完成的 APK（Shizuku 优先，回退系统安装）
@@ -686,6 +718,8 @@ class DetailLogic
     final fileName = download.name;
     final downloadUrl = download.url.trim();
     if (downloadUrl.isEmpty) return;
+
+    unawaited(_rememberDownloadSelection(download));
 
     unawaited(() async {
       final service = ModuleManager.instance.get<IDownloadService>();

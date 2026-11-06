@@ -1,17 +1,17 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
-import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 
 void main() {
   group('AgentToolCatalog 注册表', () {
-    test('内置工具协议唯一且完整（20 个可插拔 + 1 个元能力）', () {
+    test('内置工具协议唯一且完整（21 个可插拔 + 1 个元能力）', () {
       final all = AgentToolCatalog.all;
-      expect(all.length, 21);
+      expect(all.length, 22);
       final names = all.map((s) => s.name).toList();
       expect(names.toSet().length, names.length, reason: '工具名必须唯一');
       expect(all.where((s) => s.meta).map((s) => s.name), ['loadProtocol']);
+      expect(names, contains('showConfigControl'));
     });
 
     test('每个工具都有分组/标签/简介/协议', () {
@@ -26,7 +26,7 @@ void main() {
 
     test('BuiltinAgentTools 由注册表派生且不含元能力工具', () {
       final tools = BuiltinAgentTools.all;
-      expect(tools.length, 20);
+      expect(tools.length, 21);
       expect(tools.any((t) => t.toolName == 'loadProtocol'), false);
       for (final t in tools) {
         final spec = AgentToolCatalog.byName(t.toolName)!;
@@ -58,6 +58,20 @@ void main() {
       expect(dir, contains(AgentToolGroup.meta));
       // 简介是"一行"，不应包含协议正文
       expect(dir, isNot(contains('【协议】')));
+    });
+
+    test('compactDirectory 仅含分组与工具名（无简介）', () {
+      final dir = AgentToolCatalog.compactDirectory();
+      expect(dir, contains('searchApp'));
+      expect(dir, contains('downloadApp'));
+      expect(dir, contains('loadProtocol'));
+      for (final g in AgentToolCatalog.groups) {
+        expect(dir, contains(g));
+      }
+      // 不含完整目录的"简介行"标记
+      expect(dir, isNot(contains('  • ')));
+      // 明显小于完整目录
+      expect(dir.length, lessThan(AgentToolCatalog.briefDirectory().length));
     });
 
     test('敏感操作清单由敏感动作派生', () {
@@ -103,7 +117,7 @@ void main() {
       );
       AgentToolCatalog.register(spec);
       expect(AgentToolCatalog.byName('searchApp')!.label, '搜索(测试)');
-      expect(AgentToolCatalog.all.length, 21, reason: '覆盖不应新增条目');
+      expect(AgentToolCatalog.all.length, 22, reason: '覆盖不应新增条目');
     });
   });
 

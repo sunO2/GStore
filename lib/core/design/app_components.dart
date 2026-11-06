@@ -14,9 +14,7 @@ import 'app_borders.dart';
 import 'app_colors.dart';
 import 'app_spacing.dart';
 import 'app_radius.dart';
-import 'app_shadows.dart';
 import 'app_typography.dart';
-import 'app_animations.dart';
 import 'app_dialogs.dart';
 import 'app_sheet.dart';
 
@@ -35,6 +33,9 @@ class AppCard extends StatelessWidget {
     this.onLongPress,
     this.border,
     this.shadowColor,
+    this.splashColor,
+    this.highlightColor,
+    this.hoverColor,
   });
 
   final Widget child;
@@ -47,6 +48,11 @@ class AppCard extends StatelessWidget {
   final VoidCallback? onLongPress;
   final BoxBorder? border;
   final Color? shadowColor;
+
+  /// 点击/长按时的水波纹与高亮颜色（默认跟随主题；传透明可关闭按压反馈）。
+  final Color? splashColor;
+  final Color? highlightColor;
+  final Color? hoverColor;
 
   @override
   Widget build(BuildContext context) {
@@ -102,6 +108,9 @@ class AppCard extends StatelessWidget {
       return InkWell(
         onTap: onTap,
         onLongPress: onLongPress,
+        splashColor: splashColor,
+        highlightColor: highlightColor,
+        hoverColor: hoverColor,
         child: card,
       );
     }

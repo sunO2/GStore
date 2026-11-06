@@ -113,11 +113,16 @@ void main() {
 
   group('AgentModelStore', () {
     setUp(() async {
+      AgentModelStore.resetForTest();
       SharedPreferences.setMockInitialValues({});
       // 重置 ConfigStore，避免单例缓存旧 prefs 实例导致跨用例污染
       ConfigStore.instance.resetForTest();
       await ConfigStore.instance.initialize();
       ConfigRegistry.registerAll(ConfigService.instance);
+    });
+
+    tearDown(() {
+      AgentModelStore.resetForTest();
     });
 
     test('load 空存储返回空列表', () async {

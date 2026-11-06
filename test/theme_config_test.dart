@@ -7,6 +7,7 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/rust/config_api.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:gstore/core/theme/theme_state_store.dart';
 
 import 'support/grouped_config_fake.dart';
 
@@ -38,6 +39,7 @@ void main() {
   late GroupedConfigApiClient fake;
 
   setUp(() async {
+    ThemeStateStore.instance.resetForTest();
     await service.resetForTest();
     fake = GroupedConfigApiClient();
     service.debugSetApi(ConfigRustApi(fake));
@@ -45,6 +47,7 @@ void main() {
   });
 
   tearDown(() async {
+    ThemeStateStore.instance.resetForTest();
     await service.resetForTest();
     await fake.close();
   });

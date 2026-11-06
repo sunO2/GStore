@@ -229,6 +229,133 @@ DownloadGroupSummary summarizeGroup(
   );
 }
 
+/// 速度读数：数字与单位分离，供英雄卡大字号排版（如 `12.4` + `MB/s`）。
+///
+/// 空闲时固定为 `0` + `B/s`（而 [formatSpeed] 对 0 返回空串，二者语义不同）。
+class DownloadSpeedReading {
+  /// 数字部分（如 `12.4` / `856` / `0`）
+  final String value;
+
+  /// 单位部分（如 `MB/s` / `KB/s` / `B/s`）
+  final String unit;
+
+  const DownloadSpeedReading(this.value, this.unit);
+
+  /// 合并文本（如 `12.4 MB/s`），无障碍/测试用。
+  String get text => '$value $unit';
+}
+
+/// 将 bytes/s 拆成 [DownloadSpeedReading]；0 或非法值返回 `0 B/s`。
+DownloadSpeedReading speedReadingOf(num bytesPerSec) {
+  final bps = bytesPerSec.isFinite && bytesPerSec > 0 ? bytesPerSec : 0;
+  if (bps >= 1024 * 1024) {
+    return DownloadSpeedReading((bps / 1024 / 1024).toStringAsFixed(1), 'MB/s');
+  }
+  if (bps >= 1024) {
+    return DownloadSpeedReading((bps / 1024).toStringAsFixed(0), 'KB/s');
+  }
+  if (bps > 0) {
+    return DownloadSpeedReading(bps.toStringAsFixed(0), 'B/s');
+  }
+  return const DownloadSpeedReading('0', 'B/s');
+}
+
+/// 整页（未筛选）下载概览：英雄卡的速度/计数/批量操作可用性。
+///
+/// 由 [summarizeOverview] 从 `latestGroups` 计算，保证筛选切换不会改变英雄卡读数。
+class DownloadOverview {
+  /// 下载中任务合计速度（bytes/s）
+  final int totalSpeedBps;
+
+  /// 下载中/连接中数量
+  final int active;
+
+  /// 排队中数量
+  final int queued;
+
+  /// 已完成数量
+  final int completed;
+
+  /// 失败数量
+  final int failed;
+
+  /// 等待中数量（paused / cancelled，可继续）
+  final int waiting;
+
+  const DownloadOverview({
+    this.totalSpeedBps = 0,
+    this.active = 0,
+    this.queued = 0,
+    this.completed = 0,
+    this.failed = 0,
+    this.waiting = 0,
+  });
+
+  /// 全部任务数
+  int get totalTasks => active + queued + completed + failed + waiting;
+
+  /// 是否存在任何下载任务（决定英雄卡是否展示）
+  bool get hasTasks => totalTasks > 0;
+
+  /// 是否有可暂停的任务
+  bool get canPause => active > 0;
+
+  /// 是否有可恢复的任务
+  bool get canResume => waiting > 0;
+
+  /// 是否有实时吞吐（速度 > 0 且存在下载中任务）
+  bool get isLive => active > 0 && totalSpeedBps > 0;
+
+  /// 大字号速度读数
+  DownloadSpeedReading get speedReading => speedReadingOf(totalSpeedBps);
+}
+
+/// 从（未筛选的）分组任务计算整页 [DownloadOverview]。
+DownloadOverview summarizeOverview(List<List<DownloadTask>> groups) {
+  var active = 0;
+  var queued = 0;
+  var completed = 0;
+  var failed = 0;
+  var waiting = 0;
+  var totalSpeedBps = 0;
+
+  for (final group in groups) {
+    for (final item in group) {
+      switch (item.status) {
+        case DownloadStatusEnum.completed:
+          completed++;
+          break;
+        case DownloadStatusEnum.failed:
+          failed++;
+          break;
+        case DownloadStatusEnum.downloading:
+        case DownloadStatusEnum.connecting:
+          active++;
+          break;
+        case DownloadStatusEnum.queued:
+          queued++;
+          break;
+        case DownloadStatusEnum.paused:
+        case DownloadStatusEnum.cancelled:
+          waiting++;
+          break;
+      }
+      if (item.status == DownloadStatusEnum.downloading) {
+        totalSpeedBps += item.speedBps;
+      }
+    }
+  }
+
+  return DownloadOverview(
+    totalSpeedBps: totalSpeedBps,
+    active: active,
+    queued: queued,
+    completed: completed,
+    failed: failed,
+    waiting: waiting,
+  );
+}
+
 /// 格式化下载速度
 /// bytesPerSec → "12.5 MB/s" / "856 KB/s" / "1.2 KB/s"
 String formatSpeed(num bytesPerSec) {

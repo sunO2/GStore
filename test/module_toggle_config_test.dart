@@ -4,7 +4,6 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 
 /// 测试用统一初始化：全部使用内存存储（避免插件依赖）
@@ -56,8 +55,12 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() async {
+    ModuleToggleConfig.resetForTest();
     await initForTest();
     await ModuleManager.instance.clear();
+    // 清掉上一个用例可能残留的配置监听（内存后端已重建）。
+    ModuleToggleConfig.resetForTest();
+    addTearDown(ModuleToggleConfig.resetForTest);
   });
 
   group('ModuleToggleConfig key 注册', () {
@@ -214,6 +217,59 @@ void main() {
 
       expect(seen, [false, true]);
       await sub.cancel();
+    });
+  });
+
+  group('ModuleToggleConfig 外部配置监听', () {
+    test('直接写配置触发运行时上下线（不回写配置）', () async {
+      final manager = ModuleManager.instance;
+      final module = ToggleTestModule('channel');
+
+      manager.registerKnownModules(() => [module]);
+      await manager.activate(module);
+      expect(manager.isInitialized('channel'), true);
+      expect(module.registerCalls, 1);
+
+      // 通过 preApplyToggles 确保监听已挂载
+      await ModuleToggleConfig.preApplyToggles(manager);
+
+      // 外部直接写配置（不走 setEnabled）
+      final disabled = await ConfigService.instance.set(
+        ModuleToggleConfig.keyOf('channel'),
+        false,
+        source: ConfigChangeSource.internal,
+      );
+      expect(disabled.success, true);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(manager.isModuleEnabled('channel'), false);
+      expect(manager.hasModule('channel'), false);
+      expect(module.unregisterCalls, 1);
+      // 监听路径不得回写配置（避免自循环）
+      expect(
+        await ConfigService.instance.getRaw(
+          ModuleToggleConfig.keyOf('channel'),
+        ),
+        false,
+      );
+
+      final enabled = await ConfigService.instance.set(
+        ModuleToggleConfig.keyOf('channel'),
+        true,
+        source: ConfigChangeSource.internal,
+      );
+      expect(enabled.success, true);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(manager.isModuleEnabled('channel'), true);
+      expect(manager.isInitialized('channel'), true);
+      expect(module.registerCalls, 2);
+      expect(
+        await ConfigService.instance.getRaw(
+          ModuleToggleConfig.keyOf('channel'),
+        ),
+        true,
+      );
     });
   });
 }

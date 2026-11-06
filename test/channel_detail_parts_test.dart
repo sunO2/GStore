@@ -16,6 +16,7 @@ import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart' show getProxy;
 import 'package:gstore/core/data/metadata_repository.dart';
+import 'package:gstore/core/download/download_url_resolver.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
@@ -173,10 +174,14 @@ void main() {
       expect(result.data, hasLength(2));
 
       final d0 = result.data![0];
+      const rawUrl =
+          'https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk';
+      // 渠道层保持原始 URL；代理统一由下载服务入口兜底。
+      expect(d0.url, rawUrl);
       expect(
-        d0.url,
-        // 渠道层已拼代理前缀（getProxy 默认 https://gh-proxy.org/）
-        'https://gh-proxy.org/https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk',
+        resolveDownloadUrl(d0.url),
+        'https://gh-proxy.org/$rawUrl',
+        reason: '下载服务入口应自动套代理前缀',
       );
       expect(d0.name, 'app-arm64-v8a.apk');
       expect(d0.size, 12345);

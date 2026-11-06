@@ -26,8 +26,8 @@ use gstore_core::ports::{
 };
 use gstore_core::update::service::{
     asset_matches_abi, compare_versions, normalize_abi, pick_closest_apk, select_best_download,
-    select_download_with_preference, AppUpdateInfo, ChannelResolver, CheckLogLevel, UpdateService,
-    UPDATE_CACHE_TTL_MS,
+    select_download_with_preference, select_download_with_preference_for_abis, AppUpdateInfo,
+    ChannelResolver, CheckLogLevel, UpdateService, UPDATE_CACHE_TTL_MS,
 };
 use gstore_script::UnsupportedHost;
 use rusqlite::params;
@@ -524,6 +524,7 @@ fn update_parity() {
         "latestVersion",
         "checkedAt",
         "download",
+        "downloads",
     ] {
         assert!(first.contains_key(key), "missing cache key {key}");
     }
@@ -808,6 +809,8 @@ fn update_prefs_roundtrip() {
     assert_eq!(entry["checkedAt"], 1234);
     assert!(entry["iconUrl"].is_string());
     assert!(entry.get("detail").is_none());
+    let cached_downloads = entry["downloads"].as_array().expect("downloads array");
+    assert!(!cached_downloads.is_empty(), "candidate downloads must be cached");
     let cached_download = entry["download"].as_object().unwrap();
     assert_eq!(cached_download["downloadCount"], 7);
     assert_eq!(cached_download["versionCode"], 2);
@@ -890,7 +893,373 @@ fn update_preferred_apk() {
     let (_, clock) = clock_at(1_000_000);
     let service = make_service(&db, drivers, clock);
     let report = service.check_all(true).unwrap();
-    assert_eq!(find(&report.updates, "A").download.name, "chosen.apk");
+    let info = find(&report.updates, "A");
+    assert_eq!(info.download.name, "chosen.apk");
+    assert_eq!(info.selection_source.as_deref(), Some("preference"));
+    let logs: Value = serde_json::from_str(&pref(&db, "update_check_logs_v1").unwrap()).unwrap();
+    assert!(logs.as_array().unwrap().iter().any(|entry| {
+        entry["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("chosen.apk") && text.contains("记忆偏好"))
+    }));
+}
+
+#[test]
+fn update_variant_matching() {
+    let abis = vec!["arm64-v8a".to_string()];
+    let fallback = download("app-universal.apk", Some("universal"));
+    let prefer = |candidates: &[AppDownload], preferred: &str| {
+        select_download_with_preference_for_abis(&fallback, candidates, Some(preferred), &abis).name
+    };
+
+    let version_bump = vec![
+        download("app-1.2.4-arm64-v8a.apk", Some("arm64-v8a")),
+        download("app-1.2.4-universal.apk", Some("universal")),
+        download("app-1.2.4-x86_64.apk", Some("x86_64")),
+    ];
+    assert_eq!(
+        prefer(&version_bump, "app-1.2.3-arm64-v8a.apk"),
+        "app-1.2.4-arm64-v8a.apk"
+    );
+
+    let casing = vec![download("app-2.1.0-arm64-v8a.apk", Some("arm64-v8a"))];
+    assert_eq!(
+        prefer(&casing, "App-2.0.0-arm64-v8a.apk"),
+        "app-2.1.0-arm64-v8a.apk"
+    );
+
+    let debug_only = vec![download("app-arm64-v8a-debug.apk", Some("arm64-v8a"))];
+    assert_eq!(
+        prefer(&debug_only, "app-arm64-v8a-release.apk"),
+        "app-arm64-v8a-debug.apk"
+    );
+
+    let universal = vec![
+        download("app-arm64-v8a.apk", Some("arm64-v8a")),
+        download("app-universal.apk", Some("universal")),
+    ];
+    assert_eq!(prefer(&universal, "app-universal.apk"), "app-universal.apk");
+    assert_eq!(
+        prefer(&universal, "app-x86_64.apk"),
+        "app-universal.apk",
+        "an explicitly preferred x86 APK must not win on an arm64 device"
+    );
+
+    let x86_only = vec![download("app-x86_64.apk", Some("x86_64"))];
+    assert_eq!(prefer(&x86_only, "app-x86_64.apk"), "app-x86_64.apk");
+    let x86_fallback = download("app-x86_64.apk", Some("x86_64"));
+    assert_eq!(
+        select_download_with_preference_for_abis(
+            &x86_fallback,
+            &x86_only,
+            Some("app-arm64-v8a.apk"),
+            &abis,
+        )
+        .name,
+        "app-x86_64.apk",
+        "the only candidate survives even when it is ABI-incompatible"
+    );
+
+    let packaging = vec![
+        download("app-arm64-v8a-split.apk", Some("arm64-v8a")),
+        download("app-arm64-v8a-standalone.apk", Some("arm64-v8a")),
+    ];
+    assert_eq!(
+        prefer(&packaging, "app-arm64-v8a-split.apk"),
+        "app-arm64-v8a-split.apk"
+    );
+    assert_eq!(
+        prefer(&packaging, "config.arm64_v8a/apk"),
+        "app-arm64-v8a-split.apk"
+    );
+
+    let artifacts = vec![
+        download("app-1.0.0-arm64-v8a.apk", Some("arm64-v8a")),
+        download("app-1.0.0-arm64-v8a.aab", Some("arm64-v8a")),
+        download("app-1.0.0-arm64-v8a.apks", Some("arm64-v8a")),
+        download("app-1.0.0-arm64-v8a.xapk", Some("arm64-v8a")),
+    ];
+    assert_eq!(
+        prefer(&artifacts, "app-2.0.0-arm64-v8a.aab"),
+        "app-1.0.0-arm64-v8a.aab"
+    );
+    assert_eq!(
+        prefer(&artifacts, "app-2.0.0-arm64-v8a.apk"),
+        "app-1.0.0-arm64-v8a.apk"
+    );
+
+    let mut first = download("app-arm64-v8a-one.apk", Some("arm64-v8a"));
+    first.version_code = Some(1);
+    first.published_at = Some(10);
+    let mut second = download("app-arm64-v8a-two.apk", Some("arm64-v8a"));
+    second.version_code = Some(2);
+    second.published_at = Some(20);
+    assert_eq!(
+        prefer(&[first.clone(), second.clone()], "app-arm64-v8a-x.apk"),
+        "app-arm64-v8a-two.apk",
+        "version_code descending breaks an otherwise equal score"
+    );
+
+    first.version_code = Some(2);
+    second.version_code = Some(2);
+    second.published_at = Some(10);
+    assert_eq!(
+        prefer(&[first, second], "app-arm64-v8a-x.apk"),
+        "app-arm64-v8a-one.apk",
+        "original order breaks a fully equal score"
+    );
+}
+
+#[test]
+fn update_check_ignores_latest_download_api_order() {
+    let dir = TempDir::new("api_order");
+    let db = DbHandle::open(dir.path()).unwrap();
+    add_added(&db, "github", "A", 1000);
+    let drivers = vec![driver(
+        "github",
+        vec![update(
+            "A",
+            "com.a",
+            "App A",
+            Some("2.0.0"),
+            None,
+            vec![
+                download("notes.txt", None),
+                download("app-arm64-v8a.apk", Some("arm64-v8a")),
+                download("app-universal.apk", Some("universal")),
+            ],
+            Some(download("release-notes.zip", None)),
+        )],
+    )];
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    let report = service.check_all(true).unwrap();
+    let info = find(&report.updates, "A");
+    assert_eq!(info.download.name, "app-arm64-v8a.apk");
+    assert_eq!(info.selection_source.as_deref(), Some("abi"));
+
+    let serialized = serde_json::to_value(&report.updates).unwrap();
+    let names: Vec<&str> = serialized[0]["downloads"]
+        .as_array()
+        .expect("downloads array")
+        .iter()
+        .map(|download| download["name"].as_str().expect("download name"))
+        .collect();
+    assert_eq!(names, vec!["app-arm64-v8a.apk", "app-universal.apk"]);
+
+    let logs: Value = serde_json::from_str(&pref(&db, "update_check_logs_v1").unwrap()).unwrap();
+    assert!(logs.as_array().unwrap().iter().any(|entry| {
+        entry["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("app-arm64-v8a.apk") && text.contains("设备架构"))
+    }));
+
+    insert_pref(&db, "update_preferred_apk", r#"{"github:A":"missing.apk"}"#);
+    let report = service.check_all(true).unwrap();
+    let info = find(&report.updates, "A");
+    assert_eq!(info.download.name, "app-arm64-v8a.apk");
+    assert_eq!(info.selection_source.as_deref(), Some("abi_fallback"));
+    let logs: Value = serde_json::from_str(&pref(&db, "update_check_logs_v1").unwrap()).unwrap();
+    assert!(logs.as_array().unwrap().iter().any(|entry| {
+        entry["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("偏好未命中"))
+    }));
+}
+
+#[test]
+fn update_falls_back_to_latest_download_when_candidates_empty() {
+    let dir = TempDir::new("latest_only");
+    let db = DbHandle::open(dir.path()).unwrap();
+    add_added(&db, "github", "A", 1000);
+    let latest = download("app-arm64-v8a.apk", Some("arm64-v8a"));
+    let drivers = vec![driver(
+        "github",
+        vec![update(
+            "A",
+            "com.a",
+            "App A",
+            Some("2.0.0"),
+            None,
+            Vec::new(),
+            Some(latest),
+        )],
+    )];
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    let report = service.check_all(true).unwrap();
+    let info = find(&report.updates, "A");
+    assert_eq!(info.download.name, "app-arm64-v8a.apk");
+    let serialized = serde_json::to_value(&report.updates).unwrap();
+    assert_eq!(
+        serialized[0]["downloads"][0]["name"],
+        "app-arm64-v8a.apk",
+        "a latest_download fallback must be included in the candidate array"
+    );
+}
+
+#[test]
+fn update_candidates_drop_desktop_assets() {
+    let dir = TempDir::new("desktop_assets");
+    let db = DbHandle::open(dir.path()).unwrap();
+    add_added(&db, "github", "A", 1000);
+    let drivers = vec![driver(
+        "github",
+        vec![update(
+            "A",
+            "com.a",
+            "App A",
+            Some("2.0.0"),
+            None,
+            vec![
+                download("app.exe", None),
+                download("app.dmg", None),
+                download("app-x86_64.apk", Some("x86_64")),
+                download("app.aab", None),
+            ],
+            Some(download("app.exe", None)),
+        )],
+    )];
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    let report = service.check_all(true).unwrap();
+    let serialized = serde_json::to_value(&report.updates).unwrap();
+    let names: Vec<&str> = serialized[0]["downloads"]
+        .as_array()
+        .expect("downloads array")
+        .iter()
+        .map(|download| download["name"].as_str().expect("download name"))
+        .collect();
+    assert_eq!(names, vec!["app-x86_64.apk", "app.aab"]);
+}
+
+#[test]
+fn update_set_preferred_apk() {
+    let dir = TempDir::new("set_pref");
+    let db = DbHandle::open(dir.path()).unwrap();
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, Vec::new(), clock);
+
+    insert_pref(&db, "update_preferred_apk", r#"{"github:A":"a.apk"}"#);
+    service.set_preferred_apk("github", "B", "b.apk").unwrap();
+    let stored: Value = serde_json::from_str(&pref(&db, "update_preferred_apk").unwrap()).unwrap();
+    assert_eq!(stored["github:A"], "a.apk", "other keys must be preserved");
+    assert_eq!(stored["github:B"], "b.apk");
+    assert_eq!(
+        service.preferred_apk("github", "B").unwrap().as_deref(),
+        Some("b.apk")
+    );
+
+    service.set_preferred_apk("fdroid", "A", "f.apk").unwrap();
+    assert_eq!(
+        service.preferred_apk("fdroid", "A").unwrap().as_deref(),
+        Some("f.apk")
+    );
+    assert_eq!(
+        service.preferred_apk("github", "A").unwrap().as_deref(),
+        Some("a.apk"),
+        "channels must stay isolated"
+    );
+
+    service.set_preferred_apk("github", "B", "b2.apk").unwrap();
+    service.set_preferred_apk("github", "B", "b2.apk").unwrap();
+    let stored: Value = serde_json::from_str(&pref(&db, "update_preferred_apk").unwrap()).unwrap();
+    assert_eq!(stored.as_object().unwrap().len(), 3, "idempotent upsert");
+    assert_eq!(stored["github:B"], "b2.apk");
+
+    service.clear_preferred_apk("github", "B").unwrap();
+    assert!(service.preferred_apk("github", "B").unwrap().is_none());
+    assert_eq!(
+        service.preferred_apk("github", "A").unwrap().as_deref(),
+        Some("a.apk")
+    );
+    let stored: Value = serde_json::from_str(&pref(&db, "update_preferred_apk").unwrap()).unwrap();
+    assert!(stored.get("github:B").is_none());
+    assert_eq!(stored["github:A"], "a.apk");
+
+    assert!(matches!(
+        service.set_preferred_apk(" ", "A", "a.apk"),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        service.set_preferred_apk("github", "", "a.apk"),
+        Err(Error::InvalidArgument(_))
+    ));
+
+    let markers: i64 = db
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM core_writes WHERE domain='update'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(markers >= 1, "set_preferred_apk must mark the update domain");
+}
+
+#[test]
+fn update_preference_reprojects_cached_list() {
+    let dir = TempDir::new("reproject");
+    let db = DbHandle::open(dir.path()).unwrap();
+    add_added(&db, "github", "A", 1000);
+    let drivers = vec![driver(
+        "github",
+        vec![update(
+            "A",
+            "com.a",
+            "App A",
+            Some("2.0.0"),
+            None,
+            vec![
+                download("app-arm64-v8a.apk", Some("arm64-v8a")),
+                download("app-armeabi-v7a.apk", Some("armeabi-v7a")),
+            ],
+            None,
+        )],
+    )];
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a", "armeabi-v7a"]);
+    seed_inventory(&db, SOURCE, 1_000_000, &[installed("com.a", "1.0.0")]);
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, drivers, clock);
+
+    service.check_all(true).unwrap();
+    let log_rows_before = db_count(&db, "update_log");
+    assert_eq!(
+        service.list().unwrap()[0].download.name,
+        "app-arm64-v8a.apk"
+    );
+
+    service
+        .set_preferred_apk("github", "A", "app-armeabi-v7a.apk")
+        .unwrap();
+    assert_eq!(
+        service.list().unwrap()[0].download.name,
+        "app-armeabi-v7a.apk",
+        "list must re-project the cached download to the new preference"
+    );
+    assert_eq!(
+        db_count(&db, "update_log"),
+        log_rows_before,
+        "re-projection must not run a new check"
+    );
+
+    service.clear_preferred_apk("github", "A").unwrap();
+    assert_eq!(
+        service.list().unwrap()[0].download.name,
+        "app-arm64-v8a.apk",
+        "clearing the preference returns to the ABI base choice"
+    );
+    assert_eq!(db_count(&db, "update_log"), log_rows_before);
 }
 
 fn updatable_fixture(

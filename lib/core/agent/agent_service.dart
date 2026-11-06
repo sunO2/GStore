@@ -10,6 +10,7 @@ import 'package:genkit_openai/genkit_openai.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
+import 'package:gstore/core/agent/agent_inline_cards.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
 import 'package:gstore/core/agent/agent_http_client.dart';
@@ -40,6 +41,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/script/script_api.dart';
 import 'package:gstore/core/script/script_channel_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
+import 'package:gstore/core/theme/theme_state_store.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
@@ -241,6 +243,8 @@ class AgentService {
   static const String appSnapshotToolName = 'appSnapshot';
   static const String snapshotCompareToolName = 'snapshotCompare';
   static const String apkBrowserToolName = 'apkBrowser';
+  static const String showConfigSwitchToolName = 'showConfigSwitch';
+  static const String showConfigControlToolName = 'showConfigControl';
 
   // ==================== AIAgentResponse 对话全量日志 ====================
   //
@@ -335,6 +339,18 @@ class AgentService {
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
+
+  /// 是否已给当前 store 挂上变更监听
+  bool _modelStoreListenerAttached = false;
+
+  /// 上次已应用的模型签名（避免无变化时重复重配）
+  String? _lastModelSignature;
+
+  /// 忙碌期间检测到模型变化 → 有空后补一次重配
+  bool _pendingModelReconfigure = false;
+
+  /// reconfigure 重入保护
+  bool _reconfiguring = false;
 
   /// 是否正在生成回复（响应式：页面/通知订阅，脱离页面仍可感知）
   final ValueNotifier<bool> busy = ValueNotifier(false);
@@ -454,6 +470,22 @@ class AgentService {
     return out;
   }
 
+  /// 为本轮请求注入"可展示控件"提示（不持久化、不强制出卡）。
+  List<Message> _withControlHint(List<Message> base, String userText) {
+    if (!toolsEnabled) return base;
+    final controls = AgentInlineCards.controlsInText(userText);
+    if (controls.isEmpty) return base;
+    final details = controls.map((s) => '${s.configKey}（${s.title}）').join('、');
+    final keys = controls.map((s) => s.configKey).join('、');
+    final hint = '[UI hint] 用户提到了可交互配置：$details。'
+        '如果你判断需要展示控件，请调用 showConfigControl(key=...)，'
+        '可用 key：$keys；否则继续文字回答即可。';
+    final out = List<Message>.of(base);
+    final at = out.isNotEmpty && out.first.role == Role.system ? 1 : 0;
+    out.insert(at, Message(role: Role.system, content: [TextPart(text: hint)]));
+    return out;
+  }
+
   /// 执行工具（模块化工具委托入口；测试可直接调用）
   Future<String> runTool(String toolName, Map<String, dynamic> params) =>
       _executeTool(toolName, params);
@@ -530,6 +562,20 @@ class AgentService {
           params['action']?.toString() ?? '',
           params['key']?.toString() ?? '',
           params['value'],
+        );
+      case showConfigControlToolName:
+        return Future.value(
+          _showConfigControl(
+            params['key']?.toString() ?? '',
+            params['type']?.toString() ?? '',
+          ),
+        );
+      case showConfigSwitchToolName:
+        return Future.value(
+          _showConfigControl(
+            params['key']?.toString() ?? '',
+            'switch',
+          ),
         );
       case installedAppsToolName:
         return _installedApps(
@@ -935,8 +981,13 @@ class AgentService {
   Future<bool> initialize() async {
     // 运行时提示词使用中文（AgentPrompt 是唯一提示词构建器，内容由协议注册表生成）
     AgentPrompt.useChinese();
-    _store = await AgentModelStore.load();
-    _model = _store!.selected;
+    final store = await AgentModelStore.load();
+    if (!identical(_store, store)) {
+      _store?.removeListener(_onModelStoreChanged);
+      _modelStoreListenerAttached = false;
+    }
+    _store = store;
+    _model = store.selected;
     _subscribeModelChanges();
 
     // 加载会话存储
@@ -1279,32 +1330,61 @@ class AgentService {
   }
 
   /// 重新加载配置并初始化（保存新配置后调用）
+  ///
+  /// 带重入保护：重配过程中再次请求重配只置 pending，结束后自动补跑，
+  /// 避免并发初始化互相覆盖 `_ai`/`_customModel`。
   Future<bool> reconfigure() async {
-    _initialized = false;
-    _ai = null;
-    _disposeAgentHttpClient();
-    return initialize();
+    if (_reconfiguring) {
+      _pendingModelReconfigure = true;
+      return _initialized;
+    }
+    _reconfiguring = true;
+    var result = _initialized;
+    try {
+      _initialized = false;
+      _ai = null;
+      _disposeAgentHttpClient();
+      result = await initialize();
+    } finally {
+      _reconfiguring = false;
+      if (_pendingModelReconfigure) {
+        _pendingModelReconfigure = false;
+        unawaited(reconfigure());
+      }
+    }
+    return result;
   }
 
-  /// 模型切换订阅
-  StreamSubscription? _modelChangeSub;
+  /// 生成当前选中模型的签名（无模型时为 null）
+  String? _modelSignature(AgentModelStore? store) {
+    final model = store?.selected;
+    if (model == null) return null;
+    return '${model.id}|${model.provider.name}|${model.apiKey}|'
+        '${model.model}|${model.baseUrl}|${model.toolsEnabled}|'
+        '${model.showReasoning}';
+  }
 
-  /// 订阅 ConfigService：选中模型变化 → 主动重新初始化 Agent
-  void _subscribeModelChanges() {
-    if (_modelChangeSub != null) return;
-    try {
-      _modelChangeSub = ConfigService.instance
-          .watch(ConfigKeys.agentSelectedModelId)
-          .listen((event) async {
-        final newId = event.newValue?.toString();
-        if (newId == null || newId.isEmpty) return;
-        if (_store == null || _store!.selectedId == newId) return;
-        appLog.info('AgentService: 检测到模型切换 $newId，重新初始化');
-        await reconfigure();
-      });
-    } catch (e) {
-      appLog.error('AgentService: 订阅模型变化失败 - $e');
+  /// 共享 store 变化回调：模型配置/选中项变化 → 主动重新初始化 Agent
+  void _onModelStoreChanged() {
+    final signature = _modelSignature(_store);
+    if (signature == _lastModelSignature) return;
+    _lastModelSignature = signature;
+    if (_busy) {
+      _pendingModelReconfigure = true;
+      return;
     }
+    unawaited(reconfigure());
+  }
+
+  /// 订阅共享 store：模型变化 → 主动重新初始化 Agent
+  void _subscribeModelChanges() {
+    final store = _store;
+    if (store == null) return;
+    if (!_modelStoreListenerAttached) {
+      store.addListener(_onModelStoreChanged);
+      _modelStoreListenerAttached = true;
+    }
+    _lastModelSignature = _modelSignature(store);
   }
 
   /// 创建新会话
@@ -2413,6 +2493,9 @@ class AgentService {
         return AgentToolType.installed;
       case configManagerToolName:
         return AgentToolType.config;
+      case showConfigControlToolName:
+      case showConfigSwitchToolName:
+        return AgentToolType.config;
       case runJsChannelToolName:
         return AgentToolType.config;
       case appSnapshotToolName:
@@ -3331,6 +3414,21 @@ class AgentService {
     }
   }
 
+  /// 显式展示配置控件卡片：仅白名单内的配置；不修改配置。
+  String _showConfigControl(String key, String type) {
+    final spec = AgentInlineCards.controlForKey(
+      key,
+      kind: type.isEmpty ? null : type,
+    );
+    if (spec == null) {
+      final allowed = AgentInlineCards.controlSpecs
+          .map((s) => '${s.configKey}（${s.title}）')
+          .join('、');
+      return '不支持的配置控件: $key。可用：$allowed';
+    }
+    return '已展示配置控件：${spec.title}（${spec.kind.name}）';
+  }
+
   /// 应用配置管理（统一 ConfigService 门面，结构化快照输出）
   ///
   /// list/get 返回结构化 JSON（含类型/当前值/默认值/可选项/示例/分组），
@@ -3365,6 +3463,12 @@ class AgentService {
         if (!service.isAgentAccessible(key)) {
           return '配置项 $key 不允许 Agent 修改';
         }
+        if (key == ConfigKeys.themeMode) {
+          return _setThemeModeViaStore(value);
+        }
+        if (key == ConfigKeys.themeConfig) {
+          return _setThemeConfigViaStore(value);
+        }
         final result = await service.set(
           key,
           value,
@@ -3387,6 +3491,59 @@ class AgentService {
       default:
         return '未知操作: $action（支持 list/get/set/clear）';
     }
+  }
+
+  /// 通过共享 [ThemeStateStore] 设置主题模式（持久化 + 立即应用）。
+  Future<String> _setThemeModeViaStore(Object? raw) async {
+    final index = raw is int ? raw : int.tryParse(raw?.toString() ?? '');
+    if (index == null || index < 0 || index >= AppThemeMode.values.length) {
+      return _formatOpResult(const ConfigOpResult.failure(
+        '主题模式必须是 0/1/2',
+        key: ConfigKeys.themeMode,
+      ));
+    }
+    await ThemeStateStore.instance.setThemeMode(AppThemeMode.values[index]);
+    return _formatOpResult(ConfigOpResult.success(
+      '已设置主题模式',
+      key: ConfigKeys.themeMode,
+      value: index,
+      defaultValue: AppThemeMode.system.index,
+    ));
+  }
+
+  /// 通过共享 [ThemeStateStore] 合并主题配置补丁（规范化颜色后持久化）。
+  Future<String> _setThemeConfigViaStore(Object? raw) async {
+    Map<String, dynamic>? patch;
+    if (raw is Map) {
+      patch = Map<String, dynamic>.from(raw);
+    } else if (raw is String) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          patch = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        // fall through to failure
+      }
+    }
+    if (patch == null) {
+      return _formatOpResult(const ConfigOpResult.failure(
+        'theme.config 需要 JSON 对象',
+        key: ConfigKeys.themeConfig,
+      ));
+    }
+    final ok = await ThemeStateStore.instance.applyThemeConfigJson(patch);
+    if (!ok) {
+      return _formatOpResult(const ConfigOpResult.failure(
+        '主题配置格式无效',
+        key: ConfigKeys.themeConfig,
+      ));
+    }
+    return _formatOpResult(ConfigOpResult.success(
+      '已更新主题配置',
+      key: ConfigKeys.themeConfig,
+      value: patch,
+    ));
   }
 
   /// Agent 工具输出脱敏（C3）。
@@ -3727,6 +3884,7 @@ class AgentService {
 
       final ai = _ai!;
       final model = _getModelRef(_model!);
+      final requestMessages = _withControlHint(_requestMessages, userText);
 
       // 创建一条流式消息（初始为空）
       // 工具调用时会被"定稿"为独立消息并新建承接，实现分步展示
@@ -3748,12 +3906,12 @@ class AgentService {
         'toolsEnabled': toolsEnabled,
         'tools': toolsEnabled ? _modelToolNames : const <String>[],
         'maxTurns': 12,
-        'messages': _dumpMessagesLog(_requestMessages),
+        'messages': _dumpMessagesLog(requestMessages),
       });
 
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
-        messages: _requestMessages,
+        messages: requestMessages,
         toolNames: toolsEnabled ? _modelToolNames : null,
         maxTurns: 12,
       );
@@ -3866,8 +4024,11 @@ class AgentService {
       _activeStreamMsg = null;
       _busy = false;
       busy.value = false;
+      final needsReconfigure = _pendingModelReconfigure;
+      _pendingModelReconfigure = false;
       _currentTurnId = null;
       _cancelRequested = false;
+      if (needsReconfigure) unawaited(reconfigure());
     }
   }
 
@@ -3920,7 +4081,8 @@ class AgentService {
     _ai = null;
     _customModel = null;
     _disposeAgentHttpClient();
-    _modelChangeSub?.cancel();
+    _store?.removeListener(_onModelStoreChanged);
+    _modelStoreListenerAttached = false;
     _messages = [];
     messages.dispose();
     busy.dispose();

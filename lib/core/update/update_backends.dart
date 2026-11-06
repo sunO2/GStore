@@ -44,6 +44,28 @@ abstract interface class UpdateCachedStateSource {
   Future<CachedUpdateSnapshot?> cachedState();
 }
 
+/// Optional capability: persist the user's preferred APK filename.
+///
+/// Separate from [UpdateBackend] so existing fakes keep compiling; production
+/// uses the Rust-owned preference store (no SharedPreferences write).
+abstract interface class UpdatePreferenceBackend {
+  Future<void> setPreferredApk({
+    required String channelId,
+    required String appId,
+    required String fileName,
+  });
+
+  Future<void> clearPreferredApk({
+    required String channelId,
+    required String appId,
+  });
+
+  Future<String?> preferredApkName({
+    required String channelId,
+    required String appId,
+  });
+}
+
 /// Injectable update transport seam.
 abstract class UpdateBackend {
   /// Checks updates, honoring the cache unless [force].
@@ -71,7 +93,8 @@ class FrbUpdateBackend
         UpdateBackend,
         UpdateReportSource,
         UpdateProgressBackend,
-        UpdateCachedStateSource {
+        UpdateCachedStateSource,
+        UpdatePreferenceBackend {
   FrbUpdateBackend({this.dataDir, this.filesDir, this.cacheDir});
 
   final String? dataDir;
@@ -223,6 +246,38 @@ class FrbUpdateBackend
 
   @override
   Future<bool> cacheValid() => _call((api) => api.cacheValid());
+
+  @override
+  Future<void> setPreferredApk({
+    required String channelId,
+    required String appId,
+    required String fileName,
+  }) =>
+      _call((api) => api.setPreferredApk(
+            channelCode: channelId,
+            appId: appId,
+            fileName: fileName,
+          ));
+
+  @override
+  Future<void> clearPreferredApk({
+    required String channelId,
+    required String appId,
+  }) =>
+      _call((api) => api.clearPreferredApk(
+            channelCode: channelId,
+            appId: appId,
+          ));
+
+  @override
+  Future<String?> preferredApkName({
+    required String channelId,
+    required String appId,
+  }) =>
+      _call((api) => api.preferredApkName(
+            channelCode: channelId,
+            appId: appId,
+          ));
 }
 
 /// Decodes one serialized `AppUpdateInfo`.

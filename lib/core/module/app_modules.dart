@@ -28,6 +28,8 @@ import 'package:gstore/core/download/rust/rust_download_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/perf/battery_history_recorder.dart'
+    show batteryHistoryRecorder;
 import 'package:gstore/core/perf/perf_control_session.dart';
 import 'package:gstore/core/perf/perf_profile_store.dart';
 import 'package:gstore/core/perf/perf_profiles_coordinator.dart';
@@ -475,6 +477,19 @@ class PerfMonitorModule extends AppModule {
   /// 当前全局开关缓存（供自动应用引擎的 `isGloballyEnabled` 读取）。
   bool _profilesEnabled = false;
 
+  /// 电池历史采样开关变化订阅（[onUnregister] 取消）。
+  StreamSubscription<StorageChangeEvent>? _historyToggleSub;
+
+  /// 本模块是否已启动电池历史采样器（仅用于对称停止，保持惰性语义）。
+  bool _historyStarted = false;
+
+  /// 当前电池历史采样开关缓存。
+  bool _historyEnabled = false;
+
+  /// 测试注入：替代真实 BatteryHistoryRecorder start/stop（避免 Rust/Shizuku/定时器）。
+  @visibleForTesting
+  static Future<void> Function(bool enabled)? historySyncOverride;
+
   /// 当前每应用性能模式运行时（未启用 / 已关闭 / 启动失败时为 `null`）。
   PerfProfilesCoordinator? get perfProfiles => _perfProfiles;
 
@@ -491,11 +506,13 @@ class PerfMonitorModule extends AppModule {
   Future<void> onRegister(ModuleContext context) async {
     context.bindService?.call(PerfModule, PerfModule.instance);
     await _attachProfiles();
+    await _attachHistoryGate();
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
     await _detachProfiles();
+    await _detachHistoryGate();
     context.unregisterAgentTools?.call(
       _perfTools.map((t) => t.toolName).toList(),
     );
@@ -572,5 +589,71 @@ class PerfMonitorModule extends AppModule {
     _perfProfiles = null;
     _profilesEnabled = false;
     if (coordinator != null) await coordinator.stop();
+  }
+
+  // ==================== 电池历史采样生命周期 ====================
+
+  /// 订阅电池历史采样开关（`perf.history.enabled`）并按现值同步采样器。
+  ///
+  /// 订阅本身零副作用；OFF 时**绝不**取用 [batteryHistoryRecorder]（惰性构造，
+  /// 不触碰 Rust `PerfModule`）。
+  Future<void> _attachHistoryGate() async {
+    try {
+      _historyToggleSub = ConfigStore.instance
+          .watch(ConfigKeys.perfHistoryEnabled)
+          .listen((event) {
+        unawaited(_syncHistory(event.value == true));
+      });
+      final enabled =
+          await ConfigStore.instance.readBool(ConfigKeys.perfHistoryEnabled) ??
+              false;
+      await _syncHistory(enabled);
+    } catch (error) {
+      debugPrint('[PerfMonitorModule] 电池历史采样开关接线失败（降级）: $error');
+    }
+  }
+
+  /// 按开关值同步电池历史采样器：ON → start（幂等）；OFF → 仅当本模块启动过
+  /// 才 stop（保持惰性，未启动时绝不触碰单例）。绝不抛出。
+  Future<void> _syncHistory(bool enabled) async {
+    if (_historyEnabled != enabled) {
+      debugPrint('[PerfMonitorModule] 电池历史采样开关: $enabled');
+    }
+    _historyEnabled = enabled;
+    final override = historySyncOverride;
+    if (override != null) {
+      await override(enabled);
+      return;
+    }
+    try {
+      if (enabled) {
+        batteryHistoryRecorder.start();
+        _historyStarted = true;
+      } else if (_historyStarted) {
+        batteryHistoryRecorder.stop();
+        _historyStarted = false;
+      }
+    } catch (error) {
+      debugPrint('[PerfMonitorModule] 电池历史采样器同步失败（降级）: $error');
+    }
+  }
+
+  /// 取消订阅并停止本模块启动过的采样器。绝不抛出。
+  Future<void> _detachHistoryGate() async {
+    await _historyToggleSub?.cancel();
+    _historyToggleSub = null;
+    if (_historyStarted) {
+      try {
+        if (historySyncOverride != null) {
+          await historySyncOverride!(false);
+        } else {
+          batteryHistoryRecorder.stop();
+        }
+      } catch (error) {
+        debugPrint('[PerfMonitorModule] 电池历史采样器停止失败（忽略）: $error');
+      }
+      _historyStarted = false;
+    }
+    _historyEnabled = false;
   }
 }

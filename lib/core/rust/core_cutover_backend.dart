@@ -26,7 +26,7 @@ import 'package:gstore/core/rust/core_cutover.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' as rust;
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// The four `UpdateCache` keys migrated by the `update` step.
+/// The four legacy update preference keys migrated by the `update` step.
 const List<String> kCutoverUpdatePrefKeys = <String>[
   'update_last_checked_at',
   'update_results_v1',

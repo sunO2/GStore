@@ -309,4 +309,57 @@ class UpdateFacade {
   Future<int> count() async => _coreBackend().count();
 
   Future<bool> cacheValid() async => _coreBackend().cacheValid();
+
+  /// Persists the preferred APK filename for one channel/app.
+  ///
+  /// Preference storage is Rust-owned. There is no Dart fallback: a backend
+  /// that cannot write the core preference gets a typed [CoreUpdateException]
+  /// instead of silently writing SharedPreferences.
+  Future<void> setPreferredApk({
+    required String channelId,
+    required String appId,
+    required String fileName,
+  }) async {
+    await _requirePreferenceBackend().setPreferredApk(
+      channelId: channelId,
+      appId: appId,
+      fileName: fileName,
+    );
+  }
+
+  /// Removes the preferred APK filename for one channel/app.
+  Future<void> clearPreferredApk({
+    required String channelId,
+    required String appId,
+  }) async {
+    await _requirePreferenceBackend()
+        .clearPreferredApk(channelId: channelId, appId: appId);
+  }
+
+  /// Reads the remembered APK filename for one channel/app, if any.
+  Future<String?> preferredApkName({
+    required String channelId,
+    required String appId,
+  }) async {
+    return _requirePreferenceBackend()
+        .preferredApkName(channelId: channelId, appId: appId);
+  }
+
+  UpdatePreferenceBackend _requirePreferenceBackend() {
+    final backend = _coreBackend();
+    if (backend is UpdatePreferenceBackend) {
+      return backend as UpdatePreferenceBackend;
+    }
+    throw const CoreUpdateException(
+      CoreUpdateException.generic,
+      'update preference storage requires the Rust core backend',
+    );
+  }
+
+  /// 内存镜像：把用户刚选的 APK 同步为当前 `latestDownload`。
+  ///
+  /// 不触发网络检测；持久化偏好仍由 [setPreferredApk] 写入 Rust core。
+  void adoptPreferredDownload(AppUpdateInfo info) {
+    _state.adoptPreferredDownload(info);
+  }
 }

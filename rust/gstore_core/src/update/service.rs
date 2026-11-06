@@ -18,7 +18,7 @@
 //! [`InventoryStore::is_stale`]: crate::inventory::InventoryStore::is_stale
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use rusqlite::{Transaction, TransactionBehavior};
@@ -65,6 +65,18 @@ pub struct CachedDownload {
     pub platform: Option<String>,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub downloadable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl From<&AppDownload> for CachedDownload {
@@ -80,6 +92,28 @@ impl From<&AppDownload> for CachedDownload {
             platform: download.platform.clone(),
             hash: download.hash.clone(),
             hash_type: download.hash_type.clone(),
+            downloadable: download.downloadable,
+            note: download.note.clone(),
+        }
+    }
+}
+
+impl From<&CachedDownload> for AppDownload {
+    fn from(download: &CachedDownload) -> Self {
+        Self {
+            url: download.url.clone(),
+            name: download.name.clone(),
+            size: download.size,
+            download_count: download.download_count,
+            version: download.version.clone(),
+            version_code: download.version_code,
+            published_at: download.published_at,
+            platform: download.platform.clone(),
+            hash: download.hash.clone(),
+            hash_type: download.hash_type.clone(),
+            downloadable: download.downloadable,
+            note: download.note.clone(),
+            extra: None,
         }
     }
 }
@@ -97,6 +131,11 @@ pub struct AppUpdateInfo {
     pub latest_version: String,
     pub checked_at: i64,
     pub download: CachedDownload,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downloads: Vec<CachedDownload>,
+    /// Why this download was chosen: `preference`, `abi`, or `abi_fallback`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_source: Option<String>,
     #[serde(skip)]
     pub detail: Option<AppDetail>,
 }
@@ -314,14 +353,41 @@ impl UpdateService {
             return Ok(Vec::new());
         }
         let parsed: Vec<AppUpdateInfo> = serde_json::from_str(&raw).unwrap_or_default();
-        Ok(parsed
-            .into_iter()
-            .filter(|info| !info.app_id.is_empty() && !info.latest_version.is_empty())
-            .map(|mut info| {
-                info.detail = None;
-                info
-            })
-            .collect())
+        let facts = self.facts.get()?;
+        let mut results = Vec::with_capacity(parsed.len());
+        for mut info in parsed {
+            if info.app_id.is_empty() || info.latest_version.is_empty() {
+                continue;
+            }
+            info.detail = None;
+            if !info.downloads.is_empty() {
+                if let Some(facts) = facts.as_ref() {
+                    let candidates: Vec<AppDownload> =
+                        info.downloads.iter().map(AppDownload::from).collect();
+                    let base = select_best_download(&candidates, &facts.abis)
+                        .or_else(|| {
+                            candidates
+                                .iter()
+                                .find(|candidate| candidate.name == info.download.name)
+                                .cloned()
+                        })
+                        .unwrap_or_else(|| AppDownload::from(&info.download));
+                    let preferred = self.preferred_apk(&info.channel_id, &info.app_id)?;
+                    let selection = select_download_with_preference_detailed(
+                        &base,
+                        &candidates,
+                        preferred.as_deref(),
+                        &facts.abis,
+                    );
+                    let (source, _) =
+                        selection_source(preferred.as_deref(), selection.matched_preference);
+                    info.download = CachedDownload::from(&selection.download);
+                    info.selection_source = Some(source.to_string());
+                }
+            }
+            results.push(info);
+        }
+        Ok(results)
     }
 
     /// Persisted log lines from the last check.
@@ -799,35 +865,48 @@ impl UpdateService {
             .with_identity(&display_name, check.icon.as_deref()));
         }
 
-        let fallback = match check.latest_download.clone() {
-            Some(download) => download,
-            None => match select_best_download(&check.detail.downloads, &facts.abis) {
+        let mut candidates = update_candidates(&check.detail.downloads, &facts.os);
+        let base = if !candidates.is_empty() {
+            select_best_download(&candidates, &facts.abis)
+                .unwrap_or_else(|| candidates[0].clone())
+        } else {
+            match check.latest_download.clone() {
                 Some(download) => download,
-                None => {
-                    return Ok(rejection(
-                        app_id,
-                        channel_code,
-                        Some(installed_version.clone()),
-                        Some(latest_version.clone()),
-                        "no_download",
-                        &format!("应用 {display_name}：安装版本 {installed_version}，发现新版本 {latest_version}，但无可下载文件，跳过检测"),
-                        serde_json::json!({
-                            "reason": "no_download",
-                            "appId": app_id,
-                            "channelKey": channel_code,
-                        })
-                        .to_string(),
-                    ).with_identity(&display_name, check.icon.as_deref()));
-                }
-            },
+                None => match check.detail.downloads.first().cloned() {
+                    Some(download) => download,
+                    None => {
+                        return Ok(rejection(
+                            app_id,
+                            channel_code,
+                            Some(installed_version.clone()),
+                            Some(latest_version.clone()),
+                            "no_download",
+                            &format!("应用 {display_name}：安装版本 {installed_version}，发现新版本 {latest_version}，但无可下载文件，跳过检测"),
+                            serde_json::json!({
+                                "reason": "no_download",
+                                "appId": app_id,
+                                "channelKey": channel_code,
+                            })
+                            .to_string(),
+                        ).with_identity(&display_name, check.icon.as_deref()));
+                    }
+                },
+            }
         };
+        if !candidates.contains(&base) {
+            candidates.insert(0, base.clone());
+        }
 
         let preferred = self.preferred_apk(channel_code, app_id)?;
-        let download = select_download_with_preference(
-            &fallback,
-            &check.detail.downloads,
+        let selection = select_download_with_preference_detailed(
+            &base,
+            &candidates,
             preferred.as_deref(),
+            &facts.abis,
         );
+        let (source_code, source_label) =
+            selection_source(preferred.as_deref(), selection.matched_preference);
+        let download = selection.download;
 
         let identity_icon = check
             .icon
@@ -851,7 +930,10 @@ impl UpdateService {
             ),
             (
                 CheckLogLevel::Info,
-                format!("应用 {display_name}：选择平台 {platform}"),
+                format!(
+                    "应用 {display_name}：选择文件 {}（平台 {platform}，来源：{source_label}）",
+                    download.name
+                ),
             ),
         ];
         let info = AppUpdateInfo {
@@ -864,6 +946,8 @@ impl UpdateService {
             latest_version: latest_version.clone(),
             checked_at: now,
             download: CachedDownload::from(&download),
+            downloads: candidates.iter().map(CachedDownload::from).collect(),
+            selection_source: Some(source_code.to_string()),
             detail: Some(check.detail.clone()),
         };
         let key = ChannelKey::new(channel_code)?;
@@ -998,7 +1082,8 @@ impl UpdateService {
         ))
     }
 
-    fn preferred_apk(&self, channel_code: &str, app_id: &str) -> Result<Option<String>, Error> {
+    /// Reads the preferred APK file name for one channel/app, if any.
+    pub fn preferred_apk(&self, channel_code: &str, app_id: &str) -> Result<Option<String>, Error> {
         let Some(raw) = self.read_pref(KEY_PREFERRED_APK)? else {
             return Ok(None);
         };
@@ -1010,6 +1095,53 @@ impl UpdateService {
             .get(&format!("{channel_code}:{app_id}"))
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty()))
+    }
+
+    /// Persists the preferred APK file name for one channel/app.
+    ///
+    /// An empty `file_name` removes the entry. Other channel/app preferences in
+    /// the shared map are preserved, and no network check is triggered.
+    pub fn set_preferred_apk(
+        &self,
+        channel_code: &str,
+        app_id: &str,
+        file_name: &str,
+    ) -> Result<(), Error> {
+        let channel_code = channel_code.trim();
+        let app_id = app_id.trim();
+        if channel_code.is_empty() || app_id.is_empty() {
+            return Err(Error::InvalidArgument(
+                "channel_code and app_id must not be empty".to_string(),
+            ));
+        }
+        let key = format!("{channel_code}:{app_id}");
+        let file_name = file_name.trim();
+        let now = (self.clock)();
+        let mut conn = self.db.writer().map_err(db_error)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let mut map: BTreeMap<String, String> =
+            crate::migration::update_pref(&tx, KEY_PREFERRED_APK)
+                .map_err(db_error)?
+                .filter(|raw| !raw.is_empty())
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default();
+        if file_name.is_empty() {
+            map.remove(&key);
+        } else {
+            map.insert(key, file_name.to_string());
+        }
+        let encoded = serde_json::to_string(&map)?;
+        upsert_pref(&tx, KEY_PREFERRED_APK, &encoded, now)?;
+        crate::migration::mark_core_write_if_flipped(&tx, "update", None).map_err(db_error)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(())
+    }
+
+    /// Removes the preferred APK for one channel/app.
+    pub fn clear_preferred_apk(&self, channel_code: &str, app_id: &str) -> Result<(), Error> {
+        self.set_preferred_apk(channel_code, app_id, "")
     }
 }
 
@@ -1171,6 +1303,37 @@ pub fn asset_matches_abi(file_name: &str, abi: &str) -> bool {
     }
 }
 
+/// Filters update candidates to the artifacts that are actually installable.
+///
+/// Non-downloadable entries are dropped when any downloadable entry exists. On
+/// Android an `.apk`/`.aab` is preferred, so desktop archives and `.apks`/`.xapk`
+/// bundles only survive when no APK-like artifact is offered.
+fn update_candidates(downloads: &[AppDownload], os: &str) -> Vec<AppDownload> {
+    if downloads.is_empty() {
+        return Vec::new();
+    }
+    let mut filtered: Vec<AppDownload> = if downloads.iter().any(|download| download.downloadable)
+    {
+        downloads
+            .iter()
+            .filter(|download| download.downloadable)
+            .cloned()
+            .collect()
+    } else {
+        downloads.to_vec()
+    };
+    if os.eq_ignore_ascii_case("android") {
+        let is_binary = |download: &AppDownload| {
+            let lower = download.name.to_lowercase();
+            lower.ends_with(".apk") || lower.ends_with(".aab")
+        };
+        if filtered.iter().any(is_binary) {
+            filtered.retain(is_binary);
+        }
+    }
+    filtered
+}
+
 /// Selects the best download using the device ABI preference order.
 ///
 /// Order: an `.apk` matching an ABI, any file matching an ABI, any `.apk`, then
@@ -1235,10 +1398,379 @@ pub fn select_download_with_preference(
     candidates: &[AppDownload],
     preferred: Option<&str>,
 ) -> AppDownload {
-    let Some(preferred) = preferred.filter(|name| !name.trim().is_empty()) else {
-        return fallback.clone();
+    select_download_with_preference_for_abis(fallback, candidates, preferred, &[])
+}
+
+/// Result of matching a preferred filename against ABI-filtered candidates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownloadSelection {
+    pub download: AppDownload,
+    pub matched_preference: bool,
+}
+
+/// ABI-aware variant of [`select_download_with_preference`].
+///
+/// The preferred file name is matched against candidate variants (ABI, artifact
+/// kind, build type, packaging, flavor, stem) rather than raw edit distance, so
+/// a version bump or case change still selects the same architecture. Candidates
+/// that cannot run on the device are dropped when any compatible one exists.
+pub fn select_download_with_preference_for_abis(
+    fallback: &AppDownload,
+    candidates: &[AppDownload],
+    preferred: Option<&str>,
+    abis: &[String],
+) -> AppDownload {
+    select_download_with_preference_detailed(fallback, candidates, preferred, abis).download
+}
+
+/// Detailed form of [`select_download_with_preference_for_abis`].
+pub fn select_download_with_preference_detailed(
+    fallback: &AppDownload,
+    candidates: &[AppDownload],
+    preferred: Option<&str>,
+    abis: &[String],
+) -> DownloadSelection {
+    let Some(preferred_name) = preferred.map(str::trim).filter(|name| !name.is_empty()) else {
+        return DownloadSelection {
+            download: fallback.clone(),
+            matched_preference: false,
+        };
     };
-    pick_closest_apk(candidates, preferred).unwrap_or_else(|| fallback.clone())
+    if candidates.is_empty() {
+        return DownloadSelection {
+            download: fallback.clone(),
+            matched_preference: false,
+        };
+    }
+
+    let pool: Vec<usize> = if abis.is_empty() {
+        (0..candidates.len()).collect()
+    } else {
+        let compatible: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                let abi = detect_abi(candidate.platform.as_deref(), &candidate.name);
+                abi_compatible(abi.as_deref(), abis)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if compatible.is_empty() {
+            (0..candidates.len()).collect()
+        } else {
+            compatible
+        }
+    };
+
+    let preferred_lower = preferred_name.to_lowercase();
+    if let Some(index) = pool
+        .iter()
+        .copied()
+        .find(|&index| candidates[index].name.to_lowercase() == preferred_lower)
+    {
+        return DownloadSelection {
+            download: candidates[index].clone(),
+            matched_preference: true,
+        };
+    }
+
+    let preferred_variant = parse_variant(preferred_name, None);
+    let mut scored: Vec<(i64, usize, Variant)> = pool
+        .iter()
+        .map(|&index| {
+            let candidate = &candidates[index];
+            let variant = parse_variant(&candidate.name, candidate.platform.as_deref());
+            (variant_score(&variant, &preferred_variant), index, variant)
+        })
+        .collect();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| {
+                abi_rank(left.2.abi.as_deref(), abis).cmp(&abi_rank(right.2.abi.as_deref(), abis))
+            })
+            .then_with(|| {
+                candidates[right.1]
+                    .version_code
+                    .unwrap_or(i64::MIN)
+                    .cmp(&candidates[left.1].version_code.unwrap_or(i64::MIN))
+            })
+            .then_with(|| {
+                candidates[right.1]
+                    .published_at
+                    .unwrap_or(i64::MIN)
+                    .cmp(&candidates[left.1].published_at.unwrap_or(i64::MIN))
+            })
+            .then_with(|| left.1.cmp(&right.1))
+    });
+
+    match scored.first() {
+        Some((score, index, _)) if *score > 800 => DownloadSelection {
+            download: candidates[*index].clone(),
+            matched_preference: true,
+        },
+        _ => DownloadSelection {
+            download: fallback.clone(),
+            matched_preference: false,
+        },
+    }
+}
+
+fn selection_source(preferred: Option<&str>, matched_preference: bool) -> (&'static str, &'static str) {
+    match preferred.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(_) if matched_preference => ("preference", "记忆偏好"),
+        Some(_) => ("abi_fallback", "设备架构（偏好未命中）"),
+        None => ("abi", "设备架构"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactKind {
+    Apk,
+    Aab,
+    Apks,
+    Xapk,
+    Other,
+}
+
+impl ArtifactKind {
+    fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "apk" => Some(Self::Apk),
+            "aab" => Some(Self::Aab),
+            "apks" => Some(Self::Apks),
+            "xapk" => Some(Self::Xapk),
+            _ => None,
+        }
+    }
+
+    fn base_score(self) -> i64 {
+        match self {
+            Self::Apk => 100,
+            Self::Aab => 40,
+            Self::Apks => 10,
+            Self::Xapk => 5,
+            Self::Other => 0,
+        }
+    }
+}
+
+struct Variant {
+    artifact: ArtifactKind,
+    abi: Option<String>,
+    build: Option<String>,
+    packaging: Option<String>,
+    flavor: BTreeSet<String>,
+    stem: String,
+}
+
+fn parse_variant(name: &str, platform: Option<&str>) -> Variant {
+    let lower = name.to_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let artifact = tokens
+        .last()
+        .and_then(|token| ArtifactKind::from_token(token))
+        .unwrap_or(ArtifactKind::Other);
+    let abi = detect_abi(platform, &lower);
+    let abi_parts: BTreeSet<String> = abi
+        .as_deref()
+        .map(|abi| {
+            abi.split(|ch: char| !ch.is_ascii_alphanumeric())
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut build = None;
+    let mut packaging = None;
+    let mut ordered_flavor: Vec<String> = Vec::new();
+    let mut flavor: BTreeSet<String> = BTreeSet::new();
+    for token in tokens {
+        if is_version_token(token) || ArtifactKind::from_token(token).is_some() {
+            continue;
+        }
+        if abi_parts.contains(token) {
+            continue;
+        }
+        match token {
+            "android" | "app" => continue,
+            "release" | "debug" | "beta" | "alpha" | "nightly" | "profile" | "canary" | "test" => {
+                if build.is_none() {
+                    build = Some(token.to_string());
+                }
+                continue;
+            }
+            "standalone" => {
+                packaging = Some("standalone".to_string());
+                continue;
+            }
+            "split" | "config" => {
+                if packaging.is_none() {
+                    packaging = Some("split".to_string());
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if flavor.insert(token.to_string()) {
+            ordered_flavor.push(token.to_string());
+        }
+    }
+    Variant {
+        artifact,
+        abi,
+        build,
+        packaging,
+        flavor,
+        stem: ordered_flavor.join("-"),
+    }
+}
+
+fn is_version_token(token: &str) -> bool {
+    let stripped = token.strip_prefix('v').unwrap_or(token);
+    !stripped.is_empty()
+        && stripped
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '.')
+}
+
+fn detect_abi(platform: Option<&str>, file_name: &str) -> Option<String> {
+    if let Some(platform) = platform {
+        if let Some(abi) = abi_from_text(platform) {
+            return Some(abi);
+        }
+    }
+    abi_from_text(file_name)
+}
+
+fn abi_from_text(text: &str) -> Option<String> {
+    let normalized = text.to_lowercase().replace('_', "-");
+    if normalized.contains("x86-64")
+        || normalized.contains("x64")
+        || normalized.contains("amd64")
+    {
+        return Some("x86_64".to_string());
+    }
+    if normalized.contains("arm64")
+        || normalized.contains("aarch64")
+        || normalized.contains("v8a")
+    {
+        return Some("arm64-v8a".to_string());
+    }
+    if normalized.contains("armeabi-v7a")
+        || normalized.contains("arm32")
+        || normalized.contains("armv7")
+    {
+        return Some("armeabi-v7a".to_string());
+    }
+    if normalized.contains("riscv64") {
+        return Some("riscv64".to_string());
+    }
+    if normalized.contains("x86") || normalized.contains("i386") || normalized.contains("i686") {
+        return Some("x86".to_string());
+    }
+    for token in normalized.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if token == "universal" || token == "all" {
+            return Some("universal".to_string());
+        }
+    }
+    None
+}
+
+fn abi_compatible(abi: Option<&str>, abis: &[String]) -> bool {
+    match abi {
+        None | Some("universal") => true,
+        Some(value) => abis.iter().any(|abi| normalize_abi(abi) == value),
+    }
+}
+
+fn abi_rank(abi: Option<&str>, abis: &[String]) -> usize {
+    match abi {
+        None => abis.len() + 2,
+        Some("universal") => abis.len() + 1,
+        Some(value) => abis
+            .iter()
+            .position(|abi| normalize_abi(abi) == value)
+            .unwrap_or(usize::MAX),
+    }
+}
+
+fn variant_score(candidate: &Variant, preferred: &Variant) -> i64 {
+    let mut score = candidate.artifact.base_score();
+    if candidate.artifact == preferred.artifact {
+        score += 200;
+    }
+    score += abi_score(preferred.abi.as_deref(), candidate.abi.as_deref());
+    score += build_score(preferred.build.as_deref(), candidate.build.as_deref());
+    score += packaging_score(
+        preferred.packaging.as_deref(),
+        candidate.packaging.as_deref(),
+    );
+    score += jaccard_score(&candidate.flavor, &preferred.flavor);
+    score += stem_similarity(&candidate.stem, &preferred.stem);
+    score
+}
+
+fn abi_score(preferred: Option<&str>, candidate: Option<&str>) -> i64 {
+    match (preferred, candidate) {
+        (Some(preferred), Some(candidate)) => {
+            if preferred == candidate {
+                1200
+            } else if preferred != "universal" && candidate == "universal" {
+                600
+            } else {
+                -2500
+            }
+        }
+        _ => 300,
+    }
+}
+
+fn build_score(preferred: Option<&str>, candidate: Option<&str>) -> i64 {
+    match (preferred, candidate) {
+        (Some(preferred), Some(candidate)) if preferred == candidate => 350,
+        (Some(_), Some(_)) => -350,
+        _ => 0,
+    }
+}
+
+fn packaging_score(preferred: Option<&str>, candidate: Option<&str>) -> i64 {
+    match (preferred, candidate) {
+        (Some(preferred), Some(candidate)) if preferred == candidate => 300,
+        (Some(_), Some(_)) => -300,
+        _ => 0,
+    }
+}
+
+fn jaccard_score(left: &BTreeSet<String>, right: &BTreeSet<String>) -> i64 {
+    if left.is_empty() && right.is_empty() {
+        return 0;
+    }
+    let union = left.union(right).count();
+    if union == 0 {
+        return 0;
+    }
+    let intersection = left.intersection(right).count();
+    ((intersection as f64 / union as f64) * 250.0).round() as i64
+}
+
+fn stem_similarity(left: &str, right: &str) -> i64 {
+    if left.is_empty() || right.is_empty() {
+        return 0;
+    }
+    let left_units: Vec<u16> = left.encode_utf16().collect();
+    let right_units: Vec<u16> = right.encode_utf16().collect();
+    let max_len = left_units.len().max(right_units.len());
+    if max_len == 0 {
+        return 0;
+    }
+    let distance = levenshtein(&left_units, &right_units);
+    let similarity = 1.0 - (distance as f64 / max_len as f64);
+    (similarity * 200.0).round() as i64
 }
 
 fn levenshtein(left: &[u16], right: &[u16]) -> usize {

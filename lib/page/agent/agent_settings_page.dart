@@ -32,6 +32,10 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 
   Future<void> _load() async {
     final store = await AgentModelStore.load();
+    if (_store != store) {
+      _store?.removeListener(_onStoreChanged);
+    }
+    store.addListener(_onStoreChanged);
     if (mounted) {
       setState(() {
         _store = store;
@@ -40,24 +44,21 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     }
   }
 
-  /// 选择模型并立即生效（AgentService 监听配置变化后自动重配）
-  Future<void> _selectModel(AgentModel model) async {
-    await _store!.select(model.id);
+  /// 共享 store 变化 → 刷新页面（新增/编辑/删除/外部恢复都能同步）
+  void _onStoreChanged() {
     if (mounted) setState(() {});
   }
 
-  /// 重新初始化 Agent 服务
-  Future<void> _reconfigureService() async {
-    final service = ModuleManager.instance.get<AgentService>();
-    if (service == null) {
-      // Agent 模块未启用：跳过重配（页面已显示未启用文案）
-      return;
-    }
-    try {
-      await service.reconfigure();
-    } catch (e) {
-      appLog.error('AgentSettings: reconfigure 失败 - $e');
-    }
+  @override
+  void dispose() {
+    _store?.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  /// 选择模型并立即生效（AgentService 监听 store 变化后自动重配）
+  Future<void> _selectModel(AgentModel model) async {
+    await _store!.select(model.id);
+    if (mounted) setState(() {});
   }
 
   /// 打开添加/编辑对话框
@@ -69,7 +70,6 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     );
 
     if (result != null && mounted) {
-      await _reconfigureService();
       setState(() {});
     }
   }
@@ -77,7 +77,6 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   /// 删除模型
   Future<void> _deleteModel(AgentModel model) async {
     await _store!.remove(model.id);
-    await _reconfigureService();
     if (mounted) setState(() {});
   }
 
@@ -197,7 +196,6 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
         TextButton.icon(
           onPressed: () async {
             await _store!.clearAll();
-            await _reconfigureService();
             if (mounted) setState(() {});
           },
           icon: const Icon(TablerIcons.trash_x),

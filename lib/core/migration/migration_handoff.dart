@@ -77,7 +77,7 @@ class MigrationHandoff {
   static const String channelEnvFileName = 'channel_env.json';
   static const String updatePrefsFileName = 'update_prefs.json';
 
-  /// Keys owned by `UpdateCache` (kept in sync there).
+  /// Legacy update preference keys migrated into the Rust core.
   static const List<String> _updatePrefKeys = <String>[
     'update_last_checked_at',
     'update_results_v1',
@@ -120,7 +120,7 @@ class MigrationHandoff {
 
   /// Export update preferences.
   ///
-  /// When [prefs] is null the four `UpdateCache` keys are read from
+  /// When [prefs] is null the four legacy update preference keys are read from
   /// SharedPreferences. All values are normalized to strings because the Rust
   /// `update_prefs` table stores text.
   static Future<File> exportUpdatePrefs({

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/download/download_pending_hint.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
@@ -24,6 +25,18 @@ class DownloadTaskWatcher {
   DownloadTaskWatcher.debug();
 
   StreamSubscription<DownloadTask>? _sub;
+
+  /// 已经在本进程内触发过自动安装的任务 id（避免同一次 seed/重复事件重复触发）。
+  final Set<String> _autoInstallAttempted = <String>{};
+
+  /// 正在执行的自动安装 future：更新页显式等待与 watchAll 事件共用同一次尝试。
+  final Map<String, Future<InstallOutcome?>> _autoInstallFutures =
+      <String, Future<InstallOutcome?>>{};
+
+  /// 测试专用：读取核心安装状态的接缝；null → 走 [InstallFacade.get]。
+  @visibleForTesting
+  static Future<String?> Function(String moduleTaskId)?
+      installStatusProbeForTest;
 
   /// 当前绑定的实现。用于识别"重复绑定同一实现"（见 [start]）。
   IDownloadService? _service;
@@ -77,6 +90,8 @@ class DownloadTaskWatcher {
       case DownloadStatusEnum.queued:
       case DownloadStatusEnum.connecting:
       case DownloadStatusEnum.downloading:
+        // 重新进入下载态说明这是一次新的下载/重试，允许完成后再次自动安装。
+        _autoInstallAttempted.remove(id.toString());
         if (_started.add(id)) {
           notif.onDownloadStart(id, title, task.fileName);
           // 进入进行中/排队：写下廉价提示，冷启动据此决定是否后台拉起模块。
@@ -95,7 +110,7 @@ class DownloadTaskWatcher {
         // 自动安装只认任务自己持久化的标记（跨重启也有效）。
         // Wave 6B 起 install 域由核心独占：这里永远走核心安装，没有旧路径分支。
         if (task.installAfterDownload) {
-          unawaited(_installCore(id.toString(), task.filePath));
+          unawaited(ensureAutoInstall(task));
         }
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
@@ -130,22 +145,97 @@ class DownloadTaskWatcher {
     }
   }
 
-  Future<void> _installCore(String moduleTaskId, String filePath) async {
+  /// 自动安装入口：watchAll 的 completed 事件与更新页的显式等待共用。
+  ///
+  /// [forceRetry] 允许用户主动点击更新时重试一次已失败/被拒绝的安装；同一
+  /// 任务已有 in-flight 尝试时直接返回该 future，不会重复弹安装器。
+  Future<InstallOutcome?> ensureAutoInstall(
+    DownloadTask task, {
+    bool forceRetry = false,
+  }) async {
+    final id = task.id;
+    if (id == null || !task.installAfterDownload) return null;
+    final key = id.toString();
+    final inFlight = _autoInstallFutures[key];
+    if (inFlight != null) return inFlight;
+
+    // 用户主动重试只允许覆盖 failed/denied/timeout 等可重试状态；已安装或
+    // 安装中的行直接返回现状，避免重复弹安装器。probe 失败时保守跳过重试。
+    if (forceRetry && _autoInstallAttempted.contains(key)) {
+      final status = await _probeInstallStatus(key);
+      if (status == null) return null;
+      if (status == 'installed' || status == 'pending') {
+        return _outcomeFromStatus(status);
+      }
+      _autoInstallAttempted.remove(key);
+    }
+
+    final future = _runAutoInstall(key, task.filePath);
+    _autoInstallFutures[key] = future;
+    return future.whenComplete(() {
+      if (identical(_autoInstallFutures[key], future)) {
+        _autoInstallFutures.remove(key);
+      }
+    });
+  }
+
+  Future<InstallOutcome?> _runAutoInstall(
+    String moduleTaskId,
+    String filePath,
+  ) async {
+    // 自动安装是**一次性意图**：同一进程内 pending/installed 视为已消费，
+    // 避免 seed/重复事件重放。failed/denied/timeout/unknown 是可重试状态，
+    // 用户重新下载或主动点击更新时应再次尝试（forceRetry / 新下载会清标记）。
+    if (!_autoInstallAttempted.add(moduleTaskId)) {
+      return _outcomeFromStatus(await _probeInstallStatus(moduleTaskId));
+    }
+
+    final status = await _probeInstallStatus(moduleTaskId);
+    if (status == 'pending' || status == 'installed') {
+      debugPrint(
+        'DownloadTaskWatcher: 自动安装已消费（status=$status），跳过 $moduleTaskId',
+      );
+      return _outcomeFromStatus(status);
+    }
+
     final manager = ModuleManager.instance.get<InstallManager>();
     if (manager == null) {
       debugPrint('DownloadTaskWatcher: InstallManager 不可用，跳过自动安装');
-      return;
+      return null;
     }
     debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $moduleTaskId');
     try {
-      await manager.installTask(moduleTaskId, filePath);
+      final (outcome, _) = await manager.installTask(moduleTaskId, filePath);
       // 自动安装的另一条入口：核心把 `install.requested` 事件排队，前端在
       // 既有的「下载完成」路径上一次性排空（不新增常驻定时器）。
       await manager.consumeInstallRequests();
+      return outcome;
     } catch (e, st) {
       debugPrint(
         'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',
       );
+      return InstallOutcome.failed;
+    }
+  }
+
+  InstallOutcome? _outcomeFromStatus(String? status) => switch (status) {
+        'installed' => InstallOutcome.alreadyInstalled,
+        'pending' => InstallOutcome.launched,
+        'failed' || 'denied' || 'timeout' => InstallOutcome.failed,
+        _ => null,
+      };
+
+  /// 读取核心安装状态；读取失败按「未消费」处理（保留旧的自动安装行为）。
+  Future<String?> _probeInstallStatus(String moduleTaskId) async {
+    final injected = installStatusProbeForTest;
+    if (injected != null) return injected(moduleTaskId);
+    try {
+      return (await InstallFacade.instance.get(moduleTaskId))?.status;
+    } catch (e) {
+      debugPrint(
+        'DownloadTaskWatcher: 读取安装状态失败（按未消费处理） - $e',
+      );
+      return null;
     }
   }
 }

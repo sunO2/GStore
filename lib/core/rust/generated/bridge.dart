@@ -949,6 +949,10 @@ abstract class UpdateApi implements RustOpaqueInterface {
   /// progress wheel and the current app icon update in real time.
   Stream<UpdateProgressDto> checkWithProgress({required bool force});
 
+  /// Removes the persisted preferred APK for one channel/app.
+  Future<void> clearPreferredApk(
+      {required String channelCode, required String appId});
+
   /// Number of cached updatable apps.
   Future<PlatformInt64> count();
 
@@ -970,8 +974,21 @@ abstract class UpdateApi implements RustOpaqueInterface {
   /// Drops `app_id` from the cache once the installed version caught up.
   Future<bool> markUpdated({required String appId});
 
+  /// Returns the persisted preferred APK file name, if any.
+  Future<String?> preferredApkName(
+      {required String channelCode, required String appId});
+
   /// Forces a full update check.
   Future<UpdateReport> run();
+
+  /// Persists the preferred APK file name for one channel/app.
+  ///
+  /// An empty `file_name` removes the preference. This never triggers a
+  /// network update check.
+  Future<void> setPreferredApk(
+      {required String channelCode,
+      required String appId,
+      required String fileName});
 }
 
 /// One `added_apps` row crossing the FRB boundary.
@@ -2939,7 +2956,8 @@ class UpdateReport {
   final PlatformInt64 total;
   final bool usedCache;
 
-  /// JSON array of `AppUpdateInfo` (camelCase, no `detail`).
+  /// JSON array of `AppUpdateInfo` (camelCase). Candidate downloads are
+  /// included in `downloads`; `detail` is omitted.
   final String updatesJson;
 
   /// JSON array of `UpdateSkip`.

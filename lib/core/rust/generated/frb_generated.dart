@@ -80,7 +80,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 1772121088;
+  int get rustContentHash => -201229038;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -796,6 +796,11 @@ abstract class RustLibApi extends BaseApi {
   Stream<UpdateProgressDto> crateBridgeUpdateApiCheckWithProgress(
       {required UpdateApi that, required bool force});
 
+  Future<void> crateBridgeUpdateApiClearPreferredApk(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId});
+
   Future<PlatformInt64> crateBridgeUpdateApiCount({required UpdateApi that});
 
   Future<bool> crateBridgeUpdateApiHasUpdate(
@@ -811,7 +816,18 @@ abstract class RustLibApi extends BaseApi {
   Future<bool> crateBridgeUpdateApiMarkUpdated(
       {required UpdateApi that, required String appId});
 
+  Future<String?> crateBridgeUpdateApiPreferredApkName(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId});
+
   Future<UpdateReport> crateBridgeUpdateApiRun({required UpdateApi that});
+
+  Future<void> crateBridgeUpdateApiSetPreferredApk(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId,
+      required String fileName});
 
   Future<void> crateBridgeInstallHostPanicHook();
 
@@ -6468,6 +6484,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateBridgeUpdateApiClearPreferredApk(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
+            that, serializer);
+        sse_encode_String(channelCode, serializer);
+        sse_encode_String(appId, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 192, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeUpdateApiClearPreferredApkConstMeta,
+      argValues: [that, channelCode, appId],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeUpdateApiClearPreferredApkConstMeta =>
+      const TaskConstMeta(
+        debugName: "UpdateApi_clear_preferred_apk",
+        argNames: ["that", "channelCode", "appId"],
+      );
+
+  @override
   Future<PlatformInt64> crateBridgeUpdateApiCount({required UpdateApi that}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -6475,7 +6522,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 192, port: port_);
+            funcId: 193, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_i_64,
@@ -6502,7 +6549,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(appId, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 193, port: port_);
+            funcId: 194, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_bool,
@@ -6532,7 +6579,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(filesDir, serializer);
         sse_encode_String(cacheDir, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 194, port: port_);
+            funcId: 195, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -6558,7 +6605,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 195, port: port_);
+            funcId: 196, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_String,
@@ -6585,7 +6632,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(appId, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 196, port: port_);
+            funcId: 197, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_bool,
@@ -6604,6 +6651,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String?> crateBridgeUpdateApiPreferredApkName(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
+            that, serializer);
+        sse_encode_String(channelCode, serializer);
+        sse_encode_String(appId, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 198, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_opt_String,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeUpdateApiPreferredApkNameConstMeta,
+      argValues: [that, channelCode, appId],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeUpdateApiPreferredApkNameConstMeta =>
+      const TaskConstMeta(
+        debugName: "UpdateApi_preferred_apk_name",
+        argNames: ["that", "channelCode", "appId"],
+      );
+
+  @override
   Future<UpdateReport> crateBridgeUpdateApiRun({required UpdateApi that}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -6611,7 +6689,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 197, port: port_);
+            funcId: 199, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_update_report,
@@ -6629,12 +6707,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateBridgeUpdateApiSetPreferredApk(
+      {required UpdateApi that,
+      required String channelCode,
+      required String appId,
+      required String fileName}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerUpdateApi(
+            that, serializer);
+        sse_encode_String(channelCode, serializer);
+        sse_encode_String(appId, serializer);
+        sse_encode_String(fileName, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 200, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_unit,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeUpdateApiSetPreferredApkConstMeta,
+      argValues: [that, channelCode, appId, fileName],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeUpdateApiSetPreferredApkConstMeta =>
+      const TaskConstMeta(
+        debugName: "UpdateApi_set_preferred_apk",
+        argNames: ["that", "channelCode", "appId", "fileName"],
+      );
+
+  @override
   Future<void> crateBridgeInstallHostPanicHook() {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 198, port: port_);
+            funcId: 201, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -15076,6 +15187,12 @@ class UpdateApiImpl extends RustOpaque implements UpdateApi {
       RustLib.instance.api
           .crateBridgeUpdateApiCheckWithProgress(that: this, force: force);
 
+  /// Removes the persisted preferred APK for one channel/app.
+  Future<void> clearPreferredApk(
+          {required String channelCode, required String appId}) =>
+      RustLib.instance.api.crateBridgeUpdateApiClearPreferredApk(
+          that: this, channelCode: channelCode, appId: appId);
+
   /// Number of cached updatable apps.
   Future<PlatformInt64> count() =>
       RustLib.instance.api.crateBridgeUpdateApiCount(
@@ -15095,8 +15212,28 @@ class UpdateApiImpl extends RustOpaque implements UpdateApi {
   Future<bool> markUpdated({required String appId}) => RustLib.instance.api
       .crateBridgeUpdateApiMarkUpdated(that: this, appId: appId);
 
+  /// Returns the persisted preferred APK file name, if any.
+  Future<String?> preferredApkName(
+          {required String channelCode, required String appId}) =>
+      RustLib.instance.api.crateBridgeUpdateApiPreferredApkName(
+          that: this, channelCode: channelCode, appId: appId);
+
   /// Forces a full update check.
   Future<UpdateReport> run() => RustLib.instance.api.crateBridgeUpdateApiRun(
         that: this,
       );
+
+  /// Persists the preferred APK file name for one channel/app.
+  ///
+  /// An empty `file_name` removes the preference. This never triggers a
+  /// network update check.
+  Future<void> setPreferredApk(
+          {required String channelCode,
+          required String appId,
+          required String fileName}) =>
+      RustLib.instance.api.crateBridgeUpdateApiSetPreferredApk(
+          that: this,
+          channelCode: channelCode,
+          appId: appId,
+          fileName: fileName);
 }

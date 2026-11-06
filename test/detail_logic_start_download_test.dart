@@ -14,6 +14,9 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_backends.dart';
+import 'package:gstore/core/update/update_facade.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
 import 'package:gstore/page/detail/state.dart';
@@ -275,18 +278,78 @@ class _DefaultFakeDetailChannel extends IDetailChannel {
   Future<void> dispose() async {}
 }
 
+/// 只记录偏好写入；详情页下载不应触发真实 FRB 或网络检测。
+class _FakePreferenceBackend implements UpdateBackend, UpdatePreferenceBackend {
+  final Map<String, String> preferred = <String, String>{};
+
+  String _key(String channelId, String appId) => '$channelId:$appId';
+
+  @override
+  Future<void> setPreferredApk({
+    required String channelId,
+    required String appId,
+    required String fileName,
+  }) async {
+    preferred[_key(channelId, appId)] = fileName;
+  }
+
+  @override
+  Future<void> clearPreferredApk({
+    required String channelId,
+    required String appId,
+  }) async {
+    preferred.remove(_key(channelId, appId));
+  }
+
+  @override
+  Future<String?> preferredApkName({
+    required String channelId,
+    required String appId,
+  }) async =>
+      preferred[_key(channelId, appId)];
+
+  @override
+  Future<List<AppUpdateInfo>> check({required bool force}) async => const [];
+
+  @override
+  Future<List<AppUpdateInfo>> run() async => const [];
+
+  @override
+  Future<List<AppUpdateInfo>> list() async => const [];
+
+  @override
+  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
+      null;
+
+  @override
+  Future<bool> markUpdated(String appId) async => true;
+
+  @override
+  Future<bool> hasUpdate(String appId) async => false;
+
+  @override
+  Future<int> count() async => 0;
+
+  @override
+  Future<bool> cacheValid() async => false;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late _StubChannel stubChannel;
+  late _FakePreferenceBackend preferenceBackend;
 
   setUp(() {
     stubChannel = _StubChannel();
     ChannelManager.instance.registerChannel(stubChannel);
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
+    preferenceBackend = _FakePreferenceBackend();
+    UpdateFacade.backendOverride = preferenceBackend;
   });
 
   tearDown(() {
+    UpdateFacade.backendOverride = null;
   });
 
   group('drivesOwnDownloads 属性', () {
@@ -361,6 +424,43 @@ void main() {
       expect(fakeCh.startDownloadCalls, 1,
           reason: 'JS 渠道 startDownload 应被 DetailLogic 委托');
       expect(fakeCh.lastDownloadInfo?.url, 'https://example.com/test.apk');
+    });
+
+    test('详情页下载记录 APK 偏好（channelCode:appId → 文件名）', () async {
+      final logic = DetailLogic();
+      final fakeCh = _JsFakeDetailChannel('owner/repo');
+      logic.detailChannel = fakeCh;
+      logic.request = const AppDetailRequest(
+        appId: 'owner/repo',
+        name: '测试应用',
+        channel: ChannelType.github,
+        channelCode: 'github',
+      );
+
+      final apk = DownloadInfo(
+        url: 'https://example.com/app-arm64-v8a.apk',
+        name: 'app-arm64-v8a.apk',
+        version: '1.0.0',
+      );
+      await logic.startDownload(apk);
+
+      expect(
+        preferenceBackend.preferred['github:owner/repo'],
+        'app-arm64-v8a.apk',
+        reason: '详情页下载应成为更新匹配的首次选择',
+      );
+
+      final zip = DownloadInfo(
+        url: 'https://example.com/app.zip',
+        name: 'app.zip',
+        version: '1.0.0',
+      );
+      await logic.startDownload(zip);
+      expect(
+        preferenceBackend.preferred['github:owner/repo'],
+        'app-arm64-v8a.apk',
+        reason: '非 APK/AAB 下载不应覆盖 APK 偏好',
+      );
     });
 
     test('detailChannel=null：走宿主编排路径（无崩溃）', () async {

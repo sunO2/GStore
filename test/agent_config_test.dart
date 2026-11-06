@@ -9,6 +9,8 @@
 
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_service.dart';
@@ -17,6 +19,9 @@ import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/theme/app_theme_config.dart';
+import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:gstore/core/theme/theme_state_store.dart';
 
 const String _apiKeyMarker = 'sk-agent-secret-marker-19a7';
 
@@ -62,6 +67,7 @@ void main() {
     late _CountingMemoryStorage storage;
 
     setUp(() async {
+      AgentModelStore.resetForTest();
       storage = _CountingMemoryStorage();
       store.resetForTest();
       await store.initialize(storages: <ConfigStorage>[storage]);
@@ -69,6 +75,7 @@ void main() {
     });
 
     tearDown(() async {
+      AgentModelStore.resetForTest();
       await service.resetForTest();
       store.resetForTest();
     });
@@ -174,6 +181,7 @@ void main() {
     late _CountingMemoryStorage storage;
 
     setUp(() async {
+      AgentModelStore.resetForTest();
       storage = _CountingMemoryStorage();
       store.resetForTest();
       await store.initialize(storages: <ConfigStorage>[storage]);
@@ -181,6 +189,7 @@ void main() {
     });
 
     tearDown(() async {
+      AgentModelStore.resetForTest();
       await service.resetForTest();
       store.resetForTest();
     });
@@ -220,12 +229,14 @@ void main() {
 
   group('agent configManager tool output (C3)', () {
     setUp(() async {
+      AgentModelStore.resetForTest();
       store.resetForTest();
       await store.initialize(storages: <ConfigStorage>[MemoryConfigStorage()]);
       await service.ensureReady();
     });
 
     tearDown(() async {
+      AgentModelStore.resetForTest();
       await service.resetForTest();
       store.resetForTest();
     });
@@ -343,6 +354,85 @@ void main() {
       );
       expect(secretOut, isNot(contains('dav-plaintext-marker')));
       expect(secretOut, contains('不允许'));
+    });
+  });
+
+  group('configManager theme via ThemeStateStore', () {
+    late ProviderContainer container;
+
+    setUp(() async {
+      AgentModelStore.resetForTest();
+      ThemeStateStore.instance.resetForTest();
+      store.resetForTest();
+      await store.initialize(storages: <ConfigStorage>[MemoryConfigStorage()]);
+      await service.ensureReady();
+      container = ProviderContainer();
+      container.read(themeProvider);
+    });
+
+    tearDown(() async {
+      AgentModelStore.resetForTest();
+      container.dispose();
+      ThemeStateStore.instance.resetForTest();
+      await service.resetForTest();
+      store.resetForTest();
+    });
+
+    test('set theme.mode 2 writes through the store and updates the provider',
+        () async {
+      final tool = AgentService();
+      final out = await tool.runTool(
+        AgentService.configManagerToolName,
+        <String, dynamic>{
+          'action': 'set',
+          'key': ConfigKeys.themeMode,
+          'value': 2,
+        },
+      );
+
+      expect(out, contains('"success":true'), reason: out);
+      expect(container.read(themeProvider).mode, AppThemeMode.dark);
+      expect(ThemeStateStore.instance.state.value.mode, AppThemeMode.dark);
+      expect(await service.getRaw(ConfigKeys.themeMode), 2);
+    });
+
+    test('set theme.config partial color normalizes and persists ARGB', () async {
+      final tool = AgentService();
+      final out = await tool.runTool(
+        AgentService.configManagerToolName,
+        <String, dynamic>{
+          'action': 'set',
+          'key': ConfigKeys.themeConfig,
+          'value': <String, dynamic>{'primaryColor': '#1976D2'},
+        },
+      );
+
+      expect(out, contains('"success":true'), reason: out);
+      final config = container.read(themeProvider).config;
+      expect(config.useCustomColors, isTrue);
+      expect(config.primaryColor, const Color(0xFF1976D2));
+
+      final raw = await service.getRaw(ConfigKeys.themeConfig);
+      expect(raw, isA<Map>());
+      final hex = ((raw as Map)['primaryColor'] as String).toUpperCase();
+      expect(hex, 'FF1976D2');
+    });
+
+    test('set theme.config invalid enum index fails and leaves state unchanged',
+        () async {
+      final before = container.read(themeProvider);
+      final tool = AgentService();
+      final out = await tool.runTool(
+        AgentService.configManagerToolName,
+        <String, dynamic>{
+          'action': 'set',
+          'key': ConfigKeys.themeConfig,
+          'value': <String, dynamic>{'fontStyle': 99},
+        },
+      );
+
+      expect(out, contains('"success":false'), reason: out);
+      expect(container.read(themeProvider), before);
     });
   });
 }

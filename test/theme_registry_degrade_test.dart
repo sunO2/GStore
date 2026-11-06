@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/core/theme/theme_state_store.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 
 /// theme 非响应式消费点注册表化 + main 共享实例兜底测试（todo 15）
@@ -20,8 +19,13 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() async {
+    ThemeStateStore.instance.resetForTest();
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
+  });
+
+  tearDown(() {
+    ThemeStateStore.instance.resetForTest();
   });
 
   group('main 共享实例兜底（theme 模块关闭）', () {
@@ -29,8 +33,8 @@ void main() {
       expect(ModuleManager.instance.hasService<ThemeController>(), isFalse);
 
       // main.dart 的兜底逻辑（hasService ? get : bind 新实例）
-      final controller = ModuleManager.instance.get<ThemeController>() ??
-          ThemeController();
+      final controller =
+          ModuleManager.instance.get<ThemeController>() ?? ThemeController();
       ModuleManager.instance.bind<ThemeController>(controller);
 
       expect(controller, isNotNull);
@@ -44,8 +48,7 @@ void main() {
 
       // ThemeModule.onInit 的 hasService 守卫逻辑
       if (!ModuleManager.instance.hasService<ThemeController>()) {
-        ModuleManager.instance
-            .bind<ThemeController>(ThemeController());
+        ModuleManager.instance.bind<ThemeController>(ThemeController());
       }
 
       expect(ModuleManager.instance.get<ThemeController>(), same(first),

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, debugPrint, visibleForTesting;
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -177,13 +179,40 @@ Object? _decodeAgentModelsJson(Object? raw) {
 /// `List<Map>`，读取用 [ConfigStore.readValue] 拿回 typed JSON；只有旧数据
 /// （历史 `writeString` 编码的字符串）才走 [ConfigStore.readString] 兼容路径
 /// 并在读取时**一次性**迁移为 typed 列表。
-class AgentModelStore {
+///
+/// 该 store 是**全局共享单例**（[load] 返回同一实例）并继承 [ChangeNotifier]：
+/// 设置页、备份恢复、AgentService 都监听同一份状态，配置外部变更（ConfigService
+/// 事件）也会自动重新加载并通知，避免多处各持一份副本导致状态漂移。
+class AgentModelStore extends ChangeNotifier {
+  /// 全局共享实例（[load] 首次调用时创建）
+  static AgentModelStore? _instance;
+
+  /// 并发 [load] 去重
+  static Future<AgentModelStore>? _loading;
 
   /// 所有模型配置
   List<AgentModel> models;
 
   /// 当前选中的模型 ID
   String? selectedId;
+
+  /// reload 串行链：写入后再次 reload 必须读到最新配置，避免竞态
+  Future<void> _reloadChain = Future<void>.value();
+
+  /// 配置变更订阅
+  StreamSubscription<ConfigChangeEvent>? _configSub;
+
+  /// 配置变更防抖计时器
+  Timer? _reloadTimer;
+
+  /// 上次已应用的配置签名（用于跳过无变化通知）
+  String? _signatureCache;
+
+  /// 批量操作期间暂停通知（合并为一次）
+  bool _suspendNotify = false;
+
+  /// 是否已释放
+  bool _disposed = false;
 
   AgentModelStore({List<AgentModel>? models, this.selectedId})
       : models = models ?? [];
@@ -199,16 +228,102 @@ class AgentModelStore {
     return null;
   }
 
-  /// 从本地存储加载（typed JSON，含 API Key 明文——供 LLM 客户端使用）
+  /// 获取共享 store（首次会读取配置并订阅变更）。
+  ///
+  /// 已存在实例时**必然**重新读取配置（保留「写存储后 load 能看到新值」的
+  /// 语义），但返回的始终是同一实例。
   static Future<AgentModelStore> load() async {
+    final existing = _instance;
+    if (existing != null) {
+      await existing.reload();
+      return existing;
+    }
+    final loading = _loading;
+    if (loading != null) return loading;
+    final future = _createInstance();
+    _loading = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_loading, future)) _loading = null;
+    }
+  }
+
+  static Future<AgentModelStore> _createInstance() async {
+    final store = AgentModelStore();
+    await store._initialize();
+    _instance = store;
+    return store;
+  }
+
+  /// 首次初始化：读取配置并订阅配置变更。
+  Future<void> _initialize() async {
+    await reload();
+    _configSub = ConfigService.instance.onChange.listen(
+      (event) {
+        if (event.key != ConfigKeys.agentModels &&
+            event.key != ConfigKeys.agentSelectedModelId) {
+          return;
+        }
+        // 防抖：一次操作可能触发多次写入，合并成一次 reload。
+        _reloadTimer?.cancel();
+        _reloadTimer = Timer(const Duration(milliseconds: 30), () {
+          unawaited(reload());
+        });
+      },
+      onError: (Object error, StackTrace stack) {
+        debugPrint('[AgentModelStore] 配置变更订阅失败: $error');
+      },
+    );
+  }
+
+  /// 重新读取配置（串行化，避免并发 reload 互相覆盖）。
+  Future<void> reload() {
+    final next = _reloadChain.then((_) => _reloadFromConfig());
+    _reloadChain = next.catchError((_) {});
+    return next;
+  }
+
+  Future<void> _reloadFromConfig() async {
     final store = ConfigStore.instance;
     await store.initialize();
     final selected = await store.readString(ConfigKeys.agentSelectedModelId);
-    return AgentModelStore(
-      models: await _readModels(store),
-      // 不同后端对「未设置」返回 null 或默认空串；空串等价于无选中。
-      selectedId: (selected == null || selected.isEmpty) ? null : selected,
-    );
+    // 不同后端对「未设置」返回 null 或默认空串；空串等价于无选中。
+    final normalized = (selected == null || selected.isEmpty) ? null : selected;
+    final loaded = await _readModels(store);
+    final signature = _signatureFor(normalized, loaded);
+    if (signature == _signatureCache) return;
+    // 原地替换内容，保持外部持有的 models 引用有效。
+    models
+      ..clear()
+      ..addAll(loaded);
+    selectedId = normalized;
+    _signatureCache = signature;
+    _notify();
+  }
+
+  /// 由当前字段构造配置签名。
+  String _signature() => _signatureFor(selectedId, models);
+
+  /// 由指定选中 ID + 模型列表构造配置签名。
+  String _signatureFor(String? selected, List<AgentModel> models) =>
+      '${selected ?? ''}|${jsonEncode(models.map((m) => m.toJson()).toList())}';
+
+  /// 通知监听者（批量/释放期间跳过）。
+  void _notify() {
+    if (!_suspendNotify && !_disposed) notifyListeners();
+  }
+
+  /// 批量执行并在结束时只通知一次。
+  Future<T> batch<T>(Future<T> Function() action) async {
+    final previous = _suspendNotify;
+    _suspendNotify = true;
+    try {
+      return await action();
+    } finally {
+      _suspendNotify = previous;
+      if (!previous) _notify();
+    }
   }
 
   /// 读取模型列表并完成旧格式的一次性迁移。
@@ -226,7 +341,7 @@ class AgentModelStore {
     return decoded.models;
   }
 
-  /// 保存到本地存储
+  /// 保存到本地存储（一次写入，一次通知）
   Future<void> save() async {
     final store = ConfigStore.instance;
     await store.initialize();
@@ -236,6 +351,8 @@ class AgentModelStore {
     } else {
       await store.remove(ConfigKeys.agentSelectedModelId);
     }
+    _signatureCache = _signature();
+    _notify();
   }
 
   /// 以 typed JSON（`List<Map>`）写入模型列表。
@@ -247,6 +364,32 @@ class AgentModelStore {
       ConfigKeys.agentModels,
       models.map((e) => e.toJson()).toList(),
     );
+  }
+
+  /// 用备份数据恢复模型：按 id upsert（同 id 原位替换，新 id 追加）。
+  ///
+  /// [selectedId] 存在则选中；不存在或为空时回退到首个模型（非空时）。
+  /// 只写一次配置并只通知一次。
+  Future<void> restoreModels(
+    List<AgentModel> incoming, {
+    String? selectedId,
+  }) async {
+    for (final model in incoming) {
+      final index = models.indexWhere((e) => e.id == model.id);
+      if (index >= 0) {
+        models[index] = model; // 同 id：原位更新，不产生重复
+      } else {
+        models.add(model);
+      }
+    }
+    if (selectedId != null && models.any((m) => m.id == selectedId)) {
+      this.selectedId = selectedId;
+    } else if (models.isNotEmpty) {
+      this.selectedId = models.first.id;
+    } else {
+      this.selectedId = null;
+    }
+    await save();
   }
 
   /// 添加模型（同 id 已存在则更新；未指定选中时自动选中）
@@ -281,7 +424,7 @@ class AgentModelStore {
     await save();
   }
 
-  /// 选择当前使用的模型（经 ConfigService 广播，AgentService 监听后主动重配）
+  /// 选择当前使用的模型（广播选中 ID + 持久化模型列表，然后通知监听者）
   Future<void> select(String id) async {
     selectedId = id;
     await ConfigService.instance.set(
@@ -290,6 +433,8 @@ class AgentModelStore {
       source: ConfigChangeSource.user,
     );
     await _persistModels();
+    _signatureCache = _signature();
+    _notify();
   }
 
   Future<void> _persistModels() async {
@@ -301,6 +446,33 @@ class AgentModelStore {
     models.clear();
     selectedId = null;
     await save();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// 释放订阅/计时器并标记已释放（供 [resetForTest] 使用）。
+  void _disposeForTest() {
+    _reloadTimer?.cancel();
+    _reloadTimer = null;
+    _configSub?.cancel();
+    _configSub = null;
+    _reloadChain = Future<void>.value();
+    if (!_disposed) {
+      dispose();
+    }
+  }
+
+  /// 测试重置单例状态（释放旧实例，清空并发/串行链）。
+  @visibleForTesting
+  static void resetForTest() {
+    final instance = _instance;
+    _instance = null;
+    _loading = null;
+    instance?._disposeForTest();
   }
 }
 

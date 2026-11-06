@@ -4,6 +4,7 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/page/about/widgets/about_brand_header.dart';
 import 'package:gstore/page/web/browser.dart';
 
 /// 项目主页（README / Release 徽章使用同一地址）。
@@ -22,6 +23,7 @@ class AboutPage extends StatefulWidget {
 
 class _AboutPageState extends State<AboutPage> {
   late final Future<String?> _version = AppVersionService.versionName();
+  late final Future<int?> _coreVersion = CoreVersionService.schemaVersion();
 
   void _openProjectHomepage() {
     unawaited(GStoreInAppBrowser().open(url: WebUri(kProjectHomepage)));
@@ -34,7 +36,10 @@ class _AboutPageState extends State<AboutPage> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: AppSpacing.xl),
         children: [
-          _buildHeader(context),
+          AboutBrandHeader(
+            appVersion: _version,
+            coreVersion: _coreVersion,
+          ),
           _buildSectionHeader(context, '应用信息'),
           _buildAppInfoCard(context),
           const SizedBox(height: AppSpacing.xxl),
@@ -50,73 +55,6 @@ class _AboutPageState extends State<AboutPage> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildHeader(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      margin: AppSpacing.allLG,
-      child: Padding(
-        padding: AppSpacing.allLG,
-        child: Row(
-          children: [
-            Container(
-              width: AppSpacing.xxl + AppSpacing.xl,
-              height: AppSpacing.xxl + AppSpacing.xl,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(AppSpacing.md),
-              ),
-              child: Icon(
-                TablerIcons.apps,
-                size: AppTypography.iconLG,
-                color: theme.colorScheme.onPrimaryContainer,
-              ),
-            ),
-            const SizedBox(width: AppSpacing.lg),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'GStore',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: AppTypography.weightSemiBold,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    '开源 Android 应用商店',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  FutureBuilder<String?>(
-                    future: _version,
-                    builder: (context, snapshot) {
-                      final version = snapshot.data;
-                      final label =
-                          snapshot.connectionState == ConnectionState.waiting
-                              ? '版本读取中…'
-                              : version == null || version.isEmpty
-                                  ? '版本未知'
-                                  : '版本 $version';
-                      return Text(
-                        label,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

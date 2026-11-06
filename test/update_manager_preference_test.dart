@@ -1,38 +1,77 @@
-/// UpdateManager APK 选择偏好测试。
-///
-/// 增量 1 删除了 Dart 旧检测引擎（`_checkOneApp` / 公开入口 `checkApp`）。
-/// 本文件原先通过真实 `UpdateManagerService.checkApp` 走"偏好读取 → 候选
-/// 相似度匹配 → `latestDownload` 落值"的全链路冒烟，该链路随引擎一并删除，
-/// 已无生产代码可测，故原测试全部移除。
-///
-/// 仍然存活的覆盖：
-/// - 选择逻辑四象限（匹配/不匹配/无偏好/detail 为空）由
-///   `apk_matcher_test.dart` 的 `selectDownloadWithPreference` 单测覆盖；
-/// - 偏好持久化（`savePreferredApk` / `preferredApkName` / `clearPreferredApk`，
-///   更新页仍在用）由 `update_cache_test.dart` 的「APK 选择偏好」分组覆盖，
-///   这里再做一个引擎删除后的存活冒烟。
-library;
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/update/update_cache.dart';
+import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_backends.dart';
+import 'package:gstore/core/update/update_facade.dart';
+import 'package:gstore/core/update/update_report.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// A backend without the Rust preference capability.
+///
+/// Preference storage is Rust-owned; this fake proves the facade does not fall
+/// back to a Dart/SharedPreferences write.
+class _NoPreferenceBackend implements UpdateBackend {
+  @override
+  Future<List<AppUpdateInfo>> check({required bool force}) async => const [];
+
+  @override
+  Future<List<AppUpdateInfo>> run() async => const [];
+
+  @override
+  Future<List<AppUpdateInfo>> list() async => const [];
+
+  @override
+  Future<AppUpdateInfo?> checkApp(String appId, {String? channelCode}) async =>
+      null;
+
+  @override
+  Future<bool> markUpdated(String appId) async => true;
+
+  @override
+  Future<bool> hasUpdate(String appId) async => false;
+
+  @override
+  Future<int> count() async => 0;
+
+  @override
+  Future<bool> cacheValid() async => false;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
+  setUp(() {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+  });
 
-  test('偏好持久化：savePreferredApk 命中，clearPreferredApk 后返回 null', () async {
-    const channelId = 'github';
-    const appId = 'com.example.app';
+  tearDown(() {
+    UpdateFacade.backendOverride = null;
+  });
 
-    await UpdateCache.savePreferredApk(channelId, appId, 'app-arm64-v8a.apk');
-    expect(
-      await UpdateCache.preferredApkName(channelId, appId),
-      'app-arm64-v8a.apk',
+  test('无 core 偏好后端：拒绝写入且不落 SharedPreferences', () async {
+    UpdateFacade.backendOverride = _NoPreferenceBackend();
+
+    await expectLater(
+      UpdateFacade.instance.setPreferredApk(
+        channelId: 'github',
+        appId: 'com.example.app',
+        fileName: 'app-arm64-v8a.apk',
+      ),
+      throwsA(isA<CoreUpdateException>()),
     );
 
-    await UpdateCache.clearPreferredApk(channelId, appId);
-    expect(await UpdateCache.preferredApkName(channelId, appId), isNull);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('update_preferred_apk'), isNull);
+  });
+
+  test('无 core 偏好后端：读取也直接报错', () async {
+    UpdateFacade.backendOverride = _NoPreferenceBackend();
+
+    await expectLater(
+      UpdateFacade.instance.preferredApkName(
+        channelId: 'github',
+        appId: 'com.example.app',
+      ),
+      throwsA(isA<CoreUpdateException>()),
+    );
   });
 }
