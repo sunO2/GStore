@@ -177,7 +177,7 @@ jobs:
 
       # 完整包：内置全部可下载模块 .so（保持既有行为与发布文件名）。
       - name: Build full APKs (bundled modules)
-        run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+        run: flutter build apk --target-platform android-arm,android-arm64,android-x64 --split-per-abi
 
       # 产物固定写到 flutter-apk/app-<abi>-release.apk；立即改名暂存，避免随后精简包
       # 的同名产物覆盖，发布上传统一走暂存目录。
@@ -203,7 +203,7 @@ jobs:
       - name: Build slim APKs (host-only, modules excluded)
         env:
           ORG_GRADLE_PROJECT_gstoreSlimModules: "true"
-        run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+        run: flutter build apk --target-platform android-arm,android-arm64,android-x64 --split-per-abi
 
       - name: Stage slim APK assets
         run: |

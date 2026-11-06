@@ -78,8 +78,11 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.release
-            minifyEnabled false
-            shrinkResources false
+            // R8 shrinks the plugin dex; resource shrinking removes unused res.
+            // Flutter injects flutter_proguard_rules.pro in addition to this file.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
 
         debug {

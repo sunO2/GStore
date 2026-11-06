@@ -30,6 +30,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # Flutter's Cupertino widgets reference this icon font; keep it so icon
+  # tree-shaking can retain the glyphs actually used.
+  cupertino_icons: ^1.0.8
   retrofit: ^4.4.0
   logger: ^2.4.0  # for logging purpose
   json_annotation: ^4.9.0
