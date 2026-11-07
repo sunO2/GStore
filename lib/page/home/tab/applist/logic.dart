@@ -181,15 +181,32 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   }
 
   /// 可更新应用列表（用于"可更新"分区，数据来自 UpdateManager）
+  ///
+  /// build 期间会被读取多次；结果按 [ApplistState.apps] 与
+  /// [ApplistState.updateStates] 的实例身份缓存（两者在数据变化时总会被
+  /// 替换成新实例），避免每次重建都全量扫描 + 排序。
   List<AggregatedAppInfo> get updatableApps {
+    final cached = _updatableCache;
+    if (cached != null &&
+        identical(_updatableCacheSource, state.apps) &&
+        identical(_updatableCacheStates, state.updateStates)) {
+      return cached;
+    }
     final manager = UpdateFacade.instance;
     final result = state.apps
         .where((app) => manager.cachedHasUpdate(app.appInfo.appId))
         .toList();
     result.sort(
         (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
+    _updatableCache = result;
+    _updatableCacheSource = state.apps;
+    _updatableCacheStates = state.updateStates;
     return result;
   }
+
+  List<AggregatedAppInfo>? _updatableCache;
+  List<AggregatedAppInfo>? _updatableCacheSource;
+  Map<String, bool>? _updatableCacheStates;
 
   /// 加载聚合应用（首页/重试：列表为空时进入全屏 loading，否则转静默刷新）
   Future<void> loadAggregatedApps() => _loadAggregatedPage(silent: false);
@@ -444,12 +461,28 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
   }
 
   /// 最近添加应用（用于"最近添加"分区，前 [count] 个）
+  ///
+  /// 与 [updatableApps] 同样按 [ApplistState.apps] 实例身份缓存。
   List<AggregatedAppInfo> recentApps({int count = 8}) {
+    final cached = _recentCache;
+    if (cached != null &&
+        identical(_recentCacheSource, state.apps) &&
+        _recentCacheCount == count) {
+      return cached;
+    }
     final list = List.of(state.apps)
       ..sort(
           (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
-    return list.take(count).toList();
+    final result = list.take(count).toList();
+    _recentCache = result;
+    _recentCacheSource = state.apps;
+    _recentCacheCount = count;
+    return result;
   }
+
+  List<AggregatedAppInfo>? _recentCache;
+  List<AggregatedAppInfo>? _recentCacheSource;
+  int? _recentCacheCount;
 
   /// 打开应用详情
   void appDetail(AggregatedAppInfo app) {

@@ -523,7 +523,9 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         ),
       ),
       child: Stack(
-        clipBehavior: Clip.antiAlias,
+        // 外层 Container 已按圆角裁剪（且圆角矩形是本矩形边界的子集），
+        // 这里再裁一次只是多一层离屏缓冲，不改变可见结果。
+        clipBehavior: Clip.none,
         children: [
           // 卡片主体
           Card(

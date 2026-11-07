@@ -1520,6 +1520,11 @@ class AppIcon extends StatelessWidget {
       return _default(scheme);
     }
 
+    // 按物理像素解码：图标源图常为 512/1024px，而槽位只有几十 dp。
+    // 不限制解码尺寸会把整张原图作为纹理上传，列表滚动时每进一行就多一次
+    // 解码 + 纹理上传尖峰。
+    final decodePx = (width * MediaQuery.devicePixelRatioOf(context)).round();
+
     final clip = ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
       child: _isLocalPath
@@ -1529,6 +1534,7 @@ class AppIcon extends StatelessWidget {
               width: width,
               height: height,
               fit: fit,
+              cacheWidth: decodePx,
               errorBuilder: (_, __, ___) => _default(scheme),
             )
           // 网络 URL
@@ -1537,6 +1543,11 @@ class AppIcon extends StatelessWidget {
               width: width,
               height: height,
               fit: fit,
+              memCacheWidth: decodePx,
+              memCacheHeight: decodePx,
+              maxWidthDiskCache: decodePx,
+              // 默认 500ms，快速滚动时几十个图标会同时淡入
+              fadeInDuration: const Duration(milliseconds: 120),
               placeholder: (_, __) => Container(
                 width: width,
                 height: height,
