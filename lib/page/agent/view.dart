@@ -461,7 +461,10 @@ class _AgentPageState extends ConsumerState<AgentPage>
       child: ClipRRect(
         borderRadius: BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          filter: ImageFilter.blur(
+            sigmaX: AppShadows.backdropBlurSigma,
+            sigmaY: AppShadows.backdropBlurSigma,
+          ),
           child: Container(
             padding: const EdgeInsets.symmetric(
               horizontal: AppSpacing.xs,

@@ -334,6 +334,14 @@ class _ApplistBody extends ConsumerWidget {
 
     // 应用列表
     final isSearching = state.searchKeyword.isNotEmpty;
+    // 网格列数只依赖可用宽度，与滚动无关：在 build 里算一次，
+    // 避免用 SliverLayoutBuilder（其 layoutInfo 含 scrollOffset，会让
+    // 整个网格在每个滚动帧重建）。
+    final gridCrossAxisExtent =
+        MediaQuery.sizeOf(context).width - AppSpacing.sm * 2;
+    final gridCrossAxisCount =
+        (gridCrossAxisExtent / 90).floor().clamp(3, 6);
+
     return RefreshIndicator(
       // 下拉刷新走静默刷新：不置 isLoading，保留旧列表
       onRefresh: logic.refreshSilently,
@@ -408,31 +416,22 @@ class _ApplistBody extends ConsumerWidget {
           ),
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
-            sliver: SliverLayoutBuilder(
-              builder: (context, constraints) {
-                final crossAxisExtent = constraints.crossAxisExtent;
-                final crossAxisCount =
-                    (crossAxisExtent / 90).floor().clamp(3, 6);
-
-                return SliverGrid.builder(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossAxisCount,
-                    mainAxisSpacing: AppSpacing.sm,
-                    crossAxisSpacing: AppSpacing.sm,
-                    childAspectRatio: 0.75,
-                  ),
-                  itemBuilder: (context, index) {
-                    final app = state.filteredApps[index];
-                    return AppCardWidget(
-                      app: app,
-                      hasUpdate:
-                          state.updateStates[app.appInfo.appId] ?? false,
-                      onTap: () => logic.appDetail(app),
-                    );
-                  },
-                  itemCount: state.filteredApps.length,
+            sliver: SliverGrid.builder(
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: gridCrossAxisCount,
+                mainAxisSpacing: AppSpacing.sm,
+                crossAxisSpacing: AppSpacing.sm,
+                childAspectRatio: 0.75,
+              ),
+              itemBuilder: (context, index) {
+                final app = state.filteredApps[index];
+                return AppCardWidget(
+                  app: app,
+                  hasUpdate: state.updateStates[app.appInfo.appId] ?? false,
+                  onTap: () => logic.appDetail(app),
                 );
               },
+              itemCount: state.filteredApps.length,
             ),
           ),
           // 底部加载更多 / 已全部加载 指示

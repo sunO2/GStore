@@ -285,7 +285,10 @@ class _HomePageState extends ConsumerState<HomePage>
                         AppRadius.xxl + AppRadius.sm,
                       ),
                       child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                        filter: ImageFilter.blur(
+                          sigmaX: AppShadows.backdropBlurSigma,
+                          sigmaY: AppShadows.backdropBlurSigma,
+                        ),
                         child: Builder(builder: (context) {
                           // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑）。
                           // 必须 copyWith 合并应用主题已定义的 navigationBarTheme，
