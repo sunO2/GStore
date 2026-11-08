@@ -86,7 +86,7 @@ class _ChannelBuildHistorySheetState extends State<_ChannelBuildHistorySheet> {
 
     // 弹框限高（屏高 70%）：构建多时列表内部滚动，不顶出屏幕；
     // 确认/取消按钮固定在底部（不随列表滚动，始终可见）。
-    final maxHeight = MediaQuery.of(context).size.height * 0.7;
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.7;
 
     return ConstrainedBox(
       constraints: BoxConstraints(maxHeight: maxHeight),

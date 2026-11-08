@@ -776,7 +776,7 @@ class AppSegmentedButton<T> extends StatelessWidget {
         backgroundColor: WidgetStateProperty.resolveWith<Color?>(
           (states) {
             if (!enabled) {
-              return colorScheme.surfaceContainerHighest.withOpacity(0.3);
+              return colorScheme.surfaceContainerHighest.withValues(alpha: 0.3);
             }
             if (states.contains(WidgetState.selected)) {
               return colorScheme.primaryContainer;
@@ -788,7 +788,7 @@ class AppSegmentedButton<T> extends StatelessWidget {
         foregroundColor: WidgetStateProperty.resolveWith<Color?>(
           (states) {
             if (!enabled) {
-              return colorScheme.onSurface.withOpacity(0.38);
+              return colorScheme.onSurface.withValues(alpha: 0.38);
             }
             if (states.contains(WidgetState.selected)) {
               return colorScheme.onPrimaryContainer;

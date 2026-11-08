@@ -240,7 +240,7 @@ class AppColors {
 
   /// Get color with opacity
   static Color withOpacity(Color color, double opacity) {
-    return color.withOpacity(opacity);
+    return color.withValues(alpha: opacity);
   }
 
   /// Get color with alpha value
@@ -396,13 +396,13 @@ extension ColorSchemeExtensions on ColorScheme {
   Color get inputFill => surfaceContainerHighest;
 
   /// 悬停背景色 - 主色的 8%
-  Color get hoverOverlay => primary.withOpacity(0.08);
+  Color get hoverOverlay => primary.withValues(alpha: 0.08);
 
   /// 焦点背景色 - 主色的 12%
-  Color get focusOverlay => primary.withOpacity(0.12);
+  Color get focusOverlay => primary.withValues(alpha: 0.12);
 
   /// 按下背景色 - 主色的 16%
-  Color get pressedOverlay => primary.withOpacity(0.16);
+  Color get pressedOverlay => primary.withValues(alpha: 0.16);
 
   // ========== Text Colors ==========
 
@@ -410,27 +410,27 @@ extension ColorSchemeExtensions on ColorScheme {
   Color get textPrimary => onSurface;
 
   /// 次要文字色 - 自动适配亮暗模式（70% 透明度）
-  Color get textSecondary => onSurfaceVariant.withOpacity(0.7);
+  Color get textSecondary => onSurfaceVariant.withValues(alpha: 0.7);
 
   /// 辅助文字色 - 自动适配亮暗模式（50% 透明度）
-  Color get textTertiary => onSurfaceVariant.withOpacity(0.5);
+  Color get textTertiary => onSurfaceVariant.withValues(alpha: 0.5);
 
   /// 禁用文字色 - 自动适配亮暗模式（38% 透明度）
-  Color get textDisabled => onSurface.withOpacity(0.38);
+  Color get textDisabled => onSurface.withValues(alpha: 0.38);
 
   // ========== Border Colors ==========
 
   /// 标准边框色 - 自动适配亮暗模式
   /// 亮色：50% 透明度，暗色：100% 不透明（outline 已包含透明度）
   Color get borderStandard => brightness == Brightness.light
-      ? outline.withOpacity(0.5)
-      : outline.withOpacity(0.3);
+      ? outline.withValues(alpha: 0.5)
+      : outline.withValues(alpha: 0.3);
 
   /// 淡边框色 - 自动适配亮暗模式
   /// 亮色：50% 透明度，暗色：30% 透明度
   Color get borderLight => brightness == Brightness.light
-      ? outlineVariant.withOpacity(0.5)
-      : outlineVariant.withOpacity(0.3);
+      ? outlineVariant.withValues(alpha: 0.5)
+      : outlineVariant.withValues(alpha: 0.3);
 
   /// 焦点边框色 - 主色，不透明
   Color get borderFocus => primary;
@@ -441,13 +441,13 @@ extension ColorSchemeExtensions on ColorScheme {
   // ========== Container Colors ==========
 
   /// 主色容器 - 用于标签、徽章等
-  Color get primaryContainerBadge => primaryContainer.withOpacity(0.5);
+  Color get primaryContainerBadge => primaryContainer.withValues(alpha: 0.5);
 
   /// 次要色容器 - 用于次要强调
-  Color get secondaryContainerBadge => secondaryContainer.withOpacity(0.5);
+  Color get secondaryContainerBadge => secondaryContainer.withValues(alpha: 0.5);
 
   /// 错误容器 - 用于错误提示背景
-  Color get errorContainerBackground => errorContainer.withOpacity(0.5);
+  Color get errorContainerBackground => errorContainer.withValues(alpha: 0.5);
 
   /// 成功色 - 使用主色（绿色调时）或 tertiary
   Color get successColor => brightness == Brightness.light
@@ -457,14 +457,14 @@ extension ColorSchemeExtensions on ColorScheme {
   // ========== Status Colors with Opacity ==========
 
   /// 成功背景色（淡）
-  Color get successBackground => primary.withOpacity(0.15);
+  Color get successBackground => primary.withValues(alpha: 0.15);
 
   /// 错误背景色（淡）
-  Color get errorBackground => error.withOpacity(0.15);
+  Color get errorBackground => error.withValues(alpha: 0.15);
 
   /// 警告背景色（淡）
-  Color get warningBackground => tertiary.withOpacity(0.15);
+  Color get warningBackground => tertiary.withValues(alpha: 0.15);
 
   /// 信息背景色（淡）
-  Color get infoBackground => secondary.withOpacity(0.15);
+  Color get infoBackground => secondary.withValues(alpha: 0.15);
 }

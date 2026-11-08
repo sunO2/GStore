@@ -94,7 +94,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           padding: AppSpacing.allMD,
           decoration: BoxDecoration(
             color:
-                Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5),
+                Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
             borderRadius: AppRadius.allMD,
           ),
           child: Row(
@@ -240,7 +240,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
               leading: const Icon(TablerIcons.palette),
               title: const Text('主色'),
               subtitle: Text(config.primaryColor != null
-                  ? '#${config.primaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  ? '#${config.primaryColor!.toARGB32().toRadixString(16).substring(2).toUpperCase()}'
                   : '未设置'),
               trailing: Container(
                 width: 24,
@@ -272,7 +272,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
               leading: const Icon(TablerIcons.palette),
               title: const Text('次要色'),
               subtitle: Text(config.secondaryColor != null
-                  ? '#${config.secondaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  ? '#${config.secondaryColor!.toARGB32().toRadixString(16).substring(2).toUpperCase()}'
                   : '自动生成'),
               trailing: Container(
                 width: 24,
@@ -304,7 +304,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
               leading: const Icon(TablerIcons.brush),
               title: const Text('第三色'),
               subtitle: Text(config.tertiaryColor != null
-                  ? '#${config.tertiaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  ? '#${config.tertiaryColor!.toARGB32().toRadixString(16).substring(2).toUpperCase()}'
                   : '自动生成'),
               trailing: Container(
                 width: 24,
@@ -436,7 +436,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                       color: Theme.of(context)
                           .colorScheme
                           .outline
-                          .withOpacity(0.5),
+                          .withValues(alpha: 0.5),
                     ),
                   ),
                 ),
@@ -860,7 +860,7 @@ class _ColorPickerState extends State<ColorPicker> {
           itemCount: _presetColors.length,
           itemBuilder: (context, index) {
             final color = _presetColors[index];
-            final isSelected = _selectedColor.value == color.value;
+            final isSelected = _selectedColor.toARGB32() == color.toARGB32();
             return GestureDetector(
               onTap: () {
                 setState(() => _selectedColor = color);
@@ -903,7 +903,7 @@ class _ColorPickerState extends State<ColorPicker> {
           ),
           child: Center(
             child: Text(
-              '#${_selectedColor.value.toRadixString(16).substring(2).toUpperCase()}',
+              '#${_selectedColor.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
               style: TextStyle(
                 color: _selectedColor.computeLuminance() > 0.5
                     ? Colors.black

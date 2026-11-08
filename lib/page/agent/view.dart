@@ -214,7 +214,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeOut,
               padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
+                bottom: MediaQuery.viewInsetsOf(context).bottom,
               ),
               child: Column(
                 children: [
@@ -269,8 +269,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
               // - 键盘弹出时：按钮需在键盘高度之上（Stack 相对 body，底部含
               //   键盘区域），再叠加输入栏占位 _inputBarClearance + 间距；
               // - 无键盘：_inputBarClearance 即输入栏占位（含呼吸），再加间距。
-              bottom: MediaQuery.of(context).viewInsets.bottom > 0
-                  ? MediaQuery.of(context).viewInsets.bottom +
+              bottom: MediaQuery.viewInsetsOf(context).bottom > 0
+                  ? MediaQuery.viewInsetsOf(context).bottom +
                       _inputBarClearance() +
                       AppSpacing.lg
                   : _inputBarClearance() + AppSpacing.lg,
@@ -314,8 +314,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
       duration: const Duration(milliseconds: 200),
       curve: Curves.easeOut,
       padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom > 0
-            ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
+        bottom: MediaQuery.viewInsetsOf(context).bottom > 0
+            ? MediaQuery.viewInsetsOf(context).bottom + AppSpacing.md
             : widget.isTabEmbedded
                 ? (aiActive ? 16 : 100)
                 : 16,
@@ -443,7 +443,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
   /// 输入栏避让高度（键盘/胶囊状态下的悬浮输入栏占位，消息列表与
   /// "回到底部"按钮共用同一套数值保证视觉一致不重叠）
   double _inputBarClearance() {
-    return MediaQuery.of(context).viewInsets.bottom > 0
+    return MediaQuery.viewInsetsOf(context).bottom > 0
         ? 72
         : widget.isTabEmbedded
             ? (ref.read(homeProvider).index == 2 ? 80 : 156)
@@ -669,7 +669,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                   else
                     ConstrainedBox(
                       constraints: BoxConstraints(
-                        maxHeight: MediaQuery.of(context).size.height * 0.5,
+                        maxHeight: MediaQuery.sizeOf(context).height * 0.5,
                       ),
                       child: ListView.builder(
                         shrinkWrap: true,

@@ -112,10 +112,10 @@ class AppThemeConfig {
   Map<String, dynamic> toJson() {
     return {
       'useCustomColors': useCustomColors,
-      'seedColor': seedColor?.value.toRadixString(16).padLeft(8, '0'),
-      'primaryColor': primaryColor?.value.toRadixString(16).padLeft(8, '0'),
-      'secondaryColor': secondaryColor?.value.toRadixString(16).padLeft(8, '0'),
-      'tertiaryColor': tertiaryColor?.value.toRadixString(16).padLeft(8, '0'),
+      'seedColor': seedColor?.toARGB32().toRadixString(16).padLeft(8, '0'),
+      'primaryColor': primaryColor?.toARGB32().toRadixString(16).padLeft(8, '0'),
+      'secondaryColor': secondaryColor?.toARGB32().toRadixString(16).padLeft(8, '0'),
+      'tertiaryColor': tertiaryColor?.toARGB32().toRadixString(16).padLeft(8, '0'),
       'fontStyle': fontStyle.index,
       'radiusStyle': radiusStyle.index,
       'borderStyle': borderStyle.index,

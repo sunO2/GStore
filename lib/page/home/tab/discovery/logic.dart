@@ -232,7 +232,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 计算响应式 Grid 列数
   int calculateCrossAxisCount(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
+    final width = MediaQuery.sizeOf(context).width;
     if (width < 600) return 3; // 手机竖屏
     if (width < 900) return 5; // 手机横屏
     return 7; // 平板
@@ -556,7 +556,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         maxHeightFactor: 0.88,
         scrollable: false,
         content: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.62,
+          height: MediaQuery.sizeOf(context).height * 0.62,
           child: searchWidget,
         ),
       );
@@ -1623,11 +1623,11 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
 
     return Padding(
       padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
+        bottom: MediaQuery.viewInsetsOf(context).bottom,
       ),
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.85,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,

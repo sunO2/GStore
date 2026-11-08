@@ -257,7 +257,7 @@ class ThemeDataBuilder {
               ? BorderSide.none
               : BorderSide(
                   // 亮色下使用较深的 outline，增强卡片与背景的边界
-                  color: colorScheme.outline.withOpacity(borderOpacity),
+                  color: colorScheme.outline.withValues(alpha: borderOpacity),
                   width: borderWidth,
                 ),
         ),
@@ -424,7 +424,7 @@ class ThemeDataBuilder {
       dividerTheme: DividerThemeData(
         thickness: borderWidth,
         space: 1,
-        color: colorScheme.outlineVariant.withOpacity(borderOpacity),
+        color: colorScheme.outlineVariant.withValues(alpha: borderOpacity),
       ),
 
       // ListTile theme - 扁平化
@@ -584,7 +584,7 @@ class ThemeDataBuilder {
           side: borderNone
               ? BorderSide.none
               : BorderSide(
-                  color: colorScheme.outlineVariant.withOpacity(borderOpacity),
+                  color: colorScheme.outlineVariant.withValues(alpha: borderOpacity),
                   width: borderWidth,
                 ),
         ),
@@ -753,7 +753,7 @@ class ThemeDataBuilder {
       dividerTheme: DividerThemeData(
         thickness: borderWidth,
         space: 1,
-        color: colorScheme.outlineVariant.withOpacity(borderOpacity),
+        color: colorScheme.outlineVariant.withValues(alpha: borderOpacity),
       ),
 
       // ListTile theme - 扁平化

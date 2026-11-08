@@ -441,7 +441,7 @@ class _ApplistBody extends ConsumerWidget {
           // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
           SliverPadding(
             padding: EdgeInsets.only(
-              bottom: 80 + MediaQuery.of(context).padding.bottom,
+              bottom: 80 + MediaQuery.paddingOf(context).bottom,
             ),
             sliver: const SliverToBoxAdapter(child: SizedBox.shrink()),
           ),

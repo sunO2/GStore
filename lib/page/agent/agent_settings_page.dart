@@ -217,7 +217,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
         side: BorderSide(
           color: isSelected
               ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+              : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
           width: isSelected ? 2 : 1,
         ),
       ),

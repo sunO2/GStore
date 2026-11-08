@@ -261,7 +261,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         width: double.infinity,
         decoration: BoxDecoration(
           color: isSelected
-              ? theme.colorScheme.primaryContainer.withOpacity(0.5)
+              ? theme.colorScheme.primaryContainer.withValues(alpha: 0.5)
               : Colors.transparent,
           border: isSelected
               ? Border(
@@ -301,7 +301,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
               Text(
                 '$count',
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+                  color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
                   fontSize: 9,
                 ),
               ),
@@ -481,7 +481,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         AppSpacing.lg,
         AppSpacing.lg,
         AppSpacing.lg,
-        80 + MediaQuery.of(context).padding.bottom,
+        80 + MediaQuery.paddingOf(context).bottom,
       ),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: state.crossAxisCount,
@@ -515,7 +515,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
           color: isSelected
               ? theme.colorScheme.primary
               : isAdded
-                  ? theme.colorScheme.primary.withOpacity(0.5)
+                  ? theme.colorScheme.primary.withValues(alpha: 0.5)
                   : theme.colorScheme.outlineVariant,
           width: isSelected
               ? AppBorders.sideOf(context).width * 2
@@ -532,7 +532,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
             elevation: 0,
             margin: EdgeInsets.zero,
             color: isAdded
-                ? theme.colorScheme.primaryContainer.withOpacity(0.3)
+                ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
                 : theme.colorScheme.surface,
             shape: RoundedRectangleBorder(
               borderRadius: AppRadius.allMD,
@@ -614,7 +614,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                   borderRadius: AppRadius.allSM,
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.15),
+                      color: Colors.black.withValues(alpha: 0.15),
                       blurRadius: 3,
                       offset: const Offset(0, 1),
                     ),
@@ -650,12 +650,12 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                     gradient: LinearGradient(
                       colors: [
                         theme.colorScheme.primary,
-                        theme.colorScheme.primary.withOpacity(0.85),
+                        theme.colorScheme.primary.withValues(alpha: 0.85),
                       ],
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.25),
+                        color: Colors.black.withValues(alpha: 0.25),
                         blurRadius: 3,
                         offset: const Offset(1, 1),
                       ),

@@ -303,6 +303,13 @@ main() async {
   WidgetsFlutterBinding.ensureInitialized();
   bootMark('binding-ready');
 
+  // 图片缓存上限：默认 1000 条 / 100MB 对长会话（抓包截图、README 图、
+  // 图标）过大，且 release 下不会提前回收。按条目 + 字节双限，避免
+  // 大图长期驻留把内存顶到 OOM。
+  PaintingBinding.instance.imageCache
+    ..maximumSize = 300
+    ..maximumSizeBytes = 64 << 20;
+
   // 首帧优先：昂贵的启动装配（高刷 / 核心自举 / 配置 / 模块注册）整体挪到
   // runApp 之后（见 [_bootAfterFirstFrame]），使第一帧就是真实页面骨架
   //（chrome + 列表 loading），而不是装配期间的纯白窗口。

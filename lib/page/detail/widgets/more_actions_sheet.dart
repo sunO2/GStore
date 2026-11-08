@@ -151,7 +151,7 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
     return Padding(
       // 键盘弹出时上推面板，避免输入框被遮挡
       padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
+        bottom: MediaQuery.viewInsetsOf(context).bottom,
       ),
       child: SafeArea(
         top: false,

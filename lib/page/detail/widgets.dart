@@ -1789,7 +1789,7 @@ class _DownloadItem extends StatelessWidget {
       padding: EdgeInsets.symmetric(
           horizontal: AppSpacing.sm * 1.5, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         borderRadius: AppRadius.allXS,
       ),
       child: Row(

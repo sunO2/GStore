@@ -293,7 +293,7 @@ class _MinePageState extends ConsumerState<MinePage>
           left: AppSpacing.lg,
           right: AppSpacing.lg,
           top: AppSpacing.lg,
-          bottom: 80 + MediaQuery.of(context).padding.bottom,
+          bottom: 80 + MediaQuery.paddingOf(context).bottom,
         ),
         child: Builder(builder: (context) {
           // 判断是否已登录
@@ -1385,7 +1385,7 @@ class _ColorPresetButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(smallRadius),
           border: Border.all(
             color: isSelected
-                ? color.withOpacity(0.3) // 使用选中颜色的淡化版本
+                ? color.withValues(alpha: 0.3) // 使用选中颜色的淡化版本
                 : borderSide.color,
             width: isSelected ? 3 : borderSide.width,
           ),

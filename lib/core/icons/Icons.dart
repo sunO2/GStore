@@ -25,8 +25,8 @@ class SvgIcon {
   static browser(BuildContext context, {Color? full, Color? dot}) {
     var fullColor =
         (full ?? Theme.of(context).textTheme.bodyLarge?.color ?? Colors.red)
-            .value;
-    var dotColor = Theme.of(context).colorScheme.primary.value;
+            .toARGB32();
+    var dotColor = Theme.of(context).colorScheme.primary.toARGB32();
     return ScalableImage.fromSvgString(
         sprintf(_browser, [dotColor, fullColor, fullColor, fullColor]));
   }
@@ -34,8 +34,8 @@ class SvgIcon {
   static history(BuildContext context, {Color? full, Color? dot}) {
     var fullColor =
         (full ?? Theme.of(context).textTheme.bodyLarge?.color ?? Colors.red)
-            .value;
-    var dotColor = Theme.of(context).colorScheme.primary.value;
+            .toARGB32();
+    var dotColor = Theme.of(context).colorScheme.primary.toARGB32();
     return ScalableImage.fromSvgString(sprintf(
         _history, [dotColor, fullColor, fullColor, fullColor, fullColor]));
   }

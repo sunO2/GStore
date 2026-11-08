@@ -15,6 +15,7 @@ library;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
@@ -188,7 +189,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
       return AgentUserBubble(
         text: first.text,
         timeLabel: _formatTime(first.time),
-        maxWidth: MediaQuery.of(context).size.width * 0.85,
+        maxWidth: MediaQuery.sizeOf(context).width * 0.85,
       );
     }
     if (item.turnMsgs == null && first.isToolResult) {
@@ -213,7 +214,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
         alignment: Alignment.centerLeft,
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.93,
+            maxWidth: MediaQuery.sizeOf(context).width * 0.93,
           ),
           child: AgentControlCard(
             key: ValueKey('agent-control-${msg.id}'),
@@ -229,7 +230,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
   Widget build(BuildContext context) {
     final showWelcome = _items.isEmpty;
     return ListView.builder(
-      controller: widget.scrollController,
+      scrollCacheExtent: ScrollCacheExtent.pixels(600), controller: widget.scrollController,
       reverse: true,
       // 底部避让悬浮输入栏（reverse 列表：bottom padding 在视觉底部，
       // 即 offset 0 一端 = 最新消息下方留白）
@@ -241,7 +242,6 @@ class AgentChatListViewState extends State<AgentChatListView> {
       ),
       // 顶部加载指示（最早历史） + 消息 + 底部生成指示
       itemCount: _items.length + 2,
-      cacheExtent: 2000, // 预构建更多 item，减少滚出重建
       itemBuilder: (context, index) {
         if (index == 0) {
           // reverse 列表 index 0 = 视觉底部：生成指示 / 空态
@@ -464,7 +464,7 @@ class _TurnTimeline extends StatelessWidget {
         padding: const EdgeInsets.only(left: 8, top: 4, bottom: 8),
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.93,
+            maxWidth: MediaQuery.sizeOf(context).width * 0.93,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -833,7 +833,7 @@ class _ToolBubble extends StatelessWidget {
         margin: EdgeInsets.only(bottom: 16),
         padding: EdgeInsets.zero,
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.85,
+          maxWidth: MediaQuery.sizeOf(context).width * 0.85,
         ),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.08),

@@ -176,8 +176,14 @@ jobs:
       # - run: flutter test
 
       # 完整包：内置全部可下载模块 .so（保持既有行为与发布文件名）。
+      # --obfuscate 收缩 Dart 符号表（libapp.so 更小），崩溃栈需用
+      # build/symbols 下的符号文件还原；符号文件作为 artifact 单独归档，不随
+      # Release 发布（否则混淆失去意义）。
       - name: Build full APKs (bundled modules)
-        run: flutter build apk --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+        run: |
+          flutter build apk \
+            --obfuscate --split-debug-info=build/symbols \
+            --target-platform android-arm,android-arm64,android-x64 --split-per-abi
 
       # 产物固定写到 flutter-apk/app-<abi>-release.apk；立即改名暂存，避免随后精简包
       # 的同名产物覆盖，发布上传统一走暂存目录。
@@ -196,14 +202,28 @@ jobs:
             cp "$src" "$DEST/GStore-${abi}-release.apk"
           done
 
-      - run: flutter build appbundle
+      - run: |
+          flutter build appbundle \
+            --obfuscate --split-debug-info=build/symbols
 
       # 精简包：Gradle 打包排除 libgstore_mod_*.so（仅保留 libgstore_host.so），
       # 模块改为首次使用时远程下载。
       - name: Build slim APKs (host-only, modules excluded)
         env:
           ORG_GRADLE_PROJECT_gstoreSlimModules: "true"
-        run: flutter build apk --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+        run: |
+          flutter build apk \
+            --obfuscate --split-debug-info=build/symbols \
+            --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+
+      # 混淆符号表：仅在 CI 内保留（30 天），发布资产里不包含。
+      - name: Upload obfuscation symbols (artifact only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: obfuscation-symbols
+          path: build/symbols/
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Stage slim APK assets
         run: |

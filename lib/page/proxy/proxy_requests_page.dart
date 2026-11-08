@@ -384,19 +384,29 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
 
   /// 脏信号（`proxy.request`）→ 增量拉取（**拉取为准**）。
   ///
-  /// 实时关闭或页面不可见时忽略；[dispose] 取消订阅。
+  /// 实时关闭 / 页面不可见 / 被详情页覆盖时忽略；[dispose] 取消订阅。
   void _onEvent(ProxyEvent event) {
-    if (!mounted || !_visible || !_live) return;
+    if (!_shouldPoll) return;
     if (event is ProxyRequestEvent) {
       unawaited(_poll());
     }
+  }
+
+  /// 是否应当拉取：页面存活、前台、实时开启，且当前路由仍在前台
+  /// （push 详情页后请求页仍挂载，不加 `isCurrent` 会在后台每 2 秒重建一次）。
+  bool get _shouldPoll {
+    if (!mounted || !_visible || !_live) return false;
+    final route = ModalRoute.of(context);
+    return route == null || route.isCurrent;
   }
 
   void _startFallback() {
     _fallbackTimer?.cancel();
     _fallbackTimer = Timer.periodic(
       _fallbackInterval,
-      (_) => unawaited(_poll()),
+      (_) {
+        if (_shouldPoll) unawaited(_poll());
+      },
     );
   }
 
@@ -504,6 +514,16 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         (record) => record.recordId,
       );
       final mergedCursor = merged.isEmpty ? null : merged.last.recordId;
+      // 没有新行、保留计数未变、且没有待清除的错误 → 不重建。兜底轮询每
+      // 2 秒跑一次，空闲时无条件 setState 会让整页（含 _allRows 投影 +
+      // 排序）空转。
+      final unchanged = merged.length == _requests.length &&
+          page.retained == _requestsPage?.retained &&
+          _error == null;
+      if (unchanged) {
+        await _pollCaptures();
+        return;
+      }
       setState(() {
         _requests = merged;
         _requestsPage = page;
@@ -530,17 +550,23 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       final page =
           await _facade.capturesGet(_buildCapturesRequest(cursor: capCursor));
       if (!mounted) return;
+      final merged = mergeById(
+        _captures,
+        page.records,
+        (capture) => capture.recordId,
+      );
+      // 同上：无新行、保留计数未变且未处于降级态时不重建。
+      final unchanged = merged.length == _captures.length &&
+          page.retained == _capturesPage?.retained &&
+          !_capturesDegraded;
+      if (unchanged) return;
       setState(() {
-        _captures = mergeById(
-          _captures,
-          page.records,
-          (capture) => capture.recordId,
-        );
+        _captures = merged;
         _capturesPage = page;
         _capturesDegraded = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || _capturesDegraded) return;
       setState(() => _capturesDegraded = true);
     }
   }
@@ -914,9 +940,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
   /// 当前窗口经本地筛选后的行（同时转发后端可支持的过滤字段）。
-  List<_UnifiedRow> get _visibleRows {
+  List<_UnifiedRow> _visibleRows(List<_UnifiedRow> allRows) {
     final nowMs = _nowMs();
-    final matched = _allRows().where((row) {
+    final matched = allRows.where((row) {
       if (!_matchesSearch(row)) return false;
       if (!_matchesFilters(row, nowMs)) return false;
       return true;
@@ -1364,22 +1390,27 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     if (_loading && _requestsPage == null) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
     }
+    // 一次 build 只做一次请求/capture 的 join 投影：原先在 chips 计数与
+    // 内容 slivers 里各算一次 _allRows()，每次重建都是 2~3 次 O(n+m)。
+    final allRows = _allRows();
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          SliverToBoxAdapter(child: _buildTopChips(context)),
+          SliverToBoxAdapter(
+            child: _buildTopChips(context, allRows.length),
+          ),
           SliverToBoxAdapter(child: _buildSearchBar(context)),
           SliverToBoxAdapter(child: _buildAnalysis(context)),
-          ..._buildContentSlivers(context),
+          ..._buildContentSlivers(context, allRows),
         ],
       ),
     );
   }
 
   /// 顶部一行 chips：抓包开关迷你 / 实时 / `共 N 条`。
-  Widget _buildTopChips(BuildContext context) {
+  Widget _buildTopChips(BuildContext context, int totalRows) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final enabled = _captureEnabled;
@@ -1425,7 +1456,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
               borderRadius: AppRadius.allMD,
             ),
             child: Text(
-              '共 ${_allRows().length} 条',
+              '共 $totalRows 条',
               style: theme.textTheme.labelMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
@@ -1667,7 +1698,10 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     );
   }
 
-  List<Widget> _buildContentSlivers(BuildContext context) {
+  List<Widget> _buildContentSlivers(
+    BuildContext context,
+    List<_UnifiedRow> allRows,
+  ) {
     final error = _error;
     if (error != null) {
       return [
@@ -1683,9 +1717,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         ),
       ];
     }
-    final rows = _visibleRows;
+    final rows = _visibleRows(allRows);
     if (rows.isEmpty) {
-      final hasAny = _allRows().isNotEmpty;
+      final hasAny = allRows.isNotEmpty;
       return [
         SliverFillRemaining(
           hasScrollBody: false,
