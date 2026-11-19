@@ -124,6 +124,12 @@ class CoreBootstrap {
   static Future<void>? _inventoryDone;
   static int _lastSeq = 0;
 
+  /// Wall-clock stamp of the last began inventory refresh (dedupe window).
+  static DateTime? _lastInventoryRefreshAt;
+
+  /// Collapses the install path + update page asking for the same refresh.
+  static const Duration _inventoryRefreshDedupe = Duration(seconds: 2);
+
   static (String, String, String)? _inventoryDirs;
   static CoreBootstrapBackend? _inventoryBackend;
   static CorePlatformProbe? _inventoryProbe;
@@ -210,6 +216,7 @@ class CoreBootstrap {
     _inventoryBackend = null;
     _inventoryProbe = null;
     _lastSeq = 0;
+    _lastInventoryRefreshAt = null;
     _backendOverride = null;
     _probeOverride = null;
     _cutoverOverride = null;
@@ -394,11 +401,23 @@ class CoreBootstrap {
   /// [startInventory] is deliberately one-shot for startup. After an APK install
   /// the update cache needs the new version immediately, so this pushes a new
   /// sequence without re-running the cutover.
+  ///
+  /// Rapid duplicate calls collapse into one enumeration (the install path and
+  /// the update page both ask right after the same install). The window is
+  /// measured with the wall clock on purpose: [_nowMillis] is an injected test
+  /// clock and must not drive dedupe decisions.
   static Future<void> refreshInventory() async {
     if (!_ready) return;
     final probe = _inventoryProbe;
     final backend = _inventoryBackend;
     if (probe == null || backend == null) return;
+
+    final now = DateTime.now();
+    final last = _lastInventoryRefreshAt;
+    if (last != null && now.difference(last) < _inventoryRefreshDedupe) {
+      return;
+    }
+    _lastInventoryRefreshAt = now;
     try {
       final apps = await probe.listInstalled();
       final capturedAt = _nowMillis();
@@ -415,6 +434,9 @@ class CoreBootstrap {
       );
       appLog.info('CoreBootstrap: 安装后清单已刷新（${apps.length} 个应用）');
     } catch (error) {
+      // A failed push must not block the next attempt: clear the mark so a
+      // retry is not swallowed by the dedupe window.
+      _lastInventoryRefreshAt = null;
       appLog.error('CoreBootstrap: 安装后清单刷新失败 - $error');
     }
   }

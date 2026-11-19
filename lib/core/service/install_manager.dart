@@ -7,6 +7,7 @@ import 'package:gstore/core/download/download_facade.dart';
 import 'package:gstore/core/install/install_facade.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/platform/platform_channel.dart';
+import 'package:gstore/core/rust/core_bootstrap.dart';
 import 'package:gstore/core/shell/rust_shizuku_runner.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
@@ -351,6 +352,13 @@ class InstallManager implements IInstallService {
       if (ack.changed) {
         _surfaceInstallResult(status, event.packageName, event.error);
       }
+      // A system-installer terminal event lands here (not through
+      // `_reportRequest`), and the core judges updates from its own snapshot.
+      // Only a genuinely new terminal event refreshes it: a duplicate/late
+      // event (`changed:false`) carries no new version information.
+      if (ack.changed && status == InstallReportStatus.installed) {
+        await refreshInventoryAfterInstall();
+      }
     } catch (e) {
       debugPrint('InstallManager: install_events 上报失败（忽略） - $e');
     }
@@ -558,6 +566,29 @@ class InstallManager implements IInstallService {
     return _installCoreTask(moduleTaskId, filePath, force: force);
   }
 
+  /// 核心在「下载尚未完成」时拒绝安装的稳定错误码。
+  static const String _installNotDownloadedCode =
+      'CORE_E_INSTALL_NOT_DOWNLOADED';
+
+  /// 安装前强制下载对账，使核心 `download_task.status` 与模块真实状态一致。
+  ///
+  /// WHY：核心 `install()` 只接受 `download_status == 'completed'` 的行，而该列
+  /// **唯一**的写入者是 `DownloadFacade.list()` → `refresh_and_list()` →
+  /// `port.reconcile()`。下载模块推送 `download.done` 时，`DownloadPushStream._merge`
+  /// 只把 `completed` 应用到内存里的 `DownloadTask`，核心行仍是 `running`；于是
+  /// 「下载管理」的 `installApk` 因为 `_findCoreTaskId` 先 `list()` 过而对账成功，
+  /// 「更新页」的 `installTask` 却直接进入核心安装，被 `CORE_E_INSTALL_NOT_DOWNLOADED`
+  /// 拒绝。安装前主动对账即可让两个入口共享同一前置条件。
+  ///
+  /// 幂等且永不抛出：对账失败只记录日志并继续——核心行可能本就是 completed。
+  static Future<void> _reconcileDownloadsBeforeInstall() async {
+    try {
+      await DownloadFacade.instance.list();
+    } catch (e) {
+      appLog.error('InstallManager: 安装前下载对账失败（忽略，继续安装） - $e');
+    }
+  }
+
   Future<(InstallOutcome, InstallMethod)> _installCoreTask(
     String moduleTaskId,
     String filePath, {
@@ -565,7 +596,22 @@ class InstallManager implements IInstallService {
   }) async {
     try {
       await _ensureInstallRecovered();
-      final start = await _installFacade.install(moduleTaskId);
+      // 安装前先对账下载状态：核心 `install()` 要求 download_status == 'completed'，
+      // 而更新页的 installTask 不像下载管理的 installApk 那样先经过
+      // `_findCoreTaskId`（那里已经 list() 过一个来回），因此必须在此主动补上，
+      // 否则刚下载完成就安装会报 CORE_E_INSTALL_NOT_DOWNLOADED。
+      await _reconcileDownloadsBeforeInstall();
+      late InstallStart start;
+      try {
+        start = await _installFacade.install(moduleTaskId);
+      } on InstallCoreException catch (e) {
+        // reconcile 与 `download.done` 推送存在竞态：首次直读仍可能看到旧的
+        // running 行。仅对该错误再对账一次并重试 install（最多 2 次尝试）；其它
+        // 错误保持既有语义直接上抛，绝不放过真正的安装失败。
+        if (e.code != _installNotDownloadedCode) rethrow;
+        await _reconcileDownloadsBeforeInstall();
+        start = await _installFacade.install(moduleTaskId);
+      }
       final request = start.request;
       if (request == null) {
         // The core already settled this row: report it and DO NOT install —
@@ -670,8 +716,7 @@ class InstallManager implements IInstallService {
       // 发起系统安装器前先记录目标包快照：核心 `version` 对 release 来源是
       // release tag，和安装包的 `version_name` 本就不同，只有 pre/post 差分
       // 能可靠判定「本次安装是否落地」（见 [_confirmPendingInstall]）。
-      final preSnapshot =
-          await _capturePreInstallSnapshot(request.packageName);
+      final preSnapshot = await _capturePreInstallSnapshot(request.packageName);
       try {
         await _appInstaller(apkPath);
         // Launching the installer intent is NOT a successful install: the user
@@ -709,7 +754,14 @@ class InstallManager implements IInstallService {
     String? installedVersion,
     String? error,
   }) async {
-    if (request.sessionId.isEmpty) return;
+    if (request.sessionId.isEmpty) {
+      // No core session to report, but a landed install still invalidates the
+      // snapshot the update judge reads.
+      if (status == InstallReportStatus.installed) {
+        await refreshInventoryAfterInstall();
+      }
+      return;
+    }
     try {
       await _installFacade.reportResult(
         InstallReport(
@@ -731,6 +783,27 @@ class InstallManager implements IInstallService {
         'sessionId': request.sessionId,
         'status': status,
       });
+    }
+    // The core judge reads its `installed_app` snapshot, never platform code.
+    // Confirm the new version the moment any install succeeds so the next
+    // update check stops reporting the app as outdated.
+    if (status == InstallReportStatus.installed) {
+      await refreshInventoryAfterInstall();
+    }
+  }
+
+  /// 安装成功后刷新核心的已安装清单。
+  ///
+  /// 核心检测更新时只比对 `installed_app` 快照里记录的版本，从不调用平台
+  /// 代码。快照只在启动时推一次，因此从详情页/下载页/系统安装器/外部商店
+  /// 完成更新后，快照仍是旧版本，应用会继续出现在可更新列表中。
+  ///
+  /// 幂等且永不抛出：失败只记录日志，绝不影响安装结果的上报。
+  static Future<void> refreshInventoryAfterInstall() async {
+    try {
+      await CoreBootstrap.refreshInventory();
+    } catch (e) {
+      appLog.error('InstallManager: 安装后清单刷新失败 - $e');
     }
   }
 
@@ -986,8 +1059,8 @@ class InstallManager implements IInstallService {
         request.moduleTaskId,
         'snapshot-unchanged',
         'InstallManager: 包已安装但快照未变化，暂不确认 '
-        '（expected=${request.versionName} installed=${current.versionName} '
-        'code=${current.versionCode} preAvailable=${pre?.available ?? false}）',
+            '（expected=${request.versionName} installed=${current.versionName} '
+            'code=${current.versionCode} preAvailable=${pre?.available ?? false}）',
       );
       return false;
     }
@@ -1166,6 +1239,10 @@ class InstallManager implements IInstallService {
         final result = await _commandRunner(_stageAndInstallCommand(filePath));
         if (isPmSuccess(result)) {
           appLog.info('InstallManager: Shizuku 静默安装成功');
+          // Direct (non-core-row) install: the synchronous path is the only
+          // place that knows the new version landed, so refresh the snapshot
+          // the update judge reads.
+          await refreshInventoryAfterInstall();
           return (InstallOutcome.installed, InstallMethod.shizuku);
         }
         if (_isUserRejected(result)) {
@@ -1214,6 +1291,9 @@ class InstallManager implements IInstallService {
     if (action == 'uninstall') {
       try {
         await _installFacade.uninstall(packageName);
+        // An uninstalled package must leave the snapshot too, otherwise the
+        // update judge keeps comparing against a stale installed version.
+        await refreshInventoryAfterInstall();
         return true;
       } catch (e) {
         appLog.error('InstallManager: 核心卸载失败 - $e', data: {

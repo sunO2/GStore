@@ -424,6 +424,16 @@ void main() {
       final watcher = DownloadTaskWatcher.debug()..start(download);
       addTearDown(watcher.dispose);
 
+      // 自动安装现在要求两个前置条件：(1) 本进程内真正「转入」completed
+      // （seed 直接给 completed 会被当成重启重放而跳过）；(2) 能确认核心安装
+      // 状态（读不到时 FAIL-CLOSED 不装）。因此先注入可重试的假状态，并先推
+      // 一条活跃态、再推 completed，模拟一次真实下载完成。
+      DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+      addTearDown(() => DownloadTaskWatcher.installStatusProbeForTest = null);
+
+      download.controller
+          .add(_downloadTaskInState(11, DownloadStatusEnum.downloading));
+      await pumpEventQueue();
       download.controller.add(_completedInstallTask(11));
       await pumpEventQueue();
 
@@ -497,6 +507,29 @@ DownloadTask _completedInstallTask(int id) => DownloadTask(
       total: 100,
       received: 100,
       status: DownloadStatusEnum.completed,
+      speedBps: 0,
+      etaSec: null,
+      error: null,
+      segments: null,
+      installAfterDownload: true,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(1),
+    );
+
+/// 同一个下载任务但指定状态：用来先推一条活跃态，使随后的 completed 成为
+/// 本进程内真正的状态迁移（watcher 的 `_seenActive` 只认这种迁移）。
+DownloadTask _downloadTaskInState(int id, DownloadStatusEnum status) =>
+    DownloadTask(
+      id: id,
+      appId: 'com.example.app',
+      appName: 'Example',
+      version: '1.2.3',
+      fileName: 'example.apk',
+      url: 'https://example.test/example.apk',
+      filePath: '/tmp/example.apk',
+      total: 100,
+      received: 0,
+      status: status,
       speedBps: 0,
       etaSec: null,
       error: null,

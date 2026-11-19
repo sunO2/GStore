@@ -130,8 +130,9 @@ void main() {
 
   setUp(() {
     watcher = DownloadTaskWatcher.debug();
-    // 默认不访问核心 InstallFacade：按「未消费」处理（既有自动安装行为）。
-    DownloadTaskWatcher.installStatusProbeForTest = (_) async => null;
+    // 默认探针返回可重试状态 'failed'：满足 FAIL-CLOSED（null => 不安装），
+    // 同时让「活跃态→completed」的用例可以真正触发安装。
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
   });
 
   tearDown(() {
@@ -227,6 +228,12 @@ void main() {
 
     service.emit(_task(
       9,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+    service.emit(_task(
+      9,
       status: DownloadStatusEnum.completed,
       installAfterDownload: true,
     ));
@@ -259,6 +266,12 @@ void main() {
 
     service.emit(_task(
       11,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+    service.emit(_task(
+      11,
       status: DownloadStatusEnum.completed,
       installAfterDownload: true,
     ));
@@ -267,6 +280,111 @@ void main() {
     expect(install.installTaskCalls, 0,
         reason: 'pending/installed 是已消费状态，不得重放');
     expect(install.consumeCalls, 0);
+  });
+
+  test('bare completed（重启 seed）不得重放自动安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+
+    // 冷启动 seed 直接给出历史 completed，本进程从未见过活跃态。
+    service.emit(_task(
+      21,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 0,
+        reason: 'seed 的 completed 不是本进程内的状态迁移，绝不能重装');
+  });
+
+  test('probe 返回 null 时 FAIL-CLOSED：不得安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => null;
+
+    service.emit(_task(
+      22,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+    service.emit(_task(
+      22,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 0, reason: '无法确认安装状态时必须保守跳过，不能猜测未消费');
+  });
+
+  test('probe 抛异常时 FAIL-CLOSED：不得安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest =
+        (_) async => throw StateError('probe boom');
+
+    service.emit(_task(
+      23,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+    service.emit(_task(
+      23,
+      status: DownloadStatusEnum.completed,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
+
+    expect(install.installTaskCalls, 0, reason: '探针异常同样属于无法确认，必须保守跳过');
+  });
+
+  test('forceRetry: true 无需prior active 也会安装', () async {
+    final service = _FakeDownloadService();
+    addTearDown(service.close);
+    watcher.start(service);
+
+    final install = _CountingInstallManager();
+    ModuleManager.instance.bind<InstallManager>(install);
+    addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+    DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+
+    // 更新页用户显式点击：直接调 ensureAutoInstall(forceRetry: true)，
+    // 不经过 watchAll 的活跃态门禁。
+    final outcome = await watcher.ensureAutoInstall(
+      _task(
+        24,
+        status: DownloadStatusEnum.completed,
+        installAfterDownload: true,
+      ),
+      forceRetry: true,
+    );
+
+    expect(outcome, InstallOutcome.installed);
+    expect(install.installTaskCalls, 1, reason: '显式重试必须绕过 _seenActive 门禁并真正安装');
+    expect(install.lastModuleTaskId, '24');
   });
 
   test('failed 是可重试状态：completed 会再次尝试安装', () async {
@@ -280,6 +398,12 @@ void main() {
 
     DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
 
+    service.emit(_task(
+      13,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
     service.emit(_task(
       13,
       status: DownloadStatusEnum.completed,
@@ -305,6 +429,12 @@ void main() {
       status: DownloadStatusEnum.completed,
       installAfterDownload: true,
     );
+    service.emit(_task(
+      14,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
     service.emit(completed);
     await pumpEventQueue();
     expect(install.installTaskCalls, 1);
@@ -355,6 +485,12 @@ void main() {
       status: DownloadStatusEnum.completed,
       installAfterDownload: true,
     );
+    service.emit(_task(
+      12,
+      status: DownloadStatusEnum.downloading,
+      installAfterDownload: true,
+    ));
+    await pumpEventQueue();
     service.emit(task);
     service.emit(task);
     await pumpEventQueue();

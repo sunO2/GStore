@@ -29,6 +29,14 @@ class DownloadTaskWatcher {
   /// 已经在本进程内触发过自动安装的任务 id（避免同一次 seed/重复事件重复触发）。
   final Set<String> _autoInstallAttempted = <String>{};
 
+  /// 本进程内**亲眼看到过活跃态**的任务 id。
+  ///
+  /// `watchAll` 启动时会先把库里所有行作为 seed 全量重放一次；历史任务的
+  /// `completed` 因此会让重启后的进程再触发一次自动安装。只有当下发过
+  /// queued/connecting/downloading/paused、即真正在本进程内「转入」completed
+  /// 时才允许自动安装——seed 直接给出的 completed 不在此集合中。
+  final Set<String> _seenActive = <String>{};
+
   /// 正在执行的自动安装 future：更新页显式等待与 watchAll 事件共用同一次尝试。
   final Map<String, Future<InstallOutcome?>> _autoInstallFutures =
       <String, Future<InstallOutcome?>>{};
@@ -67,6 +75,7 @@ class DownloadTaskWatcher {
     // 旧订阅取消是 fire-and-forget：显式 unawaited，表明"不阻塞重绑"的意图。
     unawaited(_sub?.cancel());
     _started.clear();
+    _seenActive.clear();
     _sub = service.watchAll().listen(
           _onUpdate,
           onError: (Object e) => debugPrint('DownloadTaskWatcher: 任务流异常 - $e'),
@@ -91,6 +100,7 @@ class DownloadTaskWatcher {
       case DownloadStatusEnum.connecting:
       case DownloadStatusEnum.downloading:
         // 重新进入下载态说明这是一次新的下载/重试，允许完成后再次自动安装。
+        _seenActive.add(id.toString());
         _autoInstallAttempted.remove(id.toString());
         if (_started.add(id)) {
           notif.onDownloadStart(id, title, task.fileName);
@@ -102,23 +112,27 @@ class DownloadTaskWatcher {
             id, title, task.fileName, task.received, task.total);
       case DownloadStatusEnum.paused:
         // 暂停也意味着有未完成任务（可能因重启而停在 paused）。
+        _seenActive.add(id.toString());
         unawaited(_markPending());
       case DownloadStatusEnum.completed:
         notif.onDownloadComplete(id);
         _started.remove(id);
         unawaited(_clearPendingIfIdle());
-        // 自动安装只认任务自己持久化的标记（跨重启也有效）。
+        // 自动安装只认「本进程内真正从活跃态转入 completed」的迁移：seed 里
+        // 历史任务的 completed 不得重放自动安装（重启不重装）。
         // Wave 6B 起 install 域由核心独占：这里永远走核心安装，没有旧路径分支。
-        if (task.installAfterDownload) {
+        if (task.installAfterDownload && _seenActive.remove(id.toString())) {
           unawaited(ensureAutoInstall(task));
         }
       case DownloadStatusEnum.failed:
         notif.onDownloadError(id, title);
         _started.remove(id);
+        _seenActive.remove(id.toString());
         unawaited(_clearPendingIfIdle());
       case DownloadStatusEnum.cancelled:
         notif.onDownloadCancel(id);
         _started.remove(id);
+        _seenActive.remove(id.toString());
         unawaited(_clearPendingIfIdle());
     }
   }
@@ -156,13 +170,15 @@ class DownloadTaskWatcher {
     final id = task.id;
     if (id == null || !task.installAfterDownload) return null;
     final key = id.toString();
+    // 核心调用寻址用 module_task_id（唯一安全主键）；仅缺失时退回视图 id。
+    final coreId = task.moduleTaskId ?? key;
     final inFlight = _autoInstallFutures[key];
     if (inFlight != null) return inFlight;
 
     // 用户主动重试只允许覆盖 failed/denied/timeout 等可重试状态；已安装或
     // 安装中的行直接返回现状，避免重复弹安装器。probe 失败时保守跳过重试。
     if (forceRetry && _autoInstallAttempted.contains(key)) {
-      final status = await _probeInstallStatus(key);
+      final status = await _probeInstallStatus(coreId);
       if (status == null) return null;
       if (status == 'installed' || status == 'pending') {
         return _outcomeFromStatus(status);
@@ -170,7 +186,7 @@ class DownloadTaskWatcher {
       _autoInstallAttempted.remove(key);
     }
 
-    final future = _runAutoInstall(key, task.filePath);
+    final future = _runAutoInstall(key, coreId, task.filePath);
     _autoInstallFutures[key] = future;
     return future.whenComplete(() {
       if (identical(_autoInstallFutures[key], future)) {
@@ -180,20 +196,29 @@ class DownloadTaskWatcher {
   }
 
   Future<InstallOutcome?> _runAutoInstall(
-    String moduleTaskId,
+    String key,
+    String coreId,
     String filePath,
   ) async {
     // 自动安装是**一次性意图**：同一进程内 pending/installed 视为已消费，
     // 避免 seed/重复事件重放。failed/denied/timeout/unknown 是可重试状态，
     // 用户重新下载或主动点击更新时应再次尝试（forceRetry / 新下载会清标记）。
-    if (!_autoInstallAttempted.add(moduleTaskId)) {
-      return _outcomeFromStatus(await _probeInstallStatus(moduleTaskId));
+    if (!_autoInstallAttempted.add(key)) {
+      return _outcomeFromStatus(await _probeInstallStatus(coreId));
     }
 
-    final status = await _probeInstallStatus(moduleTaskId);
+    final status = await _probeInstallStatus(coreId);
+    // FAIL-CLOSED：读不到核心安装状态时（异常/空）不得猜测「未消费」，
+    // 否则重启 seed 之类无法确认的场景会重复弹安装器。宁可本次不装。
+    if (status == null) {
+      debugPrint(
+        'DownloadTaskWatcher: 无法确认安装状态，跳过自动安装 $coreId',
+      );
+      return null;
+    }
     if (status == 'pending' || status == 'installed') {
       debugPrint(
-        'DownloadTaskWatcher: 自动安装已消费（status=$status），跳过 $moduleTaskId',
+        'DownloadTaskWatcher: 自动安装已消费（status=$status），跳过 $coreId',
       );
       return _outcomeFromStatus(status);
     }
@@ -203,16 +228,16 @@ class DownloadTaskWatcher {
       debugPrint('DownloadTaskWatcher: InstallManager 不可用，跳过自动安装');
       return null;
     }
-    debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $moduleTaskId');
+    debugPrint('DownloadTaskWatcher: 下载完成，触发核心安装 $coreId');
     try {
-      final (outcome, _) = await manager.installTask(moduleTaskId, filePath);
+      final (outcome, _) = await manager.installTask(coreId, filePath);
       // 自动安装的另一条入口：核心把 `install.requested` 事件排队，前端在
       // 既有的「下载完成」路径上一次性排空（不新增常驻定时器）。
       await manager.consumeInstallRequests();
       return outcome;
     } catch (e, st) {
       debugPrint(
-        'DownloadTaskWatcher: 核心自动安装失败 $moduleTaskId - $e\n$st',
+        'DownloadTaskWatcher: 核心自动安装失败 $coreId - $e\n$st',
       );
       return InstallOutcome.failed;
     }
@@ -225,15 +250,15 @@ class DownloadTaskWatcher {
         _ => null,
       };
 
-  /// 读取核心安装状态；读取失败按「未消费」处理（保留旧的自动安装行为）。
+  /// 读取核心安装状态；读取失败返回 null（调用方按 FAIL-CLOSED 处理：不安装）。
   Future<String?> _probeInstallStatus(String moduleTaskId) async {
     final injected = installStatusProbeForTest;
-    if (injected != null) return injected(moduleTaskId);
     try {
+      if (injected != null) return await injected(moduleTaskId);
       return (await InstallFacade.instance.get(moduleTaskId))?.status;
     } catch (e) {
       debugPrint(
-        'DownloadTaskWatcher: 读取安装状态失败（按未消费处理） - $e',
+        'DownloadTaskWatcher: 读取安装状态失败（按无法确认处理，不安装） - $e',
       );
       return null;
     }

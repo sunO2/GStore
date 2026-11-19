@@ -169,4 +169,34 @@ void main() {
     expect(state.checkLog.first.text, '历史日志');
     expect(state.isLoading, isFalse);
   });
+
+  group('检测前刷新已安装清单（回归：更新后仍显示旧版本）', () {
+    /// 订阅 facade 的刷新接缝，返回已调用次数。
+    ({List<int> calls}) spy() {
+      final calls = <int>[];
+      UpdateFacade.refreshInventoryOverride = () async => calls.add(1);
+      addTearDown(() => UpdateFacade.refreshInventoryOverride = null);
+      return (calls: calls);
+    }
+
+    test('手动刷新（refreshInventory: true）先刷新清单再检测', () async {
+      final (_, notifier) = makeNotifier([_sampleInfo()]);
+      final watch = spy();
+
+      await notifier.checkUpdates(force: true, refreshInventory: true);
+
+      expect(watch.calls, hasLength(1),
+          reason: '手动刷新必须读取一次真实安装版本，否则核心仍按启动快照比对');
+    });
+
+    test('后台/首帧检测（refreshInventory: false）不刷新清单', () async {
+      final (_, notifier) = makeNotifier([_sampleInfo()]);
+      final watch = spy();
+
+      await notifier.checkUpdates();
+
+      expect(watch.calls, isEmpty,
+          reason: '后台检测保持启动快照，避免每次检测都全量枚举 PackageManager');
+    });
+  });
 }

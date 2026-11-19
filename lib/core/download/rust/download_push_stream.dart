@@ -163,6 +163,7 @@ class DownloadPushStream {
 
   DownloadTask _merge(DownloadTask base, _DownloadEvent event) => DownloadTask(
         id: base.id,
+        moduleTaskId: base.moduleTaskId,
         appId: base.appId,
         appName: base.appName,
         version: base.version,

@@ -638,4 +638,60 @@ void main() {
     expect(File('${filesDir.path}/migration/cutover_v6.done').existsSync(),
         isFalse);
   });
+
+  test('refreshInventory re-enumerates and pushes a newer sequence', () async {
+    final backend = _RecordingBackend();
+    final probe = _FakeProbe();
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: probe,
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: const (
+        '/tmp/gstore/data',
+        '/tmp/gstore/files',
+        '/tmp/gstore/cache',
+      ),
+    );
+    await CoreBootstrap.start();
+    final pushedBefore = backend.calls.where((c) => c == 'pushInventory').length;
+
+    await CoreBootstrap.refreshInventory();
+
+    expect(
+      backend.calls.where((c) => c == 'pushInventory').length,
+      pushedBefore + 1,
+      reason: '安装后必须把真实安装版本重新推给核心（检测只读该快照）',
+    );
+    expect(probe.listInstalledCalls, 2);
+  });
+
+  test('refreshInventory collapses rapid duplicate calls into one push',
+      () async {
+    final backend = _RecordingBackend();
+    final probe = _FakeProbe();
+    CoreBootstrap.debugConfigure(
+      backend: backend,
+      probe: probe,
+      nowMillis: () => capturedMs,
+      os: 'android',
+      dirs: const (
+        '/tmp/gstore/data',
+        '/tmp/gstore/files',
+        '/tmp/gstore/cache',
+      ),
+    );
+    await CoreBootstrap.start();
+    final before = backend.calls.where((c) => c == 'pushInventory').length;
+
+    // 安装管理器与更新页会在同一次安装后各请求一次刷新。
+    await CoreBootstrap.refreshInventory();
+    await CoreBootstrap.refreshInventory();
+
+    expect(
+      backend.calls.where((c) => c == 'pushInventory').length,
+      before + 1,
+      reason: '全量枚举 ~314ms，重复请求必须合并',
+    );
+  });
 }

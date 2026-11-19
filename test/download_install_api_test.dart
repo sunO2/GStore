@@ -354,6 +354,7 @@ DownloadTask _task(
   int id, {
   bool installAfterDownload = true,
   String fileName = 'example.apk',
+  DownloadStatusEnum status = DownloadStatusEnum.completed,
 }) =>
     DownloadTask(
       id: id,
@@ -365,7 +366,7 @@ DownloadTask _task(
       filePath: '/tmp/$fileName',
       total: 100,
       received: 100,
-      status: DownloadStatusEnum.completed,
+      status: status,
       speedBps: 0,
       etaSec: null,
       error: null,
@@ -730,7 +731,13 @@ void main() {
       final download = _FakeDownloadService();
       final watcher = DownloadTaskWatcher.debug()..start(download);
       addTearDown(watcher.dispose);
+      // 断言"completed 会走 installTask"：先发活跃态，使 completed 成为本进程内
+      // 真正的状态迁移（seed 的历史 completed 不再触发安装）。
+      DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+      addTearDown(() => DownloadTaskWatcher.installStatusProbeForTest = null);
 
+      download.controller.add(_task(9, status: DownloadStatusEnum.downloading));
+      await pumpEventQueue();
       download.controller.add(_task(9));
       await pumpEventQueue();
 
@@ -748,7 +755,11 @@ void main() {
       final download = _FakeDownloadService();
       final watcher = DownloadTaskWatcher.debug()..start(download);
       addTearDown(watcher.dispose);
+      DownloadTaskWatcher.installStatusProbeForTest = (_) async => 'failed';
+      addTearDown(() => DownloadTaskWatcher.installStatusProbeForTest = null);
 
+      download.controller.add(_task(10, status: DownloadStatusEnum.downloading));
+      await pumpEventQueue();
       download.controller.add(_task(10));
       await pumpEventQueue();
 

@@ -38,6 +38,13 @@ class SegmentInfo {
 
 class DownloadTask {
   final int? id;
+
+  /// `download_task.module_task_id` —— 对核心调用（get/pause/cancel/install）
+  /// **唯一安全的主键**。核心调用必须用它，不能依赖 [id]：
+  /// [id] 在 `module_task_id` 非数字时会退化为核心行 id（`download_task.id`），
+  /// 用它去寻址核心会打到错误的行。为空时退回 [id] 仅作兜底。
+  final String? moduleTaskId;
+
   final String appId;
   final String appName;
   final String version;
@@ -65,6 +72,7 @@ class DownloadTask {
 
   const DownloadTask({
     required this.id,
+    this.moduleTaskId,
     required this.appId,
     required this.appName,
     required this.version,
@@ -94,6 +102,7 @@ class DownloadTask {
 
   DownloadTask copyWith({
     int? id,
+    String? moduleTaskId,
     String? appId,
     String? appName,
     String? version,
@@ -115,6 +124,7 @@ class DownloadTask {
   }) {
     return DownloadTask(
       id: id ?? this.id,
+      moduleTaskId: moduleTaskId ?? this.moduleTaskId,
       appId: appId ?? this.appId,
       appName: appName ?? this.appName,
       version: version ?? this.version,

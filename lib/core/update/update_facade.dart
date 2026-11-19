@@ -42,6 +42,14 @@ class UpdateFacade {
   @visibleForTesting
   static UpdateBackend? backendOverride;
 
+  /// Test seam: observes/replaces the pre-check inventory refresh.
+  ///
+  /// Production wiring re-reads installed apps from `PackageManager` via
+  /// [CoreBootstrap.refreshInventory]; tests inject a spy so no native library
+  /// is required.
+  @visibleForTesting
+  static Future<void> Function()? refreshInventoryOverride;
+
   final UpdateBackend _frb;
 
   /// An injected FRB backend is a test seam; only the default production wiring
@@ -152,13 +160,32 @@ class UpdateFacade {
   ///
   /// Core failures surface as [CoreUpdateException] (typed `CORE_E_*`); the
   /// facade never falls back to a legacy engine.
+  ///
+  /// [refreshInventory] re-reads the installed apps from `PackageManager` and
+  /// pushes a fresh snapshot before the check runs. The core judges updates
+  /// against its `installed_app` snapshot (never platform code), so without
+  /// this the comparison can use versions captured at startup — an app updated
+  /// through the detail page, the download page, the system installer or
+  /// another store keeps showing its old version. Pass `true` for a manual
+  /// refresh; background checks keep the startup snapshot to stay cheap.
   Future<void> checkUpdates({
     bool force = false,
+    bool refreshInventory = false,
     void Function(UpdateCheckProgress progress)? onProgress,
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
     final backend = _coreBackend();
+    if (refreshInventory) {
+      // [CoreBootstrap.refreshInventory] is a safe no-op when the bootstrap has
+      // not run (tests, non-Android), so no lane guard is needed here.
+      final override = refreshInventoryOverride;
+      if (override != null) {
+        await override();
+      } else {
+        await CoreBootstrap.refreshInventory();
+      }
+    }
     _state.beginFacadeCheck();
     try {
       if (backend is UpdateProgressBackend) {

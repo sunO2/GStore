@@ -62,8 +62,9 @@ class UpdateManager extends ConsumerWidget {
           IconButton(
             tooltip: '检查更新',
             icon: const Icon(TablerIcons.refresh),
-            onPressed:
-                state.isLoading ? null : () => logic.checkUpdates(force: true),
+            onPressed: state.isLoading
+                ? null
+                : () => logic.checkUpdates(force: true, refreshInventory: true),
           ),
           const SizedBox(width: AppSpacing.xs),
         ],

@@ -147,7 +147,15 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   /// 统一走 UpdateFacade（锁防重 + 状态共享）：
   /// - 页面自动进入：build 后缓存优先/检测中订阅（不重新发起）
   /// - 手动刷新：checkUpdates(force: true) 强制重新检测
-  Future<void> checkUpdates({bool force = false}) async {
+  ///
+  /// [refreshInventory] 会让核心在检测前重新从 `PackageManager` 读取已安装
+  /// 应用并推送新快照。核心只按自己的 `installed_app` 快照判断版本，快照陈旧
+  /// 时（详情页/下载页/系统安装器/外部商店完成更新）会一直显示旧版本，因此
+  /// 手动刷新必须带上它。
+  Future<void> checkUpdates({
+    bool force = false,
+    bool refreshInventory = false,
+  }) async {
     final manager = _manager;
     if (manager.isChecking) return;
 
@@ -159,7 +167,10 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
     _resetCheckProgress();
 
     try {
-      await manager.checkUpdates(force: force);
+      await manager.checkUpdates(
+        force: force,
+        refreshInventory: refreshInventory,
+      );
     } on CoreUpdateException catch (error) {
       // typed core rejection (CORE_E_FACTS_MISSING / CORE_E_INVENTORY_STALE /
       // CORE_E_UPDATE_CUTOVER_ORDER): surface it, never fall back silently.

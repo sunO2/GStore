@@ -338,6 +338,7 @@ DownloadTask toDownloadTask(rust.DownloadTaskDto dto) {
   final id = int.tryParse(dto.moduleTaskId ?? '') ?? dto.id.toInt();
   return DownloadTask(
     id: id,
+    moduleTaskId: dto.moduleTaskId,
     appId: dto.appId ?? '',
     appName: dto.appName ?? '',
     version: dto.version ?? '',
@@ -420,8 +421,7 @@ class DownloadFacade {
   Future<int> start(rust.DownloadStartRequest request) =>
       _guard(() => _target.start(request));
 
-  Future<List<rust.DownloadTaskDto>> list() =>
-      _guard(() => _target.list());
+  Future<List<rust.DownloadTaskDto>> list() => _guard(() => _target.list());
 
   Future<rust.DownloadTaskDto?> get(String moduleTaskId) =>
       _guard(() => _target.get(moduleTaskId));
@@ -447,10 +447,9 @@ class DownloadFacade {
   /// Core event relay. A stream error carrying
   /// [DownloadModuleUnavailableException.code] becomes the typed exception;
   /// every other error is forwarded unchanged (including its stack trace).
-  Stream<rust.DownloadTaskDto> watchAll() =>
-      _target.watchAll().transform(
-        StreamTransformer<rust.DownloadTaskDto, rust.DownloadTaskDto>
-            .fromHandlers(
+  Stream<rust.DownloadTaskDto> watchAll() => _target.watchAll().transform(
+        StreamTransformer<rust.DownloadTaskDto,
+            rust.DownloadTaskDto>.fromHandlers(
           handleError: (error, stackTrace, sink) {
             if (_isModuleUnavailable(error)) {
               sink.addError(
