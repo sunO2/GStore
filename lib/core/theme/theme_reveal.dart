@@ -34,7 +34,7 @@ class ThemeReveal extends ChangeNotifier {
   final GlobalKey captureKey = GlobalKey(debugLabel: 'theme-reveal-capture');
 
   /// 水波总时长；扩散半径在这段时间内覆盖到最远屏幕角。
-  static const Duration duration = Duration(milliseconds: 480);
+  static const Duration duration = Duration(milliseconds: 440);
 
   AnimationController? _controller;
 
@@ -49,7 +49,7 @@ class ThemeReveal extends ChangeNotifier {
 
   /// 换主题后等待重建稳定的上限；测试可设为 [Duration.zero] 跳过。
   @visibleForTesting
-  Duration settleTimeout = const Duration(milliseconds: 320);
+  Duration settleTimeout = const Duration(milliseconds: 280);
 
   /// 过渡进行中的旧截图；为 null 表示覆盖层应隐藏。
   ui.Image? get image => _image;
@@ -197,11 +197,16 @@ class ThemeReveal extends ChangeNotifier {
     final dpr = WidgetsBinding.instance.platformDispatcher.views.first
         .devicePixelRatio;
     try {
-      // toImageSync：同步返回 GPU 侧图层，不做 CPU 回读。
-      // 用 await toImage()（异步回读）在 GPU 降频/空闲时会阻塞 1s+，
-      // 表现为点击后界面「冻住」一段时间才开始扩散。
-      // 上限 2.0：全量 2.75× 约 10MB；2.0× 约 5MB，肉眼几乎无差。
-      return render.toImageSync(pixelRatio: math.min(dpr, 2.0));
+      // 必须用异步 toImage()：它返回真正的「调用时快照」。toImageSync 的
+      // 延迟光栅化会受之后换主题影响，出现「先直接变浅色、再播一次动画」的闪变。
+      // 上限 2.0：2.75× 约 10MB，2.0× 约 5MB。超时兜底：GPU 降频时回读可能
+      // 很慢，宁可退化成即时切换，也不让界面长时间冻住。
+      return await render
+          .toImage(pixelRatio: math.min(dpr, 2.0))
+          .timeout(const Duration(milliseconds: 450));
+    } on TimeoutException {
+      debugPrint('ThemeReveal: 截屏超时（降级为直接切换）');
+      return null;
     } catch (error) {
       debugPrint('ThemeReveal: 截取切换前画面失败（降级为直接切换） - $error');
       return null;
@@ -333,21 +338,15 @@ class _ThemeRevealPainter extends CustomPainter {
     );
     canvas.restore();
 
-    // 2) 水波：多圈错峰外扩、随扩散淡出。
+    // 2) 水波：多圈错峰外扩。每圈用「一簇同心描边」叠出有厚度的软波峰，
+    //    单根细线在 90Hz 下看起来只是一道生硬的圆圈。
     for (var i = 0; i < _rings; i++) {
-      final ringT = ((t - i * 0.11) / (1 - 0.11 * (_rings - 1))).clamp(0.0, 1.0);
+      final ringT = ((t - i * 0.12) / (1 - 0.12 * (_rings - 1))).clamp(0.0, 1.0);
       if (ringT <= 0 || ringT >= 1) continue;
       final ringRadius = maxRadius * Curves.easeOutCubic.transform(ringT);
-      final fade = (1 - ringT) * (0.34 - i * 0.08);
+      final fade = (1 - ringT) * (0.55 - i * 0.12);
       if (fade <= 0) continue;
-      canvas.drawCircle(
-        origin,
-        ringRadius,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.0 - i * 0.6
-          ..color = primary.withValues(alpha: fade),
-      );
+      _drawSoftWave(canvas, ringRadius, fade);
     }
 
     // 3) 扩散前沿：一圈更亮的细环，强化「水波推开」的边缘。
@@ -388,6 +387,22 @@ class _ThemeRevealPainter extends CustomPainter {
         origin,
         10 * (0.6 + glow),
         Paint()..color = primary.withValues(alpha: 0.18 * glow),
+      );
+    }
+  }
+
+  /// 用 5 条错位描边叠出约 26px 厚的软波峰（无模糊滤镜，纯描边成本）。
+  void _drawSoftWave(Canvas canvas, double radius, double alpha) {
+    const offsets = <double>[-11, -5.5, 0, 5.5, 11];
+    const weights = <double>[0.28, 0.55, 0.85, 0.55, 0.28];
+    for (var i = 0; i < offsets.length; i++) {
+      canvas.drawCircle(
+        origin,
+        radius + offsets[i],
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 6
+          ..color = primary.withValues(alpha: (alpha * weights[i]).clamp(0.0, 1.0)),
       );
     }
   }
