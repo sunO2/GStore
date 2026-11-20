@@ -453,12 +453,12 @@ void main() {
 
     // 滚到最底部再回顶部（用户描述的滑动路径）。
     await tester.drag(
-      find.byType(SingleChildScrollView).first,
+      find.byType(CustomScrollView).first,
       const Offset(0, -1200),
     );
     await tester.pump(const Duration(milliseconds: 300));
     await tester.drag(
-      find.byType(SingleChildScrollView).first,
+      find.byType(CustomScrollView).first,
       const Offset(0, 1200),
     );
     await tester.pump(const Duration(milliseconds: 300));

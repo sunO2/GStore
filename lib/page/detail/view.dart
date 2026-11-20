@@ -152,31 +152,6 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     DetailLogic logic,
     DetailState state,
   ) {
-    return SingleChildScrollView(
-      padding: AppSpacing.allLG,
-      child: Column(
-        children: [
-          // 头部基础信息
-          _buildHeader(context, logic, state),
-
-          const SizedBox(height: AppSpacing.sm),
-
-          // 详情加载指示器（兜底）→ Sections：单树条件渲染（无 AnimatedSwitcher 双树）。
-          // 仅当基础信息尚未注入且无任何区块 loading 时显示 spinner，
-          // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加；
-          // sections 入场动画由各区块 _FadeSlideIn 提供（loading→sections 直接切换，
-          // 消除 switcher 保留新旧两树导致的切换帧双倍布局）。
-          _buildDetailSections(context, logic, state),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDetailSections(
-    BuildContext context,
-    DetailLogic logic,
-    DetailState state,
-  ) {
     final detail = state.detailInfo;
     final showSpinner = state.isLoadingDetail &&
         detail == null &&
@@ -184,17 +159,32 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         !state.readmeLoading &&
         !state.statisticsLoading;
 
-    if (showSpinner) {
-      return const Padding(
-        padding: AppSpacing.allLG,
-        child: Center(child: AppLoading(size: AppLoadingSize.medium)),
-      );
-    }
-    if (detail == null) {
-      return const SizedBox.shrink();
-    }
-    return Column(
-      children: _buildSections(context, logic, state, detail),
+    // 懒加载（slivers）：详情内容可能长达数屏（10+ 下载项、截图、README）。
+    // 旧实现 `SingleChildScrollView + Column` 会把**整棵**子树在每帧全部绘制，
+    // 滚动与路由转场（整页缩放/平移）时光栅线程出现 20–40ms 长帧。
+    // SliverList 只构建/布局/绘制视口内的区块，进入详情页的首帧构建与转场光栅
+    // 成本随可见内容而非页面总高度增长。
+    final children = <Widget>[
+      _buildHeader(context, logic, state),
+      const SizedBox(height: AppSpacing.sm),
+      if (showSpinner)
+        const Padding(
+          padding: AppSpacing.allLG,
+          child: Center(child: AppLoading(size: AppLoadingSize.medium)),
+        )
+      else if (detail != null)
+        ..._buildSections(context, logic, state, detail),
+    ];
+
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: AppSpacing.allLG,
+          sliver: SliverList(
+            delegate: SliverChildListDelegate(children),
+          ),
+        ),
+      ],
     );
   }
 
