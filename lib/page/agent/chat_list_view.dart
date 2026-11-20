@@ -230,7 +230,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
   Widget build(BuildContext context) {
     final showWelcome = _items.isEmpty;
     return ListView.builder(
-      scrollCacheExtent: ScrollCacheExtent.pixels(600), controller: widget.scrollController,
+      scrollCacheExtent: const ScrollCacheExtent.pixels(600), controller: widget.scrollController,
       reverse: true,
       // 底部避让悬浮输入栏（reverse 列表：bottom padding 在视觉底部，
       // 即 offset 0 一端 = 最新消息下方留白）
@@ -262,11 +262,11 @@ class AgentChatListViewState extends State<AgentChatListView> {
       return _WelcomeView(onSendExample: widget.onSendExample);
     }
     if (widget.isGenerating) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
         child: Row(
           mainAxisSize: MainAxisSize.min,
-          children: const [
+          children: [
             AppLoading(size: AppLoadingSize.small),
             SizedBox(width: 8),
             Text('思考中…', style: TextStyle(fontSize: 13)),
@@ -513,7 +513,7 @@ class _TurnTimeline extends StatelessWidget {
                 Container(
                   width: 18,
                   height: 18,
-                  margin: EdgeInsets.only(top: 4),
+                  margin: const EdgeInsets.only(top: 4),
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: nodeColor,
@@ -533,7 +533,7 @@ class _TurnTimeline extends StatelessWidget {
                   Expanded(
                     child: Container(
                       width: 2,
-                      margin: EdgeInsets.symmetric(vertical: 2),
+                      margin: const EdgeInsets.symmetric(vertical: 2),
                       color: scheme.outlineVariant.withValues(alpha: 0.5),
                     ),
                   ),
@@ -576,7 +576,7 @@ class _TurnTimeline extends StatelessWidget {
     final options = msg.confirmOptions ?? const <String>[];
 
     return Container(
-      padding: EdgeInsets.symmetric(
+      padding: const EdgeInsets.symmetric(
           horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: pending
@@ -629,7 +629,7 @@ class _TurnTimeline extends StatelessWidget {
                   child: FilledButton(
                     onPressed: () => _resolve(context, msg.id, '确认'),
                     style: FilledButton.styleFrom(
-                      padding: EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
                       backgroundColor: AppColors.success,
                     ),
                     child: const Text('确认'),
@@ -640,7 +640,7 @@ class _TurnTimeline extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: () => _resolve(context, msg.id, '取消'),
                     style: OutlinedButton.styleFrom(
-                      padding: EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
                     ),
                     child: const Text('取消'),
                   ),
@@ -657,7 +657,7 @@ class _TurnTimeline extends StatelessWidget {
       BuildContext context, AgentMessage msg, String option) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.only(bottom: 4),
       child: SizedBox(
         width: double.infinity,
         child: OutlinedButton.icon(
@@ -674,7 +674,7 @@ class _TurnTimeline extends StatelessWidget {
           ),
           style: OutlinedButton.styleFrom(
             padding:
-                EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             alignment: Alignment.centerLeft,
             backgroundColor: scheme.surface.withValues(alpha: 0.6),
             side: BorderSide(color: scheme.outlineVariant),
@@ -714,7 +714,7 @@ class _TurnTimeline extends StatelessWidget {
     return GestureDetector(
       onTap: () => _showToolDetailDialog(context, tool),
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(8),
@@ -830,7 +830,7 @@ class _ToolBubble extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: Container(
         width: double.infinity,
-        margin: EdgeInsets.only(bottom: 16),
+        margin: const EdgeInsets.only(bottom: 16),
         padding: EdgeInsets.zero,
         constraints: BoxConstraints(
           maxWidth: MediaQuery.sizeOf(context).width * 0.85,
@@ -848,7 +848,7 @@ class _ToolBubble extends StatelessWidget {
               child: Row(
                 children: [
                   isRunning
-                      ? AppLoading(size: AppLoadingSize.small)
+                      ? const AppLoading(size: AppLoadingSize.small)
                       : Icon(
                           msg.toolStatus == AgentToolStatus.error
                               ? TablerIcons.alert_circle
@@ -904,7 +904,7 @@ class _ToolBubble extends StatelessWidget {
     final progress = total > 0 ? (count / total).clamp(0.0, 1.0) : 0.0;
 
     return Padding(
-      padding: EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.only(top: 8),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: LinearProgressIndicator(
