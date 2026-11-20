@@ -268,6 +268,11 @@ class _ThemeRevealHostState extends State<ThemeRevealHost>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 波峰高光：在主题色上提亮，深/浅色下都保持「受光」的观感。
+    final hsl = HSLColor.fromColor(scheme.primary);
+    final highlight = hsl
+        .withLightness((hsl.lightness + 0.22).clamp(0.0, 1.0))
+        .toColor();
     return AnimatedBuilder(
       animation: _reveal,
       // child 不是 const：它是 MaterialApp 的 Navigator，但只在这里传一次，
@@ -289,6 +294,8 @@ class _ThemeRevealHostState extends State<ThemeRevealHost>
                       origin: _reveal.origin,
                       animation: animation,
                       primary: scheme.primary,
+                      highlight: highlight,
+                      shadow: scheme.shadow,
                       surface: scheme.surface,
                     ),
                   ),
@@ -308,6 +315,8 @@ class _ThemeRevealPainter extends CustomPainter {
     required this.origin,
     required this.animation,
     required this.primary,
+    required this.highlight,
+    required this.shadow,
     required this.surface,
   }) : super(repaint: animation);
 
@@ -315,6 +324,13 @@ class _ThemeRevealPainter extends CustomPainter {
   final Offset origin;
   final Animation<double> animation;
   final Color primary;
+
+  /// 受光面颜色（主题色提亮），用于波峰顶部高光。
+  final Color highlight;
+
+  /// 背光/投影颜色（跟随主题），用于外阴影与内阴影。
+  final Color shadow;
+
   final Color surface;
 
   /// 涟漪圈数（错峰外扩）。
@@ -327,11 +343,11 @@ class _ThemeRevealPainter extends CustomPainter {
     final maxRadius = _maxRadius(size, origin);
     final radius = maxRadius * eased;
 
-    // 1) 旧画面：整屏绘制，挖掉一个圆心在点击处、半径不断变大的洞。
+    // 1) 旧画面：整屏绘制，挖掉以点击处为圆心、半径不断变大且带轻微起伏的洞。
     final hole = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(Offset.zero & size)
-      ..addOval(Rect.fromCircle(center: origin, radius: radius));
+      ..addPath(_wobblyCircle(radius, t, 0.0, segments: 120), Offset.zero);
     canvas.save();
     canvas.clipPath(hole);
     canvas.drawImageRect(
@@ -342,30 +358,89 @@ class _ThemeRevealPainter extends CustomPainter {
     );
     canvas.restore();
 
-    // 2) 水波：多圈错峰外扩。每圈用「一簇同心描边」叠出有厚度的软波峰，
-    //    单根细线在 90Hz 下看起来只是一道生硬的圆圈。
+    // 2) 波前立体感：新一侧的内阴影（水面下沉）。
+    if (t < 0.98) {
+      _strokePath(
+        canvas,
+        _wobblyCircle(radius - 7, t, 0.0),
+        strokeWidth: 9,
+        color: shadow.withValues(alpha: 0.20 * (1 - t)),
+      );
+      _strokePath(
+        canvas,
+        _wobblyCircle(radius - 17, t, 0.0),
+        strokeWidth: 10,
+        color: shadow.withValues(alpha: 0.10 * (1 - t)),
+      );
+    }
+
+    // 3) 旧一侧的外阴影（波峰挡住光、在旧画面上投下暗边）。
+    if (t < 0.98) {
+      _strokePath(
+        canvas,
+        _wobblyCircle(radius + 9, t, 0.0),
+        strokeWidth: 10,
+        color: shadow.withValues(alpha: 0.10 * (1 - t)),
+      );
+    }
+
+    // 4) 水波：3 圈错峰外扩。每圈 = 宽描边打底 + 细描边提亮 + 受光/背光弧，
+    //    形成「有厚度的受光波峰」而不是一道平线。
     for (var i = 0; i < _rings; i++) {
       final ringT = ((t - i * 0.12) / (1 - 0.12 * (_rings - 1))).clamp(0.0, 1.0);
       if (ringT <= 0 || ringT >= 1) continue;
       final ringRadius = maxRadius * Curves.easeOutCubic.transform(ringT);
       final fade = (1 - ringT) * (0.55 - i * 0.12);
       if (fade <= 0) continue;
-      _drawSoftWave(canvas, ringRadius, fade);
-    }
+      final phase = i * 1.7;
 
-    // 3) 扩散前沿：一圈更亮的细环，强化「水波推开」的边缘。
-    if (t < 0.94) {
-      canvas.drawCircle(
-        origin,
-        radius,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.6
-          ..color = primary.withValues(alpha: 0.55 * (1 - t)),
+      // 波峰主体：宽而淡 + 窄而亮，叠出软边圆柱。
+      _strokePath(
+        canvas,
+        _wobblyCircle(ringRadius, t, phase),
+        strokeWidth: 18,
+        color: primary.withValues(alpha: fade * 0.16),
+      );
+      _strokePath(
+        canvas,
+        _wobblyCircle(ringRadius, t, phase),
+        strokeWidth: 9,
+        color: primary.withValues(alpha: fade * 0.42),
+      );
+      _strokePath(
+        canvas,
+        _wobblyCircle(ringRadius, t, phase),
+        strokeWidth: 3.5,
+        color: primary.withValues(alpha: fade * 0.62),
+      );
+
+      // 受光面：左上 ~100° 弧段更亮（固定光源方向，主题色保持统一）。
+      _strokePath(
+        canvas,
+        _wobblyArc(ringRadius, -2.45, 1.75, t, phase),
+        strokeWidth: 6,
+        color: highlight.withValues(alpha: fade * 0.55),
+      );
+      // 背光面：右下弧段压暗，形成体积。
+      _strokePath(
+        canvas,
+        _wobblyArc(ringRadius, 0.65, 1.75, t, phase),
+        strokeWidth: 7,
+        color: shadow.withValues(alpha: fade * 0.18),
       );
     }
 
-    // 4) 起点高光：像水滴落点，快速衰减。
+    // 5) 扩散前沿：一圈更亮的细环，强化「水波推开」的边缘。
+    if (t < 0.98) {
+      _strokePath(
+        canvas,
+        _wobblyCircle(radius, t, 0.0, segments: 140),
+        strokeWidth: 2.0,
+        color: highlight.withValues(alpha: 0.65 * (1 - t)),
+      );
+    }
+
+    // 6) 起点高光：像水滴落点，快速衰减。
     final glow = (1 - t * 3.2).clamp(0.0, 1.0);
     if (glow > 0) {
       final glowRadius = 110.0 * (0.55 + t);
@@ -386,29 +461,67 @@ class _ThemeRevealPainter extends CustomPainter {
             <double>[0.0, 1.0],
           ),
       );
-      // 落点中心一点点亮，避免大圆显得空。
       canvas.drawCircle(
         origin,
         10 * (0.6 + glow),
-        Paint()..color = primary.withValues(alpha: 0.18 * glow),
+        Paint()..color = highlight.withValues(alpha: 0.22 * glow),
       );
     }
   }
 
-  /// 用 5 条错位描边叠出约 26px 厚的软波峰（无模糊滤镜，纯描边成本）。
-  void _drawSoftWave(Canvas canvas, double radius, double alpha) {
-    const offsets = <double>[-11, -5.5, 0, 5.5, 11];
-    const weights = <double>[0.28, 0.55, 0.85, 0.55, 0.28];
-    for (var i = 0; i < offsets.length; i++) {
-      canvas.drawCircle(
-        origin,
-        radius + offsets[i],
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 6
-          ..color = primary.withValues(alpha: (alpha * weights[i]).clamp(0.0, 1.0)),
-      );
+  /// 带低频角向起伏的圆：`r *= 1 + 0.006·sin(7θ+…) + 0.003·sin(13θ−…)`。
+  ///
+  /// 振幅取半径的千分位，肉眼可见「不是完美圆」，但不会破坏圆形揭示的观感。
+  Path _wobblyCircle(
+    double baseRadius,
+    double t,
+    double phase, {
+    int segments = 96,
+  }) {
+    return _wobblyArc(baseRadius, 0, math.pi * 2, t, phase, segments: segments);
+  }
+
+  Path _wobblyArc(
+    double baseRadius,
+    double startAngle,
+    double sweepAngle,
+    double t,
+    double phase, {
+    int segments = 40,
+  }) {
+    final path = Path();
+    final wobblePhase = t * math.pi * 2;
+    for (var i = 0; i <= segments; i++) {
+      final theta = startAngle + sweepAngle * (i / segments);
+      final wobble = 1 +
+          0.006 * math.sin(7 * theta + 6 * wobblePhase + phase) +
+          0.003 * math.sin(13 * theta - 9 * wobblePhase + phase);
+      final r = baseRadius * wobble;
+      final point = origin + Offset(math.cos(theta) * r, math.sin(theta) * r);
+      if (i == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
     }
+    return path;
+  }
+
+  void _strokePath(
+    Canvas canvas,
+    Path path, {
+    required double strokeWidth,
+    required Color color,
+  }) {
+    if (color.a == 0) return;
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..strokeJoin = StrokeJoin.round
+        ..color = color,
+    );
   }
 
   static double _maxRadius(Size size, Offset origin) {
@@ -422,5 +535,7 @@ class _ThemeRevealPainter extends CustomPainter {
       oldDelegate.image != image ||
       oldDelegate.origin != origin ||
       oldDelegate.primary != primary ||
+      oldDelegate.highlight != highlight ||
+      oldDelegate.shadow != shadow ||
       oldDelegate.surface != surface;
 }
