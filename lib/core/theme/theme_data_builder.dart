@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/theme/app_page_transitions.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 
 /// Builder for creating app themes with design tokens
@@ -229,6 +230,11 @@ class ThemeDataBuilder {
       useMaterial3: true,
       brightness: Brightness.light,
       textTheme: textTheme, // 完整的文字主题
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: SlidePageTransitionsBuilder(),
+        },
+      ),
 
       // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
       scaffoldBackgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
@@ -556,7 +562,13 @@ class ThemeDataBuilder {
       colorScheme: colorScheme,
       useMaterial3: true,
       brightness: Brightness.dark,
-      textTheme: textTheme, // 完整的文字主题
+      textTheme: textTheme,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: SlidePageTransitionsBuilder(),
+        },
+      ),
+ // 完整的文字主题
 
       // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
       scaffoldBackgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
