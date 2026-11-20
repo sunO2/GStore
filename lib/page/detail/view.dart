@@ -583,15 +583,36 @@ class _FadeSlideInState extends State<_FadeSlideIn>
   late final AnimationController _controller;
   late final Animation<double> _animation;
 
+  /// 是否已经决定过入场策略（didChangeDependencies 可能多次调用）。
+  bool _settled = false;
+
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
       duration: AppAnimation.slow,
-    )..forward();
+    );
     _animation =
         CurvedAnimation(parent: _controller, curve: AppAnimation.curve);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_settled) return;
+    _settled = true;
+    // 路由转场（push/pop 的缩放/淡入）进行中时不再叠加区块级淡入：
+    // 两层大范围透明度会叠加 saveLayer 与重复光栅化，实测详情页进入的
+    // 首 150ms 出现 18–25ms 光栅长帧。此时直接展示，转场结束后出现的
+    // 区块仍保留下滑淡入。
+    final routeAnimation = ModalRoute.of(context)?.animation;
+    if (routeAnimation != null &&
+        routeAnimation.status != AnimationStatus.completed) {
+      _controller.value = 1;
+    } else {
+      _controller.forward();
+    }
   }
 
   @override
