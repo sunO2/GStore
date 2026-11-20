@@ -174,7 +174,10 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
   ) {
     return Listener(
       // 只记录按下位置（不参与手势竞争），供圆形揭示动画取圆心。
-      onPointerDown: (event) => _lastPointerDown = event.position,
+      onPointerDown: (event) {
+                        _lastPointerDown = event.position;
+                        ThemeReveal.instance.precapture();
+                      },
       child: Card(
         margin: AppSpacing.allLG,
         child: Column(

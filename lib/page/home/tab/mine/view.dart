@@ -700,8 +700,11 @@ class _MinePageState extends ConsumerState<MinePage>
                 const SizedBox(height: AppSpacing.md),
                 Listener(
                   // 记录按下位置（不参与手势竞争），供圆形揭示动画取圆心。
-                  onPointerDown: (event) =>
-                      _lastThemePointerDown = event.position,
+                  // 同时按下即截图，onTap 时零等待复用。
+                  onPointerDown: (event) {
+                    _lastThemePointerDown = event.position;
+                    ThemeReveal.instance.precapture();
+                  },
                   child: AppSegmentedButton<AppThemeMode>(
                     value: theme.mode,
                     segments: const [

@@ -43,13 +43,20 @@ class ThemeReveal extends ChangeNotifier {
   bool _busy = false;
   bool _disposed = false;
 
+  /// pointer-down 预捕获的旧画面（点击时零等待，省掉一次 GPU 回读）。
+  ui.Image? _precapture;
+  DateTime? _precaptureAt;
+
+  /// 预捕获有效期：超过这个时间的缓存视为过期（画面可能已变化）。
+  static const Duration _precaptureTtl = Duration(seconds: 1);
+
   /// 供测试注入截图实现（避免依赖真实渲染管线）。
   @visibleForTesting
   Future<ui.Image?> Function(RenderRepaintBoundary boundary)? captureOverride;
 
   /// 换主题后等待重建稳定的上限；测试可设为 [Duration.zero] 跳过。
   @visibleForTesting
-  Duration settleTimeout = const Duration(milliseconds: 280);
+  Duration settleTimeout = const Duration(milliseconds: 150);
 
   /// 过渡进行中的旧截图；为 null 表示覆盖层应隐藏。
   ui.Image? get image => _image;
@@ -74,6 +81,44 @@ class ThemeReveal extends ChangeNotifier {
     _image?.dispose();
     _image = null;
     _origin = null;
+    _precapture?.dispose();
+    _precapture = null;
+    _precaptureAt = null;
+  }
+
+  /// 在主题入口的 pointer-down 事件里调用：提前截好旧画面。
+  ///
+  /// 这是把「点击 → 波纹出现」压到最短的关键：截图（GPU 侧同步快照）在手指
+  /// 按下时就完成，onTap 触发时直接复用，不再等待截图。
+  void precapture() {
+    if (_busy || _disposed || _animationsDisabled) return;
+    final now = DateTime.now();
+    final cachedAt = _precaptureAt;
+    if (_precapture != null &&
+        cachedAt != null &&
+        now.difference(cachedAt) < _precaptureTtl) {
+      return;
+    }
+    final render = captureKey.currentContext?.findRenderObject();
+    if (render is! RenderRepaintBoundary) return;
+    final shot = _snapshotSync(render);
+    if (shot == null) return;
+    _precapture?.dispose();
+    _precapture = shot;
+    _precaptureAt = now;
+  }
+
+  ui.Image? _takePrecapture() {
+    final shot = _precapture;
+    final at = _precaptureAt;
+    _precapture = null;
+    _precaptureAt = null;
+    if (shot == null) return null;
+    if (at == null || DateTime.now().difference(at) > _precaptureTtl) {
+      shot.dispose();
+      return null;
+    }
+    return shot;
   }
 
   /// 系统「移除动画」开关（无障碍/开发者选项）打开时直接切换。
@@ -145,6 +190,9 @@ class ThemeReveal extends ChangeNotifier {
     _image?.dispose();
     _image = null;
     _origin = null;
+    _precapture?.dispose();
+    _precapture = null;
+    _precaptureAt = null;
     _busy = false;
     captureOverride = null;
   }
@@ -194,23 +242,25 @@ class ThemeReveal extends ChangeNotifier {
   }
 
   Future<ui.Image?> _capture() async {
+    // 1) pointer-down 预捕获命中：零等待。
+    final precaptured = _takePrecapture();
+    if (precaptured != null) return precaptured;
+
     final render = captureKey.currentContext?.findRenderObject();
     if (render is! RenderRepaintBoundary) return null;
     final injected = captureOverride;
     if (injected != null) return injected(render);
+
+    // 2) 兜底：GPU 侧同步快照（无 CPU 回读）。
+    return _snapshotSync(render);
+  }
+
+  ui.Image? _snapshotSync(RenderRepaintBoundary render) {
     final dpr = WidgetsBinding.instance.platformDispatcher.views.first
         .devicePixelRatio;
     try {
-      // 必须用异步 toImage()：它返回真正的「调用时快照」。toImageSync 的
-      // 延迟光栅化会受之后换主题影响，出现「先直接变浅色、再播一次动画」的闪变。
-      // 上限 2.0：2.75× 约 10MB，2.0× 约 5MB。超时兜底：GPU 降频时回读可能
-      // 很慢，宁可退化成即时切换，也不让界面长时间冻住。
-      return await render
-          .toImage(pixelRatio: math.min(dpr, 2.0))
-          .timeout(const Duration(milliseconds: 450));
-    } on TimeoutException {
-      debugPrint('ThemeReveal: 截屏超时（降级为直接切换）');
-      return null;
+      // toImageSync：同步返回 GPU 侧图层。上限 2.0（2.75× 约 10MB，2.0× 约 5MB）。
+      return render.toImageSync(pixelRatio: math.min(dpr, 2.0));
     } catch (error) {
       debugPrint('ThemeReveal: 截取切换前画面失败（降级为直接切换） - $error');
       return null;
