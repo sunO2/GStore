@@ -107,6 +107,10 @@ class ThemeReveal extends ChangeNotifier {
         apply();
         return;
       }
+      // 上一次动画结束后 controller 停在 1.0；若直接显示覆盖层，首帧会把
+      // 旧截图按「圆洞已完全展开」裁剪 → 看起来就是先瞬间切到新主题。
+      // 必须在插入覆盖层之前把进度归零。
+      _controller?.value = 0;
       _image = shot;
       _origin = origin;
       notifyListeners();

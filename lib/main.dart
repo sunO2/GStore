@@ -671,6 +671,10 @@ class _AppRoot extends StatelessWidget {
               );
             },
             themeMode: theme.themeModeValue,
+            // 换肤走 ThemeReveal 的圆形揭示：禁用 MaterialApp 内建的
+            // 200ms 主题颜色插值，避免「先淡变到新主题、再播放揭示动画」的
+            // 双重过渡（AnimatedTheme 会逐帧插值整棵树）。
+            themeAnimationDuration: Duration.zero,
             theme: ThemeDataBuilder.buildLightTheme(
               light,
               config: theme.config,
