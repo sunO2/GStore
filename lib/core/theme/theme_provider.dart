@@ -29,6 +29,11 @@ class ThemeNotifier extends Notifier<ThemeState> {
     return ThemeStateStore.instance.setThemeMode(mode);
   }
 
+  /// 立即应用主题模式并异步持久化（UI 换肤入口使用，避免等待写入）。
+  Future<void> setThemeModeOptimistic(AppThemeMode mode) {
+    return ThemeStateStore.instance.setThemeModeOptimistic(mode);
+  }
+
   /// 设置主题配置并持久化。
   Future<void> setThemeConfig(AppThemeConfig config) {
     return ThemeStateStore.instance.setThemeConfig(config);

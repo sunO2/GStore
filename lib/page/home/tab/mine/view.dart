@@ -9,6 +9,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:gstore/core/theme/theme_reveal.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
@@ -28,6 +29,9 @@ class _MinePageState extends ConsumerState<MinePage>
     with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   /// 外观卡片展开状态
   bool _appearanceExpanded = false;
+
+  /// 最近一次按下的全局坐标：主题揭示动画以它为圆心。
+  Offset? _lastThemePointerDown;
 
   /// 备份卡片展开状态
   bool _backupExpanded = false;
@@ -694,28 +698,44 @@ class _MinePageState extends ConsumerState<MinePage>
                       ),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                AppSegmentedButton<AppThemeMode>(
-                  value: theme.mode,
-                  segments: const [
-                    AppSegment(
-                      value: AppThemeMode.system,
-                      label: '系统',
-                      icon: TablerIcons.brightness_auto,
-                    ),
-                    AppSegment(
-                      value: AppThemeMode.light,
-                      label: '浅色',
-                      icon: TablerIcons.sun,
-                    ),
-                    AppSegment(
-                      value: AppThemeMode.dark,
-                      label: '深色',
-                      icon: TablerIcons.moon,
-                    ),
-                  ],
-                  onChanged: (AppThemeMode newMode) {
-                    notifier.setThemeMode(newMode);
-                  },
+                Listener(
+                  // 记录按下位置（不参与手势竞争），供圆形揭示动画取圆心。
+                  onPointerDown: (event) =>
+                      _lastThemePointerDown = event.position,
+                  child: AppSegmentedButton<AppThemeMode>(
+                    value: theme.mode,
+                    segments: const [
+                      AppSegment(
+                        value: AppThemeMode.system,
+                        label: '系统',
+                        icon: TablerIcons.brightness_auto,
+                      ),
+                      AppSegment(
+                        value: AppThemeMode.light,
+                        label: '浅色',
+                        icon: TablerIcons.sun,
+                      ),
+                      AppSegment(
+                        value: AppThemeMode.dark,
+                        label: '深色',
+                        icon: TablerIcons.moon,
+                      ),
+                    ],
+                    onChanged: (AppThemeMode newMode) {
+                      if (newMode == theme.mode) return;
+                      final size = MediaQuery.sizeOf(context);
+                      final origin = _lastThemePointerDown ??
+                          Offset(size.width / 2, size.height * 0.35);
+                      if (!themeModeChangesBrightness(context, newMode)) {
+                        notifier.setThemeModeOptimistic(newMode);
+                        return;
+                      }
+                      ThemeReveal.instance.run(
+                        origin: origin,
+                        apply: () => notifier.setThemeModeOptimistic(newMode),
+                      );
+                    },
+                  ),
                 ),
               ],
             ),

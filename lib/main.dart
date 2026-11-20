@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:gstore/core/theme/theme_reveal.dart';
 import 'package:gstore/core/theme/theme_data_builder.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
@@ -654,12 +655,17 @@ class _AppRoot extends StatelessWidget {
               configStatusBar(context);
               // 顶部「模块安装中」横幅：覆盖在 Material 之上，不位移/不遮挡
               // 应用内容（overlay 包 IgnorePointer，触摸穿透）。
-              return ModuleInstallBanner(
-                child: Material(
-                  child: SafeArea(
-                    top: false,
-                    bottom: false,
-                    child: child!,
+              return ThemeRevealHost(
+                child: RepaintBoundary(
+                  key: ThemeReveal.instance.captureKey,
+                  child: ModuleInstallBanner(
+                    child: Material(
+                      child: SafeArea(
+                        top: false,
+                        bottom: false,
+                        child: child!,
+                      ),
+                    ),
                   ),
                 ),
               );

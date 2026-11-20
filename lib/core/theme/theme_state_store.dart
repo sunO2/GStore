@@ -135,6 +135,29 @@ class ThemeStateStore {
     _applyMode(_modeFromValue(value));
   }
 
+  /// 立即应用主题模式，再异步持久化（UI 切换专用）。
+  ///
+  /// [setThemeMode] 会等待 Rust 配置写入 + 读回后才翻转界面；首次写入（配置
+  /// 模块刚就绪/DB 冷启动）实测可达 ~1s，表现为点击后界面长时间无反应。
+  /// 换肤是有明确用户意图的瞬时操作：先改内存状态让揭示动画立刻开始，写入
+  /// 失败只记日志（本次会话保持新主题，下次启动回落到持久化值）。
+  Future<void> setThemeModeOptimistic(AppThemeMode mode) async {
+    _stateGeneration++;
+    _applyMode(mode);
+    try {
+      final result = await ConfigService.instance.set(
+        ConfigKeys.themeMode,
+        mode.index,
+        source: ConfigChangeSource.user,
+      );
+      if (!result.success) {
+        debugPrint('ThemeStateStore: 主题持久化失败（界面保持已切换）');
+      }
+    } catch (error) {
+      debugPrint('ThemeStateStore: 主题持久化异常（界面保持已切换） - $error');
+    }
+  }
+
   /// 设置主题配置并持久化；成功后立即读回配置源值应用。
   Future<void> setThemeConfig(AppThemeConfig config) async {
     _stateGeneration++;

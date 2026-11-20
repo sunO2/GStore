@@ -5,6 +5,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
+import 'package:gstore/core/theme/theme_reveal.dart';
 
 /// Theme settings page with live preview
 class ThemeSettingsPage extends ConsumerStatefulWidget {
@@ -20,6 +21,9 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
 
   /// theme 模块上下线事件订阅（dispose 取消，防泄漏）
   StreamSubscription<ModuleEvent>? _moduleSub;
+
+  /// 最近一次按下的全局坐标：主题揭示动画以它为圆心。
+  Offset? _lastPointerDown;
 
   @override
   void initState() {
@@ -93,8 +97,10 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           margin: AppSpacing.allLG,
           padding: AppSpacing.allMD,
           decoration: BoxDecoration(
-            color:
-                Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
+            color: Theme.of(context)
+                .colorScheme
+                .primaryContainer
+                .withValues(alpha: 0.5),
             borderRadius: AppRadius.allMD,
           ),
           child: Row(
@@ -166,39 +172,46 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
     ThemeState theme,
     ThemeNotifier notifier,
   ) {
-    return Card(
-      margin: AppSpacing.allLG,
-      child: Column(
-        children: AppThemeMode.values.map((mode) {
-          final isSelected = theme.mode == mode;
-          return Column(
-            children: [
-              if (mode != AppThemeMode.system) const Divider(height: 1),
-              ListTile(
-                leading: Icon(_getIconForMode(mode)),
-                title: Text(mode.displayName),
-                trailing: isSelected
-                    ? Icon(
-                        TablerIcons.check,
-                        color: Theme.of(context).colorScheme.primary,
-                      )
-                    : null,
-                onTap: () async {
-                  await notifier.setThemeMode(mode);
-                  // 显示简短的反馈
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('已切换到${mode.displayName}'),
-                        duration: AppAnimations.snackBar,
-                      ),
+    return Listener(
+      // 只记录按下位置（不参与手势竞争），供圆形揭示动画取圆心。
+      onPointerDown: (event) => _lastPointerDown = event.position,
+      child: Card(
+        margin: AppSpacing.allLG,
+        child: Column(
+          children: AppThemeMode.values.map((mode) {
+            final isSelected = theme.mode == mode;
+            return Column(
+              children: [
+                if (mode != AppThemeMode.system) const Divider(height: 1),
+                ListTile(
+                  leading: Icon(_getIconForMode(mode)),
+                  title: Text(mode.displayName),
+                  trailing: isSelected
+                      ? Icon(
+                          TablerIcons.check,
+                          color: Theme.of(context).colorScheme.primary,
+                        )
+                      : null,
+                  onTap: () {
+                    if (mode == theme.mode) return;
+                    final size = MediaQuery.sizeOf(context);
+                    final origin = _lastPointerDown ??
+                        Offset(size.width / 2, size.height * 0.35);
+                    // 亮度没变化（如深色 → 跟随系统且系统即深色）时不放动画。
+                    if (!themeModeChangesBrightness(context, mode)) {
+                      notifier.setThemeModeOptimistic(mode);
+                      return;
+                    }
+                    ThemeReveal.instance.run(
+                      origin: origin,
+                      apply: () => notifier.setThemeModeOptimistic(mode),
                     );
-                  }
-                },
-              ),
-            ],
-          );
-        }).toList(),
+                  },
+                ),
+              ],
+            );
+          }).toList(),
+        ),
       ),
     );
   }
