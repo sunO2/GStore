@@ -13,17 +13,21 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 
 /// tab 切换交叉淡入（M3 fadeThrough，无平移）：
-/// - 两段式（fromIndex/toIndex 均非空）：源页随 fadeValue 0→0.5 淡出，
+/// - 两段式（from/to 均非空）：源页随 fade 0→0.5 淡出，
 ///   中点瞬移切换后目标页随 0.5→1 淡入；
-/// - 单段式（仅 toIndex 非空，外部瞬移跳转 fallback）：目标页全程 0→1 淡入；
-/// - 常态（均空）：当前页 opacity 1，其余 0。
+/// - 单段式（仅 to 非空，外部瞬移跳转 fallback）：目标页全程 0→1 淡入；
+/// - 常态（均为空）：当前页 opacity 1，其余 0。
+///
+/// 性能：透明度只依赖 [fadeAnimation]/[fadeIndices]，用 [AnimatedBuilder]
+/// 把重建范围限制在 `Opacity` 这一层；页面 child 是 const，动画期间不会重建。
+/// 此前 `_onFadeTick` 每帧 setState 会重建整棵 HomePage（NavigationBar、
+/// PageView、4 个 destination 及其 AnimatedSwitcher/AnimatedScale）。
 class _TabFadeThrough extends StatelessWidget {
   const _TabFadeThrough({
     required this.index,
     required this.currentIndex,
-    required this.fromIndex,
-    required this.toIndex,
-    required this.fadeValue,
+    required this.fadeIndices,
+    required this.fadeAnimation,
     required this.child,
   });
 
@@ -33,41 +37,43 @@ class _TabFadeThrough extends StatelessWidget {
   /// 无切换动画时的当前页（homeProvider.index）
   final int currentIndex;
 
-  /// 两段式交叉淡入的源页（前半段淡出）；null 表示单段淡入/常态
-  final int? fromIndex;
+  /// 两段式交叉淡入的源页/目标页；均为空表示无切换动画
+  final ValueNotifier<({int? from, int? to})> fadeIndices;
 
-  /// 切换目标页（后半段淡入）；null 表示无切换动画
-  final int? toIndex;
-
-  /// 淡入淡出进度 0→1（_fadeController.value）
-  final double fadeValue;
+  /// 淡入淡出进度 0→1（_fadeController）
+  final Animation<double> fadeAnimation;
 
   final Widget child;
 
-  @override
-  Widget build(BuildContext context) {
-    final from = fromIndex;
-    final to = toIndex;
-    double opacity;
+  double _opacity() {
+    final from = fadeIndices.value.from;
+    final to = fadeIndices.value.to;
+    final fadeValue = fadeAnimation.value;
     if (from != null && to != null) {
       // 两段式交叉：源页 0→0.5 淡出，目标页 0.5→1 淡入（中点瞬移切换）
       if (index == to) {
-        opacity = (fadeValue * 2 - 1).clamp(0.0, 1.0);
-      } else if (index == from) {
-        opacity = (1 - fadeValue * 2).clamp(0.0, 1.0);
-      } else {
-        opacity = 0.0;
+        return (fadeValue * 2 - 1).clamp(0.0, 1.0);
       }
-    } else if (index == to) {
-      // 外部瞬移跳转 fallback：新页全程 0→1 淡入（无源页淡出，瞬移已完成）
-      opacity = fadeValue;
-    } else if (index == currentIndex) {
-      // 常态：当前页完全显示
-      opacity = 1.0;
-    } else {
-      opacity = 0.0;
+      if (index == from) {
+        return (1 - fadeValue * 2).clamp(0.0, 1.0);
+      }
+      return 0.0;
     }
-    return Opacity(opacity: opacity, child: child);
+    if (index == to) {
+      // 外部瞬移跳转 fallback：新页全程 0→1 淡入（无源页淡出，瞬移已完成）
+      return fadeValue;
+    }
+    // 常态：当前页完全显示
+    return index == currentIndex ? 1.0 : 0.0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([fadeAnimation, fadeIndices]),
+      child: child,
+      builder: (context, child) => Opacity(opacity: _opacity(), child: child),
+    );
   }
 }
 
@@ -84,9 +90,16 @@ class _HomePageState extends ConsumerState<HomePage>
   late final AnimationController _fadeController =
       AnimationController(vsync: this, duration: AppAnimation.medium);
 
-  /// 两段式交叉淡入的源页/目标页；均为 null 表示无切换动画
+  /// 两段式交叉淡入的源页/目标页；均为 null 表示无切换动画。
+  ///
+  /// 与 [_fadeIndices] 同步维护：字段供 [_onFadeTick] 判断中点/结束，
+  /// notifier 供 [_TabFadeThrough] 精确重建（动画帧不重建整页）。
   int? _fromIndex;
   int? _toIndex;
+
+  /// 驱动 [_TabFadeThrough] 的源/目标索引（变更频率低，不是每帧）。
+  final ValueNotifier<({int? from, int? to})> _fadeIndices =
+      ValueNotifier((from: null, to: null));
 
   /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手入口显隐）
   bool _agentModuleEnabled =
@@ -122,6 +135,7 @@ class _HomePageState extends ConsumerState<HomePage>
   void dispose() {
     _agentSub?.cancel();
     _fadeController.dispose();
+    _fadeIndices.dispose();
     super.dispose();
   }
 
@@ -144,10 +158,15 @@ class _HomePageState extends ConsumerState<HomePage>
     if (index == current) return;
     _fromIndex = current;
     _toIndex = index;
+    _fadeIndices.value = (from: current, to: index);
     _fadeController.forward(from: 0);
   }
 
   /// 动画逐帧回调：中点一次性瞬移切换；结束时清空淡入状态。
+  ///
+  /// 这里**不做 setState**：透明度由 [_TabFadeThrough] 自行订阅动画更新，
+  /// 否则 320ms 的每次 tick 都会重建整个 HomePage（NavigationBar、
+  /// PageView、4 个 destination 及其 AnimatedSwitcher/AnimatedScale）。
   void _onFadeTick() {
     final v = _fadeController.value;
     final to = _toIndex;
@@ -158,8 +177,8 @@ class _HomePageState extends ConsumerState<HomePage>
     if (_fadeController.isCompleted && to != null) {
       _fromIndex = null;
       _toIndex = null;
+      _fadeIndices.value = (from: null, to: null);
     }
-    setState(() {});
   }
 
   /// 外部瞬移跳转（agent 返回/applist/empty_state）fallback：
@@ -168,6 +187,7 @@ class _HomePageState extends ConsumerState<HomePage>
     if (_toIndex != null) return; // 已在交叉淡入流程中（底部导航路径）
     _fromIndex = null;
     _toIndex = index;
+    _fadeIndices.value = (from: null, to: index);
     _fadeController.forward(from: 0);
   }
 
@@ -213,33 +233,29 @@ class _HomePageState extends ConsumerState<HomePage>
             _TabFadeThrough(
               index: 0,
               currentIndex: index,
-              fromIndex: _fromIndex,
-              toIndex: _toIndex,
-              fadeValue: _fadeController.value,
+              fadeIndices: _fadeIndices,
+              fadeAnimation: _fadeController,
               child: const ApplistPage(),
             ),
             _TabFadeThrough(
               index: 1,
               currentIndex: index,
-              fromIndex: _fromIndex,
-              toIndex: _toIndex,
-              fadeValue: _fadeController.value,
+              fadeIndices: _fadeIndices,
+              fadeAnimation: _fadeController,
               child: const DiscoveryPage(),
             ),
             _TabFadeThrough(
               index: 2,
               currentIndex: index,
-              fromIndex: _fromIndex,
-              toIndex: _toIndex,
-              fadeValue: _fadeController.value,
+              fadeIndices: _fadeIndices,
+              fadeAnimation: _fadeController,
               child: const AgentPage(isTabEmbedded: true),
             ),
             _TabFadeThrough(
               index: 3,
               currentIndex: index,
-              fromIndex: _fromIndex,
-              toIndex: _toIndex,
-              fadeValue: _fadeController.value,
+              fadeIndices: _fadeIndices,
+              fadeAnimation: _fadeController,
               child: const MinePage(),
             ),
           ],

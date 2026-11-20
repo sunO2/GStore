@@ -154,9 +154,11 @@ void main() {
       await pumpHome(tester);
 
       final bar = tester.getRect(find.byType(NavigationBar));
-      // 当前选中 tab 0：其图标为 home_filled，其余为各自未选中图标
+      // 当前选中 tab 0：其图标为 home_2（home_filled 的码位 U+FE2B 属组合符号，
+      // 会被文字排版处理，选中态改用私用区的 home_2，见 HomePage 注释），
+      // 其余为各自未选中图标。
       final glyphs = <IconData>[
-        TablerIcons.home_filled,
+        TablerIcons.home_2,
         TablerIcons.compass,
         TablerIcons.message_chatbot,
         TablerIcons.user,
