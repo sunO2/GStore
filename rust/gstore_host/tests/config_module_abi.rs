@@ -286,7 +286,10 @@ fn wait_for_prefix(path: &Path, prefix: &str) -> bool {
     false
 }
 
-const DOWNLOAD_KEYS: [&str; 6] = [
+const DOWNLOAD_KEYS: [&str; 7] = [
+    // 注册表按 key 字典序返回；auto_proxy.enabled 为后续新增项
+    // （gstore_core::config::schema，commit 5b4e5559）。
+    "download.auto_proxy.enabled",
     "download.default_connections",
     "download.max_concurrent",
     "download.max_retries",
