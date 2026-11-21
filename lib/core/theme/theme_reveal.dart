@@ -10,6 +10,8 @@ import 'package:gstore/core/theme/app_theme_config.dart';
 
 /// 主题切换的「圆形揭示」过渡（等价 Android 原生 createCircularReveal）。
 ///
+/// 视觉保持克制：只有旧画面被圆形裁掉 + 一条细亮边界，没有波纹/阴影/扰动。
+///
 /// 做法：切换**前**把当前界面截成一张图 → 立即应用新主题（新界面在下面渲染）
 /// → 在覆盖层上画旧截图，并用 even-odd 路径挖出一个以点击点为圆心、不断变大
 /// 的圆洞，从而露出新主题；边缘叠加多圈错峰淡出的水波光环与一次中心高光。
@@ -34,7 +36,7 @@ class ThemeReveal extends ChangeNotifier {
   final GlobalKey captureKey = GlobalKey(debugLabel: 'theme-reveal-capture');
 
   /// 水波总时长；扩散半径在这段时间内覆盖到最远屏幕角。
-  static const Duration duration = Duration(milliseconds: 440);
+  static const Duration duration = Duration(milliseconds: 400);
 
   AnimationController? _controller;
 
@@ -56,7 +58,7 @@ class ThemeReveal extends ChangeNotifier {
 
   /// 换主题后等待重建稳定的上限；测试可设为 [Duration.zero] 跳过。
   @visibleForTesting
-  Duration settleTimeout = const Duration(milliseconds: 150);
+  Duration settleTimeout = const Duration(milliseconds: 100);
 
   /// 过渡进行中的旧截图；为 null 表示覆盖层应隐藏。
   ui.Image? get image => _image;
@@ -345,8 +347,6 @@ class _ThemeRevealHostState extends State<ThemeRevealHost>
                       animation: animation,
                       primary: scheme.primary,
                       highlight: highlight,
-                      shadow: scheme.shadow,
-                      surface: scheme.surface,
                     ),
                   ),
                 ),
@@ -358,7 +358,7 @@ class _ThemeRevealHostState extends State<ThemeRevealHost>
   }
 }
 
-/// 旧截图 + 反向圆形裁剪 + 水波涟漪。
+/// 旧截图 + 反向圆形裁剪：干净利落的圆形揭示，边界仅一条细亮环。
 class _ThemeRevealPainter extends CustomPainter {
   _ThemeRevealPainter({
     required this.image,
@@ -366,8 +366,6 @@ class _ThemeRevealPainter extends CustomPainter {
     required this.animation,
     required this.primary,
     required this.highlight,
-    required this.shadow,
-    required this.surface,
   }) : super(repaint: animation);
 
   final ui.Image image;
@@ -375,16 +373,8 @@ class _ThemeRevealPainter extends CustomPainter {
   final Animation<double> animation;
   final Color primary;
 
-  /// 受光面颜色（主题色提亮），用于波峰顶部高光。
+  /// 边界亮环颜色（主题色提亮，深浅色下都清晰）。
   final Color highlight;
-
-  /// 背光/投影颜色（跟随主题），用于外阴影与内阴影。
-  final Color shadow;
-
-  final Color surface;
-
-  /// 涟漪圈数（错峰外扩）。
-  static const int _rings = 3;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -393,11 +383,11 @@ class _ThemeRevealPainter extends CustomPainter {
     final maxRadius = _maxRadius(size, origin);
     final radius = maxRadius * eased;
 
-    // 1) 旧画面：整屏绘制，挖掉以点击处为圆心、半径不断变大且带轻微起伏的洞。
+    // 1) 旧画面：整屏绘制，挖掉以点击处为圆心的洞。
     final hole = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(Offset.zero & size)
-      ..addPath(_wobblyCircle(radius, t, 0.0, segments: 120), Offset.zero);
+      ..addOval(Rect.fromCircle(center: origin, radius: radius));
     canvas.save();
     canvas.clipPath(hole);
     canvas.drawImageRect(
@@ -408,170 +398,25 @@ class _ThemeRevealPainter extends CustomPainter {
     );
     canvas.restore();
 
-    // 2) 波前立体感：新一侧的内阴影（水面下沉）。
+    // 2) 边界：细亮环 + 稍宽的主题色柔边（干净但不在浅色背景上消失）。
     if (t < 0.98) {
-      _strokePath(
-        canvas,
-        _wobblyCircle(radius - 7, t, 0.0),
-        strokeWidth: 9,
-        color: shadow.withValues(alpha: 0.20 * (1 - t)),
-      );
-      _strokePath(
-        canvas,
-        _wobblyCircle(radius - 17, t, 0.0),
-        strokeWidth: 10,
-        color: shadow.withValues(alpha: 0.10 * (1 - t)),
-      );
-    }
-
-    // 3) 旧一侧的外阴影（波峰挡住光、在旧画面上投下暗边）。
-    if (t < 0.98) {
-      _strokePath(
-        canvas,
-        _wobblyCircle(radius + 9, t, 0.0),
-        strokeWidth: 10,
-        color: shadow.withValues(alpha: 0.10 * (1 - t)),
-      );
-    }
-
-    // 4) 水波：3 圈错峰外扩。每圈 = 宽描边打底 + 细描边提亮 + 受光/背光弧，
-    //    形成「有厚度的受光波峰」而不是一道平线。
-    for (var i = 0; i < _rings; i++) {
-      final ringT = ((t - i * 0.12) / (1 - 0.12 * (_rings - 1))).clamp(0.0, 1.0);
-      if (ringT <= 0 || ringT >= 1) continue;
-      final ringRadius = maxRadius * Curves.easeOutCubic.transform(ringT);
-      final fade = (1 - ringT) * (0.55 - i * 0.12);
-      if (fade <= 0) continue;
-      final phase = i * 1.7;
-
-      // 波峰主体：宽而淡 + 窄而亮，叠出软边圆柱。
-      _strokePath(
-        canvas,
-        _wobblyCircle(ringRadius, t, phase),
-        strokeWidth: 18,
-        color: primary.withValues(alpha: fade * 0.16),
-      );
-      _strokePath(
-        canvas,
-        _wobblyCircle(ringRadius, t, phase),
-        strokeWidth: 9,
-        color: primary.withValues(alpha: fade * 0.42),
-      );
-      _strokePath(
-        canvas,
-        _wobblyCircle(ringRadius, t, phase),
-        strokeWidth: 3.5,
-        color: primary.withValues(alpha: fade * 0.62),
-      );
-
-      // 受光面：左上 ~100° 弧段更亮（固定光源方向，主题色保持统一）。
-      _strokePath(
-        canvas,
-        _wobblyArc(ringRadius, -2.45, 1.75, t, phase),
-        strokeWidth: 6,
-        color: highlight.withValues(alpha: fade * 0.55),
-      );
-      // 背光面：右下弧段压暗，形成体积。
-      _strokePath(
-        canvas,
-        _wobblyArc(ringRadius, 0.65, 1.75, t, phase),
-        strokeWidth: 7,
-        color: shadow.withValues(alpha: fade * 0.18),
-      );
-    }
-
-    // 5) 扩散前沿：一圈更亮的细环，强化「水波推开」的边缘。
-    if (t < 0.98) {
-      _strokePath(
-        canvas,
-        _wobblyCircle(radius, t, 0.0, segments: 140),
-        strokeWidth: 2.0,
-        color: highlight.withValues(alpha: 0.65 * (1 - t)),
-      );
-    }
-
-    // 6) 起点高光：像水滴落点，快速衰减。
-    final glow = (1 - t * 3.2).clamp(0.0, 1.0);
-    if (glow > 0) {
-      final glowRadius = 110.0 * (0.55 + t);
       canvas.drawCircle(
         origin,
-        glowRadius,
+        radius,
         Paint()
-          ..shader = ui.Gradient.radial(
-            origin,
-            glowRadius,
-            <Color>[
-              Color.alphaBlend(
-                primary.withValues(alpha: 0.30 * glow),
-                surface.withValues(alpha: 0.0),
-              ),
-              primary.withValues(alpha: 0),
-            ],
-            <double>[0.0, 1.0],
-          ),
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5
+          ..color = primary.withValues(alpha: 0.16 * (1 - t)),
       );
       canvas.drawCircle(
         origin,
-        10 * (0.6 + glow),
-        Paint()..color = highlight.withValues(alpha: 0.22 * glow),
+        radius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = highlight.withValues(alpha: 0.62 * (1 - t)),
       );
     }
-  }
-
-  /// 带低频角向起伏的圆：`r *= 1 + 0.006·sin(7θ+…) + 0.003·sin(13θ−…)`。
-  ///
-  /// 振幅取半径的千分位，肉眼可见「不是完美圆」，但不会破坏圆形揭示的观感。
-  Path _wobblyCircle(
-    double baseRadius,
-    double t,
-    double phase, {
-    int segments = 96,
-  }) {
-    return _wobblyArc(baseRadius, 0, math.pi * 2, t, phase, segments: segments);
-  }
-
-  Path _wobblyArc(
-    double baseRadius,
-    double startAngle,
-    double sweepAngle,
-    double t,
-    double phase, {
-    int segments = 40,
-  }) {
-    final path = Path();
-    final wobblePhase = t * math.pi * 2;
-    for (var i = 0; i <= segments; i++) {
-      final theta = startAngle + sweepAngle * (i / segments);
-      final wobble = 1 +
-          0.006 * math.sin(7 * theta + 6 * wobblePhase + phase) +
-          0.003 * math.sin(13 * theta - 9 * wobblePhase + phase);
-      final r = baseRadius * wobble;
-      final point = origin + Offset(math.cos(theta) * r, math.sin(theta) * r);
-      if (i == 0) {
-        path.moveTo(point.dx, point.dy);
-      } else {
-        path.lineTo(point.dx, point.dy);
-      }
-    }
-    return path;
-  }
-
-  void _strokePath(
-    Canvas canvas,
-    Path path, {
-    required double strokeWidth,
-    required Color color,
-  }) {
-    if (color.a == 0) return;
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = strokeWidth
-        ..strokeJoin = StrokeJoin.round
-        ..color = color,
-    );
   }
 
   static double _maxRadius(Size size, Offset origin) {
@@ -585,7 +430,5 @@ class _ThemeRevealPainter extends CustomPainter {
       oldDelegate.image != image ||
       oldDelegate.origin != origin ||
       oldDelegate.primary != primary ||
-      oldDelegate.highlight != highlight ||
-      oldDelegate.shadow != shadow ||
-      oldDelegate.surface != surface;
+      oldDelegate.highlight != highlight;
 }
