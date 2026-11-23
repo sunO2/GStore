@@ -36,24 +36,16 @@ yanked = "deny"
 # anyhow has no downcast_mut() caller, paste/unsafe-libyaml are unmaintained with
 # no vulnerability, and the two yanked pins have no advisory.
 #
-# The 12 findings that ARE reachable are deliberately NOT ignored here.  They are
+# The 15 findings that ARE reachable are deliberately NOT ignored here.  They are
 # BLOCKING records in rust/supply-chain-baseline.toml (with per-crate
 # applies_to, fix_version and an enforced review_date), so the gate reports them
 # and exits BLOCKED until the out-of-scope dependency refresh lands.  Adding a
 # reachable finding to this list without the code evidence above is a false PASS.
 #
-# Count: 9 RUSTSEC IDs + 2 yanked = 11 entries.  Every entry's machine-readable
+# Count: 7 RUSTSEC IDs + 2 yanked = 9 entries.  Every entry's machine-readable
 # review_date lives in rust/supply-chain-baseline.toml; a passed date is a hard
 # FAIL.
 ignore = [
-  # --- quinn-proto -----------------------------------------------------------
-  # reason: optional reqwest `http3` dependency present only in the lockfile;
-  #         not in the resolved build graph (`cargo tree -i quinn-proto` is
-  #         empty).  Fix would need quinn-proto >= 0.11.18.
-  # review: 2027-01-31.
-  "RUSTSEC-2026-0338",
-  "RUSTSEC-2026-0340",
-  "RUSTSEC-2026-0343",
   # --- zip ------------------------------------------------------------------
   # reason: these affect ZipArchive::extract()/ZipStreamReader::extract();
   #         no `.extract(` call site exists (readers use ZipArchive::new +

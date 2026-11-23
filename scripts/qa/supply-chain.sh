@@ -12,8 +12,8 @@
 #                      is lockfile-only, so it never appears here) plus
 #                      cargo audit --file on every lockfile.  Both outputs are
 #                      diffed against rust/supply-chain-baseline.toml:
-#                        [[finding]]    12 reachable findings -> BLOCKED
-#                        [[suppressed]] 11 justified ignores  -> accepted
+#                        [[finding]]    15 reachable findings -> BLOCKED
+#                        [[suppressed]] 9 justified ignores  -> accepted
 #                      The deny.toml ignore list is NOT passed to cargo audit;
 #                      the JSON is diffed instead, so a RUSTSEC id in a comment
 #                      can never become an ignore.  The script also asserts that
