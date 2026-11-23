@@ -51,6 +51,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 
   Future<void> _openWebSearchSettings() async {
     final config = _webSearchConfig ?? await WebSearchConfig.load();
+    if (!mounted) return;
     final updated = await WebSearchSettingsSheet.show(context, config: config);
     if (updated != null && mounted) {
       setState(() => _webSearchConfig = updated);

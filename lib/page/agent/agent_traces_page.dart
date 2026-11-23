@@ -289,6 +289,6 @@ class _StatusStyle {
 extension on AgentTurnRecord {
   String get totalTokensOrDash {
     final tokens = (inputTokens ?? 0) + (outputTokens ?? 0);
-    return tokens > 0 ? ' · ${tokens} tokens' : '';
+    return tokens > 0 ? ' · $tokens tokens' : '';
   }
 }

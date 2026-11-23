@@ -199,9 +199,7 @@ class WebSearchService {
   }
 
   WebFetchClient _ensureFetchClient(WebSearchConfig config) {
-    if (_fetchClient == null) {
-      _fetchClient = _fetchClientFactory(config);
-    }
+    _fetchClient ??= _fetchClientFactory(config);
     return _fetchClient!;
   }
 

@@ -277,6 +277,20 @@ jobs:
         if: steps.frb-cache.outputs.cache-hit != 'true'
         run: cargo install --locked flutter_rust_bridge_codegen --version 2.11.1
 
+      - name: Cache cargo-expand binary
+        id: cargo-expand-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-expand
+          key: ${{ runner.os }}-cargo-expand-1.0.127
+
+      # FRB codegen auto-installs cargo-expand without --locked, which now pulls
+      # grep-cli requiring rustc 1.96. Install a locked build ourselves so the
+      # codegen reuses it instead of attempting an un-locked install.
+      - name: Install cargo-expand
+        if: steps.cargo-expand-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-expand --version 1.0.127
+
       - name: flutter pub get
         run: flutter pub get
 

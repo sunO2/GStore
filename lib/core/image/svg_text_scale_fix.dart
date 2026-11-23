@@ -48,7 +48,7 @@ const double _defaultFontSize = 14.0;
 String fixSvgTextScale(String svg) {
   final out = StringBuffer();
   var last = 0;
-  final stack = <_Ctx>[_Ctx(1, 1, _defaultFontSize)];
+  final stack = <_Ctx>[const _Ctx(1, 1, _defaultFontSize)];
   var changed = false;
 
   for (final match in _tagPattern.allMatches(svg)) {
@@ -137,7 +137,7 @@ String _setFontSize(String attrs, double value) {
     return attrs.replaceRange(
       match.start,
       match.end,
-      'font-size="${formatted}"',
+      'font-size="$formatted"',
     );
   }
   return ' font-size="$formatted"$attrs';
