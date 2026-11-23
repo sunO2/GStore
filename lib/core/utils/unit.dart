@@ -152,13 +152,28 @@ String convertHtmlImgsToMarkdown(String html) {
   html =
       html.replaceAllMapped(imgPattern, (m) => _imgTagToMarkdown(m.group(0)!));
 
-  // 3. 剥离孤立内联 HTML 标签（img 已全部转换，剩余标签不影响 markdown 解析）
+  // 3. <summary> 作为加粗标题保留（<details> 折叠结构在 markdown 里无法还原）
+  html = html.replaceAllMapped(
+    RegExp(r'<summary[^>]*>(.*?)</summary>',
+        caseSensitive: false, dotAll: true),
+    (m) => '\n**${m.group(1)!.trim()}**\n',
+  );
+  // <kbd>Ctrl</kbd> → `Ctrl`
+  html = html.replaceAllMapped(
+    RegExp(r'<kbd[^>]*>(.*?)</kbd>', caseSensitive: false, dotAll: true),
+    (m) => '`${m.group(1)!.trim()}`',
+  );
+
+  // 4. 剥离孤立内联 HTML 标签（img 已全部转换，剩余标签不影响 markdown 解析）
   final brPattern = RegExp(r'<br\s*/?>', caseSensitive: false);
   html = html.replaceAll(brPattern, '\n');
   final orphanPattern = RegExp(
-      r'</?(?:a|div|span|center|p|h[1-6]|strong|em|b|i|u|font|table|thead|tbody|tr|td|th|ul|ol|li)(?:\s[^>]*)?/?>',
+      r'</?(?:a|div|span|center|p|h[1-6]|strong|em|b|i|u|font|table|thead|tbody|tr|td|th|ul|ol|li|details|summary|picture|source)(?:\s[^>]*)?/?>',
       caseSensitive: false);
-  return html.replaceAll(orphanPattern, '');
+  html = html.replaceAll(orphanPattern, '');
+
+  // 5. 解码常见 HTML 实体（README 里 &nbsp; / &amp; 很常见）
+  return _decodeHtmlEntities(html);
 }
 
 /// 提取单个 HTML 标签内的双引号属性（键转小写）
@@ -173,8 +188,22 @@ Map<String, String> _extractImgAttrs(String tag) {
 /// 将单个 <img> 标签转 markdown 图片语法；无 src 时原样返回原标签
 String _imgTagToMarkdown(String tag) {
   final attrs = _extractImgAttrs(tag);
-  final src = attrs['src'];
-  if (src == null || src.isEmpty) return tag; // 无 src → 原样保留
+  var src = attrs['src'] ?? '';
+  // 懒加载图片：src 可能是 1x1 占位 gif，真实地址在 data-src / srcset
+  final placeholder = src.isEmpty ||
+      (src.startsWith('data:image/gif') && src.length < 200);
+  if (placeholder) {
+    final dataSrc = attrs['data-src']?.trim() ?? '';
+    if (dataSrc.isNotEmpty) {
+      src = dataSrc;
+    } else {
+      final srcset = attrs['srcset']?.trim() ?? '';
+      if (srcset.isNotEmpty) {
+        src = srcset.split(',').first.trim().split(RegExp(r'\s+')).first;
+      }
+    }
+  }
+  if (src.isEmpty) return tag; // 无 src → 原样保留
   final alt = attrs['alt'] ?? '';
   final w = attrs['width'] == null ? null : _stripImgSize(attrs['width']!);
   final h = attrs['height'] == null ? null : _stripImgSize(attrs['height']!);
@@ -187,6 +216,47 @@ String _imgTagToMarkdown(String tag) {
     md += ' "x$h"'; // 仅高度：宽度等比补全
   }
   return '$md)';
+}
+
+/// 解码 README 中常见的 HTML 实体（含数字实体）。
+String _decodeHtmlEntities(String text) {
+  const named = {
+    'nbsp': ' ',
+    'amp': '&',
+    'lt': '<',
+    'gt': '>',
+    'quot': '"',
+    'apos': "'",
+    'hellip': '…',
+    'mdash': '—',
+    'ndash': '–',
+    'copy': '©',
+    'reg': '®',
+    'trade': '™',
+  };
+  var out = text.replaceAllMapped(
+    RegExp(r'&([a-zA-Z]+);'),
+    (m) => named[m.group(1)!.toLowerCase()] ?? m.group(0)!,
+  );
+  out = out.replaceAllMapped(
+    RegExp(r'&#(\d+);'),
+    (m) {
+      final code = int.tryParse(m.group(1)!);
+      return (code != null && code > 0 && code <= 0x10FFFF)
+          ? String.fromCharCode(code)
+          : m.group(0)!;
+    },
+  );
+  out = out.replaceAllMapped(
+    RegExp(r'&#x([0-9a-fA-F]+);'),
+    (m) {
+      final code = int.tryParse(m.group(1)!, radix: 16);
+      return (code != null && code > 0 && code <= 0x10FFFF)
+          ? String.fromCharCode(code)
+          : m.group(0)!;
+    },
+  );
+  return out;
 }
 
 /// 剥离 width/height 的 px 后缀，仅纯数字（可带 px）时返回数字串，否则返回 null

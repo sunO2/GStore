@@ -204,16 +204,19 @@ class _CodeBlockWidget extends StatelessWidget {
               ],
             ),
           ),
-          // 代码内容
+          // 代码内容：保留原始换行，长行横向滚动（不软换行，避免缩进错乱）
           Container(
             padding: EdgeInsets.all(AppSpacing.md),
             width: double.infinity,
-            child: Text(
-              codeText,
-              style: TextStyle(
-                color: AppColors.codeEditorText,
-                fontFamily: 'monospace',
-                fontSize: AppTypography.sizeSM,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SelectableText(
+                codeText,
+                style: TextStyle(
+                  color: AppColors.codeEditorText,
+                  fontFamily: 'monospace',
+                  fontSize: AppTypography.sizeSM,
+                ),
               ),
             ),
           ),
@@ -236,12 +239,14 @@ bool isSvgUrl(String url) {
 class _ReadmeImage extends StatelessWidget {
   final String url;
   final BuildContext buildContext;
+  final String? alt;
   final double? htmlWidth;
   final double? htmlHeight;
 
   const _ReadmeImage({
     required this.url,
     required this.buildContext,
+    this.alt,
     this.htmlWidth,
     this.htmlHeight,
   });
@@ -289,12 +294,21 @@ class _ReadmeImage extends StatelessWidget {
     bool hideOnError = true,
   }) {
     final maxWidth = MediaQuery.of(buildContext).size.width - AppSpacing.lg * 2;
+    final maxHeight = maxWidth * 0.8;
+    // HTML/markdown 显式尺寸先收敛到可用区域：超宽盒子会被父级裁剪，
+    // 看起来像"只渲染了一块"（README 里 <img width=大数> 的常见坑）。
+    final safeWidth = (htmlWidth != null && htmlWidth! > 0)
+        ? (htmlWidth! > maxWidth ? maxWidth : htmlWidth)
+        : null;
+    final safeHeight = (htmlHeight != null && htmlHeight! > 0)
+        ? (htmlHeight! > maxHeight ? maxHeight : htmlHeight)
+        : null;
     return AppImage(
       url: _proxiedUrl,
-      width: htmlWidth,
-      height: htmlHeight,
+      width: safeWidth,
+      height: safeHeight,
       maxWidth: maxWidth,
-      maxHeight: maxWidth * 0.8,
+      maxHeight: maxHeight,
       fit: BoxFit.contain,
       alignment: Alignment.center,
       allowDrawingOutsideViewBox: false,
@@ -358,9 +372,32 @@ class _ReadmeImage extends StatelessWidget {
             ),
           ),
           errorWidget: Container(
-            height: 60,
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.sm,
+              vertical: AppSpacing.xs,
+            ),
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: const Icon(TablerIcons.photo_off),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  TablerIcons.photo_off,
+                  size: AppTypography.iconSM,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                if (alt != null && alt!.trim().isNotEmpty) ...[
+                  const SizedBox(width: AppSpacing.xs),
+                  Flexible(
+                    child: Text(
+                      alt!.trim(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1076,9 +1113,9 @@ class _ReadmeSectionState extends State<ReadmeSection> {
       data: markdown,
       selectable: true,
       onTapLink: (text, href, title) {
-        if (href != null && href.isNotEmpty && widget.onLinkTap != null) {
-          widget.onLinkTap?.call(href);
-        }
+        // 目录锚点（#简介）不打开浏览器：README 内部跳转暂不支持滚动定位
+        if (href == null || href.isEmpty || href.startsWith('#')) return;
+        widget.onLinkTap?.call(href);
       },
       imageBuilder: (uri, title, alt) {
         final size = _parseImageTitleSize(title);
@@ -1087,6 +1124,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
           child: _ReadmeImage(
             url: uri.toString(),
             buildContext: context,
+            alt: alt,
             htmlWidth: size?.$1,
             htmlHeight: size?.$2,
           ),

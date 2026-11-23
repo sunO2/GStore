@@ -7,13 +7,56 @@ import 'app_image_loader.dart';
 import 'bitmap_size_reader.dart';
 import 'image_type_detector.dart';
 import 'svg_intrinsic_size.dart';
+import 'svg_text_scale_fix.dart';
 
-/// 判断 [url] 是否为 shields.io 徽章 URL（大小写不敏感）。
-bool isBadgeUrl(String url) => url.toLowerCase().contains('img.shields.io');
+/// 常见徽章服务域名/路径（大小写不敏感）。
+///
+/// 除 shields.io 外，README 里还常见 fury/badgen/codecov/travis/github workflow
+/// 等 SVG 徽章；它们同样是"固定小尺寸、应等比缩放"的图。
+const List<String> _badgeHosts = [
+  'img.shields.io',
+  'badge.fury.io',
+  'badgen.net',
+  'flat.badgen.net',
+  'img.badgesize.io',
+  'badge.buildkite.com',
+  'codecov.io/',
+  'coveralls.io/',
+  'api.codacy.com/project/badge',
+  'travis-ci.org/',
+  'travis-ci.com/',
+  'ci.appveyor.com/api/projects/status',
+  'github.com/',
+  'gitlab.com/',
+];
+
+/// 徽章默认显示高度（逻辑像素）。
+///
+/// shields 徽章固有高度 20；30 在手机上偏大，18（约 3/5）阅读更紧凑，
+/// 仍能看清文字。调用方可用 `badgeHeight` 覆盖。
+const double kDefaultBadgeHeight = 18;
+
+/// 判断 [url] 是否为徽章 URL（大小写不敏感）。
+///
+/// `github.com/` 仅匹配 `/badge.svg` / `/workflows/.../badge.svg` 这类路径，
+/// 避免把普通仓库图片当徽章。
+bool isBadgeUrl(String url) {
+  final lower = url.toLowerCase();
+  for (final host in _badgeHosts) {
+    if (!lower.contains(host)) continue;
+    if (host == 'github.com/' || host == 'gitlab.com/') {
+      return lower.contains('/badge.svg') ||
+          lower.contains('/badges/') ||
+          lower.contains('/workflows/');
+    }
+    return true;
+  }
+  return false;
+}
 
 /// 解析图片的显示尺寸。
 ///
-/// shields.io 徽章（SVG）高度钳制为 [badgeHeight]（默认 30），
+/// shields.io 徽章（SVG）高度钳制为 [badgeHeight]（默认 [kDefaultBadgeHeight] = 18），
 /// 其余场景原样返回 [width] x [height]。
 Size resolveImageDisplaySize({
   required String url,
@@ -23,7 +66,7 @@ Size resolveImageDisplaySize({
   double? badgeHeight,
 }) {
   if (format == ImageFormat.svg && isBadgeUrl(url)) {
-    return Size(width, badgeHeight ?? 30);
+    return Size(width, badgeHeight ?? kDefaultBadgeHeight);
   }
   return Size(width, height);
 }
@@ -90,7 +133,7 @@ class AppImage extends StatefulWidget {
   /// SVG 是否允许绘制超出 viewBox。
   final bool allowDrawingOutsideViewBox;
 
-  /// shields.io 徽章的高度钳制值（为 null 时默认 30）。
+  /// shields.io 徽章的高度钳制值（为 null 时用 [kDefaultBadgeHeight] = 18）。
   final double? badgeHeight;
 
   /// 加载器（测试注入），默认 [AppImageLoader.instance]。
@@ -128,9 +171,21 @@ class _AppImageState extends State<AppImage> {
 
   Future<void> _load() async {
     try {
-      final result =
+      var result =
           await (widget.loader ?? AppImageLoader.instance).load(widget.url);
       if (!mounted) return;
+      // vector_graphics 对「文本 + 等比缩放组」会丢字号缩放（徽章文字巨大）：
+      // 渲染前做一次字符串级修正，坐标仍由编译器折算。
+      if (result.format == ImageFormat.svg) {
+        final fixed = fixSvgTextScaleBytes(result.bytes);
+        if (!identical(fixed, result.bytes)) {
+          result = LoadedImage(
+            url: result.url,
+            bytes: fixed,
+            format: result.format,
+          );
+        }
+      }
       setState(() => _result = result);
       widget.onSuccess?.call();
       // 无 HTML 显式宽高 → 提取固有尺寸（SVG 同步文本解析，位图异步 ImageDescriptor）。
@@ -212,15 +267,18 @@ class _AppImageState extends State<AppImage> {
             },
           );
 
+    debugPrint('AppImage: url=${widget.url} format=$format badge=$isBadge '
+        'intrinsic=${_intrinsicW}x$_intrinsicH -> size=$size '
+        '(box=${widget.maxWidth}x${widget.maxHeight})');
     // 解析后尺寸完全确定（如 HTML 显式宽高、badge 钳制、固有尺寸 clamp）→ tight；
     // 否则 → loose 上限约束（现有 fallback）。
     if (size != null && size.width.isFinite && size.height.isFinite) {
       return SizedBox.fromSize(size: size, child: child);
     }
-    // loose 兜底：badge SVG 未给高度时钳制到 badgeHeight（默认 30，保留现状）。
+    // loose 兜底：badge SVG 未给高度时钳制到 badgeHeight（默认 18）。
     final double effectiveWidth = widget.width ?? widget.maxWidth;
     final double effectiveHeight = widget.height ??
-        (isBadge ? (widget.badgeHeight ?? 30) : widget.maxHeight);
+        (isBadge ? (widget.badgeHeight ?? kDefaultBadgeHeight) : widget.maxHeight);
     return ConstrainedBox(
       constraints: BoxConstraints(
         maxWidth: effectiveWidth,
@@ -250,42 +308,81 @@ class _AppImageState extends State<AppImage> {
     final isBadge = format == ImageFormat.svg && isBadgeUrl(widget.url);
     final intrinsicW = _intrinsicW;
     final intrinsicH = _intrinsicH;
-    final hasIntrinsic =
-        intrinsicW != null && intrinsicH != null && intrinsicW > 0 && intrinsicH > 0;
+    final hasIntrinsic = intrinsicW != null &&
+        intrinsicH != null &&
+        intrinsicW > 0 &&
+        intrinsicH > 0;
 
-    // 1) HTML 显式宽高 → 现状（badge 钳制保留）。
+    // 1) HTML 显式宽高 → 保留既有 badge 钳制，但**必须收敛到显示区**；
+    //    否则超宽盒子会被父级裁剪，看起来像"放大后只露出一块"。
     if (width != null && height != null) {
-      return resolveImageDisplaySize(
+      final resolved = resolveImageDisplaySize(
         url: widget.url,
         format: format,
         width: width,
         height: height,
         badgeHeight: widget.badgeHeight,
       );
+      var w = resolved.width;
+      var h = resolved.height;
+      if (isBadge) {
+        // 徽章：高度钳制优先（宽度保留但收敛）
+        w = math.min(w, maxWidth);
+        h = math.min(h, maxHeight);
+      } else {
+        // 普通图片：超限时等比缩放，避免"超宽盒子被父级裁掉一块"
+        final scale = math.min(
+          1.0,
+          math.min(maxWidth / w, maxHeight / h),
+        );
+        w = w * scale;
+        h = h * scale;
+      }
+      if (w > 0 && h > 0) return Size(w, h);
     }
 
-    // badge：intrinsic 不参与，保持现状（高度钳制 badgeHeight，默认 30）。
+    // 2) badge：高度一律钳制（显式 width 保留，但收敛到 maxWidth）；
+    //    没有显式宽度时按固有宽高比算宽（不再铺满整行），超宽再等比缩。
+    //    这样徽章会自然并排，不会被父级裁剪成"一块"。
     if (isBadge) {
-      return Size(width ?? maxWidth, widget.badgeHeight ?? 30);
+      final h = math.min(widget.badgeHeight ?? kDefaultBadgeHeight, maxHeight);
+      double? w;
+      if (width != null && width > 0) {
+        w = math.min(width, maxWidth);
+      } else if (hasIntrinsic) {
+        w = intrinsicW * h / intrinsicH;
+        if (w > maxWidth) {
+          w = maxWidth;
+        }
+      } else {
+        w = math.min(maxWidth, 200);
+      }
+      final hh = (hasIntrinsic && width == null)
+          ? math.min(h, w * intrinsicH / intrinsicW)
+          : h;
+      if (w > 0 && hh > 0) return Size(w, hh);
+      return Size(math.min(maxWidth, 200), h);
     }
 
-    // 2) 仅 width → intrinsic 比例补高（clamp ≤ maxHeight）；无 intrinsic → maxHeight 兜底。
+    // 3) 仅 width → intrinsic 等比补高（clamp ≤ maxHeight）。
     if (width != null) {
+      final w = math.min(width, maxWidth);
       final h = hasIntrinsic
-          ? math.min(intrinsicH / intrinsicW * width, maxHeight)
+          ? math.min(w * intrinsicH / intrinsicW, maxHeight)
           : maxHeight;
-      return Size(width, h);
+      return Size(w, h);
     }
 
-    // 3) 仅 height → 对称补宽。
+    // 4) 仅 height → 对称补宽。
     if (height != null) {
+      final h = math.min(height, maxHeight);
       final w = hasIntrinsic
-          ? math.min(intrinsicW / intrinsicH * height, maxWidth)
+          ? math.min(h * intrinsicW / intrinsicH, maxWidth)
           : maxWidth;
-      return Size(w, height);
+      return Size(w, h);
     }
 
-    // 4) 都无 + intrinsic → tight clamp 不放大。
+    // 5) 都无 + intrinsic → tight clamp 不放大。
     if (hasIntrinsic) {
       final scale = math.min(
         1.0,
@@ -294,7 +391,7 @@ class _AppImageState extends State<AppImage> {
       return Size(intrinsicW * scale, intrinsicH * scale);
     }
 
-    // 5) 都无 + 无 intrinsic → null（loose fallback）。
+    // 6) 都无 + 无 intrinsic → null（loose fallback）。
     return null;
   }
 

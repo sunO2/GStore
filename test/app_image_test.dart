@@ -114,7 +114,7 @@ void main() {
   });
 
   group('resolveImageDisplaySize', () {
-    test('svg + badge URL → 宽保留，高钳制为 badgeHeight（默认 30）', () {
+    test('svg + badge URL → 宽保留，高钳制为 badgeHeight（默认 18）', () {
       expect(
         resolveImageDisplaySize(
           url: kBadgeUrl,
@@ -122,7 +122,7 @@ void main() {
           width: 300,
           height: 200,
         ),
-        const Size(300, 30),
+        const Size(300, 18),
       );
     });
 
@@ -316,6 +316,36 @@ void main() {
       ));
       await tester.pump(const Duration(milliseconds: 50));
       expect(tester.getSize(find.byType(SvgPicture)), const Size(300, 30));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('无尺寸 badge SVG → 默认高 18、按固有比例宽 90', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kBadgeUrl, maxWidth: 400),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      // kBadgeUrl 的 fake SVG 固有尺寸 100x20 → 高 18 时宽 90
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(90, 18));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('badge 固有宽度超限 → 等比缩到 maxWidth', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kBadgeUrl, maxWidth: 60, badgeHeight: 30),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      // 150 > 60 → 宽 60，高 12（保持宽高比）
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(60, 12));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('显式尺寸超宽 → 等比缩放而不是被裁剪', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kSvgUrl, width: 800, height: 400, maxWidth: 200),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      // 800x400 等比缩到宽 200 → 200x100
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(200, 100));
       expect(tester.takeException(), isNull);
     });
 

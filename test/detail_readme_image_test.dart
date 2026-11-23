@@ -170,7 +170,7 @@ void main() {
     AppImageLoader.instance.clearCache();
   });
 
-  testWidgets('shields.io badge → SvgPicture，高度钳制 30（非固有 20/全屏区）',
+  testWidgets('shields.io badge → SvgPicture，按固有比例缩放（高 18 / 宽 90）',
       (tester) async {
     final info = _FakeDetailInfo()..readmeValue = '![badge]($kBadgeUrl)';
 
@@ -180,9 +180,8 @@ void main() {
     expect(find.byType(AppImage), findsOneWidget);
     expect(find.byType(SvgPicture), findsOneWidget);
     final size = tester.getSize(find.byType(SvgPicture));
-    // 宽度：768 显示区，flutter_markdown_plus 行内排版有 2px 收窄，容差 4
-    expect(size.width, closeTo(kDisplayWidth, 4));
-    expect(size.height, 30); // 钳制高度，非 SVG 固有 20 或全屏 614.4
+    // 徽章不再铺满整行：默认高 18，按固有 100x20 比例 → 宽 90（可并排）
+    expect(size, const Size(90, 18));
     expect(tester.takeException(), isNull);
   });
 
