@@ -3,9 +3,7 @@ package com.suno2.gstore
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -39,6 +37,11 @@ object LoginLiveUpdateChannel {
             when (call.method) {
                 "isSupported" -> result.success(Build.VERSION.SDK_INT >= MIN_SDK)
                 "sdkInt" -> result.success(Build.VERSION.SDK_INT)
+                // Android 16.0 用 colorized 提升（旧模型）；16.1+/17 用
+                // setRequestPromotedOngoing（新模型），只有新模型才按用户开关判断。
+                "promotionModel" -> result.success(
+                    if (hasPromotionSetter()) "new" else "old"
+                )
                 "canPostPromoted" -> {
                     result.success(Build.VERSION.SDK_INT >= MIN_SDK &&
                         context.getSystemService(NotificationManager::class.java)
@@ -100,21 +103,12 @@ object LoginLiveUpdateChannel {
         shortText: CharSequence,
     ): Map<String, Any?> {
         val manager = context.getSystemService(NotificationManager::class.java)
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        val contentIntent = PendingIntent.getActivity(
-            context,
-            NOTIFICATION_ID,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
 
+        // 不设置 contentIntent：验证码通知点击不跳转，避免覆盖正在进行的登录页。
         val builder = Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_login)
             .setContentTitle(title)
             .setContentText(body)
-            .setContentIntent(contentIntent)
             .setCategory(Notification.CATEGORY_PROGRESS)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -142,6 +136,15 @@ object LoginLiveUpdateChannel {
         return mapOf("posted" to true, "promoted" to promoted, "allowed" to allowed)
     }
 
+    /** 当前系统是否有 36.1+ 的 `setRequestPromotedOngoing`（新模型）。 */
+    private fun hasPromotionSetter(): Boolean = try {
+        Notification.Builder::class.java
+            .getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType)
+        true
+    } catch (_: Throwable) {
+        false
+    }
+
     /**
      * 请求系统提升为 Live Update。
      *
@@ -150,15 +153,16 @@ object LoginLiveUpdateChannel {
      * 两种模型互斥，用反射判断当前系统是否有 setter。
      */
     private fun requestPromotion(builder: Notification.Builder) {
-        val hasSetter = try {
-            Notification.Builder::class.java
-                .getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType)
-                .invoke(builder, true)
-            true
-        } catch (_: Throwable) {
-            false
+        if (hasPromotionSetter()) {
+            try {
+                Notification.Builder::class.java
+                    .getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType)
+                    .invoke(builder, true)
+                return
+            } catch (_: Throwable) {
+                // 反射失败则走旧模型 extra，下面兜底。
+            }
         }
-        if (hasSetter) return
 
         builder.addExtras(Bundle().apply {
             putBoolean("android.requestPromotedOngoing", true)

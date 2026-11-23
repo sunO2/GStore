@@ -39,14 +39,14 @@ class LoginNotificationService {
   /// Live Updates 是否可用（null 表示尚未探测）。
   bool? _liveUpdateSupported;
 
+  /// 本次探测结论（写入轮询日志）。
+  String _liveUpdateReason = '';
+
   /// 渲染序号：异步探测/调用返回时丢弃过期结果，避免进度条回跳。
   int _renderSeq = 0;
 
   /// 轮询日志回调（登录页用于把 Live Updates 能力/提升结果写进日志）。
   void Function(String message)? _onLog;
-
-  /// Android SDK 版本（诊断日志展示）。
-  int? _sdkInt;
 
   /// 本次验证码是否已输出过「支持/不支持」能力日志。
   bool _supportLogged = false;
@@ -173,6 +173,8 @@ class LoginNotificationService {
     _onLog = onLog;
     _supportLogged = false;
     _lastLiveUpdateStatus = null;
+    // 每次新验证码重新探测：用户可能刚在系统设置里打开「实时通知」。
+    _liveUpdateSupported = null;
     _lastCode = code;
     _expiresInSeconds = expiresIn ?? 0;
     _expiresAt = _expiresInSeconds > 0
@@ -206,36 +208,63 @@ class LoginNotificationService {
     if (live) {
       if (!_supportLogged) {
         _supportLogged = true;
-        _log('Live Updates：支持（Android SDK ${_sdkInt ?? '?'}），尝试提升为实时通知');
+        _log('Live Updates：$_liveUpdateReason，使用 Live Update 通知');
       }
       await _renderLiveUpdate();
     } else {
       if (!_supportLogged) {
         _supportLogged = true;
-        _log('Live Updates：不支持（Android SDK ${_sdkInt ?? '?'}），使用普通进度通知');
+        _log('Live Updates：$_liveUpdateReason');
       }
       _renderLoginNotification();
     }
   }
 
-  /// 探测 Android 16+ Live Updates 通道（结果缓存）。
+  /// 探测 Android 16+ Live Updates 通道（每次验证码重新探测，会话内缓存）。
+  ///
+  /// 只有「SDK 支持 + 系统允许提升」才走 Live Update；否则回退到
+  /// flutter_local_notifications 普通通知。Android 16.0 是旧提升模型
+  /// （colorized），系统查询不可靠，因此不做开关拦截。
   Future<bool> _supportsLiveUpdate() async {
     final cached = _liveUpdateSupported;
     if (cached != null) return cached;
     if (defaultTargetPlatform != TargetPlatform.android) {
       _liveUpdateSupported = false;
+      _liveUpdateReason = '非 Android 平台，使用 flutter_local_notifications';
       return false;
     }
     try {
       final sdkInt = await _liveUpdateChannel.invokeMethod<int>('sdkInt');
-      _sdkInt = sdkInt;
-      final supported =
-          await _liveUpdateChannel.invokeMethod<bool>('isSupported') ?? false;
-      _liveUpdateSupported = supported;
-      return supported;
+      if (sdkInt == null || sdkInt < 36) {
+        _liveUpdateSupported = false;
+        _liveUpdateReason = '不支持（Android SDK ${sdkInt ?? '?'}），'
+            '使用 flutter_local_notifications';
+        return false;
+      }
+
+      final model =
+          await _liveUpdateChannel.invokeMethod<String>('promotionModel') ??
+              'old';
+      if (model == 'new') {
+        final allowed =
+            await _liveUpdateChannel.invokeMethod<bool>('canPostPromoted') ??
+                false;
+        if (!allowed) {
+          _liveUpdateSupported = false;
+          _liveUpdateReason = '系统未开启实时通知（可在系统设置中打开），'
+              '使用 flutter_local_notifications';
+          return false;
+        }
+      }
+
+      _liveUpdateSupported = true;
+      _liveUpdateReason =
+          '支持（Android SDK $sdkInt，提升模型 ${model == 'new' ? '新' : '旧'}）';
+      return true;
     } catch (e) {
       // 通道缺失（测试/旧壳）时全部降级为普通通知。
       _liveUpdateSupported = false;
+      _liveUpdateReason = '检测失败（$e），使用 flutter_local_notifications';
       return false;
     }
   }
