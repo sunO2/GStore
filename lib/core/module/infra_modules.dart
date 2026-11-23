@@ -14,6 +14,7 @@ import 'package:rhttp/rhttp.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
+import 'package:gstore/core/service/login_notification_service.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
@@ -83,6 +84,7 @@ class NotificationModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     await DownloadNotificationService.instance.init();
+    await LoginNotificationService.instance.init();
   }
 }
 

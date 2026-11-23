@@ -10,6 +10,7 @@ import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
+import 'package:gstore/core/service/login_notification_service.dart';
 
 /// 用户管理服务
 ///
@@ -175,6 +176,44 @@ class UserManager {
     }
   }
 
+  /// 轮询尝试次数（每次 startLoginOfTimer 重置；登录说明页用于展示进度日志）。
+  int _pollAttempt = 0;
+
+  /// 当前登录轮询参数（用于后台回到前台时恢复轮询）。
+  String? _loginDeviceCode;
+  int _loginInterval = 5;
+  int? _loginExpiresIn;
+
+  /// 轮询是否进行中（登录说明页用于判断是否需要恢复轮询）。
+  bool get isPolling => _loginRequestTimer?.isActive ?? false;
+
+  /// 后台回到前台时恢复轮询（无设备码或已轮询时不动作）。
+  Future<void> resumePolling(CancelToken cancelToken) async {
+    if (isPolling) return;
+    final deviceCode = _loginDeviceCode;
+    if (deviceCode == null) return;
+    await startLoginOfTimer(
+      deviceCode,
+      _loginInterval,
+      cancelToken,
+      expiresIn: _loginExpiresIn,
+    );
+  }
+
+  /// 轮询日志流——登录说明页用于展示每次轮询的进度。
+  final StreamController<String> _pollLogController =
+      StreamController<String>.broadcast();
+
+  /// 轮询日志流（用户可在登录说明页查看轮询进度）。
+  Stream<String> get pollLogStream => _pollLogController.stream;
+
+  /// 向轮询日志流追加一条消息（后台无监听时静默丢弃，不影响轮询）。
+  void _emitPollLog(String message) {
+    try {
+      _pollLogController.add(message);
+    } catch (_) {}
+  }
+
   /// 开始登录轮询
   /// [expiresIn] 设备码有效期（秒，GitHub device/code 返回）；到期后终止轮询，
   /// 避免无效轮询空转（否则需等 GitHub 返回 expired_token 才停止）。
@@ -184,6 +223,11 @@ class UserManager {
     CancelToken cancelToken, {
     int? expiresIn,
   }) {
+    // 记录登录轮询参数，用于后台回到前台时恢复轮询（如从 GitHub 浏览器返回）。
+    _loginDeviceCode = deviceCode;
+    _loginInterval = interval;
+    _loginExpiresIn = expiresIn;
+    _pollAttempt = 0;
     final completer = Completer<UserInfo?>();
     final deadline = expiresIn != null
         ? DateTime.now().add(Duration(seconds: expiresIn))
@@ -222,7 +266,7 @@ class UserManager {
     if (deadline != null && !DateTime.now().isBefore(deadline)) {
       _loginRequestTimer?.cancel();
       appLog.error('UserManager: 设备码已过期，终止轮询');
-      AppDialogs.showError('验证码已过期，请重新获取', title: '登录失败');
+      _emitPollLog('设备码已过期，停止轮询');
       completer.completeError(
         DioException.requestCancelled(
           requestOptions: RequestOptions(),
@@ -241,6 +285,9 @@ class UserManager {
         );
       }
 
+      _pollAttempt++;
+      _emitPollLog('第 $_pollAttempt 次轮询：请求 access_token…');
+
       // 调用 GitHub OAuth API
       final auth = await _authApi.login(
         AppConfig.githubClientId,
@@ -250,6 +297,7 @@ class UserManager {
       // 检查 access_token
       if (auth.accessToken?.isEmpty ?? true) {
         // token 还没准备好，继续轮询
+        _emitPollLog('未获取到 access_token，继续轮询…');
         if (cancelToken.isCancelled) {
           throw DioException.requestCancelled(
             requestOptions: RequestOptions(),
@@ -264,17 +312,22 @@ class UserManager {
       if (auth.accessToken?.isNotEmpty ?? false) {
         // 先设置全局授权头（内存态，供 user() 校验携带 token）
         DioClient.instance.authorization = auth.accessToken;
+        _emitPollLog('获取到 access_token，请求用户信息…');
 
         // 先验证用户信息：拉取成功才持久化 token（避免"token 已落库但用户拉取失败"
         // 的半登录态——下次启动会误判已登录）；失败则清除内存授权头，不残留。
         final user = await _githubApi.user();
         if (user != null) {
+          _emitPollLog('登录成功：${user.login}');
+          LoginNotificationService.instance.cancel();
           await saveToken(auth.accessToken!);
           _setUserInfo(user);
           await _secureStorage.write(key: _userInfoKey, value: user.toJson());
           await _syncGithubTokenToRust(auth.accessToken);
           completer.complete(user);
         } else {
+          _emitPollLog('用户信息为空，登录失败');
+          LoginNotificationService.instance.cancel();
           DioClient.instance.authorization = null;
           completer.complete(null);
         }
@@ -286,18 +339,17 @@ class UserManager {
       } else if (e.response?.statusCode == 401 ||
           e.response?.statusCode == 403) {
         appLog.error('UserManager: 认证失败 - ${e.response?.statusCode}');
-        // 401/403：设备码过期/无效/授权被拒——提示用户重新获取验证码
-        AppDialogs.showError('认证失败，请重新获取验证码', title: '登录失败');
+        _emitPollLog('认证失败（请重新获取验证码）');
+        // 401/403：设备码过期/无效/授权被拒（不再弹 snackbar——失败态由页面「再次轮试」按钮兜底）
         completer.completeError(e);
       } else {
         appLog.error('UserManager: 登录请求失败 - $e');
-        AppDialogs.showError('网络错误，请检查网络连接', title: '登录失败');
+        _emitPollLog('网络错误，轮询停止');
         completer.completeError(e);
       }
     } catch (e) {
       // 其他错误处理
       appLog.error('UserManager: 登录异常 - $e');
-      AppDialogs.showError('发生未知错误，请重试', title: '登录失败');
       completer.completeError(e);
     }
   }

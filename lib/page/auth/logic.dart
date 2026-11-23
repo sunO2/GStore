@@ -4,20 +4,21 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
+import 'package:gstore/core/service/login_notification_service.dart';
+import 'package:gstore/page/web/browser.dart';
 import 'state.dart';
+
+/// GitHub 设备登录页面（系统浏览器打开；用户在此输入验证码）。
+const String _githubDeviceLoginUrl = 'https://github.com/login/device';
 
 /// GitHub 认证页业务逻辑（Riverpod 版）。
 class AuthPageNotifier extends Notifier<AuthPageState> {
-  /// 登录页 WebView 控制器（仅承载加载/回退等操作，非 UI 数据，不入 state）。
-  InAppWebViewController? webViewController;
-
-  /// 登录轮询取消令牌（页面销毁时一并取消，结束轮询）。
-  final loginRequestCancelToken = CancelToken();
+  /// 登录轮询取消令牌（页面销毁或重新获取时一并取消，结束轮询）。
+  CancelToken loginRequestCancelToken = CancelToken();
 
   final userManager = UserManager.instance;
 
   /// 页面监听计数（页面打开时 watch 增加，销毁时减少）。
-  /// 等价原 GetX `Get.isRegistered`：用于异步回调后判断页面是否仍存活。
   int _listenerCount = 0;
 
   /// 页面是否仍存活（存在监听者即视为存活）。
@@ -28,7 +29,7 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
     ref.onAddListener(() => _listenerCount++);
     ref.onRemoveListener(() {
       _listenerCount--;
-      // 页面（唯一监听者）关闭 → 等价原 GetX onClose：取消进行中的登录轮询
+      // 页面（唯一监听者）关闭 → 结束进行中的登录轮询
       if (!_pageAlive) {
         userManager.cancelLogin();
         loginRequestCancelToken.cancel();
@@ -39,71 +40,88 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
       userManager.cancelLogin();
       loginRequestCancelToken.cancel();
     });
+    // 订阅轮询日志，登录说明页展示轮询进度，并同步到通知栏
+    userManager.pollLogStream.listen((log) {
+      _appendLog(log);
+      LoginNotificationService.instance.updatePollProgress(log);
+    });
     return const AuthPageState();
   }
 
-  /// 直接写入状态字段（view 在 onLoadStop 等非逻辑回调中调用）。
-  void setStatus(AuthStatus status) {
-    state = state.copyWith(status: status);
+  /// 追加一条轮询日志（保留最近 50 条），供页面日志面板展示。
+  void _appendLog(String log) {
+    var logs = List<String>.of(state.pollingLogs)..add(log);
+    if (logs.length > 50) logs = logs.sublist(logs.length - 50);
+    state = state.copyWith(pollingLogs: logs);
   }
 
-  /// 取消进行中的登录轮询（页面主动关闭/外部取消时调用；ref.onDispose 同样清理）
+  /// 进入登录说明页时重置状态（避免再次进入页面时显示上一次的验证码/日志）。
+  void reset() {
+    state = const AuthPageState();
+  }
+
+  /// 切换轮询日志折叠状态（登录说明页用于展示进度）。
+  void togglePollLogs() {
+    state = state.copyWith(showPollLogs: !state.showPollLogs);
+  }
+
+  /// 取消进行中的登录轮询（页面主动关闭/重新获取时调用）。
   void cancelLogin() {
     userManager.cancelLogin();
+    LoginNotificationService.instance.cancel();
     if (!loginRequestCancelToken.isCancelled) {
       loginRequestCancelToken.cancel();
     }
   }
 
-  void loadUrl(String url) {
-    log("开始加载url $url ${null != webViewController}");
-    webViewController?.loadUrl(
-        urlRequest: URLRequest(url: WebUri.uri(Uri.parse(url))));
+  /// 后台回到前台（如从 GitHub 浏览器返回）：等待授权中但轮询未进行时恢复轮询。
+  Future<void> onAppResumed() async {
+    if (state.status != AuthStatus.verifying) return;
+    if (userManager.isPolling) return;
+    await userManager.resumePolling(loginRequestCancelToken);
   }
 
-  void registerEvent(InAppWebViewController controller) {
-    webViewController = controller;
-    // 重置状态，确保每次打开登录页面都是干净的状态
-    state = const AuthPageState();
-
-    controller.addJavaScriptHandler(
-        handlerName: "gstore_login_to_github",
-        callback: (data) {
-          webViewController?.loadUrl(
-              urlRequest: URLRequest(
-                  url: WebUri.uri(
-                      Uri.parse("https://github.com/login/device"))));
-        });
+  /// 手动「再次轮询认证」：取消当前轮询（若在途）并用已存设备码重新开始轮询。
+  /// 轮询失败（initial）时才会被按钮调用；重新开始后回到等待态。
+  Future<void> retryPolling() async {
+    userManager.cancelLogin();
+    loginRequestCancelToken = CancelToken();
+    _appendLog('重新开始轮询登录状态…');
+    await userManager.resumePolling(loginRequestCancelToken);
+    if (state.verificationCode.isNotEmpty) {
+      state = state.copyWith(status: AuthStatus.verifying);
+    }
   }
 
-  void getDeviceCode() {
+  /// 进入登录说明页即请求设备码（UserManager.deviceId 会同步把用户码写入剪贴板）。
+  Future<void> getDeviceCode() async {
+    // 若令牌已被取消（如页面重新进入），换一个新令牌
+    if (loginRequestCancelToken.isCancelled) {
+      loginRequestCancelToken = CancelToken();
+    }
     state = state.copyWith(status: AuthStatus.requestUserCode);
+    _appendLog('正在请求 GitHub 设备验证码…');
     userManager.deviceId.then((value) async {
       if (value.deviceCode?.isNotEmpty ?? false) {
-        state = state.copyWith(verificationCode: value.userCode ?? "");
+        state = state.copyWith(verificationCode: value.userCode ?? '');
         state = state.copyWith(status: AuthStatus.verifying);
-
-        // 自动填充验证码到 GitHub 页面（JS 返回 true/false）；失败降级提示手动输入
-        try {
-          final filled = await webViewController?.evaluateJavascript(
-            source:
-                "fillUserCode('${state.verificationCode.replaceAll("-", "")}')",
-          );
-          if (filled != true && filled != 'true') {
-            log('fillUserCode 自动填充失败（页面结构可能已变化）');
-            // 页面可能未加载完成/结构不匹配 → 提示手动输入（不阻塞后续轮询）
-            if (_pageAlive) {
-              try {
-                AppDialogs.showWarning('未能自动填入验证码，请在网页中手动输入',
-                    title: '验证码');
-              } catch (e) {
-                log("提示失败：$e");
-              }
-            }
-          }
-        } catch (e) {
-          log("填充验证码失败：$e");
+        // 验证码有效期（用于页面小字提醒）
+        if (value.expiresIn != null) {
+          state = state.copyWith(
+              codeExpiresAt: DateTime.now()
+                  .add(Duration(seconds: value.expiresIn!)));
         }
+        // 验证码也写入轮询日志，让日志面板一开始就有内容
+        _appendLog(
+            '已获取验证码：${value.userCode ?? ''}'
+            '${value.expiresIn != null ? '（${value.expiresIn! ~/ 60} 分钟内有效）' : ''}');
+        _appendLog('已开始轮询登录状态，在 GitHub 授权成功后即可关闭本页面');
+
+        // 前台通知：请求通知权限，再把验证码写入通知栏；启动前台服务（保持进程存活）
+        await LoginNotificationService.instance.requestPermission();
+        LoginNotificationService.instance.showLoginNotification(
+            value.userCode ?? '');
+        LoginNotificationService.instance.startForegroundService();
 
         // 开始轮询登录状态
         Future.delayed(Duration(seconds: value.interval ?? 5), () async {
@@ -112,7 +130,7 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
                 value.deviceCode!, value.interval ?? 5, loginRequestCancelToken,
                 expiresIn: value.expiresIn);
 
-            // 以 API 轮询结果为准，不依赖页面 URL
+            // 以 API 轮询结果为准
             if (userInfo != null) {
               log("登录成功：${userInfo.login}");
               state = state.copyWith(status: AuthStatus.success);
@@ -128,11 +146,11 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
                 }
               }
 
-              // 延迟自动返回（GoRouter 无 context pop；success toast 已在上方提示）
+              // 延迟自动返回
               await Future.delayed(const Duration(milliseconds: 800));
               if (_pageAlive) {
                 try {
-                  appRouter.pop();
+                  appRouter.pop(AuthStatus.success);
                 } catch (e) {
                   log("返回失败（页面可能已关闭）：$e");
                 }
@@ -140,13 +158,6 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
             } else {
               log("登录失败：userInfo 为 null");
               state = state.copyWith(status: AuthStatus.initial);
-              if (_pageAlive) {
-                try {
-                  AppDialogs.showError('登录失败，请重试', title: '登录失败');
-                } catch (e) {
-                  log("显示错误提示失败：$e");
-                }
-              }
             }
           } catch (e) {
             log("登录轮询失败：$e");
@@ -155,20 +166,32 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
           }
         });
       } else {
-        // deviceCode 为空，说明获取失败，重置状态
         log("获取设备码失败：返回的 deviceCode 为空");
+        _appendLog('获取设备码失败：deviceCode 为空');
         state = state.copyWith(status: AuthStatus.initial);
       }
     }).onError((error, stackTrace) {
       log("获取设备码失败 $error");
+      _appendLog('获取设备码失败：$error');
       state = state.copyWith(status: AuthStatus.initial);
     });
   }
 
+  /// 重新获取设备码：先取消在途轮询，再重新请求。
+  void reFetchDeviceCode() {
+    cancelLogin();
+    getDeviceCode();
+  }
+
+  /// 复制验证码到剪贴板。
   Future<void> copyVerificationCode() async {
     await Clipboard.setData(ClipboardData(text: state.verificationCode));
     AppDialogs.showSuccess('验证码已复制到剪贴板', title: '提示');
   }
+
+  /// 去 GitHub 设备登录页（系统浏览器）。
+  Future<void> openGitHubDevicePage() =>
+      GStoreInAppBrowser().open(url: WebUri(_githubDeviceLoginUrl));
 }
 
 /// 认证页 provider。

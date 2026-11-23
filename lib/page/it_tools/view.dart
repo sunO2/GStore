@@ -132,6 +132,15 @@ class _ItToolsPageState extends State<ItToolsPage> {
         _loading = false;
       });
       debugPrint('ItToolsPage: 入口 $entryPath');
+      // WebView 按进场转场结束后再挂载：转场期间创建 Android 平台视图会与动画
+      // 同帧竞争合成层，导致进场/返回掉帧（登录页与开发者工具箱均为此形态）。
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        if (mounted) {
+          setState(() {
+            _webView ??= _buildWebView();
+          });
+        }
+      });
     } catch (e) {
       debugPrint('ItToolsPage: 准备离线资源失败 - $e');
       if (!mounted) return;
@@ -285,7 +294,7 @@ class _ItToolsPageState extends State<ItToolsPage> {
       return _buildError(context);
     }
 
-    return _webView ??= _buildWebView();
+    return _webView ?? const SizedBox.expand();
   }
 
   /// 构建（并缓存）WebView 平台视图：仅在 [_entryPath] 首次可用时调用一次。
