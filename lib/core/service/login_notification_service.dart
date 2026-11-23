@@ -1,11 +1,15 @@
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, visibleForTesting;
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gstore/core/core.dart';
 
 /// GitHub 登录轮询通知服务
 ///
-/// - flutter_local_notifications：通知栏显示验证码（前台通知，持续显示）；
+/// - Android 16+：走原生 Live Updates（promoted ongoing notification），由
+///   OPPO/荣耀/小米/vivo 等系统自行渲染成灵动岛/胶囊形态；
+/// - 低版本：flutter_local_notifications 普通进度通知兜底；
 /// - flutter_foreground_task：前台服务，保持进程存活（用户去 GitHub 浏览
 ///   时轮询继续，不会被系统杀后台）。
 class LoginNotificationService {
@@ -23,10 +27,20 @@ class LoginNotificationService {
   /// 前台服务 ID
   static const int _foregroundServiceId = 998;
 
+  /// Android 16 Live Updates 原生通道（ProgressStyle + promoted ongoing）。
+  static const MethodChannel _liveUpdateChannel =
+      MethodChannel('gstore/login_live_update');
+
   final FlutterLocalNotificationsPlugin _local =
       FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
+
+  /// Live Updates 是否可用（null 表示尚未探测）。
+  bool? _liveUpdateSupported;
+
+  /// 渲染序号：异步探测/调用返回时丢弃过期结果，避免进度条回跳。
+  int _renderSeq = 0;
 
   /// 当前验证码（通知标题展示）
   String _lastCode = '';
@@ -147,18 +161,74 @@ class LoginNotificationService {
         : null;
 
     // 先立即渲染一次，不必等第一次轮询
-    _renderLoginNotification();
+    _renderNow();
 
     _countdownTimer?.cancel();
     _countdownTimer = null;
     if (_expiresAt == null) return;
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _renderLoginNotification();
+      _renderNow();
       if (_remainingSeconds <= 0) {
         _countdownTimer?.cancel();
         _countdownTimer = null;
       }
     });
+  }
+
+  /// 按当前平台能力选择渲染路径（Live Updates / 普通通知）。
+  void _renderNow() {
+    final seq = ++_renderSeq;
+    unawaited(_renderNowAsync(seq));
+  }
+
+  Future<void> _renderNowAsync(int seq) async {
+    final live = await _supportsLiveUpdate();
+    if (seq != _renderSeq) return;
+    if (live) {
+      await _renderLiveUpdate();
+    } else {
+      _renderLoginNotification();
+    }
+  }
+
+  /// 探测 Android 16+ Live Updates 通道（结果缓存）。
+  Future<bool> _supportsLiveUpdate() async {
+    final cached = _liveUpdateSupported;
+    if (cached != null) return cached;
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      _liveUpdateSupported = false;
+      return false;
+    }
+    try {
+      final supported =
+          await _liveUpdateChannel.invokeMethod<bool>('isSupported') ?? false;
+      _liveUpdateSupported = supported;
+      return supported;
+    } catch (e) {
+      // 通道缺失（测试/旧壳）时全部降级为普通通知。
+      _liveUpdateSupported = false;
+      return false;
+    }
+  }
+
+  /// 通过原生 ProgressStyle 通知渲染（Android 16+，厂商系统自动映射为岛）。
+  Future<void> _renderLiveUpdate() async {
+    final expired = _expiresAt != null && _remainingSeconds <= 0;
+    final remaining = _remainingSeconds;
+    final shortText = expired
+        ? '已过期'
+        : '${(remaining ~/ 60).toString().padLeft(2, '0')}:'
+            '${(remaining % 60).toString().padLeft(2, '0')}';
+    try {
+      await _liveUpdateChannel.invokeMethod<bool>('show', {
+        'title': '验证码：$_lastCode',
+        'body': expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
+        'progress': _progressPercent,
+        'shortText': shortText,
+      });
+    } catch (e) {
+      appLog.error('LoginNotificationService: Live Update 通知失败 - $e');
+    }
   }
 
   /// 渲染验证码通知：标题为验证码，副标题为操作说明，进度条为剩余有效期。
@@ -195,8 +265,20 @@ class LoginNotificationService {
     _expiresAt = null;
     _expiresInSeconds = 0;
     _lastCode = '';
+    _renderSeq++;
     if (!_initialized) return;
     _safeNotify(() => _local.cancel(id: _notificationId));
+    // 原生 Live Update 与插件通知同 id；两条路径都取消，保证不残留。
+    try {
+      unawaited(_liveUpdateChannel.invokeMethod<bool>('cancel').then<void>(
+        (_) {},
+        onError: (Object e) {
+          appLog.error('LoginNotificationService: 取消 Live Update 失败 - $e');
+        },
+      ));
+    } catch (e) {
+      appLog.error('LoginNotificationService: 取消 Live Update 失败 - $e');
+    }
     _stopForegroundService();
   }
 
