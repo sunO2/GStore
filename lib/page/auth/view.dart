@@ -332,16 +332,15 @@ class _AuthPageState extends ConsumerState<AuthPage> {
       _hintText(state),
       style: textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
     );
-    // 轮试失败（initial）——显示失败提示 + 「再次轮试」按钮
+    // 轮询失败（initial）——显示失败提示 +「手动认证」按钮
     if (state.status == AuthStatus.initial) {
       return Row(
         children: [
-          text,
-          const SizedBox(width: 8),
-          IconButton(
+          Expanded(child: text),
+          const SizedBox(width: AppSpacing.sm),
+          FilledButton.tonal(
             onPressed: logic.retryPolling,
-            icon: const Icon(TablerIcons.player_play, size: 16),
-            tooltip: '再次轮询',
+            child: const Text('手动认证'),
           ),
         ],
       );

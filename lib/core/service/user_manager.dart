@@ -187,12 +187,18 @@ class UserManager {
   /// 轮询是否进行中（登录说明页用于判断是否需要恢复轮询）。
   bool get isPolling => _loginRequestTimer?.isActive ?? false;
 
+  /// 是否已持有可恢复轮询的设备码（登录页回前台自动重试时判断）。
+  bool get canResumePolling => _loginDeviceCode != null;
+
   /// 后台回到前台时恢复轮询（无设备码或已轮询时不动作）。
-  Future<void> resumePolling(CancelToken cancelToken) async {
-    if (isPolling) return;
+  ///
+  /// 返回本次轮询的结果（与 [startLoginOfTimer] 一致），供调用方统一处理
+  /// 成功/失败；无法恢复时返回 null。
+  Future<UserInfo?> resumePolling(CancelToken cancelToken) async {
+    if (isPolling) return null;
     final deviceCode = _loginDeviceCode;
-    if (deviceCode == null) return;
-    await startLoginOfTimer(
+    if (deviceCode == null) return null;
+    return startLoginOfTimer(
       deviceCode,
       _loginInterval,
       cancelToken,

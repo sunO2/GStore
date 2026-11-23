@@ -17,8 +17,8 @@ class LoginNotificationService {
   static const String _channelId = 'login_poll';
   static const String _channelName = 'GitHub 登录';
 
-  /// 通知 ID
-  static const int _notificationId = 998;
+  /// 验证码通知 ID（与前台服务通知 ID 区分，避免被服务通知覆盖）
+  static const int _notificationId = 999;
 
   /// 前台服务 ID
   static const int _foregroundServiceId = 998;
@@ -28,8 +28,17 @@ class LoginNotificationService {
 
   bool _initialized = false;
 
-  /// 上次写入通知栏的验证码（更新进度时保持可见）
+  /// 当前验证码（通知标题展示）
   String _lastCode = '';
+
+  /// 验证码有效期倒计时定时器（进度条）
+  Timer? _countdownTimer;
+
+  /// 验证码过期时间（null 表示无倒计时）
+  DateTime? _expiresAt;
+
+  /// 验证码总有效秒数（进度条分母）
+  int _expiresInSeconds = 0;
 
   @visibleForTesting
   static int debugPostCount = 0;
@@ -39,18 +48,21 @@ class LoginNotificationService {
     debugPostCount = 0;
   }
 
-  /// 通知细节（前台通知：持续显示，不可滑动关闭）
-  static const NotificationDetails _notificationDetails = NotificationDetails(
-    android: AndroidNotificationDetails(
-      _channelId,
-      _channelName,
-      importance: Importance.low,
-      priority: Priority.low,
-      onlyAlertOnce: true,
-      ongoing: true,
-      autoCancel: false,
-    ),
-  );
+  /// 剩余有效秒数（已过期返回 0）
+  int get _remainingSeconds {
+    final expiresAt = _expiresAt;
+    if (expiresAt == null) return 0;
+    final remaining = expiresAt.difference(DateTime.now()).inSeconds;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  /// 剩余有效期百分比（0~100，用于通知栏进度条）
+  int get _progressPercent {
+    if (_expiresAt == null || _expiresInSeconds <= 0) return 0;
+    return (_remainingSeconds * 100 / _expiresInSeconds)
+        .round()
+        .clamp(0, 100);
+  }
 
   /// 初始化（幂等）
   Future<void> init() async {
@@ -72,7 +84,7 @@ class LoginNotificationService {
             const AndroidNotificationChannel(
               _channelId,
               _channelName,
-              description: 'GitHub 登录轮询进度通知',
+              description: 'GitHub 设备验证码与有效期倒计时',
               importance: Importance.low,
             ),
           );
@@ -122,37 +134,68 @@ class LoginNotificationService {
     }
   }
 
-  /// 显示登录轮询通知（验证码写入通知栏）
-  void showLoginNotification(String code) {
+  /// 立即显示验证码通知，并用进度条呈现有效期倒计时。
+  ///
+  /// [expiresIn] 为验证码有效秒数（GitHub device/code 的 expires_in），
+  /// 传入后每秒刷新一次进度条；为 null 时只显示静态通知。
+  void showLoginNotification(String code, {int? expiresIn}) {
     if (!_initialized) return;
     _lastCode = code;
-    _safeNotify(() => _local.show(
-          id: _notificationId,
-          title: 'GitHub 登录',
-          body: '验证码：$code（等待授权中）',
-          notificationDetails: _notificationDetails,
-          payload: 'login_poll',
-        ));
+    _expiresInSeconds = expiresIn ?? 0;
+    _expiresAt = _expiresInSeconds > 0
+        ? DateTime.now().add(Duration(seconds: _expiresInSeconds))
+        : null;
+
+    // 先立即渲染一次，不必等第一次轮询
+    _renderLoginNotification();
+
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+    if (_expiresAt == null) return;
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _renderLoginNotification();
+      if (_remainingSeconds <= 0) {
+        _countdownTimer?.cancel();
+        _countdownTimer = null;
+      }
+    });
   }
 
-  /// 更新轮询进度（保持通知栏验证码，显示当前进度日志）
-  void updatePollProgress(String log) {
-    if (!_initialized) return;
-    final body = _lastCode.isNotEmpty
-        ? '验证码：$_lastCode—— $log'
-        : log;
+  /// 渲染验证码通知：标题为验证码，副标题为操作说明，进度条为剩余有效期。
+  void _renderLoginNotification() {
+    final expired = _expiresAt != null && _remainingSeconds <= 0;
     _safeNotify(() => _local.show(
           id: _notificationId,
-          body: body,
-          notificationDetails: _notificationDetails,
+          title: '验证码：$_lastCode',
+          body: expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
+          notificationDetails: NotificationDetails(
+            android: AndroidNotificationDetails(
+              _channelId,
+              _channelName,
+              importance: Importance.low,
+              priority: Priority.low,
+              onlyAlertOnce: true,
+              ongoing: true,
+              autoCancel: false,
+              showProgress: _expiresAt != null,
+              maxProgress: 100,
+              progress: _progressPercent,
+              indeterminate: false,
+              category: AndroidNotificationCategory.progress,
+            ),
+          ),
           payload: 'login_poll',
         ));
   }
 
   /// 取消登录通知（登录成功/失败/取消时）
   void cancel() {
-    if (!_initialized) return;
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+    _expiresAt = null;
+    _expiresInSeconds = 0;
     _lastCode = '';
+    if (!_initialized) return;
     _safeNotify(() => _local.cancel(id: _notificationId));
     _stopForegroundService();
   }

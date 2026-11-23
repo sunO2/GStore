@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/service/login_notification_service.dart';
+import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'state.dart';
 
@@ -29,22 +30,21 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
     ref.onAddListener(() => _listenerCount++);
     ref.onRemoveListener(() {
       _listenerCount--;
-      // 页面（唯一监听者）关闭 → 结束进行中的登录轮询
+      // 页面（唯一监听者）关闭 → 结束进行中的登录轮询并移除登录通知
       if (!_pageAlive) {
         userManager.cancelLogin();
         loginRequestCancelToken.cancel();
+        LoginNotificationService.instance.cancel();
       }
     });
     // provider 销毁兜底（app 容器关闭时）
     ref.onDispose(() {
       userManager.cancelLogin();
       loginRequestCancelToken.cancel();
+      LoginNotificationService.instance.cancel();
     });
     // 订阅轮询日志，登录说明页展示轮询进度，并同步到通知栏
-    userManager.pollLogStream.listen((log) {
-      _appendLog(log);
-      LoginNotificationService.instance.updatePollProgress(log);
-    });
+    userManager.pollLogStream.listen(_appendLog);
     return const AuthPageState();
   }
 
@@ -74,22 +74,83 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
     }
   }
 
-  /// 后台回到前台（如从 GitHub 浏览器返回）：等待授权中但轮询未进行时恢复轮询。
+  /// 后台回到前台（如从 GitHub 浏览器返回）：
+  /// - 等待授权中但轮询已停 → 恢复轮询；
+  /// - 轮询因网络错误中止（initial）→ 自动重新发起一次。
   Future<void> onAppResumed() async {
-    if (state.status != AuthStatus.verifying) return;
+    if (state.status != AuthStatus.verifying &&
+        state.status != AuthStatus.initial) {
+      return;
+    }
     if (userManager.isPolling) return;
-    await userManager.resumePolling(loginRequestCancelToken);
+    if (!userManager.canResumePolling) return;
+    if (loginRequestCancelToken.isCancelled) {
+      loginRequestCancelToken = CancelToken();
+    }
+    if (state.verificationCode.isNotEmpty) {
+      state = state.copyWith(status: AuthStatus.verifying);
+    }
+    _appendLog('检测到回到应用，自动恢复登录轮询…');
+    final token = loginRequestCancelToken;
+    await _handleLoginResult(userManager.resumePolling(token), token);
   }
 
-  /// 手动「再次轮询认证」：取消当前轮询（若在途）并用已存设备码重新开始轮询。
-  /// 轮询失败（initial）时才会被按钮调用；重新开始后回到等待态。
+  /// 手动认证（轮询失败后）：取消当前轮询并用已存设备码重新开始，回到等待态。
   Future<void> retryPolling() async {
     userManager.cancelLogin();
     loginRequestCancelToken = CancelToken();
-    _appendLog('重新开始轮询登录状态…');
-    await userManager.resumePolling(loginRequestCancelToken);
+    _appendLog('手动重新开始轮询登录状态…');
     if (state.verificationCode.isNotEmpty) {
       state = state.copyWith(status: AuthStatus.verifying);
+    }
+    final token = loginRequestCancelToken;
+    await _handleLoginResult(userManager.resumePolling(token), token);
+  }
+
+  /// 统一处理一次登录轮询结果：成功 → 提示并自动退出；失败 → 进入可手动认证状态。
+  ///
+  /// [token] 用于识别该次轮询是否已被更新的请求（重新获取/手动认证）取代，
+  /// 避免旧请求的结果覆盖新状态或重复关闭页面。
+  Future<void> _handleLoginResult(
+    Future<UserInfo?> polling,
+    CancelToken token,
+  ) async {
+    try {
+      final userInfo = await polling;
+      if (!identical(token, loginRequestCancelToken)) return;
+      if (userInfo == null) {
+        log("登录失败：userInfo 为 null");
+        state = state.copyWith(status: AuthStatus.initial);
+        return;
+      }
+
+      log("登录成功：${userInfo.login}");
+      state = state.copyWith(status: AuthStatus.success);
+      state = state.copyWith(verificationCode: '');
+
+      // 检查页面是否还存在，避免在页面销毁后显示提示
+      if (_pageAlive) {
+        try {
+          AppDialogs.showSuccess('登录成功！欢迎回来，${userInfo.login}',
+              title: '登录成功');
+        } catch (e) {
+          log("显示成功提示失败（页面可能已关闭）：$e");
+        }
+      }
+
+      // 延迟自动返回
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (_pageAlive && identical(token, loginRequestCancelToken)) {
+        try {
+          appRouter.pop(AuthStatus.success);
+        } catch (e) {
+          log("返回失败（页面可能已关闭）：$e");
+        }
+      }
+    } catch (e) {
+      if (!identical(token, loginRequestCancelToken)) return;
+      log("登录轮询失败：$e");
+      state = state.copyWith(status: AuthStatus.initial);
     }
   }
 
@@ -120,50 +181,22 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
         // 前台通知：请求通知权限，再把验证码写入通知栏；启动前台服务（保持进程存活）
         await LoginNotificationService.instance.requestPermission();
         LoginNotificationService.instance.showLoginNotification(
-            value.userCode ?? '');
+            value.userCode ?? '',
+            expiresIn: value.expiresIn);
         LoginNotificationService.instance.startForegroundService();
 
-        // 开始轮询登录状态
+        // 开始轮询登录状态（结果统一交给 _handleLoginResult 处理）
+        final token = loginRequestCancelToken;
         Future.delayed(Duration(seconds: value.interval ?? 5), () async {
-          try {
-            final userInfo = await userManager.startLoginOfTimer(
-                value.deviceCode!, value.interval ?? 5, loginRequestCancelToken,
-                expiresIn: value.expiresIn);
-
-            // 以 API 轮询结果为准
-            if (userInfo != null) {
-              log("登录成功：${userInfo.login}");
-              state = state.copyWith(status: AuthStatus.success);
-              state = state.copyWith(verificationCode: '');
-
-              // 检查页面是否还存在，避免在页面销毁后显示提示
-              if (_pageAlive) {
-                try {
-                  AppDialogs.showSuccess('登录成功！欢迎回来，${userInfo.login}',
-                      title: '登录成功');
-                } catch (e) {
-                  log("显示成功提示失败（页面可能已关闭）：$e");
-                }
-              }
-
-              // 延迟自动返回
-              await Future.delayed(const Duration(milliseconds: 800));
-              if (_pageAlive) {
-                try {
-                  appRouter.pop(AuthStatus.success);
-                } catch (e) {
-                  log("返回失败（页面可能已关闭）：$e");
-                }
-              }
-            } else {
-              log("登录失败：userInfo 为 null");
-              state = state.copyWith(status: AuthStatus.initial);
-            }
-          } catch (e) {
-            log("登录轮询失败：$e");
-            state = state.copyWith(status: AuthStatus.initial);
-            // 错误信息已在 UserManager 中显示，这里不需要再显示
+          if (!identical(token, loginRequestCancelToken) || token.isCancelled) {
+            return;
           }
+          await _handleLoginResult(
+            userManager.startLoginOfTimer(
+                value.deviceCode!, value.interval ?? 5, token,
+                expiresIn: value.expiresIn),
+            token,
+          );
         });
       } else {
         log("获取设备码失败：返回的 deviceCode 为空");
