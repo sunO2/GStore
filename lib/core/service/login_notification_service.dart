@@ -42,6 +42,18 @@ class LoginNotificationService {
   /// 渲染序号：异步探测/调用返回时丢弃过期结果，避免进度条回跳。
   int _renderSeq = 0;
 
+  /// 轮询日志回调（登录页用于把 Live Updates 能力/提升结果写进日志）。
+  void Function(String message)? _onLog;
+
+  /// Android SDK 版本（诊断日志展示）。
+  int? _sdkInt;
+
+  /// 本次验证码是否已输出过「支持/不支持」能力日志。
+  bool _supportLogged = false;
+
+  /// 上一次 Live Update 提升状态（避免每秒刷新时反复刷日志）。
+  String? _lastLiveUpdateStatus;
+
   /// 当前验证码（通知标题展示）
   String _lastCode = '';
 
@@ -152,8 +164,15 @@ class LoginNotificationService {
   ///
   /// [expiresIn] 为验证码有效秒数（GitHub device/code 的 expires_in），
   /// 传入后每秒刷新一次进度条；为 null 时只显示静态通知。
-  void showLoginNotification(String code, {int? expiresIn}) {
+  void showLoginNotification(
+    String code, {
+    int? expiresIn,
+    void Function(String message)? onLog,
+  }) {
     if (!_initialized) return;
+    _onLog = onLog;
+    _supportLogged = false;
+    _lastLiveUpdateStatus = null;
     _lastCode = code;
     _expiresInSeconds = expiresIn ?? 0;
     _expiresAt = _expiresInSeconds > 0
@@ -185,8 +204,16 @@ class LoginNotificationService {
     final live = await _supportsLiveUpdate();
     if (seq != _renderSeq) return;
     if (live) {
+      if (!_supportLogged) {
+        _supportLogged = true;
+        _log('Live Updates：支持（Android SDK ${_sdkInt ?? '?'}），尝试提升为实时通知');
+      }
       await _renderLiveUpdate();
     } else {
+      if (!_supportLogged) {
+        _supportLogged = true;
+        _log('Live Updates：不支持（Android SDK ${_sdkInt ?? '?'}），使用普通进度通知');
+      }
       _renderLoginNotification();
     }
   }
@@ -200,6 +227,8 @@ class LoginNotificationService {
       return false;
     }
     try {
+      final sdkInt = await _liveUpdateChannel.invokeMethod<int>('sdkInt');
+      _sdkInt = sdkInt;
       final supported =
           await _liveUpdateChannel.invokeMethod<bool>('isSupported') ?? false;
       _liveUpdateSupported = supported;
@@ -220,14 +249,39 @@ class LoginNotificationService {
         : '${(remaining ~/ 60).toString().padLeft(2, '0')}:'
             '${(remaining % 60).toString().padLeft(2, '0')}';
     try {
-      await _liveUpdateChannel.invokeMethod<bool>('show', {
-        'title': '验证码：$_lastCode',
-        'body': expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
-        'progress': _progressPercent,
-        'shortText': shortText,
-      });
+      final result = await _liveUpdateChannel.invokeMethod<Map<Object?, Object?>>(
+        'show',
+        {
+          'title': '验证码：$_lastCode',
+          'body': expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
+          'progress': _progressPercent,
+          'shortText': shortText,
+        },
+      );
+      final allowed = result?['allowed'] == true;
+      final promoted = result?['promoted'] == true;
+      final status = 'allowed=$allowed promoted=$promoted';
+      if (status != _lastLiveUpdateStatus) {
+        _lastLiveUpdateStatus = status;
+        _log(
+          'Live Update：系统允许实时通知=${allowed ? '是' : '否'}，'
+          '已提升=${promoted ? '是' : '否'}'
+          '${promoted ? '' : '（厂商未映射或用户未开启实时通知）'}',
+        );
+      }
     } catch (e) {
       appLog.error('LoginNotificationService: Live Update 通知失败 - $e');
+    }
+  }
+
+  /// 写入登录页轮询日志（无回调时静默）。
+  void _log(String message) {
+    final onLog = _onLog;
+    if (onLog == null) return;
+    try {
+      onLog(message);
+    } catch (e) {
+      appLog.error('LoginNotificationService: 写入轮询日志失败 - $e');
     }
   }
 
@@ -265,6 +319,8 @@ class LoginNotificationService {
     _expiresAt = null;
     _expiresInSeconds = 0;
     _lastCode = '';
+    _onLog = null;
+    _lastLiveUpdateStatus = null;
     _renderSeq++;
     if (!_initialized) return;
     _safeNotify(() => _local.cancel(id: _notificationId));

@@ -182,7 +182,8 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
         await LoginNotificationService.instance.requestPermission();
         LoginNotificationService.instance.showLoginNotification(
             value.userCode ?? '',
-            expiresIn: value.expiresIn);
+            expiresIn: value.expiresIn,
+            onLog: _appendLog);
         LoginNotificationService.instance.startForegroundService();
 
         // 开始轮询登录状态（结果统一交给 _handleLoginResult 处理）

@@ -38,6 +38,7 @@ object LoginLiveUpdateChannel {
         MethodChannel(messenger, CHANNEL_METHOD).setMethodCallHandler { call, result ->
             when (call.method) {
                 "isSupported" -> result.success(Build.VERSION.SDK_INT >= MIN_SDK)
+                "sdkInt" -> result.success(Build.VERSION.SDK_INT)
                 "canPostPromoted" -> {
                     result.success(Build.VERSION.SDK_INT >= MIN_SDK &&
                         context.getSystemService(NotificationManager::class.java)
@@ -48,14 +49,16 @@ object LoginLiveUpdateChannel {
                     val body = call.argument<String>("body") ?: ""
                     val progress = call.argument<Int>("progress") ?: 0
                     val shortText = call.argument<String>("shortText") ?: ""
-                    val work = {
-                        post(context, title, body, progress, shortText)
-                        true
-                    }
                     if (Build.VERSION.SDK_INT >= MIN_SDK) {
-                        result.success(work())
+                        result.success(post(context, title, body, progress, shortText))
                     } else {
-                        result.success(false)
+                        result.success(
+                            mapOf(
+                                "posted" to false,
+                                "promoted" to false,
+                                "allowed" to false,
+                            )
+                        )
                     }
                 }
                 "cancel" -> {
@@ -95,7 +98,7 @@ object LoginLiveUpdateChannel {
         body: String,
         progress: Int,
         shortText: CharSequence,
-    ) {
+    ): Map<String, Any?> {
         val manager = context.getSystemService(NotificationManager::class.java)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
@@ -136,6 +139,7 @@ object LoginLiveUpdateChannel {
         val promoted = activeFlags and Notification.FLAG_PROMOTED_ONGOING != 0
         val allowed = manager.canPostPromotedNotifications()
         Log.i(TAG, "live update posted: promoted=$promoted allowed=$allowed progress=$progress")
+        return mapOf("posted" to true, "promoted" to promoted, "allowed" to allowed)
     }
 
     /**
