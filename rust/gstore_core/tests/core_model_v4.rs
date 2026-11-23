@@ -694,7 +694,13 @@ fn migration_v3_upgrades_to_v4() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(ledger, 7, "V4+V5+V6+V7 add four ledger rows");
+    // 每个 schema 版本对应一条迁移记录；V3 fixture 升级后应补齐到当前版本，
+    // 不随新增迁移（V8、V9…）而失效。
+    assert_eq!(
+        ledger,
+        i64::from(gstore_core::migration::CORE_SCHEMA_VERSION),
+        "V3 fixture must gain one ledger row per migration"
+    );
 
     for table in [
         "installed_app",
