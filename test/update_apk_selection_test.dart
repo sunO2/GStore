@@ -838,5 +838,76 @@ void main() {
           fakeBackend.preferred['github:$_appId'], 'app-arm64-v8a-v2.0.0.apk');
       expect(fakeBackend.preferred['fdroid:$_appId'], 'app-x86_64-v2.0.0.apk');
     });
+
+    test('updateAll：全部应用并发提交下载，不等待上一个完成', () async {
+      // 两个不同应用，第一个下载被闸门挡住；旧实现串行 await 时第二个不会开始。
+      final first = _infoWithId('com.example.first');
+      final second = _infoWithId('com.example.second');
+      final gate = _GateDownloadService();
+      ModuleManager.instance.bindByType(IDownloadService, gate);
+      final (_, notifier) = makeLogic([first, second]);
+      // 等 provider 首帧初始化把 manager 的可更新列表同步进 state
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(notifier.state.updateList, hasLength(2));
+
+      final running = notifier.updateAll();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // 第一个仍在下载中，第二个已经提交到下载器
+      expect(gate.started, hasLength(2), reason: '全部更新应同时提交所有应用到下载器');
+      expect(notifier.state.updatingAppKeys, contains(updateSelectionKey(first)),
+          reason: '第一个应用仍在下载中');
+
+      gate.release.complete();
+      await running.timeout(const Duration(seconds: 5));
+    });
   });
+}
+
+/// 最小应用更新信息（可指定 appId，用于多应用并发场景）。
+AppUpdateInfo _infoWithId(String appId) => AppUpdateInfo(
+      channelId: _channelCode,
+      appId: appId,
+      appName: '应用 $appId',
+      packageName: appId,
+      installedVersion: '1.0.0',
+      latestVersion: '2.0.0',
+      latestDownload: _dl('$appId.apk'),
+    );
+
+/// 下载闸门：第一条 download 挂起，直到测试释放；用于验证并发提交。
+class _GateDownloadService extends _FakeDownloadService {
+  final Completer<void> release = Completer<void>();
+  final List<String> started = [];
+
+  @override
+  Future<DownloadTask> download(
+    String appid,
+    String appName,
+    String version,
+    String url,
+    String fileName, {
+    int? downloadSize,
+    bool breakPoint = true,
+    String? saveFileName,
+    bool forceDownload = false,
+    bool installAfterDownload = true,
+  }) async {
+    started.add(fileName);
+    if (started.length == 1) {
+      await release.future;
+    }
+    return super.download(
+      appid,
+      appName,
+      version,
+      url,
+      fileName,
+      downloadSize: downloadSize,
+      breakPoint: breakPoint,
+      saveFileName: saveFileName,
+      forceDownload: forceDownload,
+      installAfterDownload: installAfterDownload,
+    );
+  }
 }

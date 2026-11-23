@@ -22,11 +22,11 @@ class UpdateState {
   /// 总应用数
   final int totalCount;
 
-  /// 正在更新的应用 ID
-  final String? updatingAppId;
+  /// 正在更新的应用键集合（`channelId:appId`；支持多个应用并发下载）
+  final Set<String> updatingAppKeys;
 
-  /// 当前下载任务（进度/状态）
-  final DownloadTask? currentDownload;
+  /// 各应用当前的下载任务（`channelId:appId` → 任务；用于并发进度展示）
+  final Map<String, DownloadTask> downloadTasks;
 
   /// 当前正在检测的应用名（用于滚动动画展示）
   final String? checkingAppName;
@@ -59,8 +59,8 @@ class UpdateState {
     this.errorMessage,
     this.checkedCount = 0,
     this.totalCount = 0,
-    this.updatingAppId,
-    this.currentDownload,
+    this.updatingAppKeys = const {},
+    this.downloadTasks = const {},
     this.checkingAppName,
     this.checkingIconUrl,
     this.checkList = const [],
@@ -78,10 +78,8 @@ class UpdateState {
     bool clearErrorMessage = false,
     int? checkedCount,
     int? totalCount,
-    String? updatingAppId,
-    bool clearUpdatingAppId = false,
-    DownloadTask? currentDownload,
-    bool clearCurrentDownload = false,
+    Set<String>? updatingAppKeys,
+    Map<String, DownloadTask>? downloadTasks,
     String? checkingAppName,
     String? checkingIconUrl,
     List<String>? checkList,
@@ -98,10 +96,8 @@ class UpdateState {
           clearErrorMessage ? null : errorMessage ?? this.errorMessage,
       checkedCount: checkedCount ?? this.checkedCount,
       totalCount: totalCount ?? this.totalCount,
-      updatingAppId:
-          clearUpdatingAppId ? null : updatingAppId ?? this.updatingAppId,
-      currentDownload:
-          clearCurrentDownload ? null : currentDownload ?? this.currentDownload,
+      updatingAppKeys: updatingAppKeys ?? this.updatingAppKeys,
+      downloadTasks: downloadTasks ?? this.downloadTasks,
       checkingAppName: checkingAppName ?? this.checkingAppName,
       checkingIconUrl: checkingIconUrl ?? this.checkingIconUrl,
       checkList: checkList ?? this.checkList,
@@ -112,4 +108,15 @@ class UpdateState {
       showLog: showLog ?? this.showLog,
     );
   }
+
+  /// 该应用是否正在更新（按 `channelId:appId` 复合键判断）
+  bool isUpdating(AppUpdateInfo info) =>
+      updatingAppKeys.contains(updateSelectionKey(info));
+
+  /// 该应用当前的下载任务（无则 null）
+  DownloadTask? downloadFor(AppUpdateInfo info) =>
+      downloadTasks[updateSelectionKey(info)];
+
+  /// 是否有任一应用正在更新（用于禁用“全部更新”按钮）
+  bool get isUpdatingAny => updatingAppKeys.isNotEmpty;
 }

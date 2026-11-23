@@ -1,7 +1,7 @@
 //! In-memory fakes for tests and callers without a database yet.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::dto::{
@@ -155,6 +155,22 @@ pub struct InMemoryChannelDriver {
     categories: RwLock<Vec<ChannelCategory>>,
     config: RwLock<Option<ChannelConfig>>,
     cache_size: AtomicU64,
+    /// Optional per-check sleep, so tests can observe overlapping checks.
+    check_delay: Option<std::time::Duration>,
+    /// Number of `check_app_update` calls currently in flight.
+    active_checks: AtomicUsize,
+    /// High-water mark of [`Self::active_checks`].
+    peak_checks: AtomicUsize,
+}
+
+/// Decrements [`InMemoryChannelDriver::active_checks`] when a check returns,
+/// including early-error paths.
+struct InFlightCheck<'a>(&'a AtomicUsize);
+
+impl Drop for InFlightCheck<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl super::sealed::Sealed for InMemoryChannelDriver {}
@@ -171,6 +187,9 @@ impl InMemoryChannelDriver {
             categories: RwLock::new(Vec::new()),
             config: RwLock::new(None),
             cache_size: AtomicU64::new(0),
+            check_delay: None,
+            active_checks: AtomicUsize::new(0),
+            peak_checks: AtomicUsize::new(0),
         }
     }
 
@@ -214,6 +233,23 @@ impl InMemoryChannelDriver {
     pub fn with_cache_size(mut self, cache_size: u64) -> Self {
         self.cache_size = AtomicU64::new(cache_size);
         self
+    }
+
+    /// Adds an artificial delay to every `check_app_update` call.
+    ///
+    /// Concurrency tests use this to make overlapping checks observable: a
+    /// batch that runs checks sequentially takes `apps * delay`, while an
+    /// overlapping batch finishes in roughly `apps / concurrency * delay`.
+    #[doc(hidden)]
+    pub fn with_check_delay(mut self, delay: std::time::Duration) -> Self {
+        self.check_delay = Some(delay);
+        self
+    }
+
+    /// Highest number of `check_app_update` calls observed in flight at once.
+    #[doc(hidden)]
+    pub fn peak_concurrent_checks(&self) -> usize {
+        self.peak_checks.load(Ordering::SeqCst)
     }
 
     fn read_apps(&self) -> Result<RwLockReadGuard<'_, BTreeMap<String, AppSummary>>, Error> {
@@ -333,6 +369,12 @@ impl ChannelDriver for InMemoryChannelDriver {
     }
 
     fn check_app_update(&self, app_id: &str) -> Result<AppUpdate, Error> {
+        let in_flight = self.active_checks.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak_checks.fetch_max(in_flight, Ordering::SeqCst);
+        let _guard = InFlightCheck(&self.active_checks);
+        if let Some(delay) = self.check_delay {
+            std::thread::sleep(delay);
+        }
         if let Some(update) = self
             .updates
             .read()

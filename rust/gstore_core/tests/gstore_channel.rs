@@ -292,7 +292,7 @@ fn gstore_migration_promotes_local_db_and_is_idempotent() {
             version,
             i64::from(gstore_core::migration::CORE_SCHEMA_VERSION)
         );
-        assert_eq!(ledger, 6);
+        assert_eq!(ledger, 7);
     }
 
     let members = count(

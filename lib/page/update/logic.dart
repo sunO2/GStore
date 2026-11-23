@@ -284,16 +284,20 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   }
 
   /// 更新单个应用（下载 + 自动安装）
+  ///
+  /// 支持多个应用并发更新：状态按 `channelId:appId` 记录，各自独立提交到
+  /// 下载器，互不阻塞（下载器内部按并发上限调度）。
   Future<void> updateApp(AppUpdateInfo info) async {
-    if (state.updatingAppId != null) return;
+    final key = updateSelectionKey(info);
+    if (state.updatingAppKeys.contains(key)) return;
 
-    state = state.copyWith(updatingAppId: info.appId);
+    _markUpdating(info);
 
     // 下载模块下线 → 注册表取不到服务，降级提示不抛
     final service = ModuleManager.instance.get<IDownloadService>();
     if (service == null) {
       AppDialogs.showWarning('下载模块未启用');
-      state = state.copyWith(clearUpdatingAppId: true);
+      _clearUpdating(info);
       return;
     }
     // 在任务开始前订阅全局 watcher，避免下载完成事件早于惰性订阅而漏掉自动安装。
@@ -327,8 +331,8 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
       }
 
       // 监听进度并等待任务进入终止态（完成/失败/取消/暂停）
-      state = state.copyWith(currentDownload: task);
-      final done = await _awaitDownloadTerminal(service, task);
+      _setDownload(info, task);
+      final done = await _awaitDownloadTerminal(service, task, info);
 
       if (done.status != DownloadStatusEnum.completed) {
         throw StateError('下载未完成（状态：${done.status}）');
@@ -379,10 +383,35 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
       }
     } finally {
       if (!_disposed) {
-        state = state.copyWith(
-            clearUpdatingAppId: true, clearCurrentDownload: true);
+        _clearUpdating(info);
       }
     }
+  }
+
+  /// 标记应用进入更新中（按 `channelId:appId` 复合键，支持多应用并发）
+  void _markUpdating(AppUpdateInfo info) {
+    state = state.copyWith(
+      updatingAppKeys: {...state.updatingAppKeys, updateSelectionKey(info)},
+    );
+  }
+
+  /// 清除应用的更新中标记与下载任务快照
+  void _clearUpdating(AppUpdateInfo info) {
+    final key = updateSelectionKey(info);
+    state = state.copyWith(
+      updatingAppKeys: {...state.updatingAppKeys}..remove(key),
+      downloadTasks: {...state.downloadTasks}..remove(key),
+    );
+  }
+
+  /// 记录某应用当前的下载任务（并发下载时各应用独立进度）
+  void _setDownload(AppUpdateInfo info, DownloadTask task) {
+    state = state.copyWith(
+      downloadTasks: {
+        ...state.downloadTasks,
+        updateSelectionKey(info): task,
+      },
+    );
   }
 
   /// 下载完成后按任务标记触发安装；安装模块不可用时明确提示并保留更新项。
@@ -495,6 +524,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   Future<DownloadTask> _awaitDownloadTerminal(
     IDownloadService service,
     DownloadTask task,
+    AppUpdateInfo info,
   ) async {
     final id = task.id;
     if (id == null) return task;
@@ -502,7 +532,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
     StreamSubscription<DownloadTask>? sub;
     sub = service.watch(id).listen((da) {
       if (_disposed) return;
-      state = state.copyWith(currentDownload: da);
+      _setDownload(info, da);
       if (_isTerminal(da.status) && !completer.isCompleted) {
         completer.complete(da);
       }
@@ -528,13 +558,14 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
       status == DownloadStatusEnum.paused;
 
   /// 更新所有可更新应用
+  ///
+  /// 全部应用**立即提交**到下载器（并发上限由下载模块调度），不再等前一个
+  /// 下载/安装完成；每个应用独立收尾（安装、markUpdated、移出列表）。
   Future<void> updateAll() async {
-    if (state.updatingAppId != null) return;
+    if (state.isUpdatingAny) return;
     final items = List<AppUpdateInfo>.from(state.updateList);
-    for (final info in items) {
-      if (state.updateList.isEmpty) break;
-      await updateApp(info);
-    }
+    if (items.isEmpty) return;
+    await Future.wait(items.map(updateApp));
   }
 
   /// 确保下载策略已注册

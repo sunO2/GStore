@@ -8,6 +8,7 @@ use std::cmp::Ordering as CmpOrdering;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gstore_core::channel::{
     ChannelDriver, FdroidDriver, InMemoryChannelDriver, LocalDbDriver, ScriptChannel,
@@ -1585,6 +1586,76 @@ fn update_uses_inventory_store() {
         "a changed inventory row must change the decision"
     );
     assert_eq!(skip_reason(&refreshed.skipped, "A"), "up_to_date");
+}
+
+/// Batch checks must run independent apps concurrently (not one-by-one) and
+/// still return results in the `added_apps` order.
+#[test]
+fn update_check_runs_apps_in_parallel() {
+    const APPS: usize = 8;
+    const DELAY_MS: u64 = 100;
+
+    let dir = TempDir::new("parallel");
+    let db = DbHandle::open(dir.path()).unwrap();
+    seed_facts(&db, SOURCE, 1_000_000, &["arm64-v8a"]);
+    seed_inventory(
+        &db,
+        SOURCE,
+        1_000_000,
+        &(0..APPS)
+            .map(|i| installed(&format!("com.p{i}"), "1.0.0"))
+            .collect::<Vec<_>>(),
+    );
+    // A0 has the newest add_time, so the expected result order is A0..A7.
+    for i in 0..APPS {
+        add_added(&db, "github", &format!("A{i}"), 1000 + (APPS - i) as i64);
+    }
+
+    let updates: Vec<AppUpdate> = (0..APPS)
+        .map(|i| {
+            update(
+                &format!("A{i}"),
+                &format!("com.p{i}"),
+                &format!("App {i}"),
+                Some("2.0.0"),
+                None,
+                vec![download("app-arm64-v8a.apk", Some("arm64-v8a"))],
+                None,
+            )
+        })
+        .collect();
+    let driver = Arc::new(
+        InMemoryChannelDriver::new(ChannelKey::new("github").unwrap(), meta("github"))
+            .with_updates(updates)
+            .with_check_delay(Duration::from_millis(DELAY_MS)),
+    );
+    let (_, clock) = clock_at(1_000_000);
+    let service = make_service(&db, vec![driver.clone()], clock);
+
+    let started = Instant::now();
+    let report = service.check_all(true).unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(report.updates.len(), APPS);
+    assert!(report.skipped.is_empty());
+    assert!(
+        driver.peak_concurrent_checks() >= 2,
+        "per-app checks must overlap, peak in flight was {}",
+        driver.peak_concurrent_checks()
+    );
+    assert!(
+        elapsed < Duration::from_millis(APPS as u64 * DELAY_MS),
+        "parallel check took {elapsed:?}; sequential would take at least {}ms",
+        APPS as u64 * DELAY_MS
+    );
+
+    let ids: Vec<&str> = report
+        .updates
+        .iter()
+        .map(|info| info.app_id.as_str())
+        .collect();
+    let expected: Vec<String> = (0..APPS).map(|i| format!("A{i}")).collect();
+    assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
 #[test]

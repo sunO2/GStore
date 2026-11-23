@@ -19,6 +19,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use rusqlite::{Transaction, TransactionBehavior};
@@ -45,6 +46,13 @@ pub type ChannelResolver =
 
 /// Cache validity window (one hour), in milliseconds.
 pub const UPDATE_CACHE_TTL_MS: i64 = 3_600_000;
+
+/// How many apps one batch check runs in parallel.
+///
+/// Checks are network-bound and independent per app, so a small fan-out hides
+/// most of the latency without hammering a single channel. Channel drivers are
+/// `Send + Sync`; their own internal locks serialize same-channel work.
+const MAX_CHECK_CONCURRENCY: usize = 4;
 
 const KEY_LAST_CHECKED: &str = "update_last_checked_at";
 const KEY_RESULTS: &str = "update_results_v1";
@@ -241,6 +249,33 @@ impl OneCheck {
         self.log_lines.push((level, text));
         self
     }
+}
+
+/// Message a check worker sends to the coordinating thread.
+///
+/// Workers own no shared mutable state: they read the service (Sync) and send
+/// events/results back so logs and `on_progress` stay single-threaded.
+enum CheckMessage {
+    Start {
+        index: usize,
+        app_id: String,
+        app_name: String,
+        icon_url: Option<String>,
+    },
+    Skipped {
+        index: usize,
+        channel_id: String,
+        app_id: String,
+        reason: &'static str,
+        log: Option<(CheckLogLevel, String)>,
+        app_name: String,
+        icon_url: Option<String>,
+    },
+    Done {
+        index: usize,
+        one: Box<OneCheck>,
+    },
+    Failed(Error),
 }
 
 impl UpdateService {
@@ -546,117 +581,245 @@ impl UpdateService {
             names: None,
         });
 
+        // Apps are checked in parallel: each worker resolves the channel and
+        // runs the (blocking) per-app check, then reports back to this thread
+        // over a channel. Progress/log callbacks stay on the calling thread,
+        // so `on_progress` keeps its `FnMut` contract while the network-bound
+        // checks overlap.
+        let mut collected: Vec<(usize, OneCheck)> = Vec::new();
+        let mut indexed_skips: Vec<(usize, UpdateSkip)> = Vec::new();
+        let mut error: Option<Error> = None;
+        let worker_count = added.len().clamp(1, MAX_CHECK_CONCURRENCY);
+        let abort = AtomicBool::new(false);
+        let next = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::channel::<CheckMessage>();
+            for _ in 0..worker_count {
+                let sender = sender.clone();
+                let next = &next;
+                let abort = &abort;
+                let added = &added;
+                let cached = &cached;
+                let identities = &identities;
+                let facts = &facts;
+                let service = self;
+                scope.spawn(move || loop {
+                    if abort.load(AtomicOrdering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, AtomicOrdering::Relaxed);
+                    let Some(app) = added.get(index) else { break };
+                    let cached_name = cached
+                        .get(&app.app_id)
+                        .map(|(name, _)| name.clone())
+                        .filter(|name| !name.trim().is_empty());
+                    let cached_icon = cached.get(&app.app_id).and_then(|(_, icon)| icon.clone());
+                    let identity = identities.get(&app.app_id);
+                    let start_name = cached_name
+                        .clone()
+                        .or_else(|| identity.map(|(name, _)| name.clone()))
+                        .unwrap_or_else(|| app.app_id.clone());
+                    let start_icon = cached_icon
+                        .clone()
+                        .or_else(|| identity.and_then(|(_, icon)| icon.clone()));
+                    if sender
+                        .send(CheckMessage::Start {
+                            index,
+                            app_id: app.app_id.clone(),
+                            app_name: start_name.clone(),
+                            icon_url: start_icon.clone(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if app.app_id.trim().is_empty() {
+                        let _ = sender.send(CheckMessage::Skipped {
+                            index,
+                            channel_id: app.channel_id.clone(),
+                            app_id: app.app_id.clone(),
+                            reason: "invalid_app_id",
+                            log: None,
+                            app_name: start_name,
+                            icon_url: start_icon,
+                        });
+                        continue;
+                    }
+                    let Some(channel) = (service.channels)(&app.channel_id) else {
+                        let _ = sender.send(CheckMessage::Skipped {
+                            index,
+                            channel_id: app.channel_id.clone(),
+                            app_id: app.app_id.clone(),
+                            reason: "unknown_channel",
+                            log: Some((
+                                CheckLogLevel::Skip,
+                                format!("应用 {start_name}：渠道不可用，跳过检测"),
+                            )),
+                            app_name: start_name,
+                            icon_url: start_icon,
+                        });
+                        continue;
+                    };
+                    match service.check_one(
+                        channel.as_ref(),
+                        &app.channel_id,
+                        &app.app_id,
+                        now,
+                        facts,
+                        max_age,
+                    ) {
+                        Ok(one) => {
+                            if sender
+                                .send(CheckMessage::Done {
+                                    index,
+                                    one: Box::new(one),
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(failure) => {
+                            abort.store(true, AtomicOrdering::Relaxed);
+                            let _ = sender.send(CheckMessage::Failed(failure));
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+
+            while let Ok(message) = receiver.recv() {
+                match message {
+                    CheckMessage::Start {
+                        index,
+                        app_id,
+                        app_name,
+                        icon_url,
+                    } => {
+                        let start_text = format!("开始检测应用：{app_name}");
+                        logs.push(log_entry(CheckLogLevel::Info, &start_text, now));
+                        on_progress(UpdateProgress {
+                            index,
+                            total,
+                            app_id,
+                            app_name,
+                            icon_url,
+                            log_level: Some(CheckLogLevel::Info),
+                            log_text: Some(start_text),
+                            is_result: false,
+                            names: None,
+                        });
+                    }
+                    CheckMessage::Skipped {
+                        index,
+                        channel_id,
+                        app_id,
+                        reason,
+                        log,
+                        app_name,
+                        icon_url,
+                    } => {
+                        indexed_skips.push((
+                            index,
+                            UpdateSkip {
+                                channel_id,
+                                app_id: app_id.clone(),
+                                reason: reason.to_string(),
+                            },
+                        ));
+                        if let Some((level, text)) = log {
+                            logs.push(log_entry(level, &text, now));
+                            on_progress(UpdateProgress {
+                                index,
+                                total,
+                                app_id,
+                                app_name,
+                                icon_url,
+                                log_level: Some(level),
+                                log_text: Some(text),
+                                is_result: true,
+                                names: None,
+                            });
+                        }
+                    }
+                    CheckMessage::Done { index, one } => {
+                        let app = &added[index];
+                        let fallback_name = cached
+                            .get(&app.app_id)
+                            .map(|(name, _)| name.clone())
+                            .filter(|name| !name.trim().is_empty())
+                            .or_else(|| identities.get(&app.app_id).map(|(name, _)| name.clone()))
+                            .unwrap_or_else(|| app.app_id.clone());
+                        let result_name = one
+                            .app_name
+                            .clone()
+                            .filter(|name| !name.trim().is_empty())
+                            .or_else(|| {
+                                one.update
+                                    .as_ref()
+                                    .map(|update| update.app_name.clone())
+                                    .filter(|name| !name.trim().is_empty())
+                            })
+                            .unwrap_or(fallback_name);
+                        let result_icon = one
+                            .icon_url
+                            .clone()
+                            .or_else(|| {
+                                one.update
+                                    .as_ref()
+                                    .and_then(|update| update.icon_url.clone())
+                            })
+                            .or_else(|| cached.get(&app.app_id).and_then(|(_, icon)| icon.clone()))
+                            .or_else(|| {
+                                identities
+                                    .get(&app.app_id)
+                                    .and_then(|(_, icon)| icon.clone())
+                            });
+                        for (level, text) in one.log_lines.clone() {
+                            logs.push(log_entry(level, &text, now));
+                            on_progress(UpdateProgress {
+                                index,
+                                total,
+                                app_id: app.app_id.clone(),
+                                app_name: result_name.clone(),
+                                icon_url: result_icon.clone(),
+                                log_level: Some(level),
+                                log_text: Some(text),
+                                is_result: true,
+                                names: None,
+                            });
+                        }
+                        collected.push((index, *one));
+                    }
+                    CheckMessage::Failed(failure) => {
+                        error = Some(failure);
+                        break;
+                    }
+                }
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+
+        // Completion order varies with network latency; aggregate in list
+        // order so the cached result and per-app logs stay stable.
+        collected.sort_by_key(|(index, _)| *index);
         let mut updates = Vec::new();
-        let mut skipped = Vec::new();
         let mut events = Vec::new();
         let mut outcomes = Vec::new();
-
-        for (index, app) in added.iter().enumerate() {
-            let cached_name = cached
-                .get(&app.app_id)
-                .map(|(name, _)| name.clone())
-                .filter(|name| !name.trim().is_empty());
-            let cached_icon = cached
-                .get(&app.app_id)
-                .and_then(|(_, icon)| icon.clone());
-            let identity = identities.get(&app.app_id);
-            let start_name = cached_name
-                .clone()
-                .or_else(|| identity.map(|(name, _)| name.clone()))
-                .unwrap_or_else(|| app.app_id.clone());
-            let start_icon = cached_icon
-                .clone()
-                .or_else(|| identity.and_then(|(_, icon)| icon.clone()));
-            let start_text = format!("开始检测应用：{start_name}");
-            logs.push(log_entry(CheckLogLevel::Info, &start_text, now));
-            on_progress(UpdateProgress {
-                index,
-                total,
-                app_id: app.app_id.clone(),
-                app_name: start_name.clone(),
-                icon_url: start_icon.clone(),
-                log_level: Some(CheckLogLevel::Info),
-                log_text: Some(start_text),
-                is_result: false,
-                names: None,
-            });
-            if app.app_id.trim().is_empty() {
-                skipped.push(UpdateSkip {
-                    channel_id: app.channel_id.clone(),
-                    app_id: app.app_id.clone(),
-                    reason: "invalid_app_id".to_string(),
-                });
-                continue;
-            }
-            let Some(channel) = (self.channels)(&app.channel_id) else {
-                skipped.push(UpdateSkip {
-                    channel_id: app.channel_id.clone(),
-                    app_id: app.app_id.clone(),
-                    reason: "unknown_channel".to_string(),
-                });
-                let unknown_text = format!("应用 {start_name}：渠道不可用，跳过检测");
-                logs.push(log_entry(CheckLogLevel::Skip, &unknown_text, now));
-                on_progress(UpdateProgress {
-                    index,
-                    total,
-                    app_id: app.app_id.clone(),
-                    app_name: start_name.clone(),
-                    icon_url: start_icon.clone(),
-                    log_level: Some(CheckLogLevel::Skip),
-                    log_text: Some(unknown_text),
-                    is_result: true,
-                    names: None,
-                });
-                continue;
-            };
-            let one = self.check_one(
-                channel.as_ref(),
-                &app.channel_id,
-                &app.app_id,
-                now,
-                &facts,
-                max_age,
-            )?;
-            let result_name = one
-                .app_name
-                .clone()
-                .filter(|name| !name.trim().is_empty())
-                .or_else(|| {
-                    one.update
-                        .as_ref()
-                        .map(|update| update.app_name.clone())
-                        .filter(|name| !name.trim().is_empty())
-                })
-                .unwrap_or_else(|| start_name.clone());
-            let result_icon = one
-                .icon_url
-                .clone()
-                .or_else(|| {
-                    one.update
-                        .as_ref()
-                        .and_then(|update| update.icon_url.clone())
-                })
-                .or_else(|| start_icon.clone());
-            for (level, text) in one.log_lines.clone() {
-                logs.push(log_entry(level, &text, now));
-                on_progress(UpdateProgress {
-                    index,
-                    total,
-                    app_id: app.app_id.clone(),
-                    app_name: result_name.clone(),
-                    icon_url: result_icon.clone(),
-                    log_level: Some(level),
-                    log_text: Some(text),
-                    is_result: true,
-                    names: None,
-                });
-            }
+        for (index, one) in collected {
             if let Some(reason) = one.skip_reason {
-                skipped.push(UpdateSkip {
-                    channel_id: app.channel_id.clone(),
-                    app_id: app.app_id.clone(),
-                    reason: reason.to_string(),
-                });
+                indexed_skips.push((
+                    index,
+                    UpdateSkip {
+                        channel_id: added[index].channel_id.clone(),
+                        app_id: added[index].app_id.clone(),
+                        reason: reason.to_string(),
+                    },
+                ));
             }
             if let Some(outcome) = one.outcome {
                 outcomes.push(outcome);
@@ -668,6 +831,8 @@ impl UpdateService {
                 updates.push(update);
             }
         }
+        indexed_skips.sort_by_key(|(index, _)| *index);
+        let skipped: Vec<UpdateSkip> = indexed_skips.into_iter().map(|(_, skip)| skip).collect();
 
         let summary = format!(
             "检测完成：共 {total} 个应用，更新 {} 个，跳过 {} 个",

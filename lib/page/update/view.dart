@@ -225,7 +225,7 @@ class UpdateManager extends ConsumerWidget {
               // 切换到检测日志的按钮已移至导航头（AppBar actions）
               const SizedBox(width: AppSpacing.xs),
               FilledButton.tonalIcon(
-                onPressed: state.updatingAppId != null ? null : logic.updateAll,
+                onPressed: state.isUpdatingAny ? null : logic.updateAll,
                 icon: const Icon(TablerIcons.refresh_dot, size: 18),
                 label: const Text('全部更新'),
               ),
@@ -262,8 +262,8 @@ class _UpdateListBody extends ConsumerWidget {
         return PressableScale(
           child: _UpdateTile(
             info: info,
-            isUpdating: state.updatingAppId == info.appId,
-            download: state.currentDownload,
+            isUpdating: state.isUpdating(info),
+            download: state.downloadFor(info),
             selectedApkName: state.selectedApkName[updateSelectionKey(info)],
             onUpdate: () => logic.updateApp(info),
             onSelectApk: (dl) => logic.selectApk(info, dl),

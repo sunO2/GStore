@@ -694,7 +694,7 @@ fn migration_v3_upgrades_to_v4() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(ledger, 6, "V4+V5+V6 add three ledger rows");
+    assert_eq!(ledger, 7, "V4+V5+V6+V7 add four ledger rows");
 
     for table in [
         "installed_app",

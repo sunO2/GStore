@@ -205,7 +205,7 @@ fn non_catalog_dump(conn: &Connection) -> String {
     let mut stmt = conn
         .prepare(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' \
-             AND name NOT IN ('apps', 'categories', 'app_config') AND name NOT LIKE 'apps_fts%' ORDER BY name",
+             AND name NOT IN ('apps', 'categories', 'app_config') AND name NOT LIKE 'apps_fts%' AND name NOT LIKE 'agent_memory_fts%' ORDER BY name",
         )
         .unwrap();
     let tables: Vec<String> = stmt

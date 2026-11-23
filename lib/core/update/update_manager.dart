@@ -91,6 +91,9 @@ class UpdateManagerService {
   Stream<int> get checkedCountStream => _checkedCountController.stream;
   void _notifyCheckedCount() => _checkedCountController.add(_checkedCount);
 
+  /// 已回传结果的检测索引（并发检测时结果乱序到达，按去重计数）
+  final Set<int> _completedCheckIndexes = <int>{};
+
   /// 总应用数
   int _totalCount = 0;
   int get totalCount => _totalCount;
@@ -214,6 +217,7 @@ class UpdateManagerService {
     _currentProgress = null;
     _notifyCurrentProgress();
     _checkedCount = 0;
+    _completedCheckIndexes.clear();
     _notifyCheckedCount();
     _totalCount = 0;
     _notifyTotalCount();
@@ -316,7 +320,10 @@ class UpdateManagerService {
       _checkLog.add(CheckLogEntry(level: level, text: logText));
       _notifyCheckLog();
       if (isResult && appId.isNotEmpty && total > 0) {
-        _checkedCount = (index + 1).clamp(0, total);
+        // 并发检测：结果按完成顺序到达，按索引去重计数（同一应用可能有多条
+        // 结果日志，不能把日志条数当成已检测应用数）。
+        _completedCheckIndexes.add(index);
+        _checkedCount = _completedCheckIndexes.length.clamp(0, total);
         _notifyCheckedCount();
       }
     }

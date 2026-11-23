@@ -438,6 +438,27 @@ fn report_json(report: &UpdateCheckReport) -> Value {
     })
 }
 
+/// Logs are emitted from concurrent check workers, so their interleaving is
+/// not part of the parity contract. Compare them as a stable multiset.
+fn normalize_log_order(value: &mut Value) {
+    let Some(logs) = value
+        .get_mut("update_check_logs_v1")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    logs.sort_by(|a, b| {
+        let key = |v: &Value| {
+            (
+                v["level"].as_str().unwrap_or("").to_string(),
+                v["text"].as_str().unwrap_or("").to_string(),
+                v["time"].as_i64().unwrap_or(0),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+}
+
 #[test]
 fn update_parity_matches_real_core_golden() {
     let input_path = fixtures_dir().join("update_parity_input.json");
@@ -539,8 +560,12 @@ fn update_parity_matches_real_core_golden() {
     }
 
     // ---- 3. Row-for-row comparison against real Rust output -------------
+    let mut actual_normalized = actual.clone();
+    let mut golden_normalized = golden["canonical"].clone();
+    normalize_log_order(&mut actual_normalized);
+    normalize_log_order(&mut golden_normalized);
     assert_eq!(
-        actual, golden["canonical"],
+        actual_normalized, golden_normalized,
         "real core update output diverged from the committed golden"
     );
     assert_eq!(
