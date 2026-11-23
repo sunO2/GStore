@@ -4,6 +4,10 @@
 > 关联文档：[05-核心模块-Agent助手](./05-核心模块-Agent助手.md) · [08-核心模块-模块化框架](./08-核心模块-模块化框架.md) · [rust-flutter-async](./rust-flutter-async.md)
 >
 > **本文只登记计划、基线与判据，不含实施。** 实施前请先过 §6 的阻塞项。
+>
+> **2026-11-21 更新**：genkit 已升级到 `1.0.3`（`genkit_openai 1.0.3`），
+> 官方插件原生流式转发 `reasoningContent/reasoning`，`openai_reasoning_model.dart` 已删除。
+> 本文的 `AgentEngine` 抽象仍未实施；升级后耦合点只剩 `agent_service.dart` 主体。
 
 ---
 
@@ -17,9 +21,9 @@ UI 与工具执行绑在 **flutter_gen_ai_chat_ui** 上。两者职责不同，�
 ### 1.2 动因
 
 1. **引擎可替换**：避免被单一 SDK 锁死，给"换引擎 / 双引擎并存"留出低成本入口。
-2. **现状已有补丁式特例**：genkit 的 OpenAI 兼容插件流式丢弃 `reasoning_content`，
-   我们为此自建了一个 model provider（`openai_reasoning_model.dart`）。这类特例应该收在一个实现里，
-   而不是散在业务层。
+2. **现状曾有补丁式特例**：旧版 genkit 的 OpenAI 兼容插件流式丢弃 `reasoning_content`，
+   我们曾自建 model provider；升级到 genkit 1.0.3 后官方已原生支持，该特例已删除。
+   引擎抽象仍用于隔离 provider 装配 / 工具声明 / 生成循环等 SDK 细节。
 3. **特化逻辑混入业务**：`rawProbe`（探测 raw 里的思考字段）、`maxTurns`、provider 装配等
    SDK 细节目前写在 `AgentService` 内部。
 
@@ -45,7 +49,7 @@ UI 与工具执行绑在 **flutter_gen_ai_chat_ui** 上。两者职责不同，�
 | 文件 | genkit 符号引用 | 说明 |
 | --- | --- | --- |
 | `lib/core/agent/agent_service.dart` | **104** | 编排核心：装配 / 定义工具 / 流式循环 / 结果处理 |
-| `lib/core/agent/openai_reasoning_model.dart` | **20** | 自建 model provider（补 reasoning 流式） |
+| `lib/core/agent/openai_reasoning_model.dart` | **0** | 已删除（genkit 1.0.3 原生 reasoning 流式） |
 | `lib/core/agent/agent_session_store.dart` | 2 | 仅 `Message` / `Role` 类型 |
 | `lib/core/agent/think_parser.dart` | 4 | 仅类型 |
 | **合计** | **~130 处 / 4 个文件** | |
@@ -56,7 +60,7 @@ UI 与工具执行绑在 **flutter_gen_ai_chat_ui** 上。两者职责不同，�
 2. 工具声明：`ai.defineTool<Map<String, dynamic>, String>(...)`
 3. 生成循环：`ai.generateStream<dynamic, void>(model/messages/toolNames/maxTurns)` + `stream.onResult`
 4. 消息类型：`Message` / `Role` / `Part` / `TextPart` / `ReasoningPart`
-5. 转换工具：`GenkitConverter.*`、`supportsTools(...)`
+5. 转换工具：旧版 `GenkitConverter.*` / `supportsTools(...)` 已不再使用
 
 ### 2.1 不属于 genkit 的部分（换引擎**不用动**）
 

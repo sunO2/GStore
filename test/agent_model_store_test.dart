@@ -102,6 +102,17 @@ void main() {
       expect(restored.apiKey, '');
       expect(restored.model, '');
       expect(restored.baseUrl, '');
+      expect(restored.contextWindow, 0, reason: '旧配置默认自动预算');
+    });
+
+    test('contextWindow 往返并兼容旧配置', () {
+      final model = AgentModel(id: 'w', contextWindow: 128000);
+      expect(model.toJson()['contextWindow'], 128000);
+      expect(
+        AgentModel.fromJson(model.toJson()).contextWindow,
+        128000,
+      );
+      expect(AgentModel.fromJson({'id': 'x'}).contextWindow, 0);
     });
 
     test('generateModelId 生成时间戳格式', () {

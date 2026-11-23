@@ -1,6 +1,7 @@
 //! gstore_core — spike skeleton (channels/catalog/update land in the main migration plan).
 
 pub mod added;
+pub mod agent;
 pub mod aggregate;
 pub mod catalog;
 pub mod channel;
@@ -21,6 +22,7 @@ pub mod ports;
 pub mod rules;
 pub mod update;
 
+pub use agent::{AgentMemory, AgentMessage, AgentSession, AgentStore};
 pub use channel::{
     validate_channel_key, BuildHistoryQuery, ChannelCategory, ChannelConfig, ChannelDriver,
     ChannelPack, ChannelRecord, ChannelRegistry, ChannelStore, DetailAction, FdroidDriver,

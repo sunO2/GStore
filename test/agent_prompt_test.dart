@@ -224,3 +224,25 @@ void main() {
     });
   });
 }
+
+void _toolSubsetPromptTests() {
+  group('工具子集提示词（P1）', () {
+    test('只渲染传入的工具与对应敏感清单', () {
+      final prompt = AgentPrompt.build(
+        'platform',
+        toolNames: const ['searchApp', 'confirmAction'],
+      );
+      expect(prompt, contains('searchApp'));
+      expect(prompt, contains('confirmAction'));
+      expect(prompt, isNot(contains('backup')));
+      expect(prompt, isNot(contains('缓存管理')));
+    });
+
+    test('null = 全量工具目录', () {
+      final prompt = AgentPrompt.build('platform');
+      expect(prompt, contains('searchApp'));
+      expect(prompt, contains('backup'));
+      expect(prompt, contains('缓存管理'));
+    });
+  });
+}

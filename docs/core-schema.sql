@@ -3,8 +3,8 @@
 -- This file is the canonical DDL text. The embedded refinery migrations
 -- `rust/gstore_core/migrations/V1__core_schema.sql`,
 -- `V2__catalog_update.sql`, `V3__download_install.sql`,
--- `V4__inventory_facts.sql`, `V5__gstore_channel.sql`, and
--- `V6__config.sql` must produce
+-- `V4__inventory_facts.sql`, `V5__gstore_channel.sql`,
+-- `V6__config.sql`, and `V7__agent_store.sql` must produce
 -- exactly this structure; `rust/gstore_core/tests/schema_contract.rs` asserts
 -- that by normalizing sqlite_master + PRAGMA table_info/index_list/index_info/
 -- foreign_key_list dumps for a migrated database and for a database created by
@@ -27,6 +27,16 @@
 --   PAUSED   : resumable/waiting; neither active nor terminal
 -- The partial unique index only covers ACTIVE rows, so a new task may reuse a
 -- dedup_key once the previous row is terminal (or paused).
+--
+-- V7 adds the agent tables (`agent_session`, `agent_message`, `agent_meta`,
+-- `agent_memory`, and the external-content `agent_memory_fts` with its sync
+-- triggers). Every restorable core snapshot must carry them:
+-- `SNAPSHOT_REQUIRED_TABLES` in `rust/gstore_core/src/db.rs` rejects a snapshot
+-- that is missing one with `CORE_E_SNAPSHOT_SHAPE`.
+--
+-- V8 adds `agent_trace`: one row per agent turn (status, latency, token usage,
+-- full trace JSON in `detail`). It is diagnostics-only and not required by the
+-- snapshot manifest.
 
 CREATE TABLE IF NOT EXISTS schema_migrations(
     version INT4 PRIMARY KEY,
@@ -347,4 +357,104 @@ CREATE TABLE IF NOT EXISTS config_meta(
     v TEXT
 );
 
-PRAGMA user_version = 6;
+CREATE TABLE IF NOT EXISTS agent_session(
+    id TEXT NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '新对话',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_session_updated
+    ON agent_session(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_message(
+    session_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    time INTEGER NOT NULL,
+    is_user INTEGER NOT NULL DEFAULT 0 CHECK(is_user IN (0,1)),
+    text TEXT NOT NULL DEFAULT '',
+    reasoning TEXT,
+    is_tool_result INTEGER NOT NULL DEFAULT 0 CHECK(is_tool_result IN (0,1)),
+    tool_type TEXT,
+    tool_status TEXT,
+    tool_detail TEXT,
+    tool_name TEXT,
+    tool_args TEXT,
+    tool_result TEXT,
+    turn_id TEXT,
+    confirm_options TEXT,
+    confirm_multi_select INTEGER NOT NULL DEFAULT 0 CHECK(confirm_multi_select IN (0,1)),
+    PRIMARY KEY(session_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_message_session_time
+    ON agent_message(session_id, time);
+
+CREATE TABLE IF NOT EXISTS agent_meta(
+    k TEXT NOT NULL PRIMARY KEY,
+    v TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_memory(
+    id TEXT NOT NULL PRIMARY KEY,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_memory_last_used
+    ON agent_memory(last_used_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(
+    text,
+    content='agent_memory',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN
+    INSERT INTO agent_memory_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN
+    INSERT INTO agent_memory_fts(agent_memory_fts, rowid, text)
+        VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_memory_au AFTER UPDATE ON agent_memory BEGIN
+    INSERT INTO agent_memory_fts(agent_memory_fts, rowid, text)
+        VALUES ('delete', old.rowid, old.text);
+    INSERT INTO agent_memory_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TABLE IF NOT EXISTS agent_trace(
+    turn_id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT,
+    created_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ok',
+    provider TEXT,
+    model TEXT,
+    tools_enabled INTEGER NOT NULL DEFAULT 1 CHECK(tools_enabled IN (0,1)),
+    prompt_chars INTEGER NOT NULL DEFAULT 0,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    tools_offered INTEGER NOT NULL DEFAULT 0,
+    model_steps INTEGER NOT NULL DEFAULT 0,
+    tool_requests INTEGER NOT NULL DEFAULT 0,
+    tool_responses INTEGER NOT NULL DEFAULT 0,
+    tool_errors INTEGER NOT NULL DEFAULT 0,
+    first_token_ms INTEGER,
+    total_ms INTEGER NOT NULL DEFAULT 0,
+    response_chars INTEGER NOT NULL DEFAULT 0,
+    reasoning_chars INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    finish_reason TEXT,
+    error TEXT,
+    detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_trace_created
+    ON agent_trace(created_at DESC);
+
+PRAGMA user_version = 8;

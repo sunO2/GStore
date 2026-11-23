@@ -44,6 +44,11 @@ class AgentModel {
   /// 关闭后思考内容仍会被记录，只是不在时间轴展开。
   bool showReasoning;
 
+  /// 模型上下文窗口（token）。0 = 自动（云端按 24k 提示预算）。
+  ///
+  /// 只用于提示裁剪预算（[AgentContextBudget]），不影响请求参数。
+  int contextWindow;
+
   AgentModel({
     required this.id,
     this.name = '',
@@ -53,6 +58,7 @@ class AgentModel {
     this.baseUrl = '',
     this.toolsEnabled = true,
     this.showReasoning = true,
+    this.contextWindow = 0,
   });
 
   /// 默认模型名（根据 provider）
@@ -98,6 +104,7 @@ class AgentModel {
       'baseUrl': baseUrl,
       'toolsEnabled': toolsEnabled,
       'showReasoning': showReasoning,
+      'contextWindow': contextWindow,
     };
   }
 
@@ -115,6 +122,8 @@ class AgentModel {
       // 旧配置无此字段 → 默认启用，保持既有行为
       toolsEnabled: json['toolsEnabled'] as bool? ?? true,
       showReasoning: json['showReasoning'] as bool? ?? true,
+      // 旧配置无此字段 → 0 = 自动预算
+      contextWindow: (json['contextWindow'] as num?)?.toInt() ?? 0,
     );
   }
 }

@@ -1,16 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
+import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 
 void main() {
   group('AgentToolCatalog 注册表', () {
-    test('内置工具协议唯一且完整（21 个可插拔 + 1 个元能力）', () {
+    test('内置工具协议唯一且完整（23 个可插拔 + 3 个元能力）', () {
       final all = AgentToolCatalog.all;
-      expect(all.length, 22);
+      expect(all.length, 26);
       final names = all.map((s) => s.name).toList();
       expect(names.toSet().length, names.length, reason: '工具名必须唯一');
-      expect(all.where((s) => s.meta).map((s) => s.name), ['loadProtocol']);
+      expect(all.where((s) => s.meta).map((s) => s.name),
+          ['loadProtocol', 'remember', 'forget']);
       expect(names, contains('showConfigControl'));
     });
 
@@ -26,7 +28,7 @@ void main() {
 
     test('BuiltinAgentTools 由注册表派生且不含元能力工具', () {
       final tools = BuiltinAgentTools.all;
-      expect(tools.length, 21);
+      expect(tools.length, 23);
       expect(tools.any((t) => t.toolName == 'loadProtocol'), false);
       for (final t in tools) {
         final spec = AgentToolCatalog.byName(t.toolName)!;
@@ -117,7 +119,7 @@ void main() {
       );
       AgentToolCatalog.register(spec);
       expect(AgentToolCatalog.byName('searchApp')!.label, '搜索(测试)');
-      expect(AgentToolCatalog.all.length, 22, reason: '覆盖不应新增条目');
+      expect(AgentToolCatalog.all.length, 26, reason: '覆盖不应新增条目');
     });
   });
 
@@ -150,6 +152,44 @@ void main() {
       final spec = AgentToolCatalog.byName('downloadApp')!;
       final p = spec.params.firstWhere((e) => e.name == 'installAfterDownload');
       expect(p.type, 'bool');
+    });
+  });
+
+  group('function-calling input schema', () {
+    test('getAppInfo 的 appId/channel 是必填 string property', () {
+      // searchApp 在本文件前面的用例被覆盖注册，这里用未覆盖的工具
+      final schema = AgentToolCatalog.byName('getAppInfo')!.inputJsonSchema;
+      expect(schema['type'], 'object');
+      final props = schema['properties'] as Map;
+      final appId = props['appId'] as Map;
+      expect(appId['type'], 'string');
+      expect(appId['description'], isNotEmpty);
+      expect(schema['required'], containsAll(['appId', 'channel']));
+    });
+
+    test('参数类型映射：bool→boolean / int→integer / json→object', () {
+      final schema = toolParamsJsonSchema(const [
+        AgentToolParam(name: 'flag', description: '开关', type: 'bool',
+            required: true),
+        AgentToolParam(name: 'count', description: '数量', type: 'int'),
+        AgentToolParam(name: 'payload', description: '原始对象', type: 'json'),
+      ]);
+      final props = schema['properties'] as Map;
+      expect((props['flag'] as Map)['type'], 'boolean');
+      expect((props['count'] as Map)['type'], 'integer');
+      expect((props['payload'] as Map)['type'], 'object');
+      expect(schema['required'], ['flag']);
+    });
+
+    test('所有工具都能生成 object schema（非空参数时 properties 非空）', () {
+      for (final spec in AgentToolCatalog.all) {
+        final schema = spec.inputJsonSchema;
+        expect(schema['type'], 'object', reason: spec.name);
+        if (spec.params.isNotEmpty) {
+          expect((schema['properties'] as Map), isNotEmpty,
+              reason: '${spec.name} 的参数未进入 schema');
+        }
+      }
     });
   });
 }

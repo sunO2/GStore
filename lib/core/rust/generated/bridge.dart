@@ -12,7 +12,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'script_pack.dart';
 import 'task_bridge.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build_inner`, `build`, `channel_key`, `check_log_level_code`, `core_err`, `core_write_marker_inner`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_update_report`, `failed`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `github_config`, `import_err`, `init_inner`, `inner_cache`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `mirrors_from`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `terminal`, `update_progress_dto`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
+// These functions are ignored because they are not marked as `pub`: `bind_registry_drivers`, `build_inner`, `build`, `channel_key`, `check_log_level_code`, `core_err`, `core_write_marker_inner`, `decode_json`, `default_meta`, `default_true`, `download_err`, `download_port`, `download_reconcile`, `driver_for`, `driver`, `driver`, `enabled_source_urls`, `encode_json`, `encode_update_report`, `failed`, `fdroid_asset_bases`, `fdroid_config`, `fdroid_spec_from_value`, `finish_init`, `from_summary`, `from_value`, `from_value`, `from_value`, `github_config`, `import_err`, `init_inner`, `inner_cache`, `install_err`, `into_summary`, `invalid_arg`, `json_extra`, `json_i64`, `json_string_list`, `json_text`, `kind_of`, `metadata_state_code`, `mirror_url`, `mirrors_for`, `mirrors_from`, `new`, `new`, `normalize_fdroid_source`, `now_millis`, `open_core_db`, `pack_err`, `parse_fdroid_source_spec`, `parse_report_status`, `persisted_fdroid_sources`, `prepare_dirs`, `push_channel_changed_str`, `push_channel_changed`, `push_core_event`, `read_plain_env`, `record`, `require_channel`, `resolver`, `resync_err`, `script_driver`, `secret_key`, `section_code`, `seed_builtin_records`, `spec_matches_source`, `summary_from_detail`, `terminal`, `update_progress_dto`, `validate_core_write_domain`, `validate_env_name`, `validate_start_request`, `validate_task_id`, `with_port`, `with_script_detail`, `write_plain_env`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ChannelApiInner`, `CorePaths`, `FdroidSourceSpec`, `HostDriverResolver`, `HostRepoPort`, `HttpMetadataPort`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clear_apps`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `db_path`, `download_repo`, `drop`, `drop`, `eq`, `eq`, `eq`, `eq`, `eq`, `fetch`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `get_app_count`, `get_app_icons`, `get_one_app`, `get_repo_meta`, `search_apps`, `writable_driver`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `config_value_for_test`, `events_recording_config_for_test`, `from_port_for_test`, `from_service_for_test`, `from_service_for_test`, `init_with_download_port_for_test`, `reset_config_store_for_test`, `run`, `shares_config_store_with_global_for_test`, `watch_recording_config_for_test`
@@ -101,6 +101,54 @@ abstract class AddedAppsApi implements RustOpaqueInterface {
 
   /// Total number of added apps.
   Future<PlatformInt64> totalCount();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>
+abstract class AgentStoreApi implements RustOpaqueInterface {
+  /// Adds (or bumps) one memory and returns the stored row as JSON.
+  Future<String> addMemory({required String text});
+
+  Future<void> clearMemories();
+
+  Future<void> clearSessions();
+
+  Future<void> clearTraces();
+
+  Future<String?> currentSessionId();
+
+  Future<void> deleteSession({required String id});
+
+  /// Opens the core database (applies migrations, including the agent schema).
+  static Future<AgentStoreApi> init({required String dataDir}) =>
+      RustLib.instance.api.crateBridgeAgentStoreApiInit(dataDir: dataDir);
+
+  Future<void> insertTraceJson({required String json});
+
+  Future<String> memoriesJson();
+
+  /// Keeps only the newest `keep` traces; returns the removed row count.
+  Future<PlatformInt64> pruneTraces({required PlatformInt64 keep});
+
+  Future<String?> readMeta({required String key});
+
+  Future<PlatformInt64> removeMemory({required String idOrText});
+
+  Future<void> replaceMemoriesJson({required String json});
+
+  Future<void> replaceSessionsJson({required String json});
+
+  Future<String> searchMemoriesJson(
+      {required String query, required PlatformInt64 limit});
+
+  Future<String> sessionsJson();
+
+  Future<void> setCurrentSessionId({String? id});
+
+  Future<String> tracesJson({required PlatformInt64 limit});
+
+  Future<void> upsertSessionJson({required String json});
+
+  Future<void> writeMeta({required String key, String? value});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CatalogApi>>

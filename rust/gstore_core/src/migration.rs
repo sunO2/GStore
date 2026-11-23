@@ -18,7 +18,7 @@ pub fn migration_dir(files_dir: &Path) -> PathBuf {
 }
 
 /// Schema version stamped into `PRAGMA user_version` by [`apply_core_schema`].
-pub const CORE_SCHEMA_VERSION: i32 = 6;
+pub const CORE_SCHEMA_VERSION: i32 = 8;
 
 /// Name of the refinery ledger table.
 pub const MIGRATION_LEDGER_TABLE: &str = "schema_migrations";
@@ -458,8 +458,60 @@ mod tests {
         ] {
             assert!(index_exists(&conn, index), "missing index {index}");
         }
-        assert_eq!(user_version(&conn), 6);
         assert_eq!(user_version(&conn), CORE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v7_agent_schema_tables_and_fts_triggers() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        apply_core_schema(&mut conn).unwrap();
+
+        for table in [
+            "agent_session",
+            "agent_message",
+            "agent_meta",
+            "agent_memory",
+            "agent_memory_fts",
+        ] {
+            assert!(table_exists(&conn, table), "missing table {table}");
+        }
+        assert_eq!(user_version(&conn), CORE_SCHEMA_VERSION);
+
+        conn.execute(
+            "INSERT INTO agent_memory(id,text,created_at,last_used_at,hits)              VALUES ('m1','用户偏好使用 F-Droid 渠道',1,1,1)",
+            [],
+        )
+        .unwrap();
+        let matched: i64 = conn
+            .query_row(
+                r#"SELECT COUNT(*) FROM agent_memory_fts WHERE agent_memory_fts MATCH '"F-Droid"'"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(matched, 1, "insert trigger must populate FTS");
+
+        conn.execute(
+            "UPDATE agent_memory SET text='用户喜欢深色主题' WHERE id='m1'",
+            [],
+        )
+        .unwrap();
+        let stale: i64 = conn
+            .query_row(
+                r#"SELECT COUNT(*) FROM agent_memory_fts WHERE agent_memory_fts MATCH '"F-Droid"'"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let fresh: i64 = conn
+            .query_row(
+                r#"SELECT COUNT(*) FROM agent_memory_fts WHERE agent_memory_fts MATCH '"深色主题"'"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, 0, "update trigger must remove old FTS row");
+        assert_eq!(fresh, 1, "update trigger must index new text");
     }
 
     #[test]
@@ -545,17 +597,20 @@ mod tests {
         .unwrap();
 
         apply_core_schema(&mut conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
-        assert_eq!(migration_ledger_len(&conn), 6);
+        assert_eq!(user_version(&conn), CORE_SCHEMA_VERSION);
+        assert_eq!(
+            migration_ledger_len(&conn),
+            i64::from(CORE_SCHEMA_VERSION)
+        );
         for table in ["config_entry", "config_change_log", "config_meta"] {
             assert!(table_exists(&conn, table), "v6 must create {table}");
         }
 
         apply_core_schema(&mut conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), CORE_SCHEMA_VERSION);
         assert_eq!(
             migration_ledger_len(&conn),
-            6,
+            i64::from(CORE_SCHEMA_VERSION),
             "re-open must not add ledger rows"
         );
         let kept: i64 = conn

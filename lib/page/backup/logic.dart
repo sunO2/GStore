@@ -478,11 +478,10 @@ class BackupLogic extends ChangeNotifier {
     // isUploadingWebDav 保持 true 使源按钮禁用，防止重复触发）
     _update(_state.copyWith(isUploadingWebDav: true));
     try {
-      await showModalBottomSheet<bool>(
+      await AppSheet.showCustom<bool>(
         context: context,
         isDismissible: false,
         enableDrag: false,
-        isScrollControlled: true,
         builder: (_) => BackupProgressSheet(
           title: '备份到网盘',
           task: (onLog) async {

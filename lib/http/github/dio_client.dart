@@ -229,10 +229,18 @@ class DioClient {
   /// 设置授权token
   /// [authorization] GitHub个人访问令牌
   set authorization(String? authorization) {
-    if (authorization?.isNotEmpty ?? false) {
-      _dio.options.headers["Authorization"] = "Bearer $authorization";
+    final value = authorization?.trim() ?? '';
+    if (value.isEmpty) {
+      // 退出登录/Token 失效时必须移除旧头，否则后续请求仍带已删除的 Token → 401
+      _dio.options.headers.remove("Authorization");
+      return;
     }
+    _dio.options.headers["Authorization"] = "Bearer $value";
   }
+
+  /// 当前全局授权头（诊断用，格式 `Bearer …`；未设置返回空串）
+  String get authorizationHeader =>
+      _dio.options.headers["Authorization"]?.toString() ?? '';
 
   /// 获取单例实例，如果不存在则创建
   static DioClient _getInstance() {

@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:gstore/core/agent/openai_model_catalog.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
+import 'package:gstore/core/websearch/web_search_config.dart';
+import 'package:gstore/page/agent/web_search_settings_sheet.dart';
 
 /// Agent 模型管理设置页
 /// 支持：添加多个模型、选择使用哪个、编辑、删除
@@ -17,6 +19,9 @@ class AgentSettingsPage extends StatefulWidget {
 class _AgentSettingsPageState extends State<AgentSettingsPage> {
   AgentModelStore? _store;
   bool _loading = true;
+
+  /// 联网检索配置（用于卡片副标题）
+  WebSearchConfig? _webSearchConfig;
 
   /// 本地推理模块是否可用（APK 内置或已下载）；不可用则不显示入口
   late final Future<bool> _llmAvailable =
@@ -34,11 +39,21 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
       _store?.removeListener(_onStoreChanged);
     }
     store.addListener(_onStoreChanged);
+    final webSearchConfig = await WebSearchConfig.load();
     if (mounted) {
       setState(() {
         _store = store;
+        _webSearchConfig = webSearchConfig;
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _openWebSearchSettings() async {
+    final config = _webSearchConfig ?? await WebSearchConfig.load();
+    final updated = await WebSearchSettingsSheet.show(context, config: config);
+    if (updated != null && mounted) {
+      setState(() => _webSearchConfig = updated);
     }
   }
 
@@ -189,6 +204,110 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
         }),
 
         const SizedBox(height: AppSpacing.xl),
+
+        // 联网检索（P3-7）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: _openWebSearchSettings,
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.primaryContainer,
+                child: Icon(
+                  TablerIcons.world,
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                ),
+              ),
+              title: const Text('联网检索'),
+              subtitle: Text(
+                _webSearchConfig == null
+                    ? 'Tavily 搜索与网页抓取'
+                    : (_webSearchConfig!.enabled
+                        ? (_webSearchConfig!.isKeyless
+                            ? 'Tavily keyless（免费，有限速）'
+                            : 'Tavily API Key 已配置')
+                        : '已关闭'),
+              ),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
+
+        // MCP 服务器（外部工具接入）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: () => context.push(AppRoute.agentMcp),
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.secondaryContainer,
+                child: Icon(
+                  TablerIcons.plug_connected,
+                  color: Theme.of(context).colorScheme.onSecondaryContainer,
+                ),
+              ),
+              title: const Text('MCP 服务器'),
+              subtitle: const Text('接入外部 MCP 工具（远程 Streamable HTTP）'),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
+
+        // 回合记录（P3-1 可观测性）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: () => context.push(AppRoute.agentTraces),
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.tertiaryContainer,
+                child: Icon(
+                  TablerIcons.activity,
+                  color: Theme.of(context).colorScheme.onTertiaryContainer,
+                ),
+              ),
+              title: const Text('回合记录'),
+              subtitle: const Text('查看每轮耗时、token 与工具调用（诊断用）'),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
 
         // 清除全部
         TextButton.icon(
@@ -348,6 +467,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
   late final TextEditingController _apiKeyController;
   late final TextEditingController _modelController;
   late final TextEditingController _baseUrlController;
+  late final TextEditingController _contextWindowController;
   late bool _toolsEnabled;
   late bool _showReasoning;
 
@@ -378,6 +498,11 @@ class ModelEditSheetState extends State<ModelEditSheet> {
     _apiKeyController = TextEditingController(text: existing?.apiKey ?? '');
     _modelController = TextEditingController(text: existing?.model ?? '');
     _baseUrlController = TextEditingController(text: existing?.baseUrl ?? '');
+    _contextWindowController = TextEditingController(
+      text: (existing?.contextWindow ?? 0) > 0
+          ? existing!.contextWindow.toString()
+          : '',
+    );
     _toolsEnabled = existing?.toolsEnabled ?? true;
     _showReasoning = existing?.showReasoning ?? true;
     // Base URL 改变后要换成该端点的缓存列表（否则会显示上一个端点的模型）
@@ -392,6 +517,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
     _apiKeyController.dispose();
     _modelController.dispose();
     _baseUrlController.dispose();
+    _contextWindowController.dispose();
     super.dispose();
   }
 
@@ -549,6 +675,20 @@ class ModelEditSheetState extends State<ModelEditSheet> {
           ],
           const SizedBox(height: AppSpacing.md),
 
+          // 上下文窗口：只影响提示裁剪预算（P3-2），留空 = 自动
+          TextField(
+            controller: _contextWindowController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '上下文窗口（tokens）',
+              hintText: '例如 128000，留空 = 自动',
+              helperText: '只用于估算提示预算；按 60% 作为提示上限，其余留给输出',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(TablerIcons.window_maximize),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+
           // 工具调用开关：本地小模型 tool calling 不可靠，可关闭走纯问答降级
           // （ListTile 需自带 Material：骨架的 DecoratedBox 背景会遮住 ink）
           Material(
@@ -633,6 +773,8 @@ class ModelEditSheetState extends State<ModelEditSheet> {
     }
 
     final existing = widget.existing;
+    final rawWindow = int.tryParse(_contextWindowController.text.trim()) ?? 0;
+    final contextWindow = rawWindow < 0 ? 0 : rawWindow;
     final model = AgentModel(
       id: existing?.id ?? generateModelId(),
       name: _nameController.text.trim(),
@@ -642,6 +784,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
       baseUrl: _baseUrlController.text.trim(),
       toolsEnabled: _toolsEnabled,
       showReasoning: _showReasoning,
+      contextWindow: contextWindow,
     );
 
     if (existing != null) {

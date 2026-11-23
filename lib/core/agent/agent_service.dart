@@ -6,9 +6,11 @@ import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
 import 'package:genkit/genkit.dart';
 import 'package:genkit_google_genai/genkit_google_genai.dart';
 import 'package:genkit_openai/genkit_openai.dart';
+import 'package:schemantic/schemantic.dart' show SchemanticType;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/agent/agent_inline_cards.dart';
+import 'package:gstore/core/agent/agent_memory_store.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
 import 'package:gstore/core/agent/agent_http_client.dart';
@@ -16,8 +18,19 @@ import 'package:http/http.dart' as http;
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
+import 'package:gstore/core/agent/agent_tool_scheduler.dart';
+import 'package:gstore/core/agent/mcp/mcp_client.dart';
+import 'package:gstore/core/agent/mcp/mcp_models.dart';
+import 'package:gstore/core/agent/mcp/mcp_server_store.dart';
+import 'package:gstore/core/agent/mcp/mcp_tool_registry.dart';
+import 'package:gstore/core/agent/agent_tool_selector.dart';
+import 'package:gstore/core/agent/agent_trace.dart';
+import 'package:gstore/core/agent/agent_trace_store.dart';
+import 'package:gstore/core/agent/agent_context_budget.dart';
+import 'package:gstore/core/agent/agent_history_selector.dart';
+import 'package:gstore/core/websearch/web_search_models.dart';
+import 'package:gstore/core/websearch/web_search_service.dart';
 import 'package:gstore/core/agent/js_channel_method_runner.dart';
-import 'package:gstore/core/agent/openai_reasoning_model.dart';
 import 'package:gstore/core/agent/think_parser.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/snapshot/snapshot_service.dart';
@@ -60,6 +73,8 @@ enum AgentToolType {
   confirm,
   config,
   snapshot,
+  mcp,
+  web,
 }
 
 /// 工具执行状态
@@ -213,6 +228,8 @@ class AgentMessage {
 class AgentService {
   /// 工具名称常量
   static const String searchToolName = 'searchApp';
+  static const String webSearchToolName = 'webSearch';
+  static const String webFetchToolName = 'webFetch';
   static const String downloadToolName = 'downloadApp';
   static const String installToolName = 'installApp';
   static const String manageAppToolName = 'manageApp';
@@ -229,6 +246,8 @@ class AgentService {
   static const String runJsChannelToolName = 'runJsChannel';
   static const String cacheManageToolName = 'cacheManage';
   static const String loadProtocolToolName = 'loadProtocol';
+  static const String rememberToolName = 'remember';
+  static const String forgetToolName = 'forget';
   static const String appSnapshotToolName = 'appSnapshot';
   static const String snapshotCompareToolName = 'snapshotCompare';
   static const String apkBrowserToolName = 'apkBrowser';
@@ -249,6 +268,21 @@ class AgentService {
 
   void _logAi(String event, {Map<String, dynamic>? data}) {
     appLog.info('[$aiResponseLogTag] $event', data: data);
+  }
+
+  /// 落库一回合的 trace（P3-1）。
+  ///
+  /// 只做诊断，失败只打日志；不阻塞回合收尾。
+  void _persistTurnTrace(AgentTurnTrace trace) {
+    final store = _traceStore;
+    if (store == null) return;
+    final record = AgentTurnRecord.fromTrace(
+      trace,
+      sessionId: _sessionStore?.current?.id,
+    );
+    unawaited(store.record(record).catchError((Object error) {
+      appLog.error('AgentService: 保存回合记录失败 - $error');
+    }));
   }
 
   /// 日志用截断（保留头部并标注截断量，避免超长内容刷屏）
@@ -317,14 +351,32 @@ class AgentService {
 
   AgentModel? _model;
 
-  /// 自建的 OpenAI 兼容模型（思考过程可流式）
-  ///
-  /// 官方插件只转发 `delta.content`，会丢掉 `delta.reasoningContent`，
-  /// 导致思考内容只能"事后补取"；这里自建模型把它作为 ReasoningPart 流式下发。
-  /// 构建失败时为 null → 回退官方插件模型。
-  Model? _customModel;
+  /// 最近一回合的执行轨迹（P0 可观测性；调试页/测试可读）
+  AgentTurnTrace? _lastTurnTrace;
+  AgentTurnTrace? get lastTurnTrace => _lastTurnTrace;
+
+  /// 上一回合下发的工具子集（异步续接沿用，避免工具集漂移）
+  List<String> _lastTurnToolNames = const <String>[];
+
+  /// 上一回合的扩展工具目录（动态模块工具，未进 AgentToolCatalog）
+  String? _lastExtraToolLines;
+
+  /// 上一回合用户输入（用于记忆相关性召回）
+  String _lastTurnQuery = '';
+
+  /// 本回合召回的长期记忆文本（FTS5 结果；continuation 复用）
+  String? _turnMemoryText;
+
   AgentModelStore? _store;
   AgentSessionStore? _sessionStore;
+  AgentMemoryStore? _memoryStore;
+  AgentTraceStore? _traceStore;
+  McpServerStore? _mcpStore;
+
+  /// 回合记录存储（P3-1；null = 尚未初始化）
+  AgentTraceStore? get traceStore => _traceStore;
+  final Map<String, McpClient> _mcpClients = <String, McpClient>{};
+  final Set<String> _registeredMcpNames = <String>{};
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
@@ -415,22 +467,74 @@ class AgentService {
   static const int _localKeepTurns = 3;
   /// 本地模型的提示字符上限（约 1~2k token，防止 CPU prefill 拖到分钟级）
   /// 提示字符上限：关闭工具时压到 4000（prefill 快）；开启工具时放宽以容纳工具清单。
-  int get _localMaxChars => toolsEnabled ? 12000 : 4000;
+  /// 配置了 [AgentModel.contextWindow] 时取两者较小值（小窗口不硬塞）。
+  int get _localMaxChars {
+    final base = toolsEnabled ? 12000 : 4000;
+    final window = AgentContextBudget.charsForWindow(
+      _model?.contextWindow ?? 0,
+    );
+    if (window <= 0) return base;
+    return window < base ? window : base;
+  }
 
   int _messageChars(List<Message> msgs) {
     var n = 0;
     for (final m in msgs) {
       for (final p in m.content) {
-        if (p is TextPart) n += p.text.length;
+        final text = p.text;
+        if (text != null && text.isNotEmpty) {
+          n += text.length;
+        } else if (p.isToolRequest) {
+          n += (p.toolRequest?.input?.toString().length ?? 0);
+        } else if (p.isToolResponse) {
+          n += (p.toolResponse?.output?.toString().length ?? 0);
+        }
       }
     }
     return n;
   }
 
+  /// 单条消息的 token 估算（与 [_messageChars] 同口径，但按 token 计）。
+  int _messageTokensOf(Message message) {
+    var n = 0;
+    for (final p in message.content) {
+      final text = p.text;
+      if (text != null && text.isNotEmpty) {
+        n += AgentContextBudget.estimateTokens(text);
+      } else if (p.isToolRequest) {
+        n += AgentContextBudget.estimateTokens(
+          p.toolRequest?.input?.toString() ?? '',
+        );
+      } else if (p.isToolResponse) {
+        n += AgentContextBudget.estimateTokens(
+          p.toolResponse?.output?.toString() ?? '',
+        );
+      }
+    }
+    return n;
+  }
+
+  int _messagesTokens(List<Message> msgs) {
+    var n = 0;
+    for (final m in msgs) {
+      n += _messageTokensOf(m);
+    }
+    return n;
+  }
+
+  /// 本回合提示 token 预算（P3-2：按模型窗口自适应）。
+  int get _promptTokenBudget => AgentContextBudget.promptTokensFor(
+        contextWindow: _model?.contextWindow ?? 0,
+        local: _isLocalModel,
+        toolsEnabled: toolsEnabled,
+      );
+
   /// 发给模型的 messages：本地模型走"精简提示 + 裁历史 + 字符上限"，
-  /// 否则原样返回（云端模型行为不变）。
+  /// 云端模型只在超过 [_cloudMaxChars] 时按回合裁剪。
   List<Message> get _requestMessages {
-    if (!_isLocalModel) return _messages;
+    if (!_isLocalModel) {
+      return _trimCloudMessages(_messages);
+    }
 
     final convo = <Message>[
       for (final m in _messages)
@@ -445,7 +549,11 @@ class AgentService {
     final out = <Message>[
       Message(
         role: Role.system,
-        content: [TextPart(text: toolsEnabled ? _systemPrompt : _localSystemPrompt)],
+        content: [
+          TextPart(
+            text: toolsEnabled ? _systemPromptForTurn : _localSystemPrompt,
+          ),
+        ],
       ),
       ...trimmed,
     ];
@@ -457,6 +565,138 @@ class AgentService {
         'AgentService: 本地模型提示裁剪 ${_messages.length}→${out.length} 条, '
         '${_messageChars(out)} 字符（上限 $_localMaxChars）');
     return out;
+  }
+
+  /// 云端模型按"最近完整回合 + 检索回填"裁剪（P3-2）。
+  ///
+  /// 1. 按模型窗口算 token 预算（未配置窗口 → 24k）；
+  /// 2. 最近回合必留，早期回合按与当前问题的词法相关度回填；
+  /// 3. 被丢掉的回合压成滚动摘要（跨重启复用，见 [_sessionSummary]）。
+  List<Message> _trimCloudMessages(List<Message> all) {
+    final budget = _promptTokenBudget;
+    final system = <Message>[
+      for (final m in all)
+        if (m.role == Role.system) m,
+    ];
+    final convo = <Message>[
+      for (final m in all)
+        if (m.role != Role.system) m,
+    ];
+    final systemTokens = _messagesTokens(system);
+    final convoTokens = _messagesTokens(convo);
+    // 摘要本身也占预算，先扣掉已持久化摘要的估算
+    final summaryReserve = _sessionSummary.isEmpty
+        ? 0
+        : AgentContextBudget.estimateTokens(_sessionSummary);
+    final available = budget - systemTokens - summaryReserve;
+    if (convoTokens <= available) return all;
+
+    final plan = AgentHistorySelector.plan(
+      messages: convo,
+      budgetTokens: available < 1 ? 1 : available,
+      query: _lastTurnQuery,
+      tokensOf: _messageTokensOf,
+    );
+    final kept = [for (final i in plan.keptIndexes) convo[i]];
+    final dropped = [for (final i in plan.droppedIndexes) convo[i]];
+
+    final summary = _mergeSummary(dropped);
+    final out = <Message>[
+      ...system,
+      if (summary != null && summary.isNotEmpty)
+        Message(role: Role.system, content: [TextPart(text: summary)]),
+      ...kept,
+    ];
+    appLog.info(
+        'AgentService: 云端提示裁剪 ${all.length}→${out.length} 条, '
+        '${_messageChars(out)} 字符 / ${_messagesTokens(out)} tokens '
+        '（预算 $budget tokens，回填 ${plan.retrievedIndexes.length} 条相关历史）'
+        '${summary == null ? '' : '，含滚动摘要'}');
+    return out;
+  }
+
+  /// 把被裁掉的回合并进滚动摘要（累积、限长、去空）。
+  ///
+  /// 返回给模型看的 `[早期对话摘要]` 文本；同时把新摘要异步落库，
+  /// 下次冷启动/切会话时直接复用，不必重新推导。
+  String? _mergeSummary(List<Message> dropped) {
+    // 同一回合内多次计算请求（工具步）会拿到相同的 dropped 集合：
+    // 形状不变就不再重复追加，避免摘要里出现重复片段。
+    final shape = '${dropped.length}:${_messageChars(dropped)}';
+    if (shape == _lastSummaryShape) {
+      return _sessionSummary.isEmpty ? null : '[早期对话摘要] $_sessionSummary';
+    }
+    _lastSummaryShape = shape;
+
+    final snippets = <String>[];
+    for (final m in dropped) {
+      if (m.role == Role.system) continue;
+      final text = m.content
+          .map((p) => p.text ?? '')
+          .where((t) => t.isNotEmpty)
+          .join(' ')
+          .trim();
+      if (text.isEmpty) continue;
+      final prefix = m.role == Role.user ? '用户：' : '助手：';
+      snippets.add(
+        '$prefix${text.length > 80 ? '${text.substring(0, 80)}…' : text}',
+      );
+    }
+    if (snippets.isEmpty && _sessionSummary.isEmpty) return null;
+
+    final parts = <String>[
+      if (_sessionSummary.isNotEmpty) _sessionSummary,
+      ...snippets,
+    ];
+    var merged = parts.join('；');
+    // 限长：保留最新部分，避免摘要本身把预算吃光
+    const maxChars = 1200;
+    if (merged.length > maxChars) {
+      merged = '…${merged.substring(merged.length - maxChars)}';
+    }
+    final next = '[早期对话摘要] $merged';
+    final nextBody = merged;
+    if (nextBody != _summaryPersisted) {
+      _summaryPersisted = nextBody;
+      _sessionSummary = nextBody;
+      _persistSessionSummary(nextBody);
+    } else {
+      _sessionSummary = nextBody;
+    }
+    return next;
+  }
+
+  /// 会话滚动摘要（随会话切换重载）
+  String _sessionSummary = '';
+
+  /// 上次已落库的摘要正文（去重写）
+  String _summaryPersisted = '';
+
+  /// 上次合并摘要时的 dropped 形状（同一回合内步进去重）
+  String _lastSummaryShape = '';
+
+  /// 从存储加载当前会话摘要（切会话/初始化时调用）。
+  Future<void> _loadSessionSummary() async {
+    final id = _sessionStore?.current?.id;
+    _sessionSummary = '';
+    _summaryPersisted = '';
+    _lastSummaryShape = '';
+    if (id == null) return;
+    final stored = await _sessionStore?.readSummary(id);
+    if (stored == null || stored.isEmpty) return;
+    _sessionSummary = stored;
+    _summaryPersisted = stored;
+  }
+
+  void _persistSessionSummary(String body) {
+    final id = _sessionStore?.current?.id;
+    if (id == null) return;
+    unawaited(
+      (_sessionStore?.writeSummary(id, body) ?? Future<void>.value())
+          .catchError((Object error) {
+        appLog.error('AgentService: 保存会话摘要失败 - $error');
+      }),
+    );
   }
 
   /// 为本轮请求注入"可展示控件"提示（不持久化、不强制出卡）。
@@ -484,6 +724,10 @@ class AgentService {
     switch (toolName) {
       case searchToolName:
         return _searchApps(params['keyword']?.toString() ?? '');
+      case webSearchToolName:
+        return _webSearch(params);
+      case webFetchToolName:
+        return _webFetch(params);
       case downloadToolName:
         return _downloadApp(
           params['appId']?.toString() ?? '',
@@ -585,6 +829,13 @@ class AgentService {
       case loadProtocolToolName:
         return Future.value(
             _loadProtocol(params['target']?.toString() ?? ''));
+      case rememberToolName:
+        return _remember(params['text']?.toString() ?? '');
+      case forgetToolName:
+        return _forget(
+          params['id']?.toString() ?? '',
+          params['text']?.toString() ?? '',
+        );
       case appSnapshotToolName:
         return _appSnapshot(params);
       case snapshotCompareToolName:
@@ -966,6 +1217,55 @@ class AgentService {
   String get _systemPrompt =>
       AgentPrompt.build(PlatformArch.platformDescription);
 
+  /// 本回合系统提示词（含工具子集与长期记忆）
+  String get _systemPromptForTurn => AgentPrompt.build(
+        PlatformArch.platformDescription,
+        toolNames: _lastTurnToolNames.isEmpty ? null : _lastTurnToolNames,
+        memories: _turnMemoryText ??
+            _memoryStore?.renderForPrompt(query: _lastTurnQuery),
+        extraToolLines: _lastExtraToolLines,
+      );
+
+  /// 构造本回合系统提示词（只列本轮可用工具，避免模型调用未下发工具）
+  void _applyTurnSystemPrompt(
+    List<String> toolNames, {
+    String? extraToolLines,
+  }) {
+    _lastExtraToolLines = extraToolLines;
+    final prompt = AgentPrompt.build(
+      PlatformArch.platformDescription,
+      toolNames: toolNames,
+      memories: _turnMemoryText ??
+          _memoryStore?.renderForPrompt(query: _lastTurnQuery),
+      extraToolLines: extraToolLines,
+    );
+    final system = Message(
+      role: Role.system,
+      content: [TextPart(text: prompt)],
+    );
+    if (_messages.isNotEmpty && _messages.first.role == Role.system) {
+      _messages[0] = system;
+    } else {
+      _messages.insert(0, system);
+    }
+  }
+
+  /// 工具检索参考的最近对话文本（最多 3 条，低权重）
+  List<String> _recentSelectionTexts() {
+    final out = <String>[];
+    for (var i = _messages.length - 1; i >= 0 && out.length < 3; i--) {
+      final m = _messages[i];
+      if (m.role == Role.system) continue;
+      final text = m.content
+          .map((p) => p.text ?? '')
+          .where((t) => t.isNotEmpty)
+          .join(' ')
+          .trim();
+      if (text.isNotEmpty) out.add(text);
+    }
+    return out;
+  }
+
   /// 初始化 Agent（加载模型存储并初始化当前选中模型）
   Future<bool> initialize() async {
     // 运行时提示词使用中文（AgentPrompt 是唯一提示词构建器，内容由协议注册表生成）
@@ -979,8 +1279,13 @@ class AgentService {
     _model = store.selected;
     _subscribeModelChanges();
 
-    // 加载会话存储
+    // 加载会话存储 + 长期记忆
     _sessionStore = await AgentSessionStore.load();
+    _memoryStore = await AgentMemoryStore.load();
+    _traceStore = await AgentTraceStore.load();
+    _mcpStore = await McpServerStore.load();
+    await _disposeMcpClients();
+    await _syncMcpTools();
     // 确保有当前会话
     if (_sessionStore!.current == null) {
       await _sessionStore!.createSession(title: '新对话');
@@ -1009,9 +1314,6 @@ class AgentService {
       // 根据模型构建插件（使用局部变量让类型推断处理）
       final plugin = _buildPlugin(_model!, httpClient: agentHttpClient);
       _ai = Genkit(plugins: [plugin]);
-      // 自建模型：补齐思考过程流式（仅 OpenAI 兼容 provider）
-      _customModel = _buildCustomModel(_ai!, _model!,
-          httpClient: agentHttpClient);
 
       // 注册 Agent 工具模块（默认全部上线；优先从 ModuleManager 拉取已注册工具）
       if (_agentTools.isEmpty) {
@@ -1036,6 +1338,8 @@ class AgentService {
       ];
       // 从当前会话加载历史消息到 Genkit 上下文
       _restoreMessagesFromSession();
+      // 滚动上下文摘要（P3-2）：冷启动后复用上次压缩结果
+      await _loadSessionSummary();
 
       _initialized = true;
       appLog.info(
@@ -1277,40 +1581,14 @@ class AgentService {
     }
   }
 
-  /// 构建自建模型（仅 OpenAI 兼容 provider 需要）
-  ///
-  /// 目的：官方插件 `genkit_openai` 的流式只转发 `delta.content`，
-  /// `delta.reasoningContent`（思考过程）被丢弃 → 只能事后补取（整段出现）。
-  /// 自建模型复用官方 `GenkitConverter`，额外把 reasoning 作为 ReasoningPart 流式下发。
-  Model? _buildCustomModel(Genkit ai, AgentModel model,
-      {http.Client? httpClient}) {
-    if (model.provider != AgentLlmProvider.openai) return null;
-    try {
-      final built = defineReasoningAwareOpenAIModel(
-        ai,
-        modelId: model.effectiveModel,
-        apiKey: model.apiKey,
-        baseUrl: model.effectiveBaseUrl,
-        httpClient: httpClient,
-      );
-      appLog.info(
-          'AgentService: 自建 OpenAI 兼容模型已注册（含 reasoning 流式）model=${model.effectiveModel}');
-      return built;
-    } catch (e) {
-      appLog.error('AgentService: 自建模型注册失败，回退官方插件模型 - $e');
-      return null;
-    }
-  }
-
   /// 获取当前使用的模型引用
   ModelRef<dynamic> _getModelRef(AgentModel model) {
     switch (model.provider) {
       case AgentLlmProvider.google:
         return googleAI.gemini(model.effectiveModel) as ModelRef<dynamic>;
       case AgentLlmProvider.openai:
-        // 优先用自建模型（思考过程可流式）；不可用时回退官方插件模型
-        final custom = _customModel;
-        if (custom != null) return custom as ModelRef<dynamic>;
+        // genkit_openai 1.x 已原生把 reasoning_content/reasoning 作为
+        // ReasoningPart 流式下发，不再需要自建 model。
         return openAI.model(
           model.effectiveModel,
           namespace: 'custom',
@@ -1321,7 +1599,7 @@ class AgentService {
   /// 重新加载配置并初始化（保存新配置后调用）
   ///
   /// 带重入保护：重配过程中再次请求重配只置 pending，结束后自动补跑，
-  /// 避免并发初始化互相覆盖 `_ai`/`_customModel`。
+  /// 避免并发初始化互相覆盖 `_ai`。
   Future<bool> reconfigure() async {
     if (_reconfiguring) {
       _pendingModelReconfigure = true;
@@ -1420,6 +1698,7 @@ class AgentService {
     ];
     _loadSessionMessages();
     _restoreMessagesFromSession();
+    unawaited(_loadSessionSummary());
   }
 
   /// 清空当前会话
@@ -1528,6 +1807,133 @@ class AgentService {
     }
   }
 
+  /// 测试接缝：替换 MCP 客户端（注入 MockClient）
+  @visibleForTesting
+  McpClient Function(McpServerConfig server)? debugMcpClientFactory;
+
+  /// 测试接缝：同步 MCP 工具并注册到目录
+  @visibleForTesting
+  Future<void> debugSyncMcpTools(McpServerStore store) async {
+    _mcpStore = store;
+    await _disposeMcpClients();
+    await _syncMcpTools();
+  }
+
+  /// 测试接缝：直接调用 MCP 工具
+  @visibleForTesting
+  Future<String> debugCallMcpTool(
+    AgentToolSpec spec,
+    Map<String, dynamic> arguments,
+  ) {
+    return _callMcpTool(spec, arguments);
+  }
+
+  McpClient _newMcpClient(McpServerConfig server) {
+    final factory = debugMcpClientFactory;
+    if (factory != null) return factory(server);
+    return McpClient(
+      url: server.url,
+      headers: server.headers,
+      timeoutSeconds: server.timeoutSeconds,
+    );
+  }
+
+  Future<void> _disposeMcpClients() async {
+    for (final client in _mcpClients.values) {
+      await client.close();
+    }
+    _mcpClients.clear();
+  }
+
+  /// 连接已启用的 MCP 服务器并注册工具（失败只记录日志，不阻塞对话）
+  Future<void> _syncMcpTools() async {
+    // 清理所有 MCP 工具（可能来自上一个 AgentService 实例）
+    final stale = <String>[
+      for (final spec in AgentToolCatalog.all)
+        if (spec.mcp) spec.name,
+    ];
+    for (final name in stale) {
+      AgentToolCatalog.unregister(name);
+    }
+    _registeredMcpNames.clear();
+
+    final servers = _mcpStore?.enabled ?? const <McpServerConfig>[];
+    if (servers.isEmpty) return;
+
+    await Future.wait(servers.map((server) async {
+      try {
+        final client = _newMcpClient(server);
+        _mcpClients[server.id] = client;
+        await client.connect().timeout(const Duration(seconds: 8));
+        final tools = await client.listTools().timeout(const Duration(seconds: 8));
+        for (final tool in tools) {
+          final spec = McpToolRegistry.toSpec(server: server, tool: tool);
+          if (_registeredMcpNames.contains(spec.name)) continue;
+          AgentToolCatalog.register(spec);
+          _registeredMcpNames.add(spec.name);
+        }
+        appLog.info(
+            'AgentService: MCP 服务器 ${server.name} 已连接，注册 ${tools.length} 个工具');
+      } catch (e) {
+        appLog.warning('AgentService: MCP 服务器 ${server.name} 连接失败 - $e');
+      }
+    }));
+  }
+
+  Future<String> _callMcpTool(
+    AgentToolSpec spec,
+    Map<String, dynamic> arguments,
+  ) async {
+    final serverId = spec.mcpServerId;
+    final toolName = spec.mcpToolName;
+    if (serverId == null || toolName == null) return 'MCP 工具未绑定服务器';
+
+    var client = _mcpClients[serverId];
+    if (client == null) {
+      final store = _mcpStore ??= await McpServerStore.load();
+      McpServerConfig? config;
+      for (final server in store.all) {
+        if (server.id == serverId) {
+          config = server;
+          break;
+        }
+      }
+      if (config == null) return 'MCP 服务器不存在或已删除';
+      client = _newMcpClient(config);
+      _mcpClients[serverId] = client;
+    }
+
+    try {
+      final result = await client.callTool(toolName, arguments);
+      return result.isError ? 'MCP 工具返回错误：${result.text}' : result.text;
+    } on McpException catch (error) {
+      // 会话过期/服务重启：重连一次再试
+      try {
+        await client.close();
+        await client.connect();
+        final result = await client.callTool(toolName, arguments);
+        return result.isError ? 'MCP 工具返回错误：${result.text}' : result.text;
+      } catch (retryError) {
+        return 'MCP 调用失败：${error.message}；重连后仍失败：$retryError';
+      }
+    } catch (e) {
+      return 'MCP 调用失败：$e';
+    }
+  }
+
+  /// 把工具参数的 JSON Schema 包装为 genkit 的 SchemanticType。
+  ///
+  /// 不传 inputSchema 时，OpenAI/Gemini 收到的 properties 为空，
+  /// 模型只能从提示词猜参数名；传了之后 function-calling 才带真实参数。
+  SchemanticType<Map<String, dynamic>> _toolInputSchema(
+    Map<String, Object?> jsonSchema,
+  ) {
+    return SchemanticType.from<Map<String, dynamic>>(
+      jsonSchema: jsonSchema,
+      parse: (json) => Map<String, dynamic>.from(json as Map),
+    );
+  }
+
   /// 定义 Agent 工具（由协议注册表生成，委托到 ActionController 原生执行）
   ///
   /// 每个工具的 function-calling 描述取自 [AgentToolSpec.brief]（单一来源）；
@@ -1540,18 +1946,36 @@ class AgentService {
       ai.defineTool<Map<String, dynamic>, String>(
         name: spec.name,
         description: spec.brief,
+        inputSchema: _toolInputSchema(spec.inputJsonSchema),
         fn: (input, _) async {
           if (spec.name == loadProtocolToolName) {
-            return _loadProtocol(input['target']?.toString() ?? '');
+            return ToolResult.response(
+              _loadProtocol(input['target']?.toString() ?? ''),
+            );
           }
           if (spec.name == confirmToolName) {
             final question = input['question']?.toString() ?? '';
-            return _requestUserConfirmation(
+            return ToolResult.response(await _requestUserConfirmation(
               question,
               options: _parseOptions(input['options']),
+            ));
+          }
+          if (spec.name == rememberToolName) {
+            return ToolResult.response(
+              await _remember(input['text']?.toString() ?? ''),
             );
           }
-          return _runAction(spec.name, input, detail: _toolDetailFor(spec, input));
+          if (spec.name == forgetToolName) {
+            return ToolResult.response(await _forget(
+              input['id']?.toString() ?? '',
+              input['text']?.toString() ?? '',
+            ));
+          }
+          return ToolResult.response(await _runAction(
+            spec.name,
+            input,
+            detail: _toolDetailFor(spec, input),
+          ));
         },
       );
     }
@@ -1562,8 +1986,13 @@ class AgentService {
       ai.defineTool<Map<String, dynamic>, String>(
         name: tool.toolName,
         description: tool.toolDescription,
+        inputSchema: _toolInputSchema(toolParamsJsonSchema(tool.toolParams)),
         fn: (input, _) async {
-          return _runAction(tool.toolName, input, detail: '工具: ${tool.toolName}');
+          return ToolResult.response(await _runAction(
+            tool.toolName,
+            input,
+            detail: '工具: ${tool.toolName}',
+          ));
         },
       );
     }
@@ -1624,6 +2053,28 @@ class AgentService {
       'method',
     ]);
     return key.isEmpty ? spec.label : '${spec.label}: $key';
+  }
+
+  /// 记住一条长期偏好/事实（懒加载存储，runTool 测试无需先 initialize）
+  Future<String> _remember(String text) async {
+    final normalized = AgentMemoryStore.normalize(text);
+    if (normalized.isEmpty) return '记忆内容不能为空';
+    final store = _memoryStore ??= await AgentMemoryStore.load();
+    try {
+      await store.add(normalized);
+      return '已记住：$normalized';
+    } catch (e) {
+      return '记住失败：$e';
+    }
+  }
+
+  /// 删除长期记忆（id 或文本包含匹配）
+  Future<String> _forget(String id, String text) async {
+    final key = id.trim().isNotEmpty ? id.trim() : text.trim();
+    if (key.isEmpty) return '需要 id 或 text';
+    final store = _memoryStore ??= await AgentMemoryStore.load();
+    final removed = await store.remove(key);
+    return removed > 0 ? '已删除 $removed 条记忆' : '未找到匹配的记忆';
   }
 
   /// 元能力工具：按需读取工具/技能的完整协议
@@ -2041,8 +2492,17 @@ class AgentService {
           message: text,
         );
       }
-      return text;
+      if (!result.success &&
+          _lastTurnTrace?.turnId == _currentTurnId) {
+        _lastTurnTrace!.toolErrors++;
+      }
+      // UI 保留完整结果；回灌模型的结果做长度保护，避免一次搜索/列表
+      // 把上下文窗口撑爆（模型需要更多时可缩小查询范围再查）。
+      return _truncateToolResult(text);
     } catch (e) {
+      if (_lastTurnTrace?.turnId == _currentTurnId) {
+        _lastTurnTrace!.toolErrors++;
+      }
       _updateToolMessage(msg,
           status: AgentToolStatus.error,
           detail: '执行失败: $e',
@@ -2057,6 +2517,17 @@ class AgentService {
       _currentToolMsg = null;
       _currentAsyncTask = null;
     }
+  }
+
+  /// 回灌模型的工具结果字符上限
+  static const int _maxToolResultChars = 6000;
+
+  /// 工具结果过长时截断并提示模型缩小范围（UI 展示不受影响）
+  String _truncateToolResult(String text) {
+    if (text.length <= _maxToolResultChars) return text;
+    return '${text.substring(0, _maxToolResultChars)}\n'
+        '…（结果过长已截断：共 ${text.length} 字符，仅回传前 '
+        '$_maxToolResultChars 字符；如需更多请缩小查询范围/分页查询）';
   }
 
   /// 参数归一化：bool 类型参数接受 "true"/"false" 字符串
@@ -2199,6 +2670,7 @@ class AgentService {
     if (!_initialized || _busy) return;
     _busy = true;
     busy.value = true;
+    AgentTurnTrace? traceRef;
     try {
       // 注入"异步工具完成"续接指令到上下文（用 user 角色——所有 LLM API 均接受，
       // 不依赖 Genkit 工具消息内部协议；内容明确告知模型应继续回复）
@@ -2221,31 +2693,58 @@ class AgentService {
       );
       _addMessage(_activeStreamMsg!);
 
+      final requestMessages = _requestMessages;
+      final toolNames = toolsEnabled
+          ? (_lastTurnToolNames.isEmpty
+              ? _modelToolNames
+              : _lastTurnToolNames)
+          : const <String>[];
+      final trace = AgentTurnTrace(
+        turnId: _currentTurnId!,
+        provider: _model!.provider.name,
+        model: _model!.effectiveModel,
+        toolsEnabled: toolsEnabled,
+        promptChars: _messageChars(requestMessages),
+        messageCount: requestMessages.length,
+        toolsOffered: toolNames.length,
+      );
+      traceRef = trace;
+      _lastTurnTrace = trace;
+
       _logAi('▶ 请求(续接)', data: {
         'turnId': _currentTurnId,
         'provider': _model!.provider.name,
         'model': _model!.effectiveModel,
         'baseUrl': _model!.effectiveBaseUrl,
-        'customModel': _customModel != null,
+        'customModel': false,
         'showReasoning': _model!.showReasoning,
         'toolsEnabled': toolsEnabled,
-        'tools': toolsEnabled ? _modelToolNames : const <String>[],
+        'tools': toolNames,
         'maxTurns': 6,
-        'messages': _dumpMessagesLog(_requestMessages),
+        'messages': _dumpMessagesLog(requestMessages),
       });
 
       final stream = _ai!.generateStream<dynamic, void>(
         model: _getModelRef(_model!),
-        messages: _requestMessages,
-        toolNames: toolsEnabled && _modelToolNames.isNotEmpty
-            ? _modelToolNames
-            : null,
+        messages: requestMessages,
+        toolNames: toolsEnabled && toolNames.isNotEmpty ? toolNames : null,
         maxTurns: 6,
       );
       await for (final chunk in stream) {
-        if (_cancelRequested) break;
+        if (_cancelRequested) {
+          trace.cancelled = true;
+          break;
+        }
         final reasoning = _extractReasoning(chunk);
         final t = chunk.text;
+        for (final part in chunk.content) {
+          if (part.isToolRequest) trace.toolRequests++;
+          if (part.isToolResponse) trace.toolResponses++;
+        }
+        trace.addChunk(
+          textChars: t.length,
+          reasoningChars: reasoning.length,
+        );
         if (reasoning.isEmpty && t.isEmpty) continue;
         if (_activeStreamMsg == null) {
           _activeStreamMsg = AgentMessage(
@@ -2276,6 +2775,13 @@ class AgentService {
         _notifyMessages();
       }
       final response = await stream.onResult;
+      trace.finishReason = response.finishReason.value;
+      final usage = response.usage;
+      if (usage != null) {
+        trace.inputTokens = usage.inputTokens;
+        trace.outputTokens = usage.outputTokens;
+        trace.totalTokens = usage.totalTokens;
+      }
       _messages = List.of(response.messages);
       // 补取思考内容（与 chat 一致）
       _backfillReasoning(response);
@@ -2300,9 +2806,16 @@ class AgentService {
       });
       _activeStreamMsg = null;
     } catch (e) {
+      traceRef?.error = _friendlyError(e);
       appLog.error('AgentService: 后台继续生成失败 - $e');
       _logAi('✗ 后台继续生成失败', data: {'error': e.toString()});
     } finally {
+      if (traceRef != null) {
+        traceRef.finishedAt = DateTime.now();
+        _lastTurnTrace = traceRef;
+        _logAi('⏱ 回合结束', data: traceRef.toJson());
+        _persistTurnTrace(traceRef);
+      }
       _activeStreamMsg = null;
       _busy = false;
       busy.value = false;
@@ -2477,8 +2990,13 @@ class AgentService {
       case snapshotCompareToolName:
       case apkBrowserToolName:
         return AgentToolType.snapshot;
+      case webSearchToolName:
+      case webFetchToolName:
+        return AgentToolType.web;
       default:
-        return AgentToolType.manageApp;
+        return name.startsWith('mcp__')
+            ? AgentToolType.mcp
+            : AgentToolType.manageApp;
     }
   }
 
@@ -2494,6 +3012,10 @@ class AgentService {
     final actions = <AiAction>[];
     for (final spec in AgentToolCatalog.enabled) {
       if (spec.meta || spec.name == confirmToolName) continue;
+      if (spec.mcp) {
+        actions.add(_buildMcpAction(spec));
+        continue;
+      }
       actions.add(spec.name == downloadToolName
           ? _buildDownloadAction(spec)
           : _buildStandardAction(spec));
@@ -2501,6 +3023,20 @@ class AgentService {
     // 模块化工具（热插拔）：协议注册表未声明的自定义工具
     actions.addAll(_extraActions());
     return actions;
+  }
+
+  /// MCP 工具 AiAction：参数不经过 ActionController 校验（MCP schema 可能很复杂），
+  /// 直接把模型参数交给 MCP tools/call。
+  AiAction _buildMcpAction(AgentToolSpec spec) {
+    return AiAction(
+      name: spec.name,
+      description: spec.brief,
+      parameters: const <ActionParameter>[],
+      handler: (params) async {
+        final result = await _callMcpTool(spec, params);
+        return _successAction(result);
+      },
+    );
   }
 
   /// 标准工具 AiAction：handler 委托 [_executeTool] 分发到内部实现
@@ -2605,6 +3141,72 @@ class AgentService {
   }
 
   /// 搜索应用（跨渠道聚合）
+  /// 联网搜索（P3-7）：Tavily keyless/keyed，结果带来源与注入防护提示。
+  Future<String> _webSearch(Map<String, dynamic> params) async {
+    final query = params['query']?.toString().trim() ?? '';
+    if (query.isEmpty) return '搜索关键词不能为空';
+    final count =
+        int.tryParse(params['count']?.toString() ?? '') ?? 0;
+    final freshness = params['freshness']?.toString();
+    final site = params['site']?.toString();
+    final service = WebSearchService.instance;
+    try {
+      final config = await service.config();
+      final hits = await service.search(
+        query,
+        count: count > 0 ? count : null,
+        freshness: freshness,
+        site: site,
+      );
+      final text = service.formatSearch(query, hits, config);
+      _logAi('◆ 联网搜索', data: {
+        'query': query,
+        'count': hits.length,
+        'keyless': config.isKeyless,
+      });
+      return text;
+    } on WebSearchException catch (error) {
+      _logAi('✗ 联网搜索失败', data: {
+        'query': query,
+        'code': error.code,
+      });
+      return '联网搜索失败：${error.message}';
+    } catch (error) {
+      return '联网搜索失败：$error';
+    }
+  }
+
+  /// 抓取网页正文（P3-7）：直连抽取，失败回退 Jina Reader。
+  Future<String> _webFetch(Map<String, dynamic> params) async {
+    final url = params['url']?.toString().trim() ?? '';
+    if (url.isEmpty) return 'URL 不能为空';
+    final maxChars =
+        int.tryParse(params['maxChars']?.toString() ?? '') ?? 8000;
+    final service = WebSearchService.instance;
+    try {
+      final page = await service.fetch(
+        url,
+        maxChars: maxChars.clamp(500, 20000),
+      );
+      _logAi('◆ 网页抓取', data: {
+        'url': page.url,
+        'via': page.via,
+        'chars': page.content.length,
+        'truncated': page.truncated,
+      });
+      return service.formatPage(page);
+    } on WebSearchException catch (error) {
+      _logAi('✗ 网页抓取失败', data: {
+        'url': url,
+        'code': error.code,
+      });
+      return '网页抓取失败：${error.message}'
+          '（不要重复抓取同一链接；可换一个来源，或直接说明无法访问）';
+    } catch (error) {
+      return '网页抓取失败：$error';
+    }
+  }
+
   Future<String> _searchApps(String keyword) async {
     if (keyword.isEmpty) return '搜索关键词不能为空';
 
@@ -3831,6 +4433,328 @@ class AgentService {
     appLog.info('AgentService: 请求停止生成');
   }
 
+  /// 自研 Agent Loop 的最大模型步数（一步 = 一次模型调用 + 工具执行）
+  static const int _maxAgentSteps = 10;
+
+  /// 测试接缝：提示字符统计
+  @visibleForTesting
+  int debugMessageChars(List<Message> messages) => _messageChars(messages);
+
+  /// 测试接缝：替换 Genkit 实例（用 defineModel 注入假模型）
+  @visibleForTesting
+  Genkit? debugAiOverride;
+
+  /// 测试接缝：替换一次模型调用（不触碰真实 Genkit/网络）
+  @visibleForTesting
+  Future<GenerateResult<dynamic>?> Function(
+    List<Message> messages,
+    List<String> toolNames,
+    AgentTurnTrace trace,
+  )? debugGenerateStepOverride;
+
+  /// 测试接缝：替换工具执行
+  @visibleForTesting
+  Future<List<ToolResponsePart>> Function(List<ToolRequestPart> requests)?
+      debugExecuteToolsOverride;
+
+  /// 测试接缝：直接跑自定义 loop（不依赖 UI 初始化）
+  @visibleForTesting
+  Future<GenerateResult<dynamic>?> debugRunAgentLoop({
+    required List<Message> initialMessages,
+    required List<String> toolNames,
+    required AgentTurnTrace trace,
+  }) {
+    return _runAgentLoop(
+      model: modelRef<dynamic>('debug/agent-model'),
+      initialMessages: initialMessages,
+      toolNames: toolNames,
+      trace: trace,
+    );
+  }
+
+  /// 执行一轮自定义 Agent Loop（P2-1）。
+  ///
+  /// 与 Genkit 内置循环的区别：
+  /// - 用 `returnToolRequests: true` 拿到工具请求后**自己执行**，从而可以对
+  ///   只读工具并行执行；
+  /// - 显式步数上限，超限后强制模型总结（不再调用工具）；
+  /// - 工具请求/响应/模型步数写入 [AgentTurnTrace]。
+  ///
+  /// 返回最后一次模型响应；取消时返回 null（由 chat 统一收尾）。
+  Future<GenerateResult<dynamic>?> _runAgentLoop({
+    required ModelRef<dynamic> model,
+    required List<Message> initialMessages,
+    required List<String> toolNames,
+    required AgentTurnTrace trace,
+  }) async {
+    var conversation = initialMessages;
+    GenerateResult<dynamic>? last;
+    for (var step = 0; step < _maxAgentSteps; step++) {
+      if (_cancelRequested) return last;
+      final result = await _generateStep(
+        model: model,
+        messages: conversation,
+        toolNames: toolNames,
+        trace: trace,
+      );
+      if (result == null) return last;
+      last = result;
+      _accumulateUsage(trace, result);
+
+      final requests = _toolRequestsOf(result);
+      if (requests.isEmpty) return result;
+
+      // 最后一步仍有工具请求：先执行它们（不能留下没有 tool response 的
+      // tool call，否则下一次模型请求会被 OpenAI/Gemini 拒绝），再强制总结。
+      if (step == _maxAgentSteps - 1) {
+        trace.toolRequests += requests.length;
+        final responses = await _executeToolRequests(requests);
+        trace.toolResponses += responses.length;
+        if (_cancelRequested) return result;
+        final forced = await _generateStep(
+          model: model,
+          messages: [
+            ...result.messages,
+            Message(role: Role.tool, content: responses),
+            Message(
+              role: Role.user,
+              content: [
+                TextPart(
+                  text: '（系统提示：已达到最大工具步数。请直接总结当前进展并给出结论，'
+                      '不要再调用任何工具。）',
+                ),
+              ],
+            ),
+          ],
+          toolNames: const <String>[],
+          trace: trace,
+        );
+        return forced ?? result;
+      }
+
+      trace.toolRequests += requests.length;
+      final responses = await _executeToolRequests(requests);
+      trace.toolResponses += responses.length;
+      if (_cancelRequested) return result;
+
+      conversation = [
+        ...result.messages,
+        Message(role: Role.tool, content: responses),
+      ];
+    }
+    return last;
+  }
+
+  /// 执行一次模型调用并把流式文本/思考写进 UI；返回该步最终响应。
+  ///
+  /// 取消时返回 null（不再等待 onResult，避免取消后卡住）。
+  Future<GenerateResult<dynamic>?> _generateStep({
+    required ModelRef<dynamic> model,
+    required List<Message> messages,
+    required List<String> toolNames,
+    required AgentTurnTrace trace,
+  }) async {
+    trace.modelSteps++;
+    final override = debugGenerateStepOverride;
+    if (override != null) {
+      return override(messages, toolNames, trace);
+    }
+    _logAi('▶ 模型步', data: {
+      'step': trace.modelSteps,
+      'messages': messages.length,
+      'tools': toolNames.length,
+    });
+
+    final ai = debugAiOverride ?? _ai!;
+    final stream = ai.generateStream<dynamic, void>(
+      model: model,
+      messages: messages,
+      toolNames: toolNames.isEmpty ? null : toolNames,
+      // 本循环自己执行工具；maxTurns=1 防止 Genkit 再次进入内部工具循环
+      maxTurns: 1,
+      returnToolRequests: true,
+    );
+
+    await for (final chunk in stream) {
+      if (_cancelRequested) break;
+      final reasoning = _extractReasoning(chunk);
+      final text = chunk.text;
+      trace.addChunk(
+        textChars: text.length,
+        reasoningChars: reasoning.length,
+      );
+      if (reasoning.isEmpty && text.isEmpty) continue;
+
+      // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
+      // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
+      if (_activeStreamMsg == null) {
+        _activeStreamMsg = AgentMessage(
+          isUser: false,
+          text: '',
+          turnId: _currentTurnId,
+        );
+        _streamRaw = '';
+        _addMessage(_activeStreamMsg!);
+      }
+      final active = _activeStreamMsg!;
+      if (reasoning.isNotEmpty) {
+        if (active.reasoning.isEmpty) {
+          _logAi('◆ 思考分片开始(结构化)',
+              data: {'head': _briefLog(reasoning, max: 120)});
+        }
+        active.reasoning += reasoning;
+      }
+      if (text.isNotEmpty) {
+        final hadReasoning = active.reasoning.isNotEmpty;
+        _applyStreamText(active, text);
+        if (!hadReasoning && active.reasoning.isNotEmpty) {
+          _logAi('◆ 思考分片开始(内联 think)', data: {
+            'head': _briefLog(active.reasoning, max: 120),
+          });
+        }
+      }
+      _notifyMessages();
+    }
+
+    if (_cancelRequested) return null;
+    return stream.onResult;
+  }
+
+  List<ToolRequestPart> _toolRequestsOf(GenerateResult<dynamic> result) {
+    final message = result.message;
+    if (message == null) return const <ToolRequestPart>[];
+    return message.content
+        .map((part) => part.toolRequestPart)
+        .nonNulls
+        .toList(growable: false);
+  }
+
+  /// 执行一步里的全部工具请求：只读且不重名 → 并行；其余串行。
+  ///
+  /// 返回值顺序与 [requests] 一致（模型要求 tool response 顺序稳定）。
+  Future<List<ToolResponsePart>> _executeToolRequests(
+    List<ToolRequestPart> requests,
+  ) {
+    final override = debugExecuteToolsOverride;
+    if (override != null) return override(requests);
+    final inputs = <Map<String, dynamic>>[
+      for (final request in requests) _toolInputMap(request.toolRequest.input),
+    ];
+    return AgentToolScheduler.run<ToolResponsePart>(
+      count: requests.length,
+      parallelSafe: (i) {
+        if (_cancelRequested) return false;
+        final spec = AgentToolCatalog.byName(requests[i].toolRequest.name);
+        return spec?.isReadOnlyCall(inputs[i]) ?? false;
+      },
+      groupKey: (i) => requests[i].toolRequest.name,
+      execute: (i) {
+        if (_cancelRequested) {
+          return Future.value(_cancelledResponse(requests[i], i));
+        }
+        return _executeToolRequest(requests[i], i);
+      },
+    );
+  }
+
+  Future<ToolResponsePart> _executeToolRequest(
+    ToolRequestPart part,
+    int index,
+  ) async {
+    final request = part.toolRequest;
+    final input = _toolInputMap(request.input);
+    final spec = AgentToolCatalog.byName(request.name);
+    String output;
+    try {
+      output = await _executeToolDirect(
+        request.name,
+        input,
+        spec: spec,
+      );
+    } catch (e) {
+      if (_lastTurnTrace?.turnId == _currentTurnId) {
+        _lastTurnTrace!.toolErrors++;
+      }
+      output = '执行失败: $e';
+    }
+    return ToolResponsePart(
+      toolResponse: ToolResponse(
+        ref: request.ref ?? '${request.name}-$index',
+        name: request.name,
+        output: output,
+      ),
+    );
+  }
+
+  /// 执行单个工具（元工具/确认工具不走 ActionController，与 _defineTools 保持一致）
+  Future<String> _executeToolDirect(
+    String name,
+    Map<String, dynamic> input, {
+    AgentToolSpec? spec,
+  }) {
+    switch (name) {
+      case loadProtocolToolName:
+        return Future.value(_loadProtocol(input['target']?.toString() ?? ''));
+      case confirmToolName:
+        return _requestUserConfirmation(
+          input['question']?.toString() ?? '',
+          options: _parseOptions(input['options']),
+          multiSelect: input['multiSelect'] == true ||
+              input['multiSelect']?.toString() == 'true',
+        );
+      case rememberToolName:
+        return _remember(input['text']?.toString() ?? '');
+      case forgetToolName:
+        return _forget(
+          input['id']?.toString() ?? '',
+          input['text']?.toString() ?? '',
+        );
+      default:
+        return _runAction(
+          name,
+          input,
+          detail: spec == null ? name : _toolDetailFor(spec, input),
+        );
+    }
+  }
+
+  ToolResponsePart _cancelledResponse(ToolRequestPart part, int index) {
+    final request = part.toolRequest;
+    return ToolResponsePart(
+      toolResponse: ToolResponse(
+        ref: request.ref ?? '${request.name}-$index',
+        name: request.name,
+        output: '已取消（用户停止）',
+      ),
+    );
+  }
+
+  Map<String, dynamic> _toolInputMap(Object? raw) {
+    if (raw is Map) {
+      return raw.map((k, v) => MapEntry(k.toString(), v));
+    }
+    if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          return decoded.map((k, v) => MapEntry(k.toString(), v));
+        }
+      } catch (_) {
+        // 非 JSON 字符串：按空参数处理（工具会返回缺参提示）
+      }
+    }
+    return <String, dynamic>{};
+  }
+
+  void _accumulateUsage(AgentTurnTrace trace, GenerateResult<dynamic> result) {
+    final usage = result.usage;
+    if (usage == null) return;
+    int? sum(int? a, int? b) => (a == null && b == null) ? null : (a ?? 0) + (b ?? 0);
+    trace.inputTokens = sum(trace.inputTokens, usage.inputTokens);
+    trace.outputTokens = sum(trace.outputTokens, usage.outputTokens);
+    trace.totalTokens = sum(trace.totalTokens, usage.totalTokens);
+  }
+
   /// 发送用户消息并获取回复（流式输出）
   Future<void> chat(String userText) async {
     if (!_initialized) {
@@ -3851,15 +4775,63 @@ class AgentService {
 
     _addUserMessage(userText);
 
+    AgentTurnTrace? traceRef;
     try {
+      _lastTurnQuery = userText;
+      _turnMemoryText =
+          await _memoryStore?.renderForPromptAsync(query: userText);
+      final selection = AgentToolSelector.select(
+        userText: userText,
+        recentTexts: _recentSelectionTexts(),
+        all: AgentToolCatalog.enabled,
+      );
+      // 动态模块工具（perf 等）不在 AgentToolCatalog：始终附带，避免热插拔工具丢失
+      final extraModules = <AgentToolModule>[
+        for (final tool in _agentTools)
+          if (tool.enabled && AgentToolCatalog.byName(tool.toolName) == null)
+            tool,
+      ];
+      final extraToolLines = extraModules.isEmpty
+          ? null
+          : '▸ 扩展工具\n${extraModules.map((t) => '  • ${t.toolName} — ${t.toolDescription}').join('\n')}';
+      final selectedNames =
+          toolsEnabled ? selection.names : const <String>[];
+      final turnToolNames = <String>[
+        ...selectedNames,
+        for (final tool in extraModules)
+          if (!selectedNames.contains(tool.toolName)) tool.toolName,
+      ];
+      _lastTurnToolNames = turnToolNames;
+      _applyTurnSystemPrompt(selectedNames, extraToolLines: extraToolLines);
+      _logAi('◆ 工具选择', data: {
+        'selected': turnToolNames.length,
+        'total': AgentToolCatalog.enabled.length + extraModules.length,
+        'tools': turnToolNames,
+        'scores': {
+          for (final e in selection.scores.entries)
+            if (e.value > 0) e.key: e.value,
+        },
+      });
+
       _messages.add(Message(
         role: Role.user,
         content: [TextPart(text: userText)],
       ));
 
-      final ai = _ai!;
       final model = _getModelRef(_model!);
       final requestMessages = _withControlHint(_requestMessages, userText);
+      final toolNames = turnToolNames;
+      final trace = AgentTurnTrace(
+        turnId: _currentTurnId!,
+        provider: _model!.provider.name,
+        model: _model!.effectiveModel,
+        toolsEnabled: toolsEnabled,
+        promptChars: _messageChars(requestMessages),
+        messageCount: requestMessages.length,
+        toolsOffered: toolNames.length,
+      );
+      _lastTurnTrace = trace;
+      traceRef = trace;
 
       // 创建一条流式消息（初始为空）
       // 工具调用时会被"定稿"为独立消息并新建承接，实现分步展示
@@ -3876,63 +4848,24 @@ class AgentService {
         'provider': _model!.provider.name,
         'model': _model!.effectiveModel,
         'baseUrl': _model!.effectiveBaseUrl,
-        'customModel': _customModel != null,
+        'customModel': false,
         'showReasoning': _model!.showReasoning,
         'toolsEnabled': toolsEnabled,
-        'tools': toolsEnabled ? _modelToolNames : const <String>[],
-        'maxTurns': 12,
+        'tools': toolNames,
+        'maxSteps': _maxAgentSteps,
         'messages': _dumpMessagesLog(requestMessages),
       });
 
-      final stream = ai.generateStream<dynamic, void>(
+      final response = await _runAgentLoop(
         model: model,
-        messages: requestMessages,
-        toolNames: toolsEnabled ? _modelToolNames : null,
-        maxTurns: 12,
+        initialMessages: requestMessages,
+        toolNames: toolNames,
+        trace: trace,
       );
-
-      // 流式累积文本（含按需解析的思考内容）
-      await for (final chunk in stream) {
-        // 用户请求停止 → 中断
-        if (_cancelRequested) break;
-        final reasoning = _extractReasoning(chunk);
-        final text = chunk.text;
-        if (reasoning.isEmpty && text.isEmpty) continue;
-        // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
-        // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
-        if (_activeStreamMsg == null) {
-          _activeStreamMsg = AgentMessage(
-            isUser: false,
-            text: '',
-            turnId: _currentTurnId,
-          );
-          _streamRaw = '';
-          _addMessage(_activeStreamMsg!);
-        }
-        final active = _activeStreamMsg!;
-        if (reasoning.isNotEmpty) {
-          // 结构化 ReasoningPart 首片到达 → 关键证据：思考是否走了流式
-          if (active.reasoning.isEmpty) {
-            _logAi('◆ 思考分片开始(结构化)',
-                data: {'head': _briefLog(reasoning, max: 120)});
-          }
-          active.reasoning += reasoning;
-        }
-        if (text.isNotEmpty) {
-          final hadReasoning = active.reasoning.isNotEmpty;
-          _applyStreamText(active, text);
-          // 内联  thinking 标签被解析出来 → 另一条思考来源
-          if (!hadReasoning && active.reasoning.isNotEmpty) {
-            _logAi('◆ 思考分片开始(内联 think)', data: {
-              'head': _briefLog(active.reasoning, max: 120),
-            });
-          }
-        }
-        _notifyMessages();
-      }
 
       // 若已停止，不再等待最终响应
       if (_cancelRequested) {
+        trace.cancelled = true;
         appLog.info('AgentService: 已停止生成，保留已输出内容');
         final msg = _activeStreamMsg;
         if (msg != null) {
@@ -3945,9 +4878,21 @@ class AgentService {
         return;
       }
 
-      // 获取最终响应，更新消息历史
-      final response = await stream.onResult;
+      if (response == null) {
+        throw StateError('模型未返回响应（可能已取消）');
+      }
+
+      trace.finishReason = response.finishReason.value;
+      if (response.finishReason == FinishReason.failed ||
+          response.finishReason == FinishReason.blocked) {
+        throw StateError(
+          '模型生成失败（${response.finishReason.value}）'
+          '${response.finishMessage == null ? '' : '：${response.finishMessage}'}',
+        );
+      }
       _messages = List.of(response.messages);
+      // [UI hint] 是本轮临时注入，不进入下一轮历史（避免系统消息堆积）
+      _stripTransientHints(_messages);
       // 补取思考内容（OpenAI 兼容端点的 reasoning_content 只在最终响应里）
       _backfillReasoning(response);
 
@@ -3975,6 +4920,7 @@ class AgentService {
       });
       _activeStreamMsg = null;
     } catch (e) {
+      traceRef?.error = _friendlyError(e);
       appLog.error('AgentService: 生成失败 - $e');
       _logAi('✗ 生成失败', data: {'error': e.toString()});
       // 定稿残留的"思考中"流式消息：接口中断/失败时，_activeStreamMsg 还停在
@@ -3996,6 +4942,12 @@ class AgentService {
       _addAssistantMessage('抱歉，请求失败：${_friendlyError(e)}',
           turnId: 'err-${DateTime.now().millisecondsSinceEpoch}');
     } finally {
+      if (traceRef != null) {
+        traceRef.finishedAt = DateTime.now();
+        _lastTurnTrace = traceRef;
+        _logAi('⏱ 回合结束', data: traceRef.toJson());
+        _persistTurnTrace(traceRef);
+      }
       _activeStreamMsg = null;
       _busy = false;
       busy.value = false;
@@ -4005,6 +4957,20 @@ class AgentService {
       _cancelRequested = false;
       if (needsReconfigure) unawaited(reconfigure());
     }
+  }
+
+  /// 清理本轮临时系统提示（[UI hint] / 早期摘要），避免跨回合累积。
+  ///
+  /// 早期摘要按需重建：下一轮仍超预算时 `_trimCloudMessages` 会重新生成。
+  void _stripTransientHints(List<Message> messages) {
+    messages.removeWhere((m) {
+      if (m.role != Role.system) return false;
+      return m.content.any((p) {
+        final text = p.text ?? '';
+        return text.startsWith('[UI hint]') ||
+            text.startsWith('[早期对话摘要]');
+      });
+    });
   }
 
   void _addUserMessage(String text) {
@@ -4054,8 +5020,11 @@ class AgentService {
   /// 释放资源（模块下线时由 AgentToolsModule 调用；替代原 GetX onClose）
   void dispose() {
     _ai = null;
-    _customModel = null;
     _disposeAgentHttpClient();
+    unawaited(_disposeMcpClients());
+    for (final spec in AgentToolCatalog.all) {
+      if (spec.mcp) AgentToolCatalog.unregister(spec.name);
+    }
     _store?.removeListener(_onModelStoreChanged);
     _modelStoreListenerAttached = false;
     _messages = [];

@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -201229038;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -784755876;
 
 // Section: executor
 
@@ -1045,6 +1045,1017 @@ fn wire__crate__bridge__AddedAppsApi_total_count_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let output_ok = crate::bridge::AddedAppsApi::total_count(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_add_memory_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_add_memory",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_text = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::add_memory(&*api_that_guard, api_text)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_clear_memories_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_clear_memories",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::clear_memories(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_clear_sessions_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_clear_sessions",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::clear_sessions(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_clear_traces_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_clear_traces",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::clear_traces(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_current_session_id_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_current_session_id",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::current_session_id(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_delete_session_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_delete_session",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::delete_session(&*api_that_guard, api_id)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_init_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_init",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_data_dir = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::bridge::AgentStoreApi::init(api_data_dir)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_insert_trace_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_insert_trace_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_json = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::insert_trace_json(
+                        &*api_that_guard,
+                        api_json,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_memories_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_memories_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::memories_json(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_prune_traces_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_prune_traces",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_keep = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::prune_traces(&*api_that_guard, api_keep)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_read_meta_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_read_meta",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_key = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::read_meta(&*api_that_guard, api_key)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_remove_memory_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_remove_memory",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_id_or_text = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::remove_memory(
+                        &*api_that_guard,
+                        api_id_or_text,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_replace_memories_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_replace_memories_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_json = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::replace_memories_json(
+                        &*api_that_guard,
+                        api_json,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_replace_sessions_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_replace_sessions_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_json = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::replace_sessions_json(
+                        &*api_that_guard,
+                        api_json,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_search_memories_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_search_memories_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_query = <String>::sse_decode(&mut deserializer);
+            let api_limit = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::search_memories_json(
+                        &*api_that_guard,
+                        api_query,
+                        api_limit,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_sessions_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_sessions_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::sessions_json(&*api_that_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_set_current_session_id_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_set_current_session_id",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::set_current_session_id(
+                        &*api_that_guard,
+                        api_id,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_traces_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_traces_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_limit = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::bridge::AgentStoreApi::traces_json(&*api_that_guard, api_limit)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_upsert_session_json_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_upsert_session_json",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_json = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::upsert_session_json(
+                        &*api_that_guard,
+                        api_json,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__bridge__AgentStoreApi_write_meta_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "AgentStoreApi_write_meta",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
+            >>::sse_decode(&mut deserializer);
+            let api_key = <String>::sse_decode(&mut deserializer);
+            let api_value = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::AgentStoreApi::write_meta(
+                        &*api_that_guard,
+                        api_key,
+                        api_value,
+                    )?;
                     Ok(output_ok)
                 })())
             }
@@ -10260,6 +11271,9 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
+    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>
+);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CatalogApi>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
@@ -10326,6 +11340,16 @@ impl SseDecode for AddedAppsApi {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <RustOpaqueMoi<
             flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>,
+        >>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
+    }
+}
+
+impl SseDecode for AgentStoreApi {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>,
         >>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
@@ -10511,6 +11535,16 @@ impl SseDecode for std::collections::HashMap<String, String> {
 
 impl SseDecode
     for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
+    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12780,332 +13814,420 @@ fn pde_ffi_dispatcher_primary_impl(
         17 => wire__crate__bridge__AddedAppsApi_tags_index_impl(port, ptr, rust_vec_len, data_len),
         18 => wire__crate__bridge__AddedAppsApi_toggle_impl(port, ptr, rust_vec_len, data_len),
         19 => wire__crate__bridge__AddedAppsApi_total_count_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__bridge__CatalogApi_by_category_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__bridge__CatalogApi_categories_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__bridge__CatalogApi_get_app_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__bridge__AgentStoreApi_add_memory_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__bridge__AgentStoreApi_clear_memories_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        22 => wire__crate__bridge__AgentStoreApi_clear_sessions_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
         23 => {
+            wire__crate__bridge__AgentStoreApi_clear_traces_impl(port, ptr, rust_vec_len, data_len)
+        }
+        24 => wire__crate__bridge__AgentStoreApi_current_session_id_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        25 => wire__crate__bridge__AgentStoreApi_delete_session_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        26 => wire__crate__bridge__AgentStoreApi_init_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__bridge__AgentStoreApi_insert_trace_json_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        28 => {
+            wire__crate__bridge__AgentStoreApi_memories_json_impl(port, ptr, rust_vec_len, data_len)
+        }
+        29 => {
+            wire__crate__bridge__AgentStoreApi_prune_traces_impl(port, ptr, rust_vec_len, data_len)
+        }
+        30 => wire__crate__bridge__AgentStoreApi_read_meta_impl(port, ptr, rust_vec_len, data_len),
+        31 => {
+            wire__crate__bridge__AgentStoreApi_remove_memory_impl(port, ptr, rust_vec_len, data_len)
+        }
+        32 => wire__crate__bridge__AgentStoreApi_replace_memories_json_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        33 => wire__crate__bridge__AgentStoreApi_replace_sessions_json_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        34 => wire__crate__bridge__AgentStoreApi_search_memories_json_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        35 => {
+            wire__crate__bridge__AgentStoreApi_sessions_json_impl(port, ptr, rust_vec_len, data_len)
+        }
+        36 => wire__crate__bridge__AgentStoreApi_set_current_session_id_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        37 => {
+            wire__crate__bridge__AgentStoreApi_traces_json_impl(port, ptr, rust_vec_len, data_len)
+        }
+        38 => wire__crate__bridge__AgentStoreApi_upsert_session_json_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        39 => wire__crate__bridge__AgentStoreApi_write_meta_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__bridge__CatalogApi_by_category_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__bridge__CatalogApi_categories_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__bridge__CatalogApi_get_app_impl(port, ptr, rust_vec_len, data_len),
+        43 => {
             wire__crate__bridge__CatalogApi_get_app_detail_impl(port, ptr, rust_vec_len, data_len)
         }
-        24 => wire__crate__bridge__CatalogApi_init_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__bridge__CatalogApi_list_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__bridge__CatalogApi_list_page_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__bridge__CatalogApi_refresh_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__bridge__CatalogApi_repo_download_impl(port, ptr, rust_vec_len, data_len),
-        29 => {
+        44 => wire__crate__bridge__CatalogApi_init_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__bridge__CatalogApi_list_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__bridge__CatalogApi_list_page_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__bridge__CatalogApi_refresh_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__bridge__CatalogApi_repo_download_impl(port, ptr, rust_vec_len, data_len),
+        49 => {
             wire__crate__bridge__CatalogApi_repo_ensure_seed_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => {
+        50 => {
             wire__crate__bridge__CatalogApi_repo_materialize_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => wire__crate__bridge__CatalogApi_repo_select_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__bridge__CatalogApi_repo_status_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__bridge__CatalogApi_search_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__bridge__ChannelApi_add_app_impl(port, ptr, rust_vec_len, data_len),
-        35 => {
+        51 => wire__crate__bridge__CatalogApi_repo_select_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__bridge__CatalogApi_repo_status_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__bridge__CatalogApi_search_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__bridge__ChannelApi_add_app_impl(port, ptr, rust_vec_len, data_len),
+        55 => {
             wire__crate__bridge__ChannelApi_canonical_app_id_impl(port, ptr, rust_vec_len, data_len)
         }
-        36 => wire__crate__bridge__ChannelApi_check_update_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__bridge__ChannelApi_disable_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__bridge__ChannelApi_enable_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__bridge__ChannelApi_env_get_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__bridge__ChannelApi_env_remove_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__bridge__ChannelApi_env_set_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__bridge__ChannelApi_export_pack_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__bridge__ChannelApi_fetch_readme_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__bridge__ChannelApi_get_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__bridge__ChannelApi_get_all_categories_impl(
+        56 => wire__crate__bridge__ChannelApi_check_update_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__bridge__ChannelApi_disable_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__bridge__ChannelApi_enable_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__bridge__ChannelApi_env_get_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__bridge__ChannelApi_env_remove_impl(port, ptr, rust_vec_len, data_len),
+        61 => wire__crate__bridge__ChannelApi_env_set_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__bridge__ChannelApi_export_pack_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__bridge__ChannelApi_fetch_readme_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__bridge__ChannelApi_get_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__bridge__ChannelApi_get_all_categories_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => {
+        66 => {
             wire__crate__bridge__ChannelApi_get_app_detail_impl(port, ptr, rust_vec_len, data_len)
         }
-        47 => wire__crate__bridge__ChannelApi_get_app_info_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__bridge__ChannelApi_get_config_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__bridge__ChannelApi_import_pack_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__bridge__ChannelApi_init_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__bridge__ChannelApi_library_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__bridge__ChannelApi_list_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__bridge__ChannelApi_list_apps_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__crate__bridge__ChannelApi_refresh_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__bridge__ChannelApi_register_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__bridge__ChannelApi_remove_app_impl(port, ptr, rust_vec_len, data_len),
-        57 => wire__crate__bridge__ChannelApi_remove_pack_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__bridge__ChannelApi_script_build_history_impl(
+        67 => wire__crate__bridge__ChannelApi_get_app_info_impl(port, ptr, rust_vec_len, data_len),
+        68 => wire__crate__bridge__ChannelApi_get_config_impl(port, ptr, rust_vec_len, data_len),
+        69 => wire__crate__bridge__ChannelApi_import_pack_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__bridge__ChannelApi_init_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__bridge__ChannelApi_library_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__bridge__ChannelApi_list_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__bridge__ChannelApi_list_apps_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__bridge__ChannelApi_refresh_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__bridge__ChannelApi_register_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__bridge__ChannelApi_remove_app_impl(port, ptr, rust_vec_len, data_len),
+        77 => wire__crate__bridge__ChannelApi_remove_pack_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__bridge__ChannelApi_script_build_history_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => wire__crate__bridge__ChannelApi_script_detail_action_impl(
+        79 => wire__crate__bridge__ChannelApi_script_detail_action_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        60 => wire__crate__bridge__ChannelApi_script_detail_menu_impl(
+        80 => wire__crate__bridge__ChannelApi_script_detail_menu_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        61 => wire__crate__bridge__ChannelApi_script_get_app_detail_impl(
+        81 => wire__crate__bridge__ChannelApi_script_get_app_detail_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        62 => wire__crate__bridge__ChannelApi_script_switch_version_impl(
+        82 => wire__crate__bridge__ChannelApi_script_switch_version_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        63 => wire__crate__bridge__ChannelApi_script_version_options_impl(
+        83 => wire__crate__bridge__ChannelApi_script_version_options_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__bridge__ChannelApi_search_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__bridge__ChannelApi_search_by_category_impl(
+        84 => wire__crate__bridge__ChannelApi_search_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__bridge__ChannelApi_search_by_category_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__bridge__ChannelApi_set_fdroid_sources_impl(
+        86 => wire__crate__bridge__ChannelApi_set_fdroid_sources_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => {
+        87 => {
             wire__crate__bridge__ChannelApi_set_github_token_impl(port, ptr, rust_vec_len, data_len)
         }
-        68 => wire__crate__bridge__ChannelApi_unregister_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__bridge__ConfigApi_clear_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__bridge__ConfigApi_config_events_stream_impl(
+        88 => wire__crate__bridge__ChannelApi_unregister_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__bridge__ConfigApi_clear_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__crate__bridge__ConfigApi_config_events_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        71 => {
+        91 => {
             wire__crate__bridge__ConfigApi_ensure_migrated_impl(port, ptr, rust_vec_len, data_len)
         }
-        72 => wire__crate__bridge__ConfigApi_export_impl(port, ptr, rust_vec_len, data_len),
-        73 => wire__crate__bridge__ConfigApi_get_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__bridge__ConfigApi_import_impl(port, ptr, rust_vec_len, data_len),
-        75 => wire__crate__bridge__ConfigApi_init_impl(port, ptr, rust_vec_len, data_len),
-        76 => wire__crate__bridge__ConfigApi_list_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__bridge__ConfigApi_meta_get_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__bridge__ConfigApi_meta_set_impl(port, ptr, rust_vec_len, data_len),
-        79 => wire__crate__bridge__ConfigApi_reset_impl(port, ptr, rust_vec_len, data_len),
-        80 => wire__crate__bridge__ConfigApi_set_impl(port, ptr, rust_vec_len, data_len),
-        81 => wire__crate__bridge__ConfigApi_snapshot_impl(port, ptr, rust_vec_len, data_len),
-        82 => wire__crate__bridge__ConfigApi_snapshots_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__bridge__ConfigApi_verify_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__bridge__ConfigApi_watch_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__bridge__CoreApi_arm_core_write_impl(port, ptr, rust_vec_len, data_len),
-        86 => {
+        92 => wire__crate__bridge__ConfigApi_export_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__bridge__ConfigApi_get_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__bridge__ConfigApi_import_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__bridge__ConfigApi_init_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__bridge__ConfigApi_list_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__bridge__ConfigApi_meta_get_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__bridge__ConfigApi_meta_set_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__bridge__ConfigApi_reset_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__crate__bridge__ConfigApi_set_impl(port, ptr, rust_vec_len, data_len),
+        101 => wire__crate__bridge__ConfigApi_snapshot_impl(port, ptr, rust_vec_len, data_len),
+        102 => wire__crate__bridge__ConfigApi_snapshots_impl(port, ptr, rust_vec_len, data_len),
+        103 => wire__crate__bridge__ConfigApi_verify_impl(port, ptr, rust_vec_len, data_len),
+        104 => wire__crate__bridge__ConfigApi_watch_impl(port, ptr, rust_vec_len, data_len),
+        105 => wire__crate__bridge__CoreApi_arm_core_write_impl(port, ptr, rust_vec_len, data_len),
+        106 => {
             wire__crate__bridge__CoreApi_core_write_marker_impl(port, ptr, rust_vec_len, data_len)
         }
-        87 => wire__crate__bridge__CoreApi_core_writes_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__bridge__CoreApi_export_snapshot_impl(port, ptr, rust_vec_len, data_len),
-        89 => {
+        107 => wire__crate__bridge__CoreApi_core_writes_impl(port, ptr, rust_vec_len, data_len),
+        108 => wire__crate__bridge__CoreApi_export_snapshot_impl(port, ptr, rust_vec_len, data_len),
+        109 => {
             wire__crate__bridge__CoreApi_get_install_rules_impl(port, ptr, rust_vec_len, data_len)
         }
-        90 => wire__crate__bridge__CoreApi_get_update_rules_impl(port, ptr, rust_vec_len, data_len),
-        91 => wire__crate__bridge__CoreApi_import_file_impl(port, ptr, rust_vec_len, data_len),
-        92 => wire__crate__bridge__CoreApi_import_migration_file_impl(
+        110 => {
+            wire__crate__bridge__CoreApi_get_update_rules_impl(port, ptr, rust_vec_len, data_len)
+        }
+        111 => wire__crate__bridge__CoreApi_import_file_impl(port, ptr, rust_vec_len, data_len),
+        112 => wire__crate__bridge__CoreApi_import_migration_file_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        93 => wire__crate__bridge__CoreApi_import_snapshot_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__bridge__CoreApi_init_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__bridge__CoreApi_inventory_status_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__bridge__CoreApi_migrate_paths_impl(port, ptr, rust_vec_len, data_len),
-        97 => wire__crate__bridge__CoreApi_push_inventory_impl(port, ptr, rust_vec_len, data_len),
-        98 => {
+        113 => wire__crate__bridge__CoreApi_import_snapshot_impl(port, ptr, rust_vec_len, data_len),
+        114 => wire__crate__bridge__CoreApi_init_impl(port, ptr, rust_vec_len, data_len),
+        115 => {
+            wire__crate__bridge__CoreApi_inventory_status_impl(port, ptr, rust_vec_len, data_len)
+        }
+        116 => wire__crate__bridge__CoreApi_migrate_paths_impl(port, ptr, rust_vec_len, data_len),
+        117 => wire__crate__bridge__CoreApi_push_inventory_impl(port, ptr, rust_vec_len, data_len),
+        118 => {
             wire__crate__bridge__CoreApi_push_platform_facts_impl(port, ptr, rust_vec_len, data_len)
         }
-        99 => wire__crate__bridge__CoreApi_resync_downloads_impl(port, ptr, rust_vec_len, data_len),
-        100 => {
+        119 => {
+            wire__crate__bridge__CoreApi_resync_downloads_impl(port, ptr, rust_vec_len, data_len)
+        }
+        120 => {
             wire__crate__bridge__CoreApi_set_install_rules_impl(port, ptr, rust_vec_len, data_len)
         }
-        101 => {
+        121 => {
             wire__crate__bridge__CoreApi_set_update_rules_impl(port, ptr, rust_vec_len, data_len)
         }
-        102 => wire__crate__bridge__CoreApi_take_events_impl(port, ptr, rust_vec_len, data_len),
-        103 => wire__crate__bridge__DownloadApi_cancel_impl(port, ptr, rust_vec_len, data_len),
-        104 => wire__crate__bridge__DownloadApi_get_impl(port, ptr, rust_vec_len, data_len),
-        105 => {
+        122 => wire__crate__bridge__CoreApi_take_events_impl(port, ptr, rust_vec_len, data_len),
+        123 => wire__crate__bridge__DownloadApi_cancel_impl(port, ptr, rust_vec_len, data_len),
+        124 => wire__crate__bridge__DownloadApi_get_impl(port, ptr, rust_vec_len, data_len),
+        125 => {
             wire__crate__bridge__DownloadApi_import_legacy_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__crate__bridge__DownloadApi_init_impl(port, ptr, rust_vec_len, data_len),
-        107 => wire__crate__bridge__DownloadApi_list_impl(port, ptr, rust_vec_len, data_len),
-        108 => wire__crate__bridge__DownloadApi_pause_impl(port, ptr, rust_vec_len, data_len),
-        109 => wire__crate__bridge__DownloadApi_remove_impl(port, ptr, rust_vec_len, data_len),
-        110 => wire__crate__bridge__DownloadApi_restart_impl(port, ptr, rust_vec_len, data_len),
-        111 => wire__crate__bridge__DownloadApi_resume_impl(port, ptr, rust_vec_len, data_len),
-        112 => wire__crate__bridge__DownloadApi_retry_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__bridge__DownloadApi_start_impl(port, ptr, rust_vec_len, data_len),
-        114 => wire__crate__bridge__DownloadApi_watch_all_impl(port, ptr, rust_vec_len, data_len),
-        115 => wire__crate__bridge__EventBridge_broadcast_impl(port, ptr, rust_vec_len, data_len),
-        116 => {
+        126 => wire__crate__bridge__DownloadApi_init_impl(port, ptr, rust_vec_len, data_len),
+        127 => wire__crate__bridge__DownloadApi_list_impl(port, ptr, rust_vec_len, data_len),
+        128 => wire__crate__bridge__DownloadApi_pause_impl(port, ptr, rust_vec_len, data_len),
+        129 => wire__crate__bridge__DownloadApi_remove_impl(port, ptr, rust_vec_len, data_len),
+        130 => wire__crate__bridge__DownloadApi_restart_impl(port, ptr, rust_vec_len, data_len),
+        131 => wire__crate__bridge__DownloadApi_resume_impl(port, ptr, rust_vec_len, data_len),
+        132 => wire__crate__bridge__DownloadApi_retry_impl(port, ptr, rust_vec_len, data_len),
+        133 => wire__crate__bridge__DownloadApi_start_impl(port, ptr, rust_vec_len, data_len),
+        134 => wire__crate__bridge__DownloadApi_watch_all_impl(port, ptr, rust_vec_len, data_len),
+        135 => wire__crate__bridge__EventBridge_broadcast_impl(port, ptr, rust_vec_len, data_len),
+        136 => {
             wire__crate__bridge__EventBridge_events_stream_impl(port, ptr, rust_vec_len, data_len)
         }
-        117 => wire__crate__bridge__EventBridge_new_impl(port, ptr, rust_vec_len, data_len),
-        118 => wire__crate__bridge__FlagsApi_get_impl(port, ptr, rust_vec_len, data_len),
-        119 => wire__crate__bridge__FlagsApi_init_impl(port, ptr, rust_vec_len, data_len),
-        120 => wire__crate__bridge__FlagsApi_reset_impl(port, ptr, rust_vec_len, data_len),
-        121 => wire__crate__bridge__FlagsApi_set_impl(port, ptr, rust_vec_len, data_len),
-        122 => wire__crate__bridge__HostInspector_loaded_modules_impl(
+        137 => wire__crate__bridge__EventBridge_new_impl(port, ptr, rust_vec_len, data_len),
+        138 => wire__crate__bridge__FlagsApi_get_impl(port, ptr, rust_vec_len, data_len),
+        139 => wire__crate__bridge__FlagsApi_init_impl(port, ptr, rust_vec_len, data_len),
+        140 => wire__crate__bridge__FlagsApi_reset_impl(port, ptr, rust_vec_len, data_len),
+        141 => wire__crate__bridge__FlagsApi_set_impl(port, ptr, rust_vec_len, data_len),
+        142 => wire__crate__bridge__HostInspector_loaded_modules_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        123 => wire__crate__bridge__HostInspector_new_impl(port, ptr, rust_vec_len, data_len),
-        124 => {
+        143 => wire__crate__bridge__HostInspector_new_impl(port, ptr, rust_vec_len, data_len),
+        144 => {
             wire__crate__bridge__HostInspector_reset_bridges_impl(port, ptr, rust_vec_len, data_len)
         }
-        125 => wire__crate__bridge__InstallApi_get_impl(port, ptr, rust_vec_len, data_len),
-        126 => wire__crate__bridge__InstallApi_init_impl(port, ptr, rust_vec_len, data_len),
-        127 => wire__crate__bridge__InstallApi_install_impl(port, ptr, rust_vec_len, data_len),
-        128 => {
+        145 => wire__crate__bridge__InstallApi_get_impl(port, ptr, rust_vec_len, data_len),
+        146 => wire__crate__bridge__InstallApi_init_impl(port, ptr, rust_vec_len, data_len),
+        147 => wire__crate__bridge__InstallApi_install_impl(port, ptr, rust_vec_len, data_len),
+        148 => {
             wire__crate__bridge__InstallApi_pending_requests_impl(port, ptr, rust_vec_len, data_len)
         }
-        129 => {
+        149 => {
             wire__crate__bridge__InstallApi_report_result_impl(port, ptr, rust_vec_len, data_len)
         }
-        130 => wire__crate__bridge__InstallApi_take_events_impl(port, ptr, rust_vec_len, data_len),
-        131 => wire__crate__bridge__InstanceHandle_call_impl(port, ptr, rust_vec_len, data_len),
-        132 => wire__crate__bridge__InstanceHandle_dispose_impl(port, ptr, rust_vec_len, data_len),
-        133 => {
+        150 => wire__crate__bridge__InstallApi_take_events_impl(port, ptr, rust_vec_len, data_len),
+        151 => wire__crate__bridge__InstanceHandle_call_impl(port, ptr, rust_vec_len, data_len),
+        152 => wire__crate__bridge__InstanceHandle_dispose_impl(port, ptr, rust_vec_len, data_len),
+        153 => {
             wire__crate__bridge__InstanceHandle_instance_id_impl(port, ptr, rust_vec_len, data_len)
         }
-        134 => wire__crate__bridge__LibraryApi_add_impl(port, ptr, rust_vec_len, data_len),
-        135 => {
+        154 => wire__crate__bridge__LibraryApi_add_impl(port, ptr, rust_vec_len, data_len),
+        155 => {
             wire__crate__bridge__LibraryApi_add_membership_impl(port, ptr, rust_vec_len, data_len)
         }
-        136 => wire__crate__bridge__LibraryApi_add_tag_impl(port, ptr, rust_vec_len, data_len),
-        137 => wire__crate__bridge__LibraryApi_clear_all_impl(port, ptr, rust_vec_len, data_len),
-        138 => {
+        156 => wire__crate__bridge__LibraryApi_add_tag_impl(port, ptr, rust_vec_len, data_len),
+        157 => wire__crate__bridge__LibraryApi_clear_all_impl(port, ptr, rust_vec_len, data_len),
+        158 => {
             wire__crate__bridge__LibraryApi_clear_channel_impl(port, ptr, rust_vec_len, data_len)
         }
-        139 => {
+        159 => {
             wire__crate__bridge__LibraryApi_count_channel_impl(port, ptr, rust_vec_len, data_len)
         }
-        140 => wire__crate__bridge__LibraryApi_get_impl(port, ptr, rust_vec_len, data_len),
-        141 => wire__crate__bridge__LibraryApi_is_added_impl(port, ptr, rust_vec_len, data_len),
-        142 => wire__crate__bridge__LibraryApi_list_impl(port, ptr, rust_vec_len, data_len),
-        143 => wire__crate__bridge__LibraryApi_list_channel_impl(port, ptr, rust_vec_len, data_len),
-        144 => wire__crate__bridge__LibraryApi_page_impl(port, ptr, rust_vec_len, data_len),
-        145 => wire__crate__bridge__LibraryApi_remove_impl(port, ptr, rust_vec_len, data_len),
-        146 => wire__crate__bridge__LibraryApi_remove_tag_impl(port, ptr, rust_vec_len, data_len),
-        147 => wire__crate__bridge__LibraryApi_repair_missing_metadata_impl(
+        160 => wire__crate__bridge__LibraryApi_get_impl(port, ptr, rust_vec_len, data_len),
+        161 => wire__crate__bridge__LibraryApi_is_added_impl(port, ptr, rust_vec_len, data_len),
+        162 => wire__crate__bridge__LibraryApi_list_impl(port, ptr, rust_vec_len, data_len),
+        163 => wire__crate__bridge__LibraryApi_list_channel_impl(port, ptr, rust_vec_len, data_len),
+        164 => wire__crate__bridge__LibraryApi_page_impl(port, ptr, rust_vec_len, data_len),
+        165 => wire__crate__bridge__LibraryApi_remove_impl(port, ptr, rust_vec_len, data_len),
+        166 => wire__crate__bridge__LibraryApi_remove_tag_impl(port, ptr, rust_vec_len, data_len),
+        167 => wire__crate__bridge__LibraryApi_repair_missing_metadata_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        148 => wire__crate__bridge__LibraryApi_set_order_impl(port, ptr, rust_vec_len, data_len),
-        149 => wire__crate__bridge__LibraryApi_set_tags_impl(port, ptr, rust_vec_len, data_len),
-        150 => wire__crate__bridge__LibraryApi_tags_impl(port, ptr, rust_vec_len, data_len),
-        151 => wire__crate__bridge__LibraryApi_tags_index_impl(port, ptr, rust_vec_len, data_len),
-        152 => wire__crate__bridge__LibraryApi_toggle_impl(port, ptr, rust_vec_len, data_len),
-        153 => wire__crate__bridge__LibraryApi_total_count_impl(port, ptr, rust_vec_len, data_len),
-        154 => wire__crate__bridge__LogBridge_logs_stream_impl(port, ptr, rust_vec_len, data_len),
-        155 => wire__crate__bridge__LogBridge_new_impl(port, ptr, rust_vec_len, data_len),
-        158 => {
+        168 => wire__crate__bridge__LibraryApi_set_order_impl(port, ptr, rust_vec_len, data_len),
+        169 => wire__crate__bridge__LibraryApi_set_tags_impl(port, ptr, rust_vec_len, data_len),
+        170 => wire__crate__bridge__LibraryApi_tags_impl(port, ptr, rust_vec_len, data_len),
+        171 => wire__crate__bridge__LibraryApi_tags_index_impl(port, ptr, rust_vec_len, data_len),
+        172 => wire__crate__bridge__LibraryApi_toggle_impl(port, ptr, rust_vec_len, data_len),
+        173 => wire__crate__bridge__LibraryApi_total_count_impl(port, ptr, rust_vec_len, data_len),
+        174 => wire__crate__bridge__LogBridge_logs_stream_impl(port, ptr, rust_vec_len, data_len),
+        175 => wire__crate__bridge__LogBridge_new_impl(port, ptr, rust_vec_len, data_len),
+        178 => {
             wire__crate__bridge__ModuleHandle_call_envelope_impl(port, ptr, rust_vec_len, data_len)
         }
-        159 => wire__crate__bridge__ModuleHandle_call_envelope_timed_impl(
+        179 => wire__crate__bridge__ModuleHandle_call_envelope_timed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        160 => {
+        180 => {
             wire__crate__bridge__ModuleHandle_call_static_impl(port, ptr, rust_vec_len, data_len)
         }
-        161 => {
+        181 => {
             wire__crate__bridge__ModuleHandle_cancel_call_impl(port, ptr, rust_vec_len, data_len)
         }
-        162 => wire__crate__bridge__ModuleHandle_create_instance_impl(
+        182 => wire__crate__bridge__ModuleHandle_create_instance_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        163 => wire__crate__bridge__ModuleHandle_dispose_impl(port, ptr, rust_vec_len, data_len),
-        164 => wire__crate__bridge__ModuleHandle_is_loaded_impl(port, ptr, rust_vec_len, data_len),
-        165 => wire__crate__bridge__ModuleHandle_load_impl(port, ptr, rust_vec_len, data_len),
-        166 => {
+        183 => wire__crate__bridge__ModuleHandle_dispose_impl(port, ptr, rust_vec_len, data_len),
+        184 => wire__crate__bridge__ModuleHandle_is_loaded_impl(port, ptr, rust_vec_len, data_len),
+        185 => wire__crate__bridge__ModuleHandle_load_impl(port, ptr, rust_vec_len, data_len),
+        186 => {
             wire__crate__bridge__ModuleHandle_mount_from_so_impl(port, ptr, rust_vec_len, data_len)
         }
-        167 => wire__crate__bridge__ScriptApi_add_app_impl(port, ptr, rust_vec_len, data_len),
-        168 => wire__crate__bridge__ScriptApi_env_impl(port, ptr, rust_vec_len, data_len),
-        169 => wire__crate__bridge__ScriptApi_import_impl(port, ptr, rust_vec_len, data_len),
-        170 => wire__crate__bridge__ScriptApi_init_impl(port, ptr, rust_vec_len, data_len),
-        171 => wire__crate__bridge__ScriptApi_list_impl(port, ptr, rust_vec_len, data_len),
-        172 => wire__crate__bridge__ScriptApi_refresh_impl(port, ptr, rust_vec_len, data_len),
-        173 => {
+        187 => wire__crate__bridge__ScriptApi_add_app_impl(port, ptr, rust_vec_len, data_len),
+        188 => wire__crate__bridge__ScriptApi_env_impl(port, ptr, rust_vec_len, data_len),
+        189 => wire__crate__bridge__ScriptApi_import_impl(port, ptr, rust_vec_len, data_len),
+        190 => wire__crate__bridge__ScriptApi_init_impl(port, ptr, rust_vec_len, data_len),
+        191 => wire__crate__bridge__ScriptApi_list_impl(port, ptr, rust_vec_len, data_len),
+        192 => wire__crate__bridge__ScriptApi_refresh_impl(port, ptr, rust_vec_len, data_len),
+        193 => {
             wire__crate__bridge__ScriptApi_release_detail_impl(port, ptr, rust_vec_len, data_len)
         }
-        174 => wire__crate__bridge__ScriptApi_remove_impl(port, ptr, rust_vec_len, data_len),
-        175 => wire__crate__bridge__ScriptApi_set_config_impl(port, ptr, rust_vec_len, data_len),
-        176 => wire__crate__bridge__ScriptApi_set_env_impl(port, ptr, rust_vec_len, data_len),
-        177 => wire__crate__bridge__ScriptApi_stored_apps_impl(port, ptr, rust_vec_len, data_len),
-        178 => wire__crate__bridge__TaskBridge_cancel_impl(port, ptr, rust_vec_len, data_len),
-        179 => wire__crate__bridge__TaskBridge_default_impl(port, ptr, rust_vec_len, data_len),
-        180 => wire__crate__bridge__TaskBridge_new_impl(port, ptr, rust_vec_len, data_len),
-        181 => {
+        194 => wire__crate__bridge__ScriptApi_remove_impl(port, ptr, rust_vec_len, data_len),
+        195 => wire__crate__bridge__ScriptApi_set_config_impl(port, ptr, rust_vec_len, data_len),
+        196 => wire__crate__bridge__ScriptApi_set_env_impl(port, ptr, rust_vec_len, data_len),
+        197 => wire__crate__bridge__ScriptApi_stored_apps_impl(port, ptr, rust_vec_len, data_len),
+        198 => wire__crate__bridge__TaskBridge_cancel_impl(port, ptr, rust_vec_len, data_len),
+        199 => wire__crate__bridge__TaskBridge_default_impl(port, ptr, rust_vec_len, data_len),
+        200 => wire__crate__bridge__TaskBridge_new_impl(port, ptr, rust_vec_len, data_len),
+        201 => {
             wire__crate__bridge__TaskBridge_running_count_impl(port, ptr, rust_vec_len, data_len)
         }
-        182 => wire__crate__bridge__TaskBridge_start_impl(port, ptr, rust_vec_len, data_len),
-        183 => wire__crate__bridge__TaskBridge_watch_impl(port, ptr, rust_vec_len, data_len),
-        184 => wire__crate__bridge__UiApi_default_impl(port, ptr, rust_vec_len, data_len),
-        185 => wire__crate__bridge__UiApi_new_impl(port, ptr, rust_vec_len, data_len),
-        186 => wire__crate__bridge__UiApi_respond_impl(port, ptr, rust_vec_len, data_len),
-        187 => wire__crate__bridge__UpdateApi_cache_valid_impl(port, ptr, rust_vec_len, data_len),
-        188 => wire__crate__bridge__UpdateApi_cached_state_impl(port, ptr, rust_vec_len, data_len),
-        189 => wire__crate__bridge__UpdateApi_check_impl(port, ptr, rust_vec_len, data_len),
-        190 => wire__crate__bridge__UpdateApi_check_app_impl(port, ptr, rust_vec_len, data_len),
-        191 => wire__crate__bridge__UpdateApi_check_with_progress_impl(
+        202 => wire__crate__bridge__TaskBridge_start_impl(port, ptr, rust_vec_len, data_len),
+        203 => wire__crate__bridge__TaskBridge_watch_impl(port, ptr, rust_vec_len, data_len),
+        204 => wire__crate__bridge__UiApi_default_impl(port, ptr, rust_vec_len, data_len),
+        205 => wire__crate__bridge__UiApi_new_impl(port, ptr, rust_vec_len, data_len),
+        206 => wire__crate__bridge__UiApi_respond_impl(port, ptr, rust_vec_len, data_len),
+        207 => wire__crate__bridge__UpdateApi_cache_valid_impl(port, ptr, rust_vec_len, data_len),
+        208 => wire__crate__bridge__UpdateApi_cached_state_impl(port, ptr, rust_vec_len, data_len),
+        209 => wire__crate__bridge__UpdateApi_check_impl(port, ptr, rust_vec_len, data_len),
+        210 => wire__crate__bridge__UpdateApi_check_app_impl(port, ptr, rust_vec_len, data_len),
+        211 => wire__crate__bridge__UpdateApi_check_with_progress_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        192 => wire__crate__bridge__UpdateApi_clear_preferred_apk_impl(
+        212 => wire__crate__bridge__UpdateApi_clear_preferred_apk_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        193 => wire__crate__bridge__UpdateApi_count_impl(port, ptr, rust_vec_len, data_len),
-        194 => wire__crate__bridge__UpdateApi_has_update_impl(port, ptr, rust_vec_len, data_len),
-        195 => wire__crate__bridge__UpdateApi_init_impl(port, ptr, rust_vec_len, data_len),
-        196 => wire__crate__bridge__UpdateApi_list_impl(port, ptr, rust_vec_len, data_len),
-        197 => wire__crate__bridge__UpdateApi_mark_updated_impl(port, ptr, rust_vec_len, data_len),
-        198 => wire__crate__bridge__UpdateApi_preferred_apk_name_impl(
+        213 => wire__crate__bridge__UpdateApi_count_impl(port, ptr, rust_vec_len, data_len),
+        214 => wire__crate__bridge__UpdateApi_has_update_impl(port, ptr, rust_vec_len, data_len),
+        215 => wire__crate__bridge__UpdateApi_init_impl(port, ptr, rust_vec_len, data_len),
+        216 => wire__crate__bridge__UpdateApi_list_impl(port, ptr, rust_vec_len, data_len),
+        217 => wire__crate__bridge__UpdateApi_mark_updated_impl(port, ptr, rust_vec_len, data_len),
+        218 => wire__crate__bridge__UpdateApi_preferred_apk_name_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        199 => wire__crate__bridge__UpdateApi_run_impl(port, ptr, rust_vec_len, data_len),
-        200 => {
+        219 => wire__crate__bridge__UpdateApi_run_impl(port, ptr, rust_vec_len, data_len),
+        220 => {
             wire__crate__bridge__UpdateApi_set_preferred_apk_impl(port, ptr, rust_vec_len, data_len)
         }
-        201 => wire__crate__bridge__install_host_panic_hook_impl(port, ptr, rust_vec_len, data_len),
+        221 => wire__crate__bridge__install_host_panic_hook_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -13118,10 +14240,10 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        156 => {
+        176 => {
             wire__crate__bridge__ModuleHandle_auto_accessor_get_id_impl(ptr, rust_vec_len, data_len)
         }
-        157 => {
+        177 => {
             wire__crate__bridge__ModuleHandle_auto_accessor_set_id_impl(ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -13141,6 +14263,21 @@ impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<
 
 impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<AddedAppsApi>> for AddedAppsApi {
     fn into_into_dart(self) -> FrbWrapper<AddedAppsApi> {
+        self.into()
+    }
+}
+
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<AgentStoreApi> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
+            .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<AgentStoreApi> {}
+
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<AgentStoreApi>> for AgentStoreApi {
+    fn into_into_dart(self) -> FrbWrapper<AgentStoreApi> {
         self.into()
     }
 }
@@ -15063,6 +16200,13 @@ impl SseEncode for AddedAppsApi {
     }
 }
 
+impl SseEncode for AgentStoreApi {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);
+    }
+}
+
 impl SseEncode for CatalogApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -15194,6 +16338,17 @@ impl SseEncode for std::collections::HashMap<String, String> {
 
 impl SseEncode
     for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        let (ptr, size) = self.sse_encode_raw();
+        <usize>::sse_encode(ptr, serializer);
+        <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
+    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -16818,6 +17973,20 @@ mod io {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAgentStoreApi(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>::increment_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAgentStoreApi(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>::decrement_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCatalogApi(
         ptr: *const std::ffi::c_void,
     ) {
@@ -17092,6 +18261,20 @@ mod web {
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AddedAppsApi>>::decrement_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAgentStoreApi(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>::increment_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAgentStoreApi(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AgentStoreApi>>::decrement_strong_count(ptr as _);
     }
 
     #[wasm_bindgen]

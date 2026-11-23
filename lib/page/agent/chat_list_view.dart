@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
+import 'package:gstore/core/agent/agent_suggestions.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 
@@ -175,8 +176,7 @@ class AgentChatListViewState extends State<AgentChatListView> {
     final key = _keys[index];
     if (_dirtyKeys.contains(key)) {
       _dirtyKeys.remove(key);
-      final item = _items[index];
-      _widgetCache[key] = _buildItemWidget(item);
+      _widgetCache[key] = _buildItemWidget(_items[index]);
     }
     return _widgetCache[key]!;
   }
@@ -229,6 +229,12 @@ class AgentChatListViewState extends State<AgentChatListView> {
   @override
   Widget build(BuildContext context) {
     final showWelcome = _items.isEmpty;
+    // 最新回合的可点击建议（独立条目渲染：不参与 item 缓存，
+    // 历史消息的 widget identity 不受影响）
+    final suggestions = (!widget.isGenerating && _items.isNotEmpty)
+        ? _tailSuggestions(_items.first)
+        : const <AgentSuggestion>[];
+    final extra = suggestions.isEmpty ? 0 : 1;
     return ListView.builder(
       scrollCacheExtent: const ScrollCacheExtent.pixels(600), controller: widget.scrollController,
       reverse: true,
@@ -240,20 +246,39 @@ class AgentChatListViewState extends State<AgentChatListView> {
         top: 8,
         bottom: widget.bottomPadding,
       ),
-      // 顶部加载指示（最早历史） + 消息 + 底部生成指示
-      itemCount: _items.length + 2,
+      // 顶部加载指示（最早历史） + 消息 + 建议条 + 底部生成指示
+      itemCount: _items.length + 2 + extra,
       itemBuilder: (context, index) {
         if (index == 0) {
           // reverse 列表 index 0 = 视觉底部：生成指示 / 空态
           return _buildBottomIndicator(showWelcome);
         }
-        if (index == _items.length + 1) {
+        if (extra == 1 && index == 1) {
+          // 最新回复下方（reverse 列表 index 1 = 视觉倒数第二）
+          return _SuggestionChips(
+            suggestions: suggestions,
+            onSend: widget.onSendExample,
+          );
+        }
+        final itemIndex = index - 1 - extra;
+        if (itemIndex == _items.length) {
           // reverse 列表末尾 = 视觉顶部：加载更早历史
           return _buildTopLoader();
         }
-        return _renderItem(index - 1);
+        return _renderItem(itemIndex);
       },
     );
+  }
+
+  /// 最新条目若是助手回合，提取其回复正文里的建议。
+  List<AgentSuggestion> _tailSuggestions(_ChatItem item) {
+    final msgs = item.turnMsgs;
+    if (msgs == null || msgs.isEmpty) return const [];
+    final text = msgs
+        .where((m) => !m.isToolResult)
+        .map((m) => m.text)
+        .join('\n');
+    return AgentSuggestions.extract(text);
   }
 
   /// 底部（视觉最下）：生成中指示 / 空态欢迎
@@ -561,7 +586,8 @@ class _TurnTimeline extends StatelessWidget {
         ModuleManager.instance.get<AgentService>()?.model?.showReasoning ??
             true;
     return AgentStepTextBlock(
-      text: msg.text,
+      // 建议行已经渲染成下面的可点击按钮，正文里不再重复
+      text: AgentSuggestions.stripStructuredLine(msg.text),
       reasoning: msg.reasoning,
       reasoningDone: msg.reasoningDone,
       showReasoning: showReasoning,
@@ -955,6 +981,10 @@ Color _timelineToolColor(AgentToolType? type) {
       return Colors.blueGrey;
     case AgentToolType.snapshot:
       return Colors.deepPurple;
+    case AgentToolType.mcp:
+      return Colors.teal;
+    case AgentToolType.web:
+      return Colors.lightBlue;
     case null:
     case AgentToolType.confirm:
       return Colors.indigo;
@@ -991,6 +1021,10 @@ IconData _timelineToolIcon(AgentToolType? type) {
       return TablerIcons.settings;
     case AgentToolType.snapshot:
       return TablerIcons.camera;
+    case AgentToolType.mcp:
+      return TablerIcons.plug_connected;
+    case AgentToolType.web:
+      return TablerIcons.world;
     case null:
     case AgentToolType.confirm:
       return TablerIcons.help_circle;
@@ -1027,6 +1061,10 @@ String _timelineToolLabel(AgentToolType? type) {
       return '⚙️ 配置管理';
     case AgentToolType.snapshot:
       return '📸 应用快照';
+    case AgentToolType.mcp:
+      return '🔌 MCP 工具';
+    case AgentToolType.web:
+      return '🌐 联网检索';
     case null:
     case AgentToolType.confirm:
       return '❓ 确认操作';
@@ -1082,5 +1120,42 @@ String _downloadStatusLabel(DownloadStatusEnum status) {
       return '失败';
     case DownloadStatusEnum.cancelled:
       return '已取消';
+  }
+}
+/// 回复末尾的可点击建议（点击后作为用户消息发送）
+class _SuggestionChips extends StatelessWidget {
+  final List<AgentSuggestion> suggestions;
+  final ValueChanged<String>? onSend;
+
+  const _SuggestionChips({required this.suggestions, this.onSend});
+
+  @override
+  Widget build(BuildContext context) {
+    final onSend = this.onSend;
+    if (onSend == null || suggestions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      // 28 = 20px 轨道 + 8px 间距，与步骤内容左对齐
+      padding: const EdgeInsets.only(left: 28, top: 6, bottom: 4),
+      child: Wrap(
+        spacing: AppSpacing.sm,
+        runSpacing: AppSpacing.sm,
+        children: [
+          for (final suggestion in suggestions)
+            ActionChip(
+              key: ValueKey('agent-suggestion-${suggestion.sendText}'),
+              avatar: Icon(
+                TablerIcons.arrow_right,
+                size: 16,
+                color: scheme.primary,
+              ),
+              label: Text(suggestion.label),
+              onPressed: () => onSend(suggestion.sendText),
+            ),
+        ],
+      ),
+    );
   }
 }

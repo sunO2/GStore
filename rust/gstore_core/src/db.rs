@@ -66,7 +66,17 @@ pub const SNAPSHOT_BACKUP: &str = "CORE_E_SNAPSHOT_BACKUP";
 pub const SNAPSHOT_RESTORE: &str = "CORE_E_SNAPSHOT_RESTORE";
 
 /// Tables every restorable core snapshot must contain.
-pub const SNAPSHOT_REQUIRED_TABLES: [&str; 12] = [
+///
+/// The `agent_*` tables come from `V7__agent_store.sql`: a snapshot that reports
+/// the current schema version must also carry the agent sessions, messages and
+/// long-term memory, otherwise a "successful" restore would silently drop the
+/// user's chat history. Older snapshots are migrated first, so the current
+/// version is always what this list is checked against.
+///
+/// `agent_trace` (V8) is deliberately *not* required: it is ephemeral
+/// diagnostics, and restoring a snapshot without it is harmless (the table is
+/// recreated by the migration).
+pub const SNAPSHOT_REQUIRED_TABLES: [&str; 17] = [
     "core_writes",
     "download_task",
     "installed_app",
@@ -79,6 +89,11 @@ pub const SNAPSHOT_REQUIRED_TABLES: [&str; 12] = [
     "config_entry",
     "config_change_log",
     "config_meta",
+    "agent_session",
+    "agent_message",
+    "agent_meta",
+    "agent_memory",
+    "agent_memory_fts",
 ];
 
 /// Monotonic suffix shared by every staging file in this process.
@@ -921,7 +936,12 @@ mod tests {
                     "DROP TABLE IF EXISTS config_change_log;\
                      DROP TABLE IF EXISTS config_entry;\
                      DROP TABLE IF EXISTS config_meta;\
-                     DELETE FROM schema_migrations WHERE version = 6;\
+                     DROP TABLE IF EXISTS agent_memory_fts;\
+                     DROP TABLE IF EXISTS agent_memory;\
+                     DROP TABLE IF EXISTS agent_meta;\
+                     DROP TABLE IF EXISTS agent_message;\
+                     DROP TABLE IF EXISTS agent_session;\
+                     DELETE FROM schema_migrations WHERE version >= 6;\
                      PRAGMA user_version = 5;",
                 )
                 .map_err(|e| DbError(e.to_string()))?;
@@ -1112,8 +1132,7 @@ mod tests {
     fn snapshot_rejects_newer_schema() {
         let snapshot = make_snapshot("newer_src", "");
         let newer = copy_snapshot(&snapshot, "newer_copy");
-        assert_eq!(migration::CORE_SCHEMA_VERSION + 1, 7);
-        set_snapshot_version(&newer, 7);
+        set_snapshot_version(&newer, migration::CORE_SCHEMA_VERSION + 1);
         let (live, files) = live_handle(
             "newer_live",
             "INSERT INTO channels(key, kind, name) VALUES ('keep', 'custom', 'Keep');",
@@ -1516,6 +1535,89 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn snapshot_round_trips_agent_sessions_and_memory() {
+        let snapshot = make_snapshot(
+            "agent_src",
+            "INSERT INTO agent_session(id,title,created_at,updated_at) \
+                 VALUES ('s1', '旧会话', 1, 2);\
+             INSERT INTO agent_message(session_id,seq,time,is_user,text) \
+                 VALUES ('s1', 0, 11, 1, '你好');\
+             INSERT INTO agent_meta(k,v) VALUES ('current_session_id', 's1');\
+             INSERT INTO agent_memory(id,text,created_at,last_used_at,hits) \
+                 VALUES ('m1', '用户喜欢 Gopeed', 5, 6, 2);",
+        );
+        let (live, files) = live_handle("agent_live", "");
+        let handle = restore_handle(&live, &files);
+
+        handle.replace_from_snapshot(&snapshot).unwrap();
+
+        live.with_writer(|conn| {
+            assert_eq!(count(conn, "SELECT COUNT(*) FROM agent_session"), 1);
+            assert_eq!(
+                count(
+                    conn,
+                    "SELECT COUNT(*) FROM agent_message WHERE session_id='s1'",
+                ),
+                1,
+                "restore must keep the session messages"
+            );
+            let title: String = conn
+                .query_row("SELECT title FROM agent_session WHERE id='s1'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(title, "旧会话");
+            assert_eq!(count(conn, "SELECT COUNT(*) FROM agent_memory"), 1);
+            // The FTS index travels with the snapshot: the restored DB can still
+            // answer MATCH queries without a manual rebuild.
+            assert_eq!(
+                count(
+                    conn,
+                    "SELECT COUNT(*) FROM agent_memory_fts \
+                     WHERE agent_memory_fts MATCH '\"Gopeed\"'",
+                ),
+                1,
+                "restored memory must be searchable through FTS5"
+            );
+            let current: String = conn
+                .query_row(
+                    "SELECT v FROM agent_meta WHERE k='current_session_id'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(current, "s1");
+            assert_integrity_ok(conn);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_rejects_missing_agent_table() {
+        let snapshot = make_snapshot("agent_shape_src", "");
+        let broken = copy_snapshot(&snapshot, "agent_shape_copy");
+        Connection::open(&broken)
+            .unwrap()
+            .execute_batch("DROP TABLE agent_message;")
+            .unwrap();
+        let (live, files) = live_handle("agent_shape_live", "");
+        let handle = restore_handle(&live, &files);
+
+        let error = handle.replace_from_snapshot(&broken).unwrap_err();
+        assert!(
+            error.0.starts_with(SNAPSHOT_SHAPE),
+            "unexpected error: {}",
+            error.0
+        );
+        assert!(
+            error.0.contains("agent_message"),
+            "typed error must name the missing table: {}",
+            error.0
+        );
     }
 
     #[test]

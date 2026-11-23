@@ -15,6 +15,8 @@ export 'package:gstore/page/backup/view.dart';
 export 'package:gstore/page/webdav_config/view.dart';
 export 'package:gstore/page/agent/view.dart';
 export 'package:gstore/page/agent/agent_settings_page.dart';
+export 'package:gstore/page/agent/mcp_servers_page.dart';
+export 'package:gstore/page/agent/agent_traces_page.dart';
 export 'package:gstore/page/local_llm/view.dart';
 export 'package:gstore/page/installed_apps/view.dart';
 export 'package:gstore/page/installed_apps/sdk_analysis_page.dart';

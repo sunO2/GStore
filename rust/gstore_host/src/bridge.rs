@@ -2321,6 +2321,7 @@ use gstore_core::channel::{
     PackError, PackStore, ScriptChannel, ScriptChannelConfig, ScriptChannelStore, ScriptDetail,
     ScriptDetailConfig, SqliteChannelStore, SwitchVersionQuery, VersionOptionsQuery, VivoDriver,
 };
+use gstore_core::agent::{AgentMemory, AgentSession, AgentStore, AgentTrace};
 use gstore_core::db::DbHandle;
 use gstore_core::dto::{
     AppDetail, AppDownload, AppSummary, ChannelKey, ChannelKind, ChannelMeta, DetailSection, Label,
@@ -5318,6 +5319,127 @@ fn encode_update_report(report: UpdateCheckReport) -> Result<UpdateReport, Strin
         skipped_json,
         events_json,
     })
+}
+
+/// Agent session/memory facade over the core SQLite store (FTS5 memory index).
+#[frb(opaque)]
+pub struct AgentStoreApi {
+    store: AgentStore,
+}
+
+impl AgentStoreApi {
+    /// Opens the core database (applies migrations, including the agent schema).
+    pub fn init(data_dir: String) -> Result<AgentStoreApi, String> {
+        let db = open_core_db(&data_dir)?;
+        Ok(Self {
+            store: AgentStore::new(db),
+        })
+    }
+
+    pub fn sessions_json(&self) -> Result<String, String> {
+        encode_json(&self.store.sessions().map_err(core_err)?)
+    }
+
+    pub fn replace_sessions_json(&self, json: String) -> Result<(), String> {
+        let sessions: Vec<AgentSession> = decode_json(&json)?;
+        self.store.replace_sessions(&sessions).map_err(core_err)
+    }
+
+    pub fn upsert_session_json(&self, json: String) -> Result<(), String> {
+        let session: AgentSession = decode_json(&json)?;
+        self.store.upsert_session(&session).map_err(core_err)
+    }
+
+    pub fn delete_session(&self, id: String) -> Result<(), String> {
+        self.store.delete_session(&id).map_err(core_err)
+    }
+
+    pub fn clear_sessions(&self) -> Result<(), String> {
+        self.store.clear_sessions().map_err(core_err)
+    }
+
+    pub fn current_session_id(&self) -> Result<Option<String>, String> {
+        self.store.current_session_id().map_err(core_err)
+    }
+
+    pub fn set_current_session_id(&self, id: Option<String>) -> Result<(), String> {
+        self.store
+            .set_current_session_id(id.as_deref())
+            .map_err(core_err)
+    }
+
+    pub fn memories_json(&self) -> Result<String, String> {
+        encode_json(&self.store.memories().map_err(core_err)?)
+    }
+
+    pub fn search_memories_json(&self, query: String, limit: i64) -> Result<String, String> {
+        encode_json(
+            &self
+                .store
+                .search_memories(&query, limit)
+                .map_err(core_err)?,
+        )
+    }
+
+    /// Adds (or bumps) one memory and returns the stored row as JSON.
+    pub fn add_memory(&self, text: String) -> Result<String, String> {
+        encode_json(&self.store.add_memory(&text).map_err(core_err)?)
+    }
+
+    pub fn remove_memory(&self, id_or_text: String) -> Result<i64, String> {
+        let removed = self.store.remove_memory(&id_or_text).map_err(core_err)?;
+        Ok(i64::try_from(removed).unwrap_or(i64::MAX))
+    }
+
+    pub fn clear_memories(&self) -> Result<(), String> {
+        self.store.clear_memories().map_err(core_err)
+    }
+
+    pub fn replace_memories_json(&self, json: String) -> Result<(), String> {
+        let memories: Vec<AgentMemory> = decode_json(&json)?;
+        self.store.replace_memories(&memories).map_err(core_err)
+    }
+
+    // ---- turn traces (P3-1) ----
+
+    pub fn insert_trace_json(&self, json: String) -> Result<(), String> {
+        let trace: AgentTrace = decode_json(&json)?;
+        self.store.insert_trace(&trace).map_err(core_err)
+    }
+
+    pub fn traces_json(&self, limit: i64) -> Result<String, String> {
+        encode_json(&self.store.traces(limit).map_err(core_err)?)
+    }
+
+    /// Keeps only the newest `keep` traces; returns the removed row count.
+    pub fn prune_traces(&self, keep: i64) -> Result<i64, String> {
+        let removed = self.store.prune_traces(keep).map_err(core_err)?;
+        Ok(i64::try_from(removed).unwrap_or(i64::MAX))
+    }
+
+    pub fn clear_traces(&self) -> Result<(), String> {
+        self.store.clear_traces().map_err(core_err)
+    }
+
+    // ---- generic agent_meta (rolling summary) ----
+
+    pub fn read_meta(&self, key: String) -> Result<Option<String>, String> {
+        self.store.read_meta(&key).map_err(core_err)
+    }
+
+    pub fn write_meta(&self, key: String, value: Option<String>) -> Result<(), String> {
+        self.store
+            .write_meta(&key, value.as_deref())
+            .map_err(core_err)
+    }
+}
+
+fn encode_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|error| format!("CORE_E_AGENT_JSON: {error}"))
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, String> {
+    serde_json::from_str(raw).map_err(|error| format!("CORE_E_AGENT_JSON: {error}"))
 }
 
 /// Update check/cache facade over [`UpdateService`].

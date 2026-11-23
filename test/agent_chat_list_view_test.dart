@@ -281,6 +281,101 @@ void main() {
       expect(find.text('新增回复'), findsOneWidget);
     });
   });
+
+  group('可点击建议', () {
+    testWidgets('最新回合末尾的建议渲染为按钮，点击发送祈使句', (tester) async {
+      final controller = ScrollController();
+      final sent = <String>[];
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: 'Termux 最新版？'),
+        _agentMsg(
+          id: 'a1',
+          text: '最新版是 0.119.0-beta.2。\n'
+              '建议：帮我下载 Termux|查看 Termux 详情',
+          turnId: 't1',
+        ),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: false,
+            hasMoreHistory: false,
+            onSendExample: sent.add,
+          ),
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.text('帮我下载 Termux'), findsOneWidget);
+      expect(find.text('查看 Termux 详情'), findsOneWidget);
+
+      await tester.tap(find.text('帮我下载 Termux'));
+      expect(sent, ['帮我下载 Termux']);
+    });
+
+    testWidgets('生成中不显示建议', (tester) async {
+      final controller = ScrollController();
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: '继续'),
+        _agentMsg(
+          id: 'a1',
+          text: '稍等。\n建议：帮我下载 Termux',
+          turnId: 't1',
+        ),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: true,
+            hasMoreHistory: false,
+            onSendExample: (_) {},
+          ),
+        ),
+      ));
+      await tester.pump();
+      expect(find.text('帮我下载 Termux'), findsNothing);
+    });
+
+    testWidgets('历史回合不显示建议（只对最后一条生效）', (tester) async {
+      final controller = ScrollController();
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: '第一轮'),
+        _agentMsg(
+          id: 'a1',
+          text: '第一轮回复。\n建议：帮我下载 Termux',
+          turnId: 't1',
+        ),
+        _userMsg(id: 'u2', text: '第二轮'),
+        _agentMsg(id: 'a2', text: '第二轮回复。', turnId: 't2'),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: false,
+            hasMoreHistory: false,
+            onSendExample: (_) {},
+          ),
+        ),
+      ));
+      await tester.pump();
+      expect(find.text('帮我下载 Termux'), findsNothing);
+    });
+  });
 }
 
 AgentMessage _userMsg({required String id, required String text}) =>

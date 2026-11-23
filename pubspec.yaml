@@ -40,6 +40,8 @@ dependencies:
   go_router: ^14.6.2
   flutter_markdown_plus: ^1.0.12
   markdown: ^7.2.0
+  # 联网检索：HTML 正文抽取（webFetch）
+  html: ^0.15.4
   async: ^2.11.0
 
   http: ^1.2.2
@@ -72,13 +74,13 @@ dependencies:
   flutter_rust_bridge: 2.11.1
   path: any
   xml: ^6.5.0
-  genkit: ^0.15.1
-  genkit_google_genai: ^0.2.12
-  genkit_openai: ^0.3.7
-  # 自建 OpenAI 兼容 model provider 需要（补齐 reasoning 流式；
-  # genkit_openai 只转发 delta.content，会丢弃 delta.reasoningContent）。
-  # 它本就作为 genkit_openai 的传递依赖存在，这里只是提升为直接依赖以便 import。
-  openai_dart: ^5.0.0
+  genkit: ^1.0.3
+  genkit_google_genai: ^1.2.0
+  genkit_openai: ^1.0.3
+  # 工具 function-calling 的 JSON Schema 构造（genkit 的传递依赖，显式引入）
+  schemantic: ^1.0.0
+  # OpenAI 兼容模型目录探测（openai_model_catalog 直接用 OpenAIClient）
+  openai_dart: ^11.0.1
   device_info_plus: ^12.4.0
   shizuku_api:
     path: packages/shizuku_api

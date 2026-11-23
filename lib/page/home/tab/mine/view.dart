@@ -16,6 +16,7 @@ import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/state.dart';
+import 'package:gstore/page/home/tab/mine/widgets/github_login_check_sheet.dart';
 
 class MinePage extends ConsumerStatefulWidget {
   const MinePage({super.key});
@@ -440,16 +441,29 @@ class _MinePageState extends ConsumerState<MinePage>
             color: AppColors.textSecondary,
           ),
         ),
-        trailing: IconButton(
-          icon: const Icon(TablerIcons.logout, size: AppTypography.iconSM),
-          tooltip: '退出登录',
-          onPressed: () {
-            UserManager.instance.logout();
-            AppDialogs.showSuccess(
-              '您已成功退出 GitHub 账号',
-              title: '已退出登录',
-            );
-          },
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(
+                TablerIcons.shield_check,
+                size: AppTypography.iconSM,
+              ),
+              tooltip: '检查登录状态',
+              onPressed: () => GithubLoginCheckSheet.show(context),
+            ),
+            IconButton(
+              icon: const Icon(TablerIcons.logout, size: AppTypography.iconSM),
+              tooltip: '退出登录',
+              onPressed: () {
+                UserManager.instance.logout();
+                AppDialogs.showSuccess(
+                  '您已成功退出 GitHub 账号',
+                  title: '已退出登录',
+                );
+              },
+            ),
+          ],
         ),
       ),
     );

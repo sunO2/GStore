@@ -111,7 +111,10 @@ void main() {
     await tester.pump();
     await tester.pump(); // 处理 postFrame 跳转
 
-    final scrollable = tester.widget<Scrollable>(find.byType(Scrollable));
+    final scrollable = tester.widget<Scrollable>(find.descendant(
+      of: find.byKey(const ValueKey('progress-log-list')),
+      matching: find.byType(Scrollable),
+    ));
     expect(
       scrollable.controller!.position.pixels,
       scrollable.controller!.position.maxScrollExtent,
