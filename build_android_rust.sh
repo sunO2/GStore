@@ -354,6 +354,15 @@ EOF
         chmod +x "$symlink_dir/"*-clang* 2>/dev/null
         export PATH="$symlink_dir:$PATH"
 
+        # cc-rs（ring/libsqlite3 等 C 依赖）需要**绝对路径**的版本化 NDK clang：
+        # sccache 作为 RUSTC_WRAPPER 时 cc-rs 也会用它包装 C 编译，裸名
+        # `i686-linux-android-clang` 在 PATH 中并不存在（NDK 只有带 API 版本的
+        # 文件名），会导致 x86 构建失败。target 级变量不会影响 zxing 的 cmake
+        # 编译器选择（cmake 读 CMAKE_C_COMPILER/通用 CC，不读 CC_<target>）。
+        export "CC_${target_underscore}=$toolchain_bin/$clang_name"
+        export "CXX_${target_underscore}=$toolchain_bin/${clang_name%clang}clang++"
+        export "AR_${target_underscore}=$toolchain_bin/llvm-ar"
+
         # gstore_mod_proxy（meow-rs：lwIP C + BoringSSL/aws-lc cmake + bindgen）需要
         # 显式注入 NDK 的 C/C++ 工具链与 libclang：其 .cargo/config.toml 的 [env] 段
         # 写的是开发机绝对 NDK 路径，CI runner 上不存在（cargo [env] 不覆盖已存在的
@@ -370,9 +379,6 @@ EOF
             # stdint.h 被跳过（unknown type name 'uint32_t'）。-resource-dir 覆盖其
             # 默认内建头目录，保证版本与 sysroot 一致且不重复加入。
             local clang_resdir="${clang_resource%/include}"
-            export "CC_${target_underscore}=$toolchain_bin/$clang_name"
-            export "CXX_${target_underscore}=$toolchain_bin/${clang_name%clang}clang++"
-            export "AR_${target_underscore}=$toolchain_bin/llvm-ar"
             export LIBCLANG_PATH="$ndk_llvm/lib"
             export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ndk_llvm/sysroot ${clang_resdir:+-resource-dir $clang_resdir}"
             export "BINDGEN_EXTRA_CLANG_ARGS_${target_underscore}=$BINDGEN_EXTRA_CLANG_ARGS"
@@ -409,12 +415,12 @@ EOF
         fi
     done
 
-    # 清理为 proxy 注入的进程级环境变量，避免泄漏到后续模块的 cargo 调用
+    # 清理 target 级 CC/CXX/AR，避免泄漏到后续模块的 cargo 调用
+    for target in "${!ARCHS[@]}"; do
+        local tu="${target//-/_}"
+        unset "CC_$tu" "CXX_$tu" "AR_$tu" "BINDGEN_EXTRA_CLANG_ARGS_$tu"
+    done
     if [ "$module" = "gstore_mod_proxy" ]; then
-        for target in "${!ARCHS[@]}"; do
-            local tu="${target//-/_}"
-            unset "CC_$tu" "CXX_$tu" "AR_$tu" "BINDGEN_EXTRA_CLANG_ARGS_$tu"
-        done
         unset LIBCLANG_PATH BINDGEN_EXTRA_CLANG_ARGS
     fi
 
