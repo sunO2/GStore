@@ -279,8 +279,9 @@ class LoginNotificationService {
           'title': '验证码：$_lastCode',
           'body': expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
           'progress': _progressPercent,
-          // 状态栏胶囊优先显示验证码本身；过期后显示提示。
-          'shortText': expired ? '已过期' : _lastCode,
+          // 状态栏胶囊优先显示验证码本身；去掉连字符以适配胶囊的窄宽度
+          // （2035-462D → 2035462D），完整带连字符的码保留在通知标题里。
+          'shortText': expired ? '已过期' : _lastCode.replaceAll('-', ''),
           // 部分 ROM 不认 shortCriticalText，会用 when 作为倒计时。
           'expiresAtMillis': _expiresAt?.millisecondsSinceEpoch,
         },
