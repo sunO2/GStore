@@ -89,7 +89,9 @@ NODE_ENV=development pnpm install --frozen-lockfile
 # vue-tsc 会拉到与上游锁文件匹配的版本，类型检查对 lib/target 很敏感，
 # 容易在 CI 上以无关的 TS 报错中断发布。
 # 发布产物只需要打包器（vite 转译不做类型检查），类型门禁留给开发期。
-node scripts/build-embed.mjs
+# vite 打包大依赖树时默认 2GB 堆在 CI 上会 OOM（曾出现 FATAL ERROR: heap
+# out of memory）；与上游 package.json 的 build 脚本保持一致提到 4GB。
+NODE_OPTIONS="--max-old-space-size=4096" node scripts/build-embed.mjs
 
 mkdir -p "$(dirname "$OUT_ZIP")"
 cp dist-embed.zip "$OUT_ZIP"
