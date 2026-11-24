@@ -272,11 +272,6 @@ class LoginNotificationService {
   /// 通过原生 ProgressStyle 通知渲染（Android 16+，厂商系统自动映射为岛）。
   Future<void> _renderLiveUpdate() async {
     final expired = _expiresAt != null && _remainingSeconds <= 0;
-    final remaining = _remainingSeconds;
-    final shortText = expired
-        ? '已过期'
-        : '${(remaining ~/ 60).toString().padLeft(2, '0')}:'
-            '${(remaining % 60).toString().padLeft(2, '0')}';
     try {
       final result = await _liveUpdateChannel.invokeMethod<Map<Object?, Object?>>(
         'show',
@@ -284,7 +279,10 @@ class LoginNotificationService {
           'title': '验证码：$_lastCode',
           'body': expired ? '验证码已过期，请重新获取' : '登录 GitHub 并输入设备验证码登录',
           'progress': _progressPercent,
-          'shortText': shortText,
+          // 状态栏胶囊优先显示验证码本身；过期后显示提示。
+          'shortText': expired ? '已过期' : _lastCode,
+          // 部分 ROM 不认 shortCriticalText，会用 when 作为倒计时。
+          'expiresAtMillis': _expiresAt?.millisecondsSinceEpoch,
         },
       );
       final allowed = result?['allowed'] == true;

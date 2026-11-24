@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -52,8 +53,19 @@ object LoginLiveUpdateChannel {
                     val body = call.argument<String>("body") ?: ""
                     val progress = call.argument<Int>("progress") ?: 0
                     val shortText = call.argument<String>("shortText") ?: ""
+                    val expiresAtMillis =
+                        call.argument<Number>("expiresAtMillis")?.toLong()
                     if (Build.VERSION.SDK_INT >= MIN_SDK) {
-                        result.success(post(context, title, body, progress, shortText))
+                        result.success(
+                            post(
+                                context,
+                                title,
+                                body,
+                                progress,
+                                shortText,
+                                expiresAtMillis,
+                            )
+                        )
                     } else {
                         result.success(
                             mapOf(
@@ -101,6 +113,7 @@ object LoginLiveUpdateChannel {
         body: String,
         progress: Int,
         shortText: CharSequence,
+        expiresAtMillis: Long?,
     ): Map<String, Any?> {
         val manager = context.getSystemService(NotificationManager::class.java)
 
@@ -113,10 +126,19 @@ object LoginLiveUpdateChannel {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
+            // 状态栏胶囊的兜底文案：部分 ROM 不认 shortCriticalText，会用 when
+            // 作为倒计时；不设置 when 会显示成一直 0s。这里固定为过期时刻。
+            .setWhen(expiresAtMillis ?: System.currentTimeMillis())
+            .setShowWhen(true)
             .setStyle(
                 Notification.ProgressStyle()
                     .setProgress(progress.coerceIn(0, 100))
-                    .setStyledByProgress(false),
+                    // 必须把「进度之后」的轨道置灰，否则整条进度条永远满格。
+                    .setStyledByProgress(true)
+                    .addProgressSegment(
+                        Notification.ProgressStyle.Segment(100)
+                            .setColor(Color.parseColor("#4F7CFF")),
+                    ),
             )
 
         requestPromotion(builder)
