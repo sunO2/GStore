@@ -166,7 +166,12 @@ jobs:
           cargo build --manifest-path rust/gstore_mod_repo/Cargo.toml
           cargo build --manifest-path rust/gstore_mod_qr/Cargo.toml
 
+      # The host suite shares global JNI/tun/channel state. Running the test
+      # binaries in parallel lets one panic poison the shared mutex and cascade
+      # into unrelated failures (observed flaky on CI). Serialize the harness.
       - name: Rust host tests
+        env:
+          RUST_TEST_THREADS: '1'
         run: cargo test --manifest-path rust/gstore_host/Cargo.toml
 
       - name: C ABI drift + consumer
