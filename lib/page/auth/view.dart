@@ -236,24 +236,27 @@ class _AuthPageState extends ConsumerState<AuthPage> {
               onTap: logic.togglePollLogs,
               borderRadius: BorderRadius.circular(AppRadius.sm),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.xs, vertical: AppSpacing.xs),
+                // 只留纵向内边距：横向内边距会把文字右移，与上方「剩余…」小字、
+                // 下方日志框的左缘对不齐。
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                        state.showPollLogs
-                            ? TablerIcons.chevron_up
-                            : TablerIcons.chevron_down,
-                        size: 16,
-                        color: scheme.primary),
-                    const SizedBox(width: AppSpacing.xs),
+                    // 文字在前，箭头放在文字后面：左缘即文字本身，天然与上方
+                    // 小字对齐，也避开 Tabler 字体图标字形自带的留白问题。
                     Text(
                       state.showPollLogs ? '收起轮询日志' : '查看轮询进度',
                       style: textTheme.labelLarge?.copyWith(
                           color: scheme.primary,
                           fontWeight: AppTypography.weightMedium),
                     ),
+                    const SizedBox(width: AppSpacing.xs),
+                    Icon(
+                        state.showPollLogs
+                            ? TablerIcons.chevron_up
+                            : TablerIcons.chevron_down,
+                        size: 16,
+                        color: scheme.primary),
                   ],
                 ),
               ),

@@ -32,8 +32,17 @@ class _FakeAuthApi implements GithubAuthApi {
   /// 每次 login 调用抛出的异常（非空时优先抛）
   Object? throwOnLogin;
 
+  /// 仅下一次 login 调用抛出的异常（用于「第一次失败、重试成功」场景）
+  Object? throwOnLoginOnce;
+
   /// login 调用次数（P4 断言不再调用）
   int loginCallCount = 0;
+
+  /// 返回 pending（无 accessToken）时携带的 interval（秒）。
+  int pendingInterval = 5;
+
+  /// 非空时 [login] 会先等待它（用于模拟慢请求 / 请求在途）。
+  Future<void>? loginGate;
 
   @override
   Future<AuthLoginResponse> login(
@@ -42,9 +51,16 @@ class _FakeAuthApi implements GithubAuthApi {
     String gratType = 'urn:ietf:params:oauth:grant-type:device_code',
   }) async {
     loginCallCount++;
+    final gate = loginGate;
+    if (gate != null) await gate;
     if (throwOnLogin != null) throw throwOnLogin!;
+    if (throwOnLoginOnce != null) {
+      final error = throwOnLoginOnce!;
+      throwOnLoginOnce = null;
+      throw error;
+    }
     if (responses.isNotEmpty) return responses.removeAt(0);
-    return AuthLoginResponse(null, 5); // pending：继续轮询
+    return AuthLoginResponse(null, pendingInterval); // pending：继续轮询
   }
 
   @override
@@ -196,6 +212,140 @@ void main() {
       expect(authApi.loginCallCount, 0,
           reason: 'P4: 到期后不应再发起 access_token 请求');
       expect(await manager.getToken(), isNull);
+    });
+  });
+
+  group('回前台恢复轮询（超过间隔立即补发）', () {
+    test('resumePolling：距上次轮询已超过间隔 → 立即发起请求', () async {
+      authApi.pendingInterval = 1;
+      final token = dio.CancelToken();
+      manager.startLoginOfTimer('device-code', 1, token);
+
+      // 等首次轮询执行，随后取消定时器模拟后台挂起
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      final callsBeforePause = authApi.loginCallCount;
+      expect(callsBeforePause, greaterThanOrEqualTo(1));
+      manager.cancelLogin();
+      expect(manager.isPolling, isFalse);
+
+      // 模拟后台停留时间超过一个轮询间隔
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(manager.isPollOverdue, isTrue);
+
+      manager.resumePolling(token);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(authApi.loginCallCount, callsBeforePause + 1,
+          reason: '回到前台超过轮询间隔应立即补发一次请求，而不是再等一个间隔');
+      manager.cancelLogin();
+    });
+
+    test('resumePolling：未超过间隔 → 仍按剩余间隔等待', () async {
+      authApi.pendingInterval = 1;
+      final token = dio.CancelToken();
+      manager.startLoginOfTimer('device-code', 1, token);
+
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      manager.cancelLogin();
+      final callsBeforeResume = authApi.loginCallCount;
+
+      manager.resumePolling(token);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(authApi.loginCallCount, callsBeforeResume,
+          reason: '未超过轮询间隔时应等待剩余时长，而不是立即重复请求');
+      manager.cancelLogin();
+    });
+
+    test('pollNow：轮询定时器等待中可立即补发一次请求', () async {
+      final token = dio.CancelToken();
+      manager.startLoginOfTimer('device-code', 1, token);
+
+      // 首次轮询完成，进入下一个等待窗口
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      final callsBefore = authApi.loginCallCount;
+      expect(callsBefore, 1);
+      expect(manager.isPolling, isTrue);
+
+      expect(manager.pollNow(), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(authApi.loginCallCount, callsBefore + 1,
+          reason: 'pollNow 应立即复用当前轮询链补发一次请求');
+      manager.cancelLogin();
+    });
+
+    test('请求在途时回前台：不新建链，返回 pending 后立即补发', () async {
+      authApi.pendingInterval = 1;
+      final gate = Completer<void>();
+      authApi.loginGate = gate.future;
+      final token = dio.CancelToken();
+      manager.startLoginOfTimer('device-code', 1, token);
+
+      // 首次请求已在途（慢请求）
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(authApi.loginCallCount, 1);
+      expect(manager.isPolling, isFalse, reason: '请求在途时定时器是停的');
+      expect(manager.hasPendingPollRequest, isTrue);
+
+      // 回前台：应只登记「返回后立即补发」，不能再发请求
+      expect(manager.resumeAfterPendingRequest(), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(authApi.loginCallCount, 1,
+          reason: '在途期间不得另起一条链/并发请求');
+
+      // 放行在途请求（此时已过了一整个间隔）：pending → 立即补发
+      authApi.loginGate = null;
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(authApi.loginCallCount, 2,
+          reason: '在途请求返回 pending 且已超过间隔 → 应立即补发一次');
+      expect(manager.isPolling, isTrue);
+      manager.cancelLogin();
+    });
+
+    test('在途请求很快返回 pending：仍遵守最小轮询间隔', () async {
+      authApi.pendingInterval = 1;
+      final gate = Completer<void>();
+      authApi.loginGate = gate.future;
+      manager.startLoginOfTimer('device-code', 1, dio.CancelToken());
+
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(authApi.loginCallCount, 1);
+      expect(manager.resumeAfterPendingRequest(), isTrue);
+
+      // 在途请求很快返回 pending（请求耗时 < 间隔）→ 只等剩余时长
+      authApi.loginGate = null;
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(authApi.loginCallCount, 1,
+          reason: '请求耗时不足一个间隔时，不应立刻再发（避免触发 GitHub 限频）');
+
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      expect(authApi.loginCallCount, 2, reason: '剩余间隔到点后应继续轮询');
+      manager.cancelLogin();
+    });
+
+    test('在途请求网络失败：回前台后立即重试一次，而不是结束轮询', () async {
+      authApi.pendingInterval = 1;
+      final gate = Completer<void>();
+      authApi.loginGate = gate.future;
+      manager.startLoginOfTimer('device-code', 1, dio.CancelToken());
+
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      expect(authApi.loginCallCount, 1);
+      expect(manager.resumeAfterPendingRequest(), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+      // 放行在途请求，但让它以网络错误失败
+      authApi.loginGate = null;
+      authApi.throwOnLoginOnce = dio.DioException(
+        requestOptions: dio.RequestOptions(path: '/oauth/access_token'),
+        type: dio.DioExceptionType.connectionError,
+      );
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(authApi.loginCallCount, 2,
+          reason: '后台请求网络失败、且已回到前台 → 立即重试一次，不直接终止轮询');
+      expect(manager.isPolling, isTrue, reason: '重试请求 pending 后应继续轮询');
+      manager.cancelLogin();
     });
   });
 }

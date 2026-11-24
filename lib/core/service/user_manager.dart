@@ -89,7 +89,22 @@ class UserManager {
     _isInitialized = false;
     _setUserInfo(const UserInfo());
     _prefs = null;
+    _resetLoginPollState();
     _secureStorage.deleteAll();
+  }
+
+  /// 清空登录轮询链状态（测试重置 / 链结束）。
+  void _resetLoginPollState() {
+    _loginDeviceCode = null;
+    _loginInterval = 5;
+    _loginExpiresIn = null;
+    _loginCompleter = null;
+    _loginCancelToken = null;
+    _loginDeadline = null;
+    _lastPollActivityAt = null;
+    _inFlightCompleter = null;
+    _pollNowAfterResponse = false;
+    _pollAttempt = 0;
   }
 
   /// 获取当前用户信息
@@ -174,6 +189,7 @@ class UserManager {
     if (_loginRequestTimer?.isActive ?? false) {
       _loginRequestTimer?.cancel();
     }
+    _pollNowAfterResponse = false;
   }
 
   /// 轮询尝试次数（每次 startLoginOfTimer 重置；登录说明页用于展示进度日志）。
@@ -184,17 +200,80 @@ class UserManager {
   int _loginInterval = 5;
   int? _loginExpiresIn;
 
+  /// 当前轮询链的完成器 / 取消令牌 / 截止时间。
+  ///
+  /// 回前台时若轮询定时器仍在等待但已超期，可直接复用该链（同一 completer、
+  /// 同一取消令牌）立即补发一次请求，结果仍由原来的 future 返回。
+  Completer<UserInfo?>? _loginCompleter;
+  CancelToken? _loginCancelToken;
+  DateTime? _loginDeadline;
+
+  /// 上次轮询活动时间（发起请求或启动轮询链）。
+  ///
+  /// 用于后台回到前台时判断：距上次轮询是否已超过一个轮询间隔——超过则立即
+  /// 补发一次请求，而不是再空等一个间隔。
+  DateTime? _lastPollActivityAt;
+
+  /// 正在途中的请求所属轮询链（用于回前台时判断「是否有请求在飞」）。
+  Completer<UserInfo?>? _inFlightCompleter;
+
+  /// 回前台时若已有请求在途，登记「该请求返回后立即补发一次」。
+  bool _pollNowAfterResponse = false;
+
   /// 轮询是否进行中（登录说明页用于判断是否需要恢复轮询）。
   bool get isPolling => _loginRequestTimer?.isActive ?? false;
 
+  /// 是否有登录轮询请求正在途中。
+  ///
+  /// 请求在途期间定时器是停着的（触发请求时先取消定时器），所以不能用
+  /// [isPolling] 判断。回前台时若只看定时器，会把「请求在途」误判为
+  /// 「轮询已停」而另起一条链，导致同一设备码被并发轮询、先到的成功结果
+  /// 又被当成过期结果丢弃（表现为「请求成功了却要再轮询一次才显示登录」）。
+  bool get hasPendingPollRequest {
+    final completer = _inFlightCompleter;
+    return completer != null && !completer.isCompleted;
+  }
+
+  /// 回前台时若已有请求在途：沿用当前轮询链，登记它返回后立即补发一次
+  /// （不新建链，避免两条链并发）。返回是否登记成功。
+  bool resumeAfterPendingRequest() {
+    if (!hasPendingPollRequest) return false;
+    _pollNowAfterResponse = true;
+    return true;
+  }
+
   /// 是否已持有可恢复轮询的设备码（登录页回前台自动重试时判断）。
   bool get canResumePolling => _loginDeviceCode != null;
+
+  /// 距上次轮询活动是否已超过一个轮询间隔。
+  ///
+  /// 后台（如跳到系统浏览器登录 GitHub）期间定时器可能被挂起或网络请求失败，
+  /// 回到前台时用该值判断是否需要立即补发一次请求。
+  bool get isPollOverdue => _remainingPollDelay == Duration.zero;
+
+  /// 距离下一次轮询应等待的时长（已超过间隔则为 [Duration.zero]）。
+  Duration get _remainingPollDelay {
+    final last = _lastPollActivityAt;
+    final interval = Duration(seconds: _loginInterval);
+    if (last == null) return interval;
+    final elapsed = DateTime.now().difference(last);
+    return elapsed >= interval ? Duration.zero : interval - elapsed;
+  }
 
   /// 后台回到前台时恢复轮询（无设备码或已轮询时不动作）。
   ///
   /// 返回本次轮询的结果（与 [startLoginOfTimer] 一致），供调用方统一处理
   /// 成功/失败；无法恢复时返回 null。
-  Future<UserInfo?> resumePolling(CancelToken cancelToken) async {
+  ///
+  /// [immediate] 为 true 时立即发起首次请求；否则按「距上次轮询还剩多久」等待
+  /// ——若已超过一个轮询间隔，剩余为 0，同样立即发起。
+  ///
+  /// 注意：调用前应先确认没有请求在途（[resumeAfterPendingRequest]），否则会
+  /// 与在途请求并发成两条链。
+  Future<UserInfo?> resumePolling(
+    CancelToken cancelToken, {
+    bool immediate = false,
+  }) async {
     if (isPolling) return null;
     final deviceCode = _loginDeviceCode;
     if (deviceCode == null) return null;
@@ -203,6 +282,49 @@ class UserManager {
       _loginInterval,
       cancelToken,
       expiresIn: _loginExpiresIn,
+      initialDelay: immediate ? Duration.zero : _remainingPollDelay,
+    );
+  }
+
+  /// 立即补发一次轮询请求（复用当前轮询链，结果仍由原 future 返回）。
+  ///
+  /// 仅在轮询定时器仍在等待（[isPolling]）时有效：取消当前定时器并立刻执行
+  /// 一次 [_login]。返回是否已发起；定时器已停止时返回 false——此时应改用
+  /// [resumePolling] 重新拉起轮询链。
+  bool pollNow() {
+    if (!isPolling) return false;
+    final deviceCode = _loginDeviceCode;
+    final completer = _loginCompleter;
+    final cancelToken = _loginCancelToken;
+    if (deviceCode == null ||
+        completer == null ||
+        completer.isCompleted ||
+        cancelToken == null ||
+        cancelToken.isCancelled) {
+      return false;
+    }
+    _loginRequestTimer?.cancel();
+    _runLogin(deviceCode, completer, cancelToken, _loginDeadline);
+    return true;
+  }
+
+  /// 发起一次请求并标记「在途」，请求结束后清除在途标记。
+  ///
+  /// 在途标记按「链」区分：只清除自己那条链的标记，被新链取代的旧链不会污染
+  /// 新链的在途状态。
+  void _runLogin(
+    String deviceCode,
+    Completer<UserInfo?> completer,
+    CancelToken cancelToken,
+    DateTime? deadline,
+  ) {
+    _inFlightCompleter = completer;
+    unawaited(
+      _login(deviceCode, completer, cancelToken, deadline).whenComplete(() {
+        if (identical(_inFlightCompleter, completer)) {
+          _inFlightCompleter = null;
+        }
+      }),
     );
   }
 
@@ -223,41 +345,59 @@ class UserManager {
   /// 开始登录轮询
   /// [expiresIn] 设备码有效期（秒，GitHub device/code 返回）；到期后终止轮询，
   /// 避免无效轮询空转（否则需等 GitHub 返回 expired_token 才停止）。
+  /// [initialDelay] 首次请求前的等待时长（默认一个 [interval]；回到前台恢复
+  /// 轮询时可传 [Duration.zero] 立即补发）。
   Future<UserInfo?> startLoginOfTimer(
     String deviceCode,
     int interval,
     CancelToken cancelToken, {
     int? expiresIn,
+    Duration? initialDelay,
   }) {
     // 记录登录轮询参数，用于后台回到前台时恢复轮询（如从 GitHub 浏览器返回）。
     _loginDeviceCode = deviceCode;
     _loginInterval = interval;
     _loginExpiresIn = expiresIn;
     _pollAttempt = 0;
+    _lastPollActivityAt = DateTime.now();
+    _pollNowAfterResponse = false;
+    // 新链开始：旧的（可能仍被放弃的）在途标记不再代表当前链。
+    _inFlightCompleter = null;
     final completer = Completer<UserInfo?>();
+    _loginCompleter = completer;
+    _loginCancelToken = cancelToken;
     final deadline = expiresIn != null
         ? DateTime.now().add(Duration(seconds: expiresIn))
         : null;
-    _nextTimer(deviceCode, interval, completer, cancelToken, deadline);
+    _loginDeadline = deadline;
+    _nextTimer(deviceCode, interval, completer, cancelToken, deadline,
+        initialDelay: initialDelay);
     return completer.future;
   }
 
-  /// 下一次轮询
+  /// 安排下一次轮询
   void _nextTimer(
     String deviceCode,
     int interval,
     Completer<UserInfo?> completer,
     CancelToken cancelToken,
-    DateTime? deadline,
-  ) {
+    DateTime? deadline, {
+    Duration? initialDelay,
+  }) {
+    // 链归属校验：已被新链取代的旧链不得再调度，否则会取消/覆盖当前链的定时器。
+    if (!identical(completer, _loginCompleter)) return;
     if (_loginRequestTimer?.isActive ?? false) {
       _loginRequestTimer?.cancel();
     }
-    _loginRequestTimer = Timer.periodic(Duration(seconds: interval), (timer) {
+    _loginInterval = interval;
+    _lastPollActivityAt = DateTime.now();
+    // 单次定时器：到点后执行一次请求，再由 [_login] 按返回的 interval 安排下一次。
+    // 不做周期定时任务，避免「上一次请求还没回来就按固定节拍再发」。
+    _loginRequestTimer = Timer(initialDelay ?? Duration(seconds: interval), () {
       if (_loginRequestTimer?.isActive ?? false) {
         _loginRequestTimer?.cancel();
       }
-      _login(deviceCode, completer, cancelToken, deadline);
+      _runLogin(deviceCode, completer, cancelToken, deadline);
     });
   }
 
@@ -268,6 +408,11 @@ class UserManager {
     CancelToken cancelToken,
     DateTime? deadline,
   ) async {
+    // 旧链已被新链取代（手动重新认证等）：不再发请求，直接结束这条链。
+    if (!identical(completer, _loginCompleter)) {
+      if (!completer.isCompleted) completer.complete(null);
+      return;
+    }
     // 设备码已过期：终止轮询，提示重新获取（不再发起无效的 access_token 请求）
     if (deadline != null && !DateTime.now().isBefore(deadline)) {
       _loginRequestTimer?.cancel();
@@ -292,6 +437,7 @@ class UserManager {
       }
 
       _pollAttempt++;
+      _lastPollActivityAt = DateTime.now();
       _emitPollLog('第 $_pollAttempt 次轮询：请求 access_token…');
 
       // 调用 GitHub OAuth API
@@ -310,7 +456,19 @@ class UserManager {
             reason: '登录请求已取消',
           );
         }
-        _nextTimer(deviceCode, auth.interval ?? 5, completer, cancelToken, deadline);
+        // 回前台时登记过「在途请求返回后立即补发」：这次 pending 已经等过了，
+        // 不必再等满一个 interval；但仍遵守 GitHub 的最小轮询间隔（用请求耗时
+        // 抵扣，若这次请求本身在后台耗掉了整个间隔则剩余为 0，立即发下一次）。
+        final immediate = _pollNowAfterResponse;
+        _pollNowAfterResponse = false;
+        _nextTimer(
+          deviceCode,
+          auth.interval ?? _loginInterval,
+          completer,
+          cancelToken,
+          deadline,
+          initialDelay: immediate ? _remainingPollDelay : null,
+        );
         return;
       }
 
@@ -348,6 +506,20 @@ class UserManager {
         _emitPollLog('认证失败（请重新获取验证码）');
         // 401/403：设备码过期/无效/授权被拒（不再弹 snackbar——失败态由页面「再次轮试」按钮兜底）
         completer.completeError(e);
+      } else if (_pollNowAfterResponse) {
+        // 回前台时登记过「在途请求返回后立即补发」：后台发出的这次请求网络失败，
+        // 现在已回到前台，立刻重试一次（只重试一次，避免前台断网时无限重试）。
+        _pollNowAfterResponse = false;
+        appLog.error('UserManager: 登录请求失败（回前台重试一次）- $e');
+        _emitPollLog('网络错误，立即重试一次…');
+        _nextTimer(
+          deviceCode,
+          _loginInterval,
+          completer,
+          cancelToken,
+          deadline,
+          initialDelay: _remainingPollDelay,
+        );
       } else {
         appLog.error('UserManager: 登录请求失败 - $e');
         _emitPollLog('网络错误，轮询停止');

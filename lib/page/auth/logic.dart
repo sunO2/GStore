@@ -75,27 +75,42 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
   }
 
   /// 后台回到前台（如从 GitHub 浏览器返回）：
-  /// - 等待授权中但轮询已停 → 恢复轮询；
-  /// - 轮询因网络错误中止（initial）→ 自动重新发起一次。
+  /// - 已有请求在途 → 沿用当前链，等它返回后立即补发一次（不另起链）；
+  /// - 定时器仍在等待且已超过一个轮询间隔 → 立即补发一次；
+  /// - 轮询链已停（如后台期间网络失败）→ 重建轮询链（超期时立即发起）。
   Future<void> onAppResumed() async {
     if (state.status != AuthStatus.verifying &&
         state.status != AuthStatus.initial) {
       return;
     }
-    if (userManager.isPolling) return;
     if (!userManager.canResumePolling) return;
-    if (loginRequestCancelToken.isCancelled) {
-      loginRequestCancelToken = CancelToken();
+    // 请求在途（常见于后台期间发出的那次）：只登记「返回后立即补发」，
+    // 绝不能另起一条链——否则同一设备码会被并发轮询，先到的成功结果还会
+    // 因为令牌换代被丢弃，表现为「成功了却要再轮询一次才显示登录」。
+    if (userManager.resumeAfterPendingRequest()) {
+      _appendLog('检测到回到应用，等待在途的登录检查结果…');
+      return;
     }
+    // 定时器仍在等待：仅有超期时才立即补发，其余情况按原定时间继续。
+    if (userManager.isPolling) {
+      if (userManager.isPollOverdue && userManager.pollNow()) {
+        _appendLog('检测到回到应用且已超过轮询间隔，立即检查登录状态…');
+      }
+      return;
+    }
+    // 轮询链已停：换新令牌重建链，旧链结果不再影响页面状态。
+    if (!loginRequestCancelToken.isCancelled) {
+      loginRequestCancelToken.cancel();
+    }
+    final token = loginRequestCancelToken = CancelToken();
     if (state.verificationCode.isNotEmpty) {
       state = state.copyWith(status: AuthStatus.verifying);
     }
     _appendLog('检测到回到应用，自动恢复登录轮询…');
-    final token = loginRequestCancelToken;
     await _handleLoginResult(userManager.resumePolling(token), token);
   }
 
-  /// 手动认证（轮询失败后）：取消当前轮询并用已存设备码重新开始，回到等待态。
+  /// 手动认证（轮询失败后）：取消当前轮询并用已存设备码重新开始，立即发起一次。
   Future<void> retryPolling() async {
     userManager.cancelLogin();
     loginRequestCancelToken = CancelToken();
@@ -104,7 +119,10 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
       state = state.copyWith(status: AuthStatus.verifying);
     }
     final token = loginRequestCancelToken;
-    await _handleLoginResult(userManager.resumePolling(token), token);
+    await _handleLoginResult(
+      userManager.resumePolling(token, immediate: true),
+      token,
+    );
   }
 
   /// 统一处理一次登录轮询结果：成功 → 提示并自动退出；失败 → 进入可手动认证状态。
@@ -186,19 +204,16 @@ class AuthPageNotifier extends Notifier<AuthPageState> {
             onLog: _appendLog);
         LoginNotificationService.instance.startForegroundService();
 
-        // 开始轮询登录状态（结果统一交给 _handleLoginResult 处理）
+        // 开始轮询登录状态（结果统一交给 _handleLoginResult 处理）。
+        // 首次请求由轮询链按 GitHub 返回的 interval 等待后自动发出——这里不再
+        // 额外 Future.delayed，否则首次请求会多等一个间隔。
         final token = loginRequestCancelToken;
-        Future.delayed(Duration(seconds: value.interval ?? 5), () async {
-          if (!identical(token, loginRequestCancelToken) || token.isCancelled) {
-            return;
-          }
-          await _handleLoginResult(
-            userManager.startLoginOfTimer(
-                value.deviceCode!, value.interval ?? 5, token,
-                expiresIn: value.expiresIn),
-            token,
-          );
-        });
+        await _handleLoginResult(
+          userManager.startLoginOfTimer(
+              value.deviceCode!, value.interval ?? 5, token,
+              expiresIn: value.expiresIn),
+          token,
+        );
       } else {
         log("获取设备码失败：返回的 deviceCode 为空");
         _appendLog('获取设备码失败：deviceCode 为空');
