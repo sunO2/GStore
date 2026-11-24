@@ -72,6 +72,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
+  # sccache 与增量编译互斥；CI 关闭增量以获得稳定、可复用的缓存命中。
+  CARGO_INCREMENTAL: '0'
+  SCCACHE_CACHE_SIZE: 10G
   FLUTTER_VERSION: '3.44.8'
 
 jobs:
@@ -94,6 +97,14 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        name: Set up sccache
+
+      - name: Enable sccache for Rust
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
       - name: Install host QA dependencies (sqlite/ripgrep; NO libclang)
         run: |
           sudo apt-get update -qq
@@ -111,21 +122,22 @@ jobs:
             ${{ runner.os }}-wave01-pub-
             ${{ runner.os }}-pub-
 
-      - name: Cache cargo registry and crate targets
-        uses: actions/cache@v6
+      # rust-cache 按每个 workspace 的 Cargo.lock/rustc 版本生成 key，任一依赖
+      # 变化不再整体失效；sccache 再兜住跨 crate 的重复 rustc 产物。
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/gstore_contract/target
-            rust/gstore_core/target
-            rust/gstore_host/target
-            rust/gstore_mod_analyzer/target
-            rust/gstore_mod_repo/target
-            rust/gstore_mod_qr/target
-          key: ${{ runner.os }}-wave01-cargo-${{ hashFiles('rust/**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-wave01-cargo-
+          # 只缓存 QA 直接构建的 target（与旧 cache 列表一致），其余 crate 的
+          # 编译产物交给 sccache，避免超过 Actions 10GB 缓存配额后被整体丢弃。
+          workspaces: |
+            rust -> target
+            rust/gstore_contract -> target
+            rust/gstore_core -> target
+            rust/gstore_host -> target
+            rust/gstore_mod_analyzer -> target
+            rust/gstore_mod_repo -> target
+            rust/gstore_mod_qr -> target
+          cache-on-failure: true
 
       - name: Cache QA CLIs (cbindgen)
         id: qa-cli-cache
@@ -246,6 +258,10 @@ jobs:
       - name: Plan audit self-test (fixtures only, no real plan needed)
         run: bash scripts/qa/f1-plan-audit.sh --self-test
 
+      - name: Show sccache stats
+        if: always()
+        run: '"${SCCACHE_PATH:-sccache}" --show-stats || true'
+
   frb-regen:
     name: FRB regeneration diff gate
     runs-on: ubuntu-latest
@@ -352,6 +368,14 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Enable sccache for Rust
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -371,16 +395,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-wave01-pub-
 
-      - name: Cache cargo registry and host target
-        uses: actions/cache@v6
+      - name: Cache Rust build artifacts (host arm64 target)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/gstore_host/target
-          key: ${{ runner.os }}-wave01-android-arm64-${{ hashFiles('rust/gstore_host/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-wave01-android-arm64-
+          workspaces: |
+            rust/gstore_host -> target
+          cache-on-failure: true
 
       - name: Build gstore_host .so for arm64 (NDK)
         env:
@@ -416,3 +436,7 @@ jobs:
           path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           if-no-files-found: error
           retention-days: 7
+
+      - name: Show sccache stats
+        if: always()
+        run: '"${SCCACHE_PATH:-sccache}" --show-stats || true'

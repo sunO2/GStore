@@ -17,8 +17,47 @@ PROJECT_DIR="${GSTORE_PROJECT_DIR:-/home/hezhihu89/develop/flutter/project/GStor
 ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStore/android/app/src/main/jniLibs}"
 # 可下载模块的输出目录（不进 APK，发布时作为 GitHub Release 附件分发）
 MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
+
+# Rust profile：默认 release（fat LTO + CGU1，发布用）。本地快速验证可设
+# GSTORE_RUST_PROFILE=release-fast（thin LTO + 多 CGU），产物目录随之变化。
+RUST_PROFILE="${GSTORE_RUST_PROFILE:-release}"
+if [ "$RUST_PROFILE" = "release" ]; then
+    CARGO_PROFILE_ARGS=(--release)
+    CARGO_PROFILE_DIR="release"
+else
+    CARGO_PROFILE_ARGS=(--profile "$RUST_PROFILE")
+    CARGO_PROFILE_DIR="$RUST_PROFILE"
+fi
+
+# 并行任务数：ABI/模块之间互不依赖。CI runner 内存有限默认 2，本地默认取
+# CPU 数上限 4（fat LTO 链接单任务可能吃 2~4GB，盲目拉满会 OOM）。
+BUILD_JOBS="${GSTORE_BUILD_JOBS:-}"
+if [ -z "$BUILD_JOBS" ]; then
+    if [ -n "${CI:-}" ]; then
+        BUILD_JOBS=2
+    else
+        _ncpu="$(nproc 2>/dev/null || echo 4)"
+        BUILD_JOBS=$(( _ncpu > 4 ? 4 : _ncpu ))
+    fi
+fi
+if ! [[ "$BUILD_JOBS" =~ ^[0-9]+$ ]] || [ "$BUILD_JOBS" -lt 1 ]; then
+    BUILD_JOBS=1
+fi
+PARALLEL_LOG_DIR="$(mktemp -d)"
+trap 'rm -rf "$PARALLEL_LOG_DIR"' EXIT
+
+# 本地装了 sccache 就自动启用（CI 由 workflow 注入 RUSTC_WRAPPER）。多个 crate
+# 的独立 target 会重复编译同一批依赖，sccache 能把它们复用起来。
+if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
+    export RUSTC_WRAPPER=sccache
+    export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"
+fi
 # 需要构建的可下载模块（crate 名 -> 目录）
 MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo" "gstore_mod_download" "gstore_mod_proxy" "gstore_mod_perf")
+# 本地调试可只构建部分模块：GSTORE_MODULES="gstore_mod_download"
+if [ -n "${GSTORE_MODULES:-}" ]; then
+    read -r -a MODULES <<<"$GSTORE_MODULES"
+fi
 # 需要「随 APK 内置」的模块（crate 名）：除发布到 release-modules 外，额外安装到
 # jniLibs（ANDROID_LIB_DIR），随 APK 打包。运行时加载器优先命中内置产物，无需下载。
 # 注意：内置模块**不做签名**——不生成 `.sig` 侧车；信任层（gstore_host/src/trust.rs）
@@ -212,7 +251,7 @@ EOF
     # 构建
     # 显式用 --config 注入 NDK linker/ar：各 crate 的 .cargo/config.toml 里写的是
     # 开发机绝对路径，CI runner 上不存在会导致链接失败。
-    cargo build --release --target "$target" \
+    cargo build "${CARGO_PROFILE_ARGS[@]}" --target "$target" \
         --config "target.$target.linker=\"$ndk_bin/$clang_name\"" \
         --config "target.$target.ar=\"$ndk_bin/llvm-ar\""
 
@@ -221,13 +260,13 @@ EOF
     if [ -n "$saved_bindgen" ]; then export BINDGEN_EXTRA_CLANG_ARGS="$saved_bindgen"; else unset BINDGEN_EXTRA_CLANG_ARGS; fi
 
     # 检查构建结果
-    if [ -f "target/$target/release/libgstore_host.so" ]; then
-        local size=$(ls -lh "target/$target/release/libgstore_host.so" | awk '{print $5}')
+    if [ -f "target/$target/$CARGO_PROFILE_DIR/libgstore_host.so" ]; then
+        local size=$(ls -lh "target/$target/$CARGO_PROFILE_DIR/libgstore_host.so" | awk '{print $5}')
         echo_success "✓ Built libgstore_host.so ($size) for $arch_name"
 
         # 复制到 Android 目录
         mkdir -p "$ANDROID_LIB_DIR/$arch_name"
-        cp "target/$target/release/libgstore_host.so" "$ANDROID_LIB_DIR/$arch_name/"
+        cp "target/$target/$CARGO_PROFILE_DIR/libgstore_host.so" "$ANDROID_LIB_DIR/$arch_name/"
         echo_info "✓ Copied to $ANDROID_LIB_DIR/$arch_name/"
 
         # libc++_shared.so 随包分发（原因见脚本顶部）：取 16 KB 对齐 NDK 的对应 ABI 副本，
@@ -265,6 +304,7 @@ module_is_builtin() {
 build_module() {
     local module=$1
     local module_dir="$(dirname "$PROJECT_DIR")/$module"
+    local module_failed=0
     echo_info "Building module: $module"
     local toolchain_dir="$module_dir/target/cmake-toolchain"
     mkdir -p "$toolchain_dir"
@@ -340,7 +380,7 @@ EOF
 
         local cargo_log
         cargo_log="$(mktemp)"
-        if cargo build --release --target "$target" \
+        if cargo build "${CARGO_PROFILE_ARGS[@]}" --target "$target" \
             --config "target.$target.linker=\"$toolchain_bin/$clang_name\"" \
             --config "target.$target.ar=\"$toolchain_bin/llvm-ar\"" >"$cargo_log" 2>&1; then
             tail -1 "$cargo_log"
@@ -351,8 +391,8 @@ EOF
         rm -f "$cargo_log"
         local out_dir="$MODULE_DIR/$arch_name"
         mkdir -p "$out_dir"
-        if [ -f "target/$target/release/lib${module}.so" ]; then
-            cp "target/$target/release/lib${module}.so" "$out_dir/"
+        if [ -f "target/$target/$CARGO_PROFILE_DIR/lib${module}.so" ]; then
+            cp "target/$target/$CARGO_PROFILE_DIR/lib${module}.so" "$out_dir/"
             # 体积用 ls 而不是 du：du 统计磁盘块，实测会报出与实际不符的值（曾报 1.0K）
             echo_success "✓ $module/$arch_name: $(ls -lh "$out_dir/lib${module}.so" | awk '{print $5}')"
 
@@ -360,12 +400,12 @@ EOF
             # 直接复制产物、不写任何 `.sig`（无签名 = 内置信任，见 BUILTIN_MODULES 注释）。
             if module_is_builtin "$module"; then
                 mkdir -p "$ANDROID_LIB_DIR/$arch_name"
-                cp "target/$target/release/lib${module}.so" "$ANDROID_LIB_DIR/$arch_name/"
+                cp "target/$target/$CARGO_PROFILE_DIR/lib${module}.so" "$ANDROID_LIB_DIR/$arch_name/"
                 echo_info "✓ built-in → $ANDROID_LIB_DIR/$arch_name/lib${module}.so"
             fi
         else
             echo_error "✗ $module build failed for $arch_name"
-            MODULE_FAILED=$((MODULE_FAILED + 1))
+            module_failed=1
         fi
     done
 
@@ -380,6 +420,43 @@ EOF
 
     # 回到宿主目录
     cd "$PROJECT_DIR"
+    return "$module_failed"
+}
+
+# 并行等待一个后台任务并回放日志；返回任务退出码。
+wait_job() {
+    local pid=$1
+    local log=$2
+    local status=0
+    wait "$pid" || status=$?
+    cat "$log"
+    return "$status"
+}
+
+# 并行构建全部 ABI 的宿主 .so（每个 ABI 一个独立子 shell，环境变量互不污染）。
+build_hosts_parallel() {
+    local failed=0
+    local -a host_targets=("${!ARCHS[@]}")
+    local i
+    for ((i = 0; i < ${#host_targets[@]}; i += BUILD_JOBS)); do
+        local -a batch_pids=()
+        local -a batch_names=()
+        local target
+        for target in "${host_targets[@]:i:BUILD_JOBS}"; do
+            local log="$PARALLEL_LOG_DIR/host-$target.log"
+            ( build_arch "$target" "${ARCHS[$target]}" ) >"$log" 2>&1 &
+            batch_pids+=("$!")
+            batch_names+=("host-$target")
+        done
+        local idx
+        for idx in "${!batch_pids[@]}"; do
+            if ! wait_job "${batch_pids[$idx]}" "$PARALLEL_LOG_DIR/${batch_names[$idx]}.log"; then
+                echo_warn "Build failed for ${batch_names[$idx]#host-}, continuing..."
+                failed=1
+            fi
+        done
+    done
+    return "$failed"
 }
 
 # 主流程
@@ -403,34 +480,26 @@ fi
 # 注意：这些分支必须在主流程之前——原来它们位于脚本末尾的 exit 之后，永远不可达，
 # 导致 `--module-qr` 实际会跑全量构建。
 if [ "$1" = "--module-qr" ]; then
-    build_module "gstore_mod_qr"
+    build_module "gstore_mod_qr" || MODULE_FAILED=1
     exit $(( MODULE_FAILED > 0 ))
 fi
 
 # 仅构建下载内核模块：./build_android_rust.sh --module-download
 if [ "$1" = "--module-download" ]; then
-    build_module "gstore_mod_download"
+    build_module "gstore_mod_download" || MODULE_FAILED=1
     exit $(( MODULE_FAILED > 0 ))
 fi
 
 # 通用：./build_android_rust.sh --module <crate 名>
 if [ "$1" = "--module" ] && [ -n "$2" ]; then
-    build_module "$2"
+    build_module "$2" || MODULE_FAILED=1
     exit $(( MODULE_FAILED > 0 ))
 fi
 
 # 仅构建宿主（Rust 改动只涉及 gstore_host 时，避免重建可下载模块）：
 # ./build_android_rust.sh --host-only
 if [ "$1" = "--host-only" ]; then
-    FAILED=0
-    for target in "${!ARCHS[@]}"; do
-        if ! build_arch "$target" "${ARCHS[$target]}"; then
-            echo_warn "Build failed for $target, continuing..."
-            FAILED=1
-        fi
-        echo ""
-    done
-    if [ "$FAILED" -eq 0 ]; then
+    if build_hosts_parallel; then
         echo_success "✓ Host built for all architectures (host-only)"
         exit 0
     fi
@@ -441,26 +510,48 @@ fi
 # 记录开始时间
 start_time=$(date +%s)
 
-# 构建每个架构
+# 构建每个架构（并行，受 BUILD_JOBS 限制）
 FAILED=0
-for target in "${!ARCHS[@]}"; do
-    if ! build_arch "$target" "${ARCHS[$target]}"; then
-        echo_warn "Build failed for $target, continuing..."
-        FAILED=1
-    fi
-    echo ""
-done
+if ! build_hosts_parallel; then
+    FAILED=1
+fi
 
-# 构建可下载模块（可选：MODULES 为空则跳过）
-for module in "${MODULES[@]}"; do
-    build_module "$module"
+# 构建可下载模块（可选），模块之间并行；每个模块内部仍按 ABI 顺序构建。
+if [ "${#MODULES[@]}" -gt 0 ]; then
+    module_pids=()
+    module_names=()
+    for module in "${MODULES[@]}"; do
+        module_log="$PARALLEL_LOG_DIR/module-$module.log"
+        ( build_module "$module" ) >"$module_log" 2>&1 &
+        module_pids+=("$!")
+        module_names+=("$module")
+
+        if [ "${#module_pids[@]}" -ge "$BUILD_JOBS" ]; then
+            pid="${module_pids[0]}"
+            name="${module_names[0]}"
+            module_pids=("${module_pids[@]:1}")
+            module_names=("${module_names[@]:1}")
+            if ! wait_job "$pid" "$PARALLEL_LOG_DIR/module-$name.log"; then
+                echo_warn "Module build failed: $name"
+                MODULE_FAILED=$((MODULE_FAILED + 1))
+            fi
+        fi
+    done
+
+    # 等待剩余模块
+    for idx in "${!module_pids[@]}"; do
+        if ! wait_job "${module_pids[$idx]}" "$PARALLEL_LOG_DIR/module-${module_names[$idx]}.log"; then
+            echo_warn "Module build failed: ${module_names[$idx]}"
+            MODULE_FAILED=$((MODULE_FAILED + 1))
+        fi
+    done
     echo ""
-done
+fi
 
 # 本地推理模块（可选、仅 arm64）：需要 bindgen/libclang + 编译 llama.cpp，故单独脚本。
 # 失败不阻断整体构建（该模块按需使用）。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -x "$SCRIPT_DIR/rust/build_llm_android.sh" ]; then
+if [ "${GSTORE_SKIP_LLM:-0}" != "1" ] && [ -x "$SCRIPT_DIR/rust/build_llm_android.sh" ]; then
     echo_info "Building local LLM module (gstore_mod_llm, arm64 only)..."
     if ! "$SCRIPT_DIR/rust/build_llm_android.sh"; then
         echo_warn "gstore_mod_llm 构建失败（可选模块，继续）"

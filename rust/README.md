@@ -230,6 +230,33 @@ rustup target add x86_64-linux-android
 3. **缓存策略**：内存缓存 + SQLite 持久化
 4. **流式解析**：支持 tokio 流式 JSON 解析
 
+## 构建加速
+
+`build_android_rust.sh` / `rust/build_all.sh` 支持以下环境变量：
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `GSTORE_BUILD_JOBS` | ABI / 模块 / crate 的并行构建数 | CI=2；本地=min(CPU, 4) |
+| `GSTORE_RUST_PROFILE` | Rust profile；`release-fast` 为 thin LTO + 8 CGU | `release` |
+| `RUSTC_WRAPPER` | 编译缓存；本地检测到 `sccache` 时自动启用 | 空 |
+
+本地日常迭代建议：
+
+```bash
+# 只改 gstore_host 时，跳过 6 个模块
+GSTORE_RUST_PROFILE=release-fast GSTORE_BUILD_JOBS=4 \
+  ./build_android_rust.sh --host-only
+
+# 只重建单个模块
+./build_android_rust.sh --module gstore_mod_download
+
+# 安装 sccache 后，脚本会自动用它跨 crate 复用编译产物
+cargo install sccache
+```
+
+发布/CI 仍使用默认的 `release`（fat LTO + `codegen-units = 1`），`release-fast`
+仅用于本地快速验证，不要用于最终产物。
+
 ## 相关资源
 
 - [flutter_rust_bridge 文档](https://cjycode.com/flutter_rust_bridge/)

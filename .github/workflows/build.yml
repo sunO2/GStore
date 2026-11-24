@@ -1,5 +1,10 @@
 on: push
 name: build and test app
+env:
+  # sccache 与增量编译互斥；CI 统一关闭增量以获得稳定的缓存命中。
+  CARGO_INCREMENTAL: '0'
+  SCCACHE_CACHE_SIZE: 10G
+  CARGO_TERM_COLOR: always
 jobs:
   build:
     name: install dependencies
@@ -33,6 +38,35 @@ jobs:
         with:
           # build_android_rust.sh 会为这 4 个 target 构建宿主 + qr/analyzer/repo/download/proxy 模块
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      # 编译缓存：sccache 负责跨 crate/ABI 复用 rustc 产物（host + 6 模块会重复
+      # 编译 tokio/reqwest/rustls 等），rust-cache 只缓存 registry/git，避免把
+      # 4 个 ABI 的 target 目录塞进 10GB Actions 缓存配额。
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Enable sccache for Rust
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Cache Rust registry and git sources
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            rust/gstore_contract -> target
+            rust/gstore_core -> target
+            rust/gstore_host -> target
+            rust/gstore_mod_analyzer -> target
+            rust/gstore_mod_repo -> target
+            rust/gstore_mod_qr -> target
+            rust/gstore_mod_download -> target
+            rust/gstore_mod_llm -> target
+            rust/gstore_mod_perf -> target
+            rust/gstore_mod_proxy -> target
+          cache-targets: false
+          cache-on-failure: true
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -125,7 +159,13 @@ jobs:
           GSTORE_PROJECT_DIR: ${{ github.workspace }}/rust/gstore_host
           GSTORE_LIB_DIR: ${{ github.workspace }}/android/app/src/main/jniLibs
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+          # runner 16GB：fat LTO 单任务可能吃 2~4GB，并发 2 是安全上限。
+          GSTORE_BUILD_JOBS: '2'
         run: bash build_android_rust.sh
+
+      - name: Show sccache stats
+        if: always()
+        run: '"${SCCACHE_PATH:-sccache}" --show-stats || true'
 
       # 非零字节断言：任一模块/ABI 产物缺失或为零字节都会让作业失败。
       - name: Assert Rust module artifacts are present and non-zero
