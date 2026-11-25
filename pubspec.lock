@@ -778,6 +778,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.2.0"
+  genkit_middleware:
+    dependency: "direct main"
+    description:
+      name: genkit_middleware
+      sha256: fdc3c3d8dfcc33889cf17575e7e76a777bf4754552d29dbe4ccd48f77a1dfe2c
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.3"
   genkit_openai:
     dependency: "direct main"
     description:

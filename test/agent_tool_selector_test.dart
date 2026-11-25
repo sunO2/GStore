@@ -62,6 +62,17 @@ void main() {
       }
     });
 
+    test('用户提到白名单配置：强制保留 showConfigControl', () {
+      final names = namesFor('分段下载开关状态');
+      expect(names, contains('showConfigControl'),
+          reason: '工具检索裁剪不能把控件工具裁掉');
+    });
+
+    test('普通下载请求不会误加强制控件', () {
+      final names = namesFor('帮我下载一个笔记应用');
+      expect(names, isNot(contains('showConfigControl')));
+    });
+
     test('无重复、保持注册表顺序、数量受限', () {
       final selection = AgentToolSelector.select(
         userText: '帮我搜索、下载、安装、更新、备份、清理缓存、看快照、执行脚本',

@@ -333,7 +333,7 @@ void main() {
     );
   });
 
-  testWidgets('模型只回文字时出现“显示控件”兜底入口，点击后渲染卡片', (tester) async {
+  testWidgets('模型只回文字时也直接渲染控件卡片', (tester) async {
     await initStore();
 
     await pumpList(tester, [
@@ -349,12 +349,7 @@ void main() {
       ),
     ]);
 
-    expect(find.text('显示控件：多段下载'), findsOneWidget);
-    expect(find.byType(Switch), findsNothing);
-
-    await tester.tap(find.text('显示控件：多段下载'));
-    await tester.pumpAndSettle();
-
+    expect(find.text('显示控件：多段下载'), findsNothing);
     expect(find.byType(Switch), findsOneWidget);
     expect(find.text('多段下载'), findsOneWidget);
   });
@@ -386,7 +381,7 @@ void main() {
     expect(find.text('显示控件：多段下载'), findsNothing);
   });
 
-  testWidgets('用户提到多个控件且模型未出卡时出现多个兜底入口', (tester) async {
+  testWidgets('用户提到多个控件且模型未出卡时直接渲染多个控件', (tester) async {
     await initStore();
 
     await pumpList(tester, [
@@ -402,16 +397,11 @@ void main() {
       ),
     ]);
 
-    expect(find.text('显示控件：多段下载'), findsOneWidget);
-    expect(find.text('显示控件：最大并发下载数'), findsOneWidget);
-
-    await tester.tap(find.text('显示控件：最大并发下载数'));
-    await tester.pumpAndSettle();
-
+    expect(find.byType(Switch), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
   });
 
-  testWidgets('用户追问未点名控件时，助手文本中的控件名也能出现兜底入口', (tester) async {
+  testWidgets('用户追问未点名控件时，助手文本中的控件名也直接渲染', (tester) async {
     await initStore();
 
     await pumpList(tester, [
@@ -427,12 +417,7 @@ void main() {
       ),
     ]);
 
-    expect(find.text('显示控件：多段下载'), findsOneWidget);
-    expect(find.byType(Switch), findsNothing);
-
-    await tester.tap(find.text('显示控件：多段下载'));
-    await tester.pumpAndSettle();
-
+    expect(find.text('显示控件：多段下载'), findsNothing);
     expect(find.byType(Switch), findsOneWidget);
   });
 }

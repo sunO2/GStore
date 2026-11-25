@@ -273,10 +273,10 @@ class _HomePageState extends ConsumerState<HomePage>
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
+                    AppBottomCapsule.horizontalMargin,
                     0,
-                    AppSpacing.lg,
-                    AppSpacing.md,
+                    AppBottomCapsule.horizontalMargin,
+                    AppBottomCapsule.bottomMargin,
                   ),
                   child: Container(
                     // 细描边层次试验：描边必须在 ClipRRect 外层（内层会被
@@ -285,7 +285,7 @@ class _HomePageState extends ConsumerState<HomePage>
                     // （AppBorders，无边框档真不绘制）。
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(
-                        AppRadius.xxl + AppRadius.sm,
+                        AppBottomCapsule.radius,
                       ),
                       border: AppBorders.all(
                         context,
@@ -298,7 +298,7 @@ class _HomePageState extends ConsumerState<HomePage>
                     child: ClipRRect(
                       // 大圆角胶囊（高度 64 时近似全圆）
                       borderRadius: BorderRadius.circular(
-                        AppRadius.xxl + AppRadius.sm,
+                        AppBottomCapsule.radius,
                       ),
                       child: BackdropFilter(
                         filter: ImageFilter.blur(
@@ -314,7 +314,7 @@ class _HomePageState extends ConsumerState<HomePage>
                             data: Theme.of(context).copyWith(
                               navigationBarTheme: Theme.of(context)
                                   .navigationBarTheme
-                                  .copyWith(height: 64),
+                                  .copyWith(height: AppBottomCapsule.height),
                             ),
                             child: NavigationBar(
                               selectedIndex: _displayIndex(index),

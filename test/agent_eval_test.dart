@@ -591,13 +591,35 @@ Future<({List<String> executed, int errors, AgentTurnTrace trace})> _run(
   );
 
   try {
-    final result = await agent.debugRunAgentLoop(
+    var result = await agent.debugRunAgentLoop(
       initialMessages: [
         Message(role: Role.user, content: [TextPart(text: c.prompt)]),
       ],
       toolNames: selection.names,
       trace: trace,
     );
+
+    // confirmAction 现在会暂停模型回合；评测脚本自动确认后继续。
+    final pendingId = agent.debugPendingModelConfirmationId;
+    if (result == null && pendingId != null) {
+      executed.add(AgentService.confirmToolName);
+      final confirmMsg = agent.messages.value.firstWhere(
+        (m) => m.id == pendingId,
+      );
+      final choice = confirmMsg.confirmOptions?.isNotEmpty == true
+          ? confirmMsg.confirmOptions!.first
+          : '确认';
+      agent.resolveConfirmation(pendingId, choice);
+      for (var i = 0; i < 100; i++) {
+        if (agent.debugPendingModelConfirmationId == null &&
+            trace.finishReason != null) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      result = agent.debugLastModelConfirmationResponse;
+    }
+
     expect(result, isNotNull, reason: c.id);
     expect(result!.text, contains(c.expectedText), reason: c.id);
   } finally {

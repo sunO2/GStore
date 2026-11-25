@@ -478,6 +478,43 @@ class AgentSessionStore {
   static const String _summaryMetaPrefix = 'session_summary:';
   static const String _summaryPrefsPrefix = 'agent_summary_';
 
+  /// 通用小状态（token 统计等）：SQLite `agent_meta` 优先，SP 兜底。
+  static const String _metaBackendPrefix = 'meta:';
+  static const String _metaPrefsPrefix = 'agent_meta_';
+
+  /// 读取一条通用 meta（无则 null）。
+  Future<String?> readMeta(String key) async {
+    final backend = _backend;
+    if (backend != null) {
+      try {
+        return await backend.readMeta('$_metaBackendPrefix$key');
+      } catch (error) {
+        debugPrint('AgentSessionStore: 读取 meta 失败（$key） - $error');
+      }
+    }
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('$_metaPrefsPrefix$key');
+  }
+
+  /// 写入一条通用 meta（null/空 = 删除）。
+  Future<void> writeMeta(String key, String? value) async {
+    final backend = _backend;
+    if (backend != null) {
+      try {
+        await backend.writeMeta('$_metaBackendPrefix$key', value);
+        return;
+      } catch (error) {
+        debugPrint('AgentSessionStore: 写入 meta 失败（$key） - $error');
+      }
+    }
+    final prefs = await SharedPreferences.getInstance();
+    if (value == null || value.isEmpty) {
+      await prefs.remove('$_metaPrefsPrefix$key');
+    } else {
+      await prefs.setString('$_metaPrefsPrefix$key', value);
+    }
+  }
+
   /// 读取会话摘要（无则 null）。
   Future<String?> readSummary(String sessionId) async {
     final backend = _backend;

@@ -47,6 +47,8 @@ app.*.map.json
 # AI 辅助工具工作目录（会话/草稿/证据，不进版本库）
 .commandcode/
 .omo/
+# Genkit CLI 本地 trace / Dev UI 数据
+/.genkit/
 
 # Rust
 # Rust crate 构建产物（host/contract/模块各 crate 的 target）

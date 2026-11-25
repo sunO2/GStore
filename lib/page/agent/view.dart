@@ -8,9 +8,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 
 import 'logic.dart';
 import 'chat_list_view.dart';
+import 'keyboard_inset_layout.dart';
+import 'agent_more_action.dart';
 
 class AgentPage extends ConsumerStatefulWidget {
   /// 是否内嵌在首页 tab（底部有悬浮导航胶囊需避让）；
@@ -25,9 +28,27 @@ class AgentPage extends ConsumerStatefulWidget {
 
 /// 保持页面状态（作为首页 tab 时切换不销毁：输入/滚动/对话状态保留）
 class _AgentPageState extends ConsumerState<AgentPage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, SingleTickerProviderStateMixin {
   @override
   bool get wantKeepAlive => true;
+
+  /// 键盘避让动画时长/曲线（消息区、输入栏、列表内边距共用同一套值）
+  static const Duration _keyboardDuration = Duration(milliseconds: 200);
+  static const Curve _keyboardCurve = Curves.easeOut;
+
+  /// 键盘高度动画：唯一驱动源。
+  ///
+  /// 原来消息区/输入栏各用一个 AnimatedPadding，而列表 bottomPadding 在
+  /// `keyboard > 0` 分支上瞬时切换，键盘收起最后一帧会多出安全区高度导致
+  /// 内容抖动。这里改为一个控制器同时驱动三者，保证几何连续。
+  late final AnimationController _insetController;
+  Tween<double> _insetTween = Tween<double>(begin: 0, end: 0);
+  double _insetTarget = 0;
+
+  /// 当前动画中的键盘高度（逻辑像素）
+  double get _keyboardInset => _insetTween.transform(
+        _keyboardCurve.transform(_insetController.value),
+      );
 
   /// 悬浮输入框焦点（tab 内嵌时离开 AI tab 自动失焦收键盘）
   final FocusNode _inputFocusNode = FocusNode();
@@ -46,6 +67,10 @@ class _AgentPageState extends ConsumerState<AgentPage>
   @override
   void initState() {
     super.initState();
+    _insetController = AnimationController(
+      vsync: this,
+      duration: _keyboardDuration,
+    );
     // 独立路由进入：标记 AI 页可见（服务层后台通知/敏感拦截门控）
     if (!widget.isTabEmbedded) {
       HomeTabVisibility.instance.setAgentRoute(true);
@@ -73,6 +98,22 @@ class _AgentPageState extends ConsumerState<AgentPage>
         });
       });
     }
+  }
+
+  /// MediaQuery 键盘高度变化：从当前动画位置平滑追到新目标。
+  ///
+  /// 不用 `AnimatedPadding` 的内部隐式动画：键盘收起时 Android 往往在最后
+  /// 才把 inset 置 0，隐式动画会滞后 200ms；这里与其他避让值共用同一个
+  /// 动画进度，避免“键盘没了页面还在动”。
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final target = MediaQuery.viewInsetsOf(context).bottom;
+    if (target == _insetTarget) return;
+    final current = _keyboardInset;
+    _insetTween = Tween<double>(begin: current, end: target);
+    _insetTarget = target;
+    _insetController.forward(from: 0);
   }
 
   /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史；
@@ -116,6 +157,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
       HomeTabVisibility.instance.setAgentRoute(false);
     }
     _inputFocusNode.dispose();
+    _insetController.dispose();
     _scroll.removeListener(_onScrollChanged);
     super.dispose();
   }
@@ -156,7 +198,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
     super.build(context); // AutomaticKeepAliveClientMixin 要求
     // 按字段拆分监听（而不是整体 watch agentProvider）：
     // 流式输出时 messageCount 每个 chunk 都变化，整体 watch 会导致整页（含
-    // 消息列表外层 Stack/AnimatedPadding）每 chunk 重建一次 → 视觉跳动。
+    // 消息列表外层 Stack/键盘动画）每 chunk 重建一次 → 视觉跳动。
     // messageCount 由自绘列表内部消费（空态欢迎页），页面本身不监听它。
     final isInitialized =
         ref.watch(agentProvider.select((s) => s.isInitialized));
@@ -165,6 +207,9 @@ class _AgentPageState extends ConsumerState<AgentPage>
     final errorMessage =
         ref.watch(agentProvider.select((s) => s.errorMessage));
     final logic = ref.read(agentProvider.notifier);
+    // AI tab 激活时导航胶囊滑出，输入胶囊落到胶囊原位（同时显示返回按钮）
+    final aiActive = widget.isTabEmbedded &&
+        ref.watch(homeProvider.select((s) => s.index)) == 2;
     return Scaffold(
       // 手动键盘布局：禁用内嵌 Scaffold 自动压缩（否则 body 内 viewInsets 被
       // 消费为 0，悬浮输入栏的 viewInsets 顶起逻辑失效，输入栏停在半空）
@@ -185,98 +230,99 @@ class _AgentPageState extends ConsumerState<AgentPage>
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: '新建会话',
-            icon: const Icon(TablerIcons.message_plus),
-            onPressed: logic.newSession,
-          ),
-          IconButton(
-            tooltip: '会话列表',
-            icon: const Icon(TablerIcons.history),
-            onPressed: () => _showSessionList(context, logic),
-          ),
-          IconButton(
-            tooltip: '模型设置',
-            icon: const Icon(TablerIcons.settings),
-            onPressed: logic.openSettings,
+          AgentMoreAction(
+            service: logic.service,
+            onNewSession: logic.newSession,
+            onShowSessions: () => _showSessionList(context, logic),
+            onOpenSettings: logic.openSettings,
           ),
         ],
       ),
       // 悬浮输入栏：消息列表在下（readOnly 隐藏库内置输入栏），
       // 磨砂输入栏覆盖在消息之上（与底部导航胶囊同款磨砂风格）
       // 键盘处理（resizeToAvoidBottomInset: false 手动模式）：
-      // - 消息区 AnimatedPadding 让出键盘高度（底部 = 键盘顶）
-      // - 输入栏 AnimatedPadding 顶起（紧贴键盘上方，平滑过渡）
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: AnimatedPadding(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.viewInsetsOf(context).bottom,
-              ),
-              child: Column(
-                children: [
-                  // 未配置提示
-                  _buildConfigBanner(context, isInitialized, logic),
+      // 消息区、输入栏、列表内边距、回底按钮全部由同一个动画键盘高度
+      // (_keyboardInset) 计算，避免键盘收起最后安全区跳变导致的抖动。
+      body: AnimatedBuilder(
+        animation: _insetController,
+        builder: (context, _) {
+          final keyboard = _keyboardInset;
+          final layout = AgentKeyboardLayout.of(
+            keyboard: keyboard,
+            inputBarInset:
+                _inputBarBottomInset(context, aiActive: aiActive),
+          );
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: layout.message),
+                  child: Column(
+                    children: [
+                      // 未配置提示
+                      _buildConfigBanner(context, isInitialized, logic),
 
-                  // AI 聊天界面（自绘消息列表，空消息时显示欢迎页）
-                  // 外层 Listener 只做手势采集、不消费事件：判断用户是"主动上翻
-                  // 阅读"还是"只是点了一下"，供流式输出决定要不要自动滚底。
-                  // 手势起落同步 setState：把 logic.uiPaused（挂起标志）变化
-                  // 传给 AgentChatListView（冻结/恢复消息列表更新）。
-                  Expanded(
-                    child: Listener(
-                      onPointerDown: (_) {
-                        logic.onPointerDown();
-                        setState(() {});
-                      },
-                      onPointerMove: (event) =>
-                          logic.onPointerMove(event.delta),
-                      onPointerUp: (_) {
-                        logic.onPointerUp();
-                        setState(() {});
-                      },
-                      onPointerCancel: (_) {
-                        logic.onPointerUp();
-                        setState(() {});
-                      },
-                      child: _buildChatArea(context, isGenerating,
-                          errorMessage, logic.uiPaused, logic),
-                    ),
+                      // AI 聊天界面（自绘消息列表，空消息时显示欢迎页）
+                      // 外层 Listener 只做手势采集、不消费事件：判断用户是"主动上翻
+                      // 阅读"还是"只是点了一下"，供流式输出决定要不要自动滚底。
+                      // 手势起落同步 setState：把 logic.uiPaused（挂起标志）变化
+                      // 传给 AgentChatListView（冻结/恢复消息列表更新）。
+                      Expanded(
+                        child: Listener(
+                          onPointerDown: (_) {
+                            logic.onPointerDown();
+                            setState(() {});
+                          },
+                          onPointerMove: (event) =>
+                              logic.onPointerMove(event.delta),
+                          onPointerUp: (_) {
+                            logic.onPointerUp();
+                            setState(() {});
+                          },
+                          onPointerCancel: (_) {
+                            logic.onPointerUp();
+                            setState(() {});
+                          },
+                          child: _buildChatArea(
+                            context,
+                            isGenerating,
+                            errorMessage,
+                            logic.uiPaused,
+                            logic,
+                            bottomPadding: layout.list,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-          // 悬浮磨砂输入栏：AnimatedPadding 按键盘高度平滑顶起
-          // （tab 内嵌且 AI 激活时胶囊滑出 → 贴底 16 + 左侧"返回"按钮；
-          //   非激活时胶囊在场 → 上浮 100；独立页面常规贴底 16；
-          //   键盘弹出时均紧贴键盘上方）
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _buildFloatingInputWrapper(context),
-          ),
-          // "回到底部"悬浮按钮：用户上翻阅读/偏离底部时出现（右侧、输入栏上方），
-          // 点击无条件回到最新消息（解除挂起 + 贴底 + 展示积攒内容）
-          if (_showScrollToBottom)
-            Positioned(
-              right: AppSpacing.md,
-              // 在输入栏上方避让：
-              // - 键盘弹出时：按钮需在键盘高度之上（Stack 相对 body，底部含
-              //   键盘区域），再叠加输入栏占位 _inputBarClearance + 间距；
-              // - 无键盘：_inputBarClearance 即输入栏占位（含呼吸），再加间距。
-              bottom: MediaQuery.viewInsetsOf(context).bottom > 0
-                  ? MediaQuery.viewInsetsOf(context).bottom +
-                      _inputBarClearance() +
-                      AppSpacing.lg
-                  : _inputBarClearance() + AppSpacing.lg,
-              child: _buildScrollToBottomButton(context),
-            ),
-        ],
+              // 悬浮磨砂输入栏
+              // （tab 内嵌且 AI 激活时导航胶囊滑出 → 输入胶囊落在胶囊原位
+              //   （AppBottomCapsule 等高 + 同外边距）+ 左侧"返回"按钮；
+              //   非激活时胶囊在场 → 上浮到导航胶囊上方；独立页面常规贴底；
+              //   键盘弹出时均紧贴键盘上方）
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: layout.input),
+                  child: _buildFloatingInput(context, showBack: aiActive),
+                ),
+              ),
+              // "回到底部"悬浮按钮：用户上翻阅读/偏离底部时出现（右侧、输入栏
+              // 上方），点击无条件回到最新消息（解除挂起 + 贴底 + 展示积攒内容）
+              if (_showScrollToBottom)
+                Positioned(
+                  right: AppSpacing.md,
+                  // 输入胶囊底边 + 胶囊高度 + 呼吸间距 + 与按钮的间距
+                  bottom: layout.button,
+                  child: _buildScrollToBottomButton(context),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -306,22 +352,32 @@ class _AgentPageState extends ConsumerState<AgentPage>
     );
   }
 
-  /// 悬浮输入栏外层：按键盘高度与 AI tab 激活状态计算贴底/上浮
-  Widget _buildFloatingInputWrapper(BuildContext context) {
-    final homeIndex = ref.watch(homeProvider.select((s) => s.index));
-    final aiActive = widget.isTabEmbedded && homeIndex == 2;
-    return AnimatedPadding(
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.viewInsetsOf(context).bottom > 0
-            ? MediaQuery.viewInsetsOf(context).bottom + AppSpacing.md
-            : widget.isTabEmbedded
-                ? (aiActive ? 16 : 100)
-                : 16,
-      ),
-      child: _buildFloatingInput(context, showBack: aiActive),
-    );
+  /// 输入胶囊的底部偏移（不含键盘）：与首页导航胶囊共用同一套外边距与安全区。
+  ///
+  /// - AI tab 激活（导航胶囊滑出）：输入胶囊正好落在导航胶囊原来的位置；
+  /// - 非激活（导航胶囊在场）：输入胶囊浮在导航胶囊上方，留一段呼吸间距；
+  /// - 独立路由页：没有导航胶囊，直接贴底。
+  double _inputBarBottomInset(BuildContext context, {required bool aiActive}) {
+    final safeBottom = _systemBottomInset(context);
+    if (!widget.isTabEmbedded || aiActive) {
+      return safeBottom + AppBottomCapsule.bottomMargin;
+    }
+    return safeBottom +
+        AppBottomCapsule.bottomMargin +
+        AppBottomCapsule.height +
+        AppSpacing.xxl;
+  }
+
+  /// 系统底部安全区（逻辑像素）。
+  ///
+  /// 不能用 `MediaQuery` 的 padding/viewPadding：首页 Scaffold 开了 extendBody
+  /// 且带 bottomNavigationBar，body 拿到的 MediaQuery 会把底部 padding 换成
+  /// 导航胶囊总高度，并顺手从 viewPadding 里扣掉这段（MediaQueryData
+  /// .removePadding 的行为），两个值都不是系统安全区。直接读视图原始
+  /// viewPadding 才与导航胶囊 SafeArea 用的是同一个值。
+  double _systemBottomInset(BuildContext context) {
+    final view = View.of(context);
+    return MediaQueryData.fromView(view).viewPadding.bottom;
   }
 
   /// 顶部提示条：模块未启用 →「去启用」；未配置模型 →「去设置」
@@ -386,8 +442,9 @@ class _AgentPageState extends ConsumerState<AgentPage>
     bool isGenerating,
     String errorMessage,
     bool uiPaused,
-    AgentNotifier logic,
-  ) {
+    AgentNotifier logic, {
+    required double bottomPadding,
+  }) {
     final errMsg = errorMessage;
     if (logic.agentUnavailable) {
       // Agent 模块未启用：占位提示（不渲染聊天组件）
@@ -435,84 +492,91 @@ class _AgentPageState extends ConsumerState<AgentPage>
           }
           logic.sendText(text);
         },
-        bottomPadding: _inputBarClearance(),
+        bottomPadding: bottomPadding,
       ),
     );
   }
 
-  /// 输入栏避让高度（键盘/胶囊状态下的悬浮输入栏占位，消息列表与
-  /// "回到底部"按钮共用同一套数值保证视觉一致不重叠）
-  double _inputBarClearance() {
-    return MediaQuery.viewInsetsOf(context).bottom > 0
-        ? 72
-        : widget.isTabEmbedded
-            ? (ref.read(homeProvider).index == 2 ? 80 : 156)
-            : 80;
-  }
-
-  /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
   /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
   /// [showBack] 为 true（AI tab 激活、胶囊滑出）时，左侧显示"返回来源 tab"按钮
   Widget _buildFloatingInput(BuildContext context, {bool showBack = false}) {
     final scheme = Theme.of(context).colorScheme;
     final logic = ref.read(agentProvider.notifier);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(
-            sigmaX: AppShadows.backdropBlurSigma,
-            sigmaY: AppShadows.backdropBlurSigma,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppBottomCapsule.horizontalMargin,
+      ),
+      // 外描边与首页导航胶囊同款（必须在 ClipRRect 外层，内层会被磨砂/圆角
+      // 裁掉），这样两个胶囊切换时边框也能对上。
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppBottomCapsule.radius),
+          border: AppBorders.all(
+            context,
+            color: scheme.outlineVariant.withValues(alpha: 0.6),
           ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.xs,
-              vertical: AppSpacing.xs,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(AppBottomCapsule.radius),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(
+              sigmaX: AppShadows.backdropBlurSigma,
+              sigmaY: AppShadows.backdropBlurSigma,
             ),
-            decoration: BoxDecoration(
-              // 半透明磨砂底（alpha 0.65：更透，背后消息滚动可见）
-              color: scheme.surface.withValues(alpha: 0.65),
-              borderRadius: BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                // 返回来源 tab 按钮（与发送按钮对称；仅胶囊滑出时显示）
-                if (showBack) ...[
-                  _buildBackButton(context),
-                  const SizedBox(width: AppSpacing.xs),
-                ],
-                Expanded(
-                  child: TextField(
-                    controller: logic.inputController,
-                    focusNode: _inputFocusNode,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    // 多行自动换行：1 行起，最高 4 行（超出内部滚动）
-                    minLines: 1,
-                    maxLines: 4,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    decoration: InputDecoration(
-                      hintText: '输入你的需求...',
-                      hintStyle: TextStyle(color: scheme.onSurfaceVariant),
-                      // 无内框/无填充：显式覆盖全局主题的 OutlineInputBorder，
-                      // 输入区直接透出磨砂容器底色，与胶囊融为一体
-                      filled: false,
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      disabledBorder: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.lg,
-                        vertical: AppSpacing.md,
+            child: Container(
+              // 与首页导航胶囊等高（单行时 64）：切入 AI tab 时两者位置/高度
+              // 完全一致，切换看起来像同一个胶囊在变形；多行输入时随内容增高。
+              constraints: const BoxConstraints(
+                minHeight: AppBottomCapsule.height,
+              ),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.xs,
+                vertical: AppSpacing.xs,
+              ),
+              decoration: BoxDecoration(
+                // 半透明磨砂底（alpha 0.65：更透，背后消息滚动可见）
+                color: scheme.surface.withValues(alpha: 0.65),
+                borderRadius: BorderRadius.circular(AppBottomCapsule.radius),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // 返回来源 tab 按钮（与发送按钮对称；仅胶囊滑出时显示）
+                  if (showBack) ...[
+                    _buildBackButton(context),
+                    const SizedBox(width: AppSpacing.xs),
+                  ],
+                  Expanded(
+                    child: TextField(
+                      controller: logic.inputController,
+                      focusNode: _inputFocusNode,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      // 多行自动换行：1 行起，最高 4 行（超出内部滚动）
+                      minLines: 1,
+                      maxLines: 4,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      decoration: InputDecoration(
+                        hintText: '输入你的需求...',
+                        hintStyle: TextStyle(color: scheme.onSurfaceVariant),
+                        // 无内框/无填充：显式覆盖全局主题的 OutlineInputBorder，
+                        // 输入区直接透出磨砂容器底色，与胶囊融为一体
+                        filled: false,
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        disabledBorder: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.lg,
+                          vertical: AppSpacing.md,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: AppSpacing.xs),
-                _buildSendButton(),
-              ],
+                  const SizedBox(width: AppSpacing.xs),
+                  _buildSendButton(),
+                ],
+              ),
             ),
           ),
         ),
@@ -520,14 +584,21 @@ class _AgentPageState extends ConsumerState<AgentPage>
     );
   }
 
-  /// 发送按钮（生成中禁用 + loading）
+  /// 发送按钮：空闲时发送，生成中切换为停止按钮（点击中断本轮生成）
   Widget _buildSendButton() {
     final sending = ref.watch(agentProvider.select((s) => s.isGenerating));
+    if (sending) {
+      return IconButton.filled(
+        key: const Key('agent-stop-button'),
+        onPressed: () => ref.read(agentProvider.notifier).stopGenerating(),
+        icon: const Icon(TablerIcons.player_stop),
+        tooltip: '停止生成',
+      );
+    }
     return IconButton.filled(
-      onPressed: sending ? null : _submitInput,
-      icon: sending
-          ? const AppLoading(size: AppLoadingSize.small)
-          : const Icon(TablerIcons.send),
+      key: const Key('agent-send-button'),
+      onPressed: _submitInput,
+      icon: const Icon(TablerIcons.send),
       tooltip: '发送',
     );
   }

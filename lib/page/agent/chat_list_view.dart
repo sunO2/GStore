@@ -474,6 +474,14 @@ class _TurnTimeline extends StatelessWidget {
     for (final m in turnMsgs) {
       final spec = controlForInlineCard(m);
       if (spec != null) existingKeys.add(spec.configKey);
+      // 其他工具（configManager get、类型不匹配的控件调用、运行中的控件）
+      // 已引用同一配置时，不再用文字兜底重复出卡。
+      if (m.isToolResult) {
+        final referenced = AgentInlineCards.controlForKey(
+          m.toolArgs?['key']?.toString(),
+        );
+        if (referenced != null) existingKeys.add(referenced.configKey);
+      }
     }
     final assistantText = turnMsgs
         .where((m) => !m.isToolResult)
@@ -501,14 +509,17 @@ class _TurnTimeline extends StatelessWidget {
                 Padding(
                   // 28 = 20px 轨道 + 8px 间距，与步骤内容左对齐
                   padding: const EdgeInsets.only(left: 28, top: 4, bottom: 8),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  child: Column(
                     children: [
+                      // 模型只回了文字、没有显式出卡时，按对话中提到的白名单
+                      // 配置直接渲染控件（不再要求用户先点“显示控件”）。
                       for (final spec in manualSpecs)
-                        _ManualControlPrompt(
-                          key: ValueKey('manual-control-${spec.configKey}'),
-                          spec: spec,
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: AgentControlCard(
+                            key: ValueKey('auto-control-${spec.configKey}'),
+                            spec: spec,
+                          ),
                         ),
                     ],
                   ),
@@ -778,32 +789,6 @@ class _TurnTimeline extends StatelessWidget {
 
   void _showToolDetailDialog(BuildContext context, AgentMessage tool) {
     _showToolDetailSheet(context, tool);
-  }
-}
-
-/// 模型只回了文字时的兜底入口：用户点一下才渲染控件卡片。
-class _ManualControlPrompt extends StatefulWidget {
-  final AgentInlineSwitchSpec spec;
-
-  const _ManualControlPrompt({super.key, required this.spec});
-
-  @override
-  State<_ManualControlPrompt> createState() => _ManualControlPromptState();
-}
-
-class _ManualControlPromptState extends State<_ManualControlPrompt> {
-  bool _shown = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (_shown) {
-      return AgentControlCard(spec: widget.spec);
-    }
-    return ActionChip(
-      avatar: const Icon(Icons.tune, size: 16),
-      label: Text('显示控件：${widget.spec.title}'),
-      onPressed: () => setState(() => _shown = true),
-    );
   }
 }
 

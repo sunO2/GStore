@@ -309,6 +309,13 @@ void main() {
       expect(specs.single.kind, AgentInlineControlKind.segmented);
     });
 
+    test('深浅色主题设置 also resolves to the theme.mode segmented', () {
+      final specs = AgentInlineCards.controlsInText('深浅色主题设置');
+      expect(specs, hasLength(1));
+      expect(specs.single.configKey, ConfigKeys.themeMode);
+      expect(specs.single.kind, AgentInlineControlKind.segmented);
+    });
+
     test('unrelated text returns empty', () {
       expect(AgentInlineCards.controlsInText('帮我下载一个笔记应用'), isEmpty);
       expect(AgentInlineCards.controlsInText(''), isEmpty);

@@ -93,6 +93,7 @@ dependencies:
   gal: ^2.3.3
   camera: ^0.12.1
   protobuf: ^3.1.0
+  genkit_middleware: ^1.0.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -141,6 +142,20 @@ flutter:
   assets:
      - assets/app/
      - assets/auth/
+     - assets/skills/app-recommendation/SKILL.md
+     - assets/skills/download-install-flow/SKILL.md
+     - assets/skills/app-update-check/SKILL.md
+     - assets/skills/backup-restore/SKILL.md
+     - assets/skills/installed-apps-management/SKILL.md
+     - assets/skills/sensitive-operations-and-choices/SKILL.md
+     - assets/skills/download-management/SKILL.md
+     - assets/skills/fdroid-repository/SKILL.md
+     - assets/skills/webdav-cloud-backup/SKILL.md
+     - assets/skills/app-config-management/SKILL.md
+     - assets/skills/troubleshooting/SKILL.md
+     - assets/skills/js-channel-app-operations/SKILL.md
+     - assets/skills/js-channel-method-execution/SKILL.md
+     - assets/skills/version-diff-analysis/SKILL.md
      - assets/app/db/
      - assets/channels/
      - assets/lcrules/

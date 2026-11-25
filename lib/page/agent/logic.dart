@@ -192,6 +192,13 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
     _submitAndJumpBottom(() => svc.chat(trimmed));
   }
 
+  /// 停止当前生成（对话流 + 工具调用），由输入栏停止按钮调用。
+  ///
+  /// 取消结果由 service.busy 驱动回写 isGenerating，无需在本地改 state。
+  void stopGenerating() {
+    service?.stopGenerating();
+  }
+
   /// 统一发送路径：先解除挂起（用户在历史中间挂起时发消息，必须恢复 UI
   /// 更新和跟随），再执行发送并回到底部——否则滚底 Timer 的双保险会因
   /// _uiPaused 而取消 jumpTo(0)，发完消息停在上翻位置。

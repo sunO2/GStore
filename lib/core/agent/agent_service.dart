@@ -4,6 +4,7 @@ import 'package:flutter/painting.dart' show Color;
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
 import 'package:genkit/genkit.dart';
+import 'package:genkit_middleware/genkit_middleware.dart';
 import 'package:genkit_google_genai/genkit_google_genai.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 import 'package:schemantic/schemantic.dart' show SchemanticType;
@@ -14,6 +15,7 @@ import 'package:gstore/core/agent/agent_memory_store.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
 import 'package:gstore/core/agent/agent_http_client.dart';
+import 'package:gstore/core/agent/genkit_read_only_shadow.dart';
 import 'package:http/http.dart' as http;
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
@@ -121,6 +123,30 @@ class AgentAsyncTask {
   });
 }
 
+/// 模型工具调用触发的确认暂停。
+///
+/// 与直接调用 `runTool('confirmAction')` 的阻塞式确认不同：这里保存完整
+/// 工具回合上下文，用户选择后继续同一轮模型调用。
+class _ModelConfirmationPause {
+  _ModelConfirmationPause({
+    required this.message,
+    required this.requests,
+    required this.conversation,
+    required this.model,
+    required this.toolNames,
+    required this.trace,
+    required this.turnId,
+  });
+
+  final AgentMessage message;
+  final List<ToolRequestPart> requests;
+  final List<Message> conversation;
+  final ModelRef<dynamic> model;
+  final List<String> toolNames;
+  final AgentTurnTrace trace;
+  final String? turnId;
+}
+
 /// Agent 对话消息（UI 层模型）
 /// 支持流式文本更新与工具调用状态展示
 class AgentMessage {
@@ -226,6 +252,9 @@ class AgentMessage {
 /// - 下载应用
 /// - 安装应用
 class AgentService {
+  AgentService({AgentSkillStore? skillStore})
+      : _skillStore = skillStore ?? AgentSkillStore();
+
   /// 工具名称常量
   static const String searchToolName = 'searchApp';
   static const String webSearchToolName = 'webSearch';
@@ -246,6 +275,7 @@ class AgentService {
   static const String runJsChannelToolName = 'runJsChannel';
   static const String cacheManageToolName = 'cacheManage';
   static const String loadProtocolToolName = 'loadProtocol';
+  static const String useSkillToolName = 'use_skill';
   static const String rememberToolName = 'remember';
   static const String forgetToolName = 'forget';
   static const String appSnapshotToolName = 'appSnapshot';
@@ -283,6 +313,283 @@ class AgentService {
     unawaited(store.record(record).catchError((Object error) {
       appLog.error('AgentService: 保存回合记录失败 - $error');
     }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // 会话 token 统计 / 1M 上下文自动压缩
+  // ---------------------------------------------------------------------------
+
+  String _sessionTokensMetaKey(String sessionId) =>
+      '$_sessionTokensMetaPrefix$sessionId';
+
+  /// 当前会话上下文估算（全部消息 + 滚动摘要 + 系统提示）。
+  int _estimateSessionContextTokens() {
+    var tokens = AgentContextBudget.estimateTokens(_sessionSummary);
+    if (_messages.isNotEmpty && _messages.first.role == Role.system) {
+      tokens += _messageTokensOf(_messages.first);
+    }
+    for (final m in _allSessionMessages) {
+      tokens += AgentContextBudget.estimateTokens(m.text);
+      final reasoning = m.reasoning;
+      if (reasoning != null && reasoning.isNotEmpty) {
+        tokens += AgentContextBudget.estimateTokens(reasoning);
+      }
+      final detail = m.toolDetail;
+      if (detail != null && detail.isNotEmpty) {
+        tokens += AgentContextBudget.estimateTokens(detail);
+      }
+      final result = m.toolResult;
+      if (result != null && result.isNotEmpty) {
+        tokens += AgentContextBudget.estimateTokens(result);
+      }
+      final args = m.toolArgs;
+      if (args != null && args.isNotEmpty) {
+        tokens += AgentContextBudget.estimateTokens(args);
+      }
+    }
+    return tokens;
+  }
+
+  /// 切会话/启动时从 meta 读取累计值，并按当前消息重算上下文估算。
+  Future<void> _loadSessionTokens() async {
+    final session = _sessionStore?.current;
+    _tokensSessionId = session?.id;
+    if (session == null) {
+      sessionTokens.value = AgentSessionTokenStats.empty;
+      return;
+    }
+
+    var stats = AgentSessionTokenStats.empty;
+    try {
+      final raw = await _sessionStore?.readMeta(_sessionTokensMetaKey(session.id));
+      if (raw != null && raw.isNotEmpty) {
+        stats = AgentSessionTokenStats.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw) as Map),
+        );
+      }
+    } catch (error) {
+      appLog.warning('AgentService: 读取会话 token 统计失败 - $error');
+    }
+    if (_tokensSessionId != session.id) return;
+    sessionTokens.value = stats.copyWith(
+      contextTokens: _estimateSessionContextTokens(),
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// 消息/摘要变化后重算上下文（仅当前会话）。
+  void _refreshSessionContextTokens() {
+    final currentId = _sessionStore?.current?.id;
+    if (currentId == null || currentId != _tokensSessionId) return;
+    sessionTokens.value = sessionTokens.value.copyWith(
+      contextTokens: _estimateSessionContextTokens(),
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// 累加 provider 返回的 usage（每次模型调用）。
+  void _recordSessionUsage(GenerationUsage usage) {
+    // 生成本回合的会话（测试直接跑 loop 时未标记回合会话，退化为当前会话）
+    final turnSessionId =
+        _turnSessionId ?? _sessionStore?.current?.id;
+    final currentId = _sessionStore?.current?.id;
+    if (turnSessionId == null ||
+        currentId != turnSessionId ||
+        _tokensSessionId != turnSessionId) {
+      return;
+    }
+    final stats = sessionTokens.value;
+    sessionTokens.value = stats.copyWith(
+      inputTokens: stats.inputTokens + (usage.inputTokens ?? 0),
+      outputTokens: stats.outputTokens + (usage.outputTokens ?? 0),
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  Future<void> _persistSessionTokens(
+    String sessionId,
+    AgentSessionTokenStats stats,
+  ) async {
+    try {
+      await _sessionStore?.writeMeta(
+        _sessionTokensMetaKey(sessionId),
+        jsonEncode(stats.toJson()),
+      );
+    } catch (error) {
+      appLog.warning('AgentService: 保存会话 token 统计失败 - $error');
+    }
+  }
+
+  /// 回合收尾：刷新上下文估算 → 落库 → 超过 1M 自动压缩。
+  Future<void> _finalizeSessionTokens() async {
+    final session = _sessionStore?.current;
+    if (session == null || session.id != _tokensSessionId) {
+      _turnSessionId = null;
+      return;
+    }
+    // 生成中切到别的会话：本回合统计不写入新会话。
+    if (_turnSessionId != null && _turnSessionId != session.id) {
+      _turnSessionId = null;
+      return;
+    }
+    _turnSessionId = null;
+    _refreshSessionContextTokens();
+    await _persistSessionTokens(session.id, sessionTokens.value);
+    await _maybeCompactSession(session.id);
+  }
+
+  Future<void> _maybeCompactSession(String sessionId) async {
+    if (_busy) return;
+    final session = _sessionStore?.current;
+    if (session == null || session.id != sessionId) return;
+    final limit = debugSessionContextLimitTokens;
+    if (limit <= 0 || sessionTokens.value.contextTokens < limit) return;
+    // 不足保留回合数时无法压缩，避免每回合重复尝试。
+    if (_compactKeepFromIndex(
+          List<SessionMessage>.of(_allSessionMessages),
+          _compactKeepUserTurns,
+        ) <=
+        0) {
+      return;
+    }
+    await _compactSession(session);
+  }
+
+  /// 自动压缩：保留最近 [_compactKeepUserTurns] 个用户回合，更早的合并进
+  /// 滚动摘要，并从会话历史中移除（UI 会显示一条压缩提示）。
+  ///
+  /// 手动压缩会传入更小的 [keepUserTurns]，保证在短会话里也能看到效果。
+  /// 返回是否真正执行了压缩。
+  Future<bool> _compactSession(
+    AgentSession session, {
+    int keepUserTurns = _compactKeepUserTurns,
+  }) async {
+    final msgs = List<SessionMessage>.of(_allSessionMessages);
+    final keepFrom = _compactKeepFromIndex(msgs, keepUserTurns);
+    if (keepFrom <= 0) {
+      appLog.info(
+        'AgentService: 暂无可压缩内容（保留最近 $keepUserTurns 个用户回合）',
+      );
+      return false;
+    }
+
+    final dropped = msgs.sublist(0, keepFrom);
+    final keepSeq = msgs[keepFrom].seq;
+
+    // 先把被丢弃的历史合并进滚动摘要（_mergeSummary 内部负责限长/落库）。
+    final summaryInput = <Message>[];
+    for (final m in dropped) {
+      if (m.isToolResult) {
+        final toolText = [m.toolDetail ?? '', m.toolResult ?? '']
+            .where((e) => e.trim().isNotEmpty)
+            .join(' ');
+        if (toolText.isNotEmpty) {
+          summaryInput.add(Message(
+            role: Role.model,
+            content: [TextPart(text: '[工具] $toolText')],
+          ));
+        }
+        continue;
+      }
+      if (m.text.trim().isEmpty) continue;
+      summaryInput.add(Message(
+        role: m.isUser ? Role.user : Role.model,
+        content: [TextPart(text: m.text)],
+      ));
+    }
+    _lastSummaryShape = '';
+    _mergeSummary(summaryInput);
+
+    // 从会话中移除旧消息（摘要已保留在 session meta）。
+    session.messages.removeWhere((m) => m.seq < keepSeq);
+    session.updatedAt = DateTime.now().millisecondsSinceEpoch;
+    _persistedToolIds.clear();
+    await _sessionStore?.save();
+
+    // 可见的压缩提示（持久化，模型后续也能看到已压缩过）。
+    final notice = AgentMessage(
+      isUser: false,
+      text: '（上下文已压缩：${dropped.length} 条早期消息已合并为摘要）',
+      turnId: 'compact-${DateTime.now().millisecondsSinceEpoch}',
+    );
+    _persistMessage(notice);
+
+    // 重建模型上下文与 UI 分页。
+    _messages = [
+      Message(
+        role: Role.system,
+        content: [TextPart(text: _systemPrompt)],
+      ),
+    ];
+    _loadSessionMessages();
+    _restoreMessagesFromSession();
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final stats = sessionTokens.value.copyWith(
+      contextTokens: _estimateSessionContextTokens(),
+      compactCount: sessionTokens.value.compactCount + 1,
+      updatedAt: now,
+    );
+    sessionTokens.value = stats;
+    await _persistSessionTokens(session.id, stats);
+    _logAi('◆ 会话上下文压缩', data: {
+      'sessionId': session.id,
+      'droppedMessages': dropped.length,
+      'keepFromSeq': keepSeq,
+      'keepUserTurns': keepUserTurns,
+      'contextTokens': stats.contextTokens,
+      'compactCount': stats.compactCount,
+    });
+    return true;
+  }
+
+  /// 保留最近 [keepUserTurns] 个用户回合的起始下标。
+  ///
+  /// 返回 0 表示消息不足，无需/无法压缩。
+  int _compactKeepFromIndex(List<SessionMessage> msgs, int keepUserTurns) {
+    var seenUsers = 0;
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      if (!msgs[i].isUser) continue;
+      seenUsers++;
+      if (seenUsers == keepUserTurns) return i;
+    }
+    return 0;
+  }
+
+  /// 测试接缝：按当前会话重新同步历史并执行一次收尾（落库 + 压缩判断）。
+  @visibleForTesting
+  Future<void> debugFinalizeSessionTokens() async {
+    final session = _sessionStore?.current;
+    if (session == null) return;
+    _syncSessionCache(session);
+    _tokensSessionId = session.id;
+    _refreshSessionContextTokens();
+    await _finalizeSessionTokens();
+  }
+
+  /// 测试接缝：当前滚动摘要正文（不含 `[早期对话摘要]` 前缀）。
+  @visibleForTesting
+  String get debugSessionSummary => _sessionSummary;
+
+  /// 测试接缝：本轮实际发给模型的 messages（含摘要/裁剪结果）。
+  @visibleForTesting
+  List<Message> get debugRequestMessages => _requestMessages;
+
+  /// 手动压缩当前会话上下文（更多菜单入口）。
+  ///
+  /// 与自动压缩同一套逻辑，但只保留最近 [_manualCompactKeepUserTurns] 个
+  /// 用户回合，确保短会话也能看到压缩效果。返回是否真正执行了压缩。
+  Future<bool> compactSessionNow() async {
+    if (_busy) return false;
+    final session = _sessionStore?.current;
+    if (session == null) return false;
+    _tokensSessionId = session.id;
+    _syncSessionCache(session);
+    _refreshSessionContextTokens();
+    return _compactSession(
+      session,
+      keepUserTurns: _manualCompactKeepUserTurns,
+    );
   }
 
   /// 日志用截断（保留头部并标注截断量，避免超长内容刷屏）
@@ -344,6 +651,9 @@ class AgentService {
   }
 
   Genkit? _ai;
+
+  /// 标准 SKILL.md 技能库（由 Genkit Skills Middleware 发现，本地执行器读取）。
+  final AgentSkillStore _skillStore;
 
   /// OpenAI 兼容 provider 注入的 http.Client（标准 package:http；注入 Genkit
   /// 插件与自建模型）。dispose 时关闭。
@@ -589,7 +899,19 @@ class AgentService {
         ? 0
         : AgentContextBudget.estimateTokens(_sessionSummary);
     final available = budget - systemTokens - summaryReserve;
-    if (convoTokens <= available) return all;
+    if (convoTokens <= available) {
+      // 已压缩过的会话：即使当前未超预算，也要把滚动摘要带给模型，
+      // 否则压缩后旧历史被移除、摘要却丢了。
+      if (_sessionSummary.isEmpty) return all;
+      return <Message>[
+        ...system,
+        Message(
+          role: Role.system,
+          content: [TextPart(text: '[早期对话摘要] $_sessionSummary')],
+        ),
+        ...convo,
+      ];
+    }
 
     final plan = AgentHistorySelector.plan(
       messages: convo,
@@ -683,9 +1005,13 @@ class AgentService {
     _lastSummaryShape = '';
     if (id == null) return;
     final stored = await _sessionStore?.readSummary(id);
-    if (stored == null || stored.isEmpty) return;
+    if (stored == null || stored.isEmpty) {
+      _refreshSessionContextTokens();
+      return;
+    }
     _sessionSummary = stored;
     _summaryPersisted = stored;
+    _refreshSessionContextTokens();
   }
 
   void _persistSessionSummary(String body) {
@@ -707,8 +1033,9 @@ class AgentService {
     final details = controls.map((s) => '${s.configKey}（${s.title}）').join('、');
     final keys = controls.map((s) => s.configKey).join('、');
     final hint = '[UI hint] 用户提到了可交互配置：$details。'
-        '如果你判断需要展示控件，请调用 showConfigControl(key=...)，'
-        '可用 key：$keys；否则继续文字回答即可。';
+        '请直接调用 showConfigControl(key=...) 展示控件卡片，'
+        '不要只在文字里描述，也不要让用户去设置里打开或点击展开；'
+        '可用 key：$keys。只有纯概念性解释时才可以不调用。';
     final out = List<Message>.of(base);
     final at = out.isNotEmpty && out.first.role == Role.system ? 1 : 0;
     out.insert(at, Message(role: Role.system, content: [TextPart(text: hint)]));
@@ -829,6 +1156,8 @@ class AgentService {
       case loadProtocolToolName:
         return Future.value(
             _loadProtocol(params['target']?.toString() ?? ''));
+      case useSkillToolName:
+        return _skillStore.readSkill(params['skillName']?.toString() ?? '');
       case rememberToolName:
         return _remember(params['text']?.toString() ?? '');
       case forgetToolName:
@@ -1131,6 +1460,18 @@ class AgentService {
   /// 值为用户选择（多选一时为所选选项，二选一时为 '确认'/'取消'）
   final Map<String, Completer<String>> _pendingConfirmations = {};
 
+  /// 模型工具回合的确认暂停（仅一条；用户处理后继续）。
+  _ModelConfirmationPause? _modelConfirmationPause;
+
+  /// 测试接缝：当前模型确认暂停的消息 ID。
+  @visibleForTesting
+  String? get debugPendingModelConfirmationId =>
+      _modelConfirmationPause?.message.id;
+
+  /// 测试接缝：确认恢复后最后一次模型响应。
+  @visibleForTesting
+  GenerateResult<dynamic>? debugLastModelConfirmationResponse;
+
   /// 工具名称常量：确认工具
   static const String confirmToolName = 'confirmAction';
 
@@ -1193,6 +1534,29 @@ class AgentService {
   final ValueNotifier<List<AgentMessage>> messages =
       ValueNotifier(const []);
 
+  /// 当前会话 token 统计（UI 监听：更多按钮进度环/菜单）
+  final ValueNotifier<AgentSessionTokenStats> sessionTokens =
+      ValueNotifier(AgentSessionTokenStats.empty);
+
+  /// 统计所属会话 id（切会话后丢弃旧回合的迟到写入）
+  String? _tokensSessionId;
+
+  /// 本回合开始时所属会话 id（防止生成中切会话把 usage 记到新会话）
+  String? _turnSessionId;
+
+  /// 会话 token 统计的 meta key 前缀（`agent_meta` 表，兼容 JSON）
+  static const String _sessionTokensMetaPrefix = 'session_tokens:';
+
+  /// 自动压缩保留的最近用户回合数
+  static const int _compactKeepUserTurns = 4;
+
+  /// 手动压缩保留的最近用户回合数（更激进，保证短会话也能生效）
+  static const int _manualCompactKeepUserTurns = 1;
+
+  /// 测试接缝：上下文压缩阈值（默认 1M）
+  @visibleForTesting
+  int debugSessionContextLimitTokens = kAgentSessionContextLimitTokens;
+
   /// 发布消息列表变更（结构性增删/整体替换后调用）。
   void _notifyMessages() => messages.value = List.of(messages.value);
 
@@ -1212,8 +1576,9 @@ class AgentService {
 
   /// 系统提示词（由 [AgentPrompt] 依据协议注册表生成）
   ///
-  /// 内容 = 工具目录（分组+一行简介）+ 生成式敏感清单 + 技能目录（名称+触发）
-  /// + 错误处理指引。完整参数/步骤不再常驻，模型经 `loadProtocol` 按需读取。
+  /// 内容 = 工具目录 + 生成式敏感清单 + 错误处理指引。
+  /// 技能目录由 Genkit Skills Middleware 在生成阶段注入；完整工具协议经
+  /// `loadProtocol` 按需读取，完整技能经 `use_skill` 按需读取。
   String get _systemPrompt =>
       AgentPrompt.build(PlatformArch.platformDescription);
 
@@ -1291,6 +1656,7 @@ class AgentService {
       await _sessionStore!.createSession(title: '新对话');
     }
     _loadSessionMessages();
+    await _loadSessionTokens();
 
     if (_model == null || !_model!.isConfigured) {
       appLog.error('AgentService: 未配置模型');
@@ -1311,9 +1677,12 @@ class AgentService {
         _agentHttpClient = agentHttpClient;
       }
 
+      // 将内置 SKILL.md 资产解压到文件系统，供 Genkit Skills Middleware 扫描。
+      await _skillStore.ensureExtracted();
+
       // 根据模型构建插件（使用局部变量让类型推断处理）
       final plugin = _buildPlugin(_model!, httpClient: agentHttpClient);
-      _ai = Genkit(plugins: [plugin]);
+      _ai = Genkit(plugins: [plugin, SkillsPlugin()]);
 
       // 注册 Agent 工具模块（默认全部上线；优先从 ModuleManager 拉取已注册工具）
       if (_agentTools.isEmpty) {
@@ -1679,6 +2048,7 @@ class AgentService {
     final store = _sessionStore;
     if (store == null) return;
     await store.deleteSession(id);
+    await store.writeMeta(_sessionTokensMetaKey(id), null);
     // 重新加载当前会话
     final session = store.current;
     if (session != null) {
@@ -1699,6 +2069,7 @@ class AgentService {
     _loadSessionMessages();
     _restoreMessagesFromSession();
     unawaited(_loadSessionSummary());
+    unawaited(_loadSessionTokens());
   }
 
   /// 清空当前会话
@@ -1710,6 +2081,13 @@ class AgentService {
     session.title = '新对话';
     session.updatedAt = DateTime.now().millisecondsSinceEpoch;
     await store!.updateCurrent(session);
+    await store.writeMeta(_sessionTokensMetaKey(session.id), null);
+    await store.writeSummary(session.id, null);
+    _sessionSummary = '';
+    _summaryPersisted = '';
+    _lastSummaryShape = '';
+    sessionTokens.value = AgentSessionTokenStats.empty;
+    _tokensSessionId = session.id;
     _switchToSession(session);
   }
 
@@ -1937,7 +2315,7 @@ class AgentService {
   /// 定义 Agent 工具（由协议注册表生成，委托到 ActionController 原生执行）
   ///
   /// 每个工具的 function-calling 描述取自 [AgentToolSpec.brief]（单一来源）；
-  /// 元能力工具 loadProtocol 直接读取注册表/技能库，不经过 ActionController。
+  /// 元能力工具 loadProtocol 直接读取工具协议注册表，不经过 ActionController。
   void _defineTools() {
     final ai = _ai;
     if (ai == null) return;
@@ -2077,30 +2455,24 @@ class AgentService {
     return removed > 0 ? '已删除 $removed 条记忆' : '未找到匹配的记忆';
   }
 
-  /// 元能力工具：按需读取工具/技能的完整协议
+  /// 元能力工具：按需读取工具完整协议。
   ///
-  /// 常驻提示词只含一行简介；模型不确定参数或需要完整步骤时调用本工具，
-  /// 从而把"协议全文"从常驻上下文移到按需加载。
+  /// 技能不再由此加载；模型应使用 Genkit Skills Middleware 提供的 `use_skill`。
   String _loadProtocol(String target) {
     final key = target.trim();
-    if (key.isEmpty) return '需要 target（工具名或技能名）';
+    if (key.isEmpty) return '需要 target（工具名）';
     if (key == 'all') {
       final buf = StringBuffer('=== 全部工具协议 ===\n');
       for (final s in AgentToolCatalog.enabled) {
         buf.writeln();
         buf.writeln(s.renderProtocol());
       }
-      buf.writeln('\n=== 全部技能协议 ===');
-      buf.write(AgentSkills.renderAll(language: PromptLanguage.zh));
       return buf.toString();
     }
     final tool = AgentToolCatalog.protocolFor(key);
     if (tool != null) return tool;
-    final skill = AgentSkills.protocolFor(key, language: PromptLanguage.zh);
-    if (skill != null) return skill;
     final names = AgentToolCatalog.enabled.map((s) => s.name).join(', ');
-    return '未找到工具或技能 "$key"。可用工具: $names；技能: '
-        '${AgentSkills.all.map((s) => s.name).join('、')}';
+    return '未找到工具协议 "$key"。可用工具: $names；技能请使用 use_skill。';
   }
 
   /// 解析整型参数（模型可能传字符串）
@@ -2271,21 +2643,13 @@ class AgentService {
       return '确认问题不能为空';
     }
 
-    // 定稿已输出的 agent 文本为独立消息（实现"回答→确认→结果"分步）
-    _commitActiveStreamText();
-
-    // 创建确认工具消息（step 节点显示确认 UI）
-    final msg = _addToolMessage(AgentToolType.confirm, question);
-    msg.confirmOptions = options;
-    msg.confirmMultiSelect = multiSelect;
+    final msg = _createConfirmationNode(
+      question,
+      options,
+      multiSelect: multiSelect,
+    );
     final completer = Completer<String>();
     _pendingConfirmations[msg.id] = completer;
-
-    // B3：持久化待确认消息（退出/重启后可恢复确认 UI）
-    _persistPendingConfirmation(msg, question, options, multiSelect: multiSelect);
-
-    // B3：页面不可见时升级为通知栏确认（带按钮，点按回写 resolveConfirmation）
-    _notifyConfirmIfBackground(msg.id, question, options, multiSelect: multiSelect);
 
     // 等待 UI 选择（resolveConfirmation 完成）
     final choice = await completer.future;
@@ -2293,17 +2657,53 @@ class AgentService {
     // 确认已解决：清理待确认持久化 + 关闭通知
     _clearPendingConfirmation(msg.id);
     AgentNotificationService.instance.onConfirmResolved();
+    return _applyConfirmationChoice(msg, choice, options, multiSelect);
+  }
 
+  /// 创建确认节点：定稿文本、插入工具消息、持久化并发送后台通知。
+  AgentMessage _createConfirmationNode(
+    String question,
+    List<String>? options, {
+    required bool multiSelect,
+  }) {
+    _commitActiveStreamText();
+
+    final msg = _addToolMessage(AgentToolType.confirm, question);
+    msg.confirmOptions = options;
+    msg.confirmMultiSelect = multiSelect;
+
+    _persistPendingConfirmation(
+      msg,
+      question,
+      options,
+      multiSelect: multiSelect,
+    );
+    _notifyConfirmIfBackground(
+      msg.id,
+      question,
+      options,
+      multiSelect: multiSelect,
+    );
+    return msg;
+  }
+
+  /// 将用户选择写回确认消息，并生成给模型的工具结果文本。
+  String _applyConfirmationChoice(
+    AgentMessage msg,
+    String choice,
+    List<String>? options,
+    bool multiSelect,
+  ) {
     if (choice.isEmpty || choice == '取消') {
       _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
       return '用户已取消';
     }
-    if (multiSelect) {
-      _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已选择：$choice');
-      return '用户已选择：$choice';
-    }
-    if (options != null && options.isNotEmpty) {
-      _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已选择：$choice');
+    if (multiSelect || (options != null && options.isNotEmpty)) {
+      _updateToolMessage(
+        msg,
+        status: AgentToolStatus.done,
+        detail: '已选择：$choice',
+      );
       return '用户已选择：$choice';
     }
     _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已确认');
@@ -2393,9 +2793,136 @@ class AgentService {
   /// - 二选一：'确认' 或 '取消'
   /// - 空字符串视为取消
   void resolveConfirmation(String msgId, String choice) {
+    final paused = _modelConfirmationPause;
+    if (paused != null && paused.message.id == msgId) {
+      _modelConfirmationPause = null;
+      _clearPendingConfirmation(msgId);
+      AgentNotificationService.instance.onConfirmResolved();
+      final responseText = _applyConfirmationChoice(
+        paused.message,
+        choice,
+        paused.message.confirmOptions,
+        paused.message.confirmMultiSelect,
+      );
+      unawaited(_resumeAfterModelConfirmation(paused, responseText));
+      return;
+    }
+
     final completer = _pendingConfirmations[msgId];
     if (completer != null && !completer.isCompleted) {
       completer.complete(choice);
+    }
+  }
+
+  /// 用户确认后继续同一模型回合。
+  ///
+  /// 同一批工具请求中，确认请求使用用户选择的结果；其余请求在确认后执行。
+  Future<void> _resumeAfterModelConfirmation(
+    _ModelConfirmationPause paused,
+    String confirmationOutput,
+  ) async {
+    _busy = true;
+    busy.value = true;
+    _currentTurnId = paused.turnId;
+    _cancelRequested = false;
+
+    final responses = <ToolResponsePart>[];
+    for (var i = 0; i < paused.requests.length; i++) {
+      final request = paused.requests[i];
+      if (request.toolRequest.name == confirmToolName) {
+        responses.add(
+          ToolResponsePart(
+            toolResponse: ToolResponse(
+              ref: request.toolRequest.ref ?? '${request.toolRequest.name}-$i',
+              name: request.toolRequest.name,
+              output: confirmationOutput,
+            ),
+          ),
+        );
+        continue;
+      }
+      if (_cancelRequested) {
+        responses.add(_cancelledResponse(request, i));
+      } else {
+        responses.add(await _executeToolRequest(request, i));
+      }
+    }
+
+    paused.trace.toolResponses += responses.length;
+    final conversation = <Message>[
+      ...paused.conversation,
+      Message(role: Role.tool, content: responses),
+    ];
+
+    _streamRaw = '';
+    _activeStreamMsg = AgentMessage(
+      isUser: false,
+      text: '',
+      turnId: paused.turnId,
+    );
+    _addMessage(_activeStreamMsg!);
+
+    try {
+      final response = await _runAgentLoop(
+        model: paused.model,
+        initialMessages: conversation,
+        toolNames: paused.toolNames,
+        trace: paused.trace,
+      );
+      if (_modelConfirmationPause != null) return;
+
+      if (_cancelRequested || response == null) {
+        final msg = _activeStreamMsg;
+        if (msg != null) {
+          msg.text = msg.text.trim().isEmpty ? '（已停止生成）' : msg.text.trim();
+          msg.reasoningDone = true;
+          _notifyMessages();
+          _persistStreamMessage(msg);
+        }
+        return;
+      }
+
+      debugLastModelConfirmationResponse = response;
+      paused.trace.finishReason = response.finishReason.value;
+      if (response.finishReason == FinishReason.failed ||
+          response.finishReason == FinishReason.blocked) {
+        throw StateError(
+          '模型生成失败（${response.finishReason.value}）'
+          '${response.finishMessage == null ? '' : '：${response.finishMessage}'}',
+        );
+      }
+      _messages = List.of(response.messages);
+      _stripTransientHints(_messages);
+      _backfillReasoning(response);
+
+      final msg = _activeStreamMsg;
+      if (msg != null) {
+        if (msg.text.trim().isEmpty && msg.reasoning.isEmpty) {
+          _removeMessage(msg);
+        } else {
+          msg.text = msg.text.trim();
+          msg.reasoningDone = true;
+          _notifyMessages();
+          _persistStreamMessage(msg);
+        }
+      }
+    } catch (error) {
+      appLog.error('AgentService: 确认后继续失败 - $error');
+      _addAssistantMessage('抱歉，确认后请求失败：${_friendlyError(error)}',
+          turnId: 'err-${DateTime.now().millisecondsSinceEpoch}');
+    } finally {
+      if (_modelConfirmationPause == null) {
+        paused.trace.finishedAt = DateTime.now();
+        _lastTurnTrace = paused.trace;
+        _logAi('⏱ 确认后续回合结束', data: paused.trace.toJson());
+        _persistTurnTrace(paused.trace);
+        _activeStreamMsg = null;
+        _busy = false;
+        busy.value = false;
+        _currentTurnId = null;
+        _cancelRequested = false;
+        unawaited(_finalizeSessionTokens());
+      }
     }
   }
 
@@ -2685,6 +3212,7 @@ class AgentService {
       ));
       // 用新的 turnId，独立展示这一轮"完成 → 建议"的回复
       _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
+      _turnSessionId = _sessionStore?.current?.id;
       _streamRaw = '';
       _activeStreamMsg = AgentMessage(
         isUser: false,
@@ -2781,6 +3309,7 @@ class AgentService {
         trace.inputTokens = usage.inputTokens;
         trace.outputTokens = usage.outputTokens;
         trace.totalTokens = usage.totalTokens;
+        _recordSessionUsage(usage);
       }
       _messages = List.of(response.messages);
       // 补取思考内容（与 chat 一致）
@@ -2821,6 +3350,7 @@ class AgentService {
       busy.value = false;
       _currentTurnId = null;
       _cancelRequested = false;
+      unawaited(_finalizeSessionTokens());
     }
   }
 
@@ -4417,8 +4947,39 @@ class AgentService {
   }
 
   /// 停止当前生成（对话流 + 工具调用）
-  /// 由 AiChatWidget 的停止按钮回调调用
+  /// 由输入栏停止按钮 / AiChatWidget 停止按钮回调调用
   void stopGenerating() {
+    // 模型回合暂停等待确认时没有活跃的模型流：直接结束本轮，避免用户
+    // 点了停止还要先处理确认框。
+    final paused = _modelConfirmationPause;
+    if (paused != null) {
+      _modelConfirmationPause = null;
+      _pendingConfirmations.remove(paused.message.id);
+      _clearPendingConfirmation(paused.message.id);
+      AgentNotificationService.instance.onConfirmResolved();
+      _updateToolMessage(
+        paused.message,
+        status: AgentToolStatus.error,
+        detail: '已停止',
+      );
+      paused.trace.cancelled = true;
+      paused.trace.finishedAt = DateTime.now();
+      _lastTurnTrace = paused.trace;
+      _logAi('⏱ 回合结束（确认等待中停止）', data: paused.trace.toJson());
+      _persistTurnTrace(paused.trace);
+      _activeStreamMsg = null;
+      _busy = false;
+      busy.value = false;
+      final needsReconfigure = _pendingModelReconfigure;
+      _pendingModelReconfigure = false;
+      _currentTurnId = null;
+      _cancelRequested = false;
+      if (needsReconfigure) unawaited(reconfigure());
+      unawaited(_finalizeSessionTokens());
+      appLog.info('AgentService: 确认等待中停止生成');
+      return;
+    }
+
     _cancelRequested = true;
     // 中断正在执行的下载工具
     final download = _currentDownloadStatus;
@@ -4457,6 +5018,75 @@ class AgentService {
   Future<List<ToolResponsePart>> Function(List<ToolRequestPart> requests)?
       debugExecuteToolsOverride;
 
+  /// 实验性只读 Shadow Runtime。
+  ///
+  /// 仅在 `--dart-define=GSTORE_GENKIT_READ_ONLY_SHADOW=true` 时启用，
+  /// 且不进入正常聊天路径；用于对比 defineCustomAgent 与现有 loop。
+  @visibleForTesting
+  Future<ShadowAgentResult?> debugRunReadOnlyShadow(String text) async {
+    if (!genkitReadOnlyShadowEnabled || !_initialized) return null;
+    final configured = _model;
+    if (configured == null || !configured.isConfigured) return null;
+
+    http.Client? shadowHttpClient;
+    try {
+      if (configured.provider == AgentLlmProvider.openai) {
+        shadowHttpClient = await buildAgentHttpClient();
+      }
+      final plugin =
+          _buildPlugin(configured, httpClient: shadowHttpClient);
+      final ai = Genkit(plugins: [plugin, SkillsPlugin()]);
+      final skillDir = await _skillStore.ensureExtracted();
+      final runtime = GenkitReadOnlyShadowRuntime.create(
+        ai: ai,
+        model: _getModelRef(configured),
+        systemPrompt: AgentPrompt.build(
+          PlatformArch.platformDescription,
+          toolNames: genkitReadOnlyShadowTools,
+        ),
+        executeTool: _executeTool,
+        skillDirectory: skillDir.path,
+      );
+      return runtime.run(text);
+    } finally {
+      shadowHttpClient?.close();
+    }
+  }
+
+  /// 同一只读请求分别运行现有 Loop 与 defineCustomAgent，供诊断页对比。
+  Future<({ShadowAgentResult legacy, ShadowAgentResult shadow})?>
+      debugRunReadOnlyComparison(String text) async {
+    if (!genkitReadOnlyShadowEnabled || !_initialized) return null;
+    final configured = _model;
+    if (configured == null || !configured.isConfigured) return null;
+
+    http.Client? shadowHttpClient;
+    try {
+      if (configured.provider == AgentLlmProvider.openai) {
+        shadowHttpClient = await buildAgentHttpClient();
+      }
+      final plugin =
+          _buildPlugin(configured, httpClient: shadowHttpClient);
+      final ai = Genkit(plugins: [plugin, SkillsPlugin()]);
+      final skillDir = await _skillStore.ensureExtracted();
+      final runtime = GenkitReadOnlyShadowRuntime.create(
+        ai: ai,
+        model: _getModelRef(configured),
+        systemPrompt: AgentPrompt.build(
+          PlatformArch.platformDescription,
+          toolNames: genkitReadOnlyShadowTools,
+        ),
+        executeTool: _executeTool,
+        skillDirectory: skillDir.path,
+      );
+      final legacy = await runtime.runLegacyLoop(text);
+      final shadow = await runtime.run(text);
+      return (legacy: legacy, shadow: shadow);
+    } finally {
+      shadowHttpClient?.close();
+    }
+  }
+
   /// 测试接缝：直接跑自定义 loop（不依赖 UI 初始化）
   @visibleForTesting
   Future<GenerateResult<dynamic>?> debugRunAgentLoop({
@@ -4464,6 +5094,7 @@ class AgentService {
     required List<String> toolNames,
     required AgentTurnTrace trace,
   }) {
+    debugLastModelConfirmationResponse = null;
     return _runAgentLoop(
       model: modelRef<dynamic>('debug/agent-model'),
       initialMessages: initialMessages,
@@ -4503,6 +5134,20 @@ class AgentService {
 
       final requests = _toolRequestsOf(result);
       if (requests.isEmpty) return result;
+
+      // confirmAction 是回合级暂停点：先展示确认，不执行同批其他工具。
+      // 用户选择后由 _resumeAfterModelConfirmation 统一执行并继续模型回合。
+      if (requests.any((r) => r.toolRequest.name == confirmToolName)) {
+        trace.toolRequests += requests.length;
+        _pauseForModelConfirmation(
+          result: result,
+          requests: requests,
+          model: model,
+          toolNames: toolNames,
+          trace: trace,
+        );
+        return null;
+      }
 
       // 最后一步仍有工具请求：先执行它们（不能留下没有 tool response 的
       // tool call，否则下一次模型请求会被 OpenAI/Gemini 拒绝），再强制总结。
@@ -4545,6 +5190,45 @@ class AgentService {
     return last;
   }
 
+  /// 暂停模型回合，等待用户处理 confirmAction。
+  void _pauseForModelConfirmation({
+    required GenerateResult<dynamic> result,
+    required List<ToolRequestPart> requests,
+    required ModelRef<dynamic> model,
+    required List<String> toolNames,
+    required AgentTurnTrace trace,
+  }) {
+    final confirm = requests.firstWhere(
+      (request) => request.toolRequest.name == confirmToolName,
+    );
+    final input = _toolInputMap(confirm.toolRequest.input);
+    final question = input['question']?.toString() ?? '';
+    final options = _parseOptions(input['options']);
+    final multiSelect = input['multiSelect'] == true ||
+        input['multiSelect']?.toString() == 'true';
+
+    final msg = _createConfirmationNode(
+      question,
+      options,
+      multiSelect: multiSelect,
+    );
+    _modelConfirmationPause = _ModelConfirmationPause(
+      message: msg,
+      requests: List<ToolRequestPart>.of(requests),
+      conversation: List<Message>.of(result.messages),
+      model: model,
+      toolNames: List<String>.of(toolNames),
+      trace: trace,
+      turnId: _currentTurnId,
+    );
+    _lastTurnTrace = trace;
+    _logAi('◆ 回合暂停等待确认', data: {
+      'msgId': msg.id,
+      'question': _briefLog(question, max: 200),
+      'toolRequests': requests.length,
+    });
+  }
+
   /// 执行一次模型调用并把流式文本/思考写进 UI；返回该步最终响应。
   ///
   /// 取消时返回 null（不再等待 onResult，避免取消后卡住）。
@@ -4566,10 +5250,14 @@ class AgentService {
     });
 
     final ai = debugAiOverride ?? _ai!;
+    // 无工具模式（包括达到最大步数后的强制总结）不加载 Skills Middleware，
+    // 避免它自动追加 use_skill 工具。
+    final skillDir = toolNames.isEmpty ? null : await _skillStore.ensureExtracted();
     final stream = ai.generateStream<dynamic, void>(
       model: model,
       messages: messages,
       toolNames: toolNames.isEmpty ? null : toolNames,
+      use: skillDir == null ? null : [skills(skillPaths: [skillDir.path])],
       // 本循环自己执行工具；maxTurns=1 防止 Genkit 再次进入内部工具循环
       maxTurns: 1,
       returnToolRequests: true,
@@ -4695,6 +5383,8 @@ class AgentService {
     switch (name) {
       case loadProtocolToolName:
         return Future.value(_loadProtocol(input['target']?.toString() ?? ''));
+      case useSkillToolName:
+        return _skillStore.readSkill(input['skillName']?.toString() ?? '');
       case confirmToolName:
         return _requestUserConfirmation(
           input['question']?.toString() ?? '',
@@ -4753,6 +5443,7 @@ class AgentService {
     trace.inputTokens = sum(trace.inputTokens, usage.inputTokens);
     trace.outputTokens = sum(trace.outputTokens, usage.outputTokens);
     trace.totalTokens = sum(trace.totalTokens, usage.totalTokens);
+    _recordSessionUsage(usage);
   }
 
   /// 发送用户消息并获取回复（流式输出）
@@ -4772,6 +5463,7 @@ class AgentService {
 
     // 开启新回合（该轮的用户/助手/工具消息共享 turnId）
     _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
+    _turnSessionId = _sessionStore?.current?.id;
 
     _addUserMessage(userText);
 
@@ -4794,8 +5486,9 @@ class AgentService {
       final extraToolLines = extraModules.isEmpty
           ? null
           : '▸ 扩展工具\n${extraModules.map((t) => '  • ${t.toolName} — ${t.toolDescription}').join('\n')}';
-      final selectedNames =
-          toolsEnabled ? selection.names : const <String>[];
+      final selectedNames = <String>[
+        if (toolsEnabled) ...selection.names,
+      ];
       final turnToolNames = <String>[
         ...selectedNames,
         for (final tool in extraModules)
@@ -4862,6 +5555,12 @@ class AgentService {
         toolNames: toolNames,
         trace: trace,
       );
+
+      // 模型请求 confirmAction：本轮已暂停，等待 resolveConfirmation 后续跑。
+      if (_modelConfirmationPause != null) {
+        _activeStreamMsg = null;
+        return;
+      }
 
       // 若已停止，不再等待最终响应
       if (_cancelRequested) {
@@ -4942,20 +5641,26 @@ class AgentService {
       _addAssistantMessage('抱歉，请求失败：${_friendlyError(e)}',
           turnId: 'err-${DateTime.now().millisecondsSinceEpoch}');
     } finally {
-      if (traceRef != null) {
-        traceRef.finishedAt = DateTime.now();
-        _lastTurnTrace = traceRef;
-        _logAi('⏱ 回合结束', data: traceRef.toJson());
-        _persistTurnTrace(traceRef);
+      if (_modelConfirmationPause == null) {
+        if (traceRef != null) {
+          traceRef.finishedAt = DateTime.now();
+          _lastTurnTrace = traceRef;
+          _logAi('⏱ 回合结束', data: traceRef.toJson());
+          _persistTurnTrace(traceRef);
+        }
+        _activeStreamMsg = null;
+        _busy = false;
+        busy.value = false;
+        final needsReconfigure = _pendingModelReconfigure;
+        _pendingModelReconfigure = false;
+        _currentTurnId = null;
+        _cancelRequested = false;
+        if (needsReconfigure) unawaited(reconfigure());
+        unawaited(_finalizeSessionTokens());
+      } else {
+        _activeStreamMsg = null;
+        _cancelRequested = false;
       }
-      _activeStreamMsg = null;
-      _busy = false;
-      busy.value = false;
-      final needsReconfigure = _pendingModelReconfigure;
-      _pendingModelReconfigure = false;
-      _currentTurnId = null;
-      _cancelRequested = false;
-      if (needsReconfigure) unawaited(reconfigure());
     }
   }
 
@@ -5030,6 +5735,7 @@ class AgentService {
     _messages = [];
     messages.dispose();
     busy.dispose();
+    sessionTokens.dispose();
   }
 
   /// 释放 OpenAI 兼容 provider 注入的 http.Client

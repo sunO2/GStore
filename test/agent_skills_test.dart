@@ -1,106 +1,88 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
-  group('AgentSkill.render', () {
-    test('中文渲染包含中文名称/触发条件/工作流', () {
-      const skill = AgentSkill(
-        name: '测试技能',
-        nameEn: 'Test Skill',
-        triggers: '触发场景A',
-        triggersEn: 'Trigger A',
-        workflow: '步骤1',
-        workflowEn: 'Step 1',
-      );
-      final text = skill.render(PromptLanguage.zh);
-      expect(text, contains('[Skill: 测试技能]'));
-      expect(text, contains('Trigger: 触发场景A'));
-      expect(text, contains('步骤1'));
-      expect(text, isNot(contains('Test Skill')));
-    });
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-    test('英文渲染包含英文名称/触发条件/工作流', () {
-      const skill = AgentSkill(
-        name: '测试技能',
-        nameEn: 'Test Skill',
-        triggers: '触发场景A',
-        triggersEn: 'Trigger A',
-        workflow: '步骤1',
-        workflowEn: 'Step 1',
-      );
-      final text = skill.render(PromptLanguage.en);
-      expect(text, contains('[Skill: Test Skill]'));
-      expect(text, contains('Trigger: Trigger A'));
-      expect(text, contains('Step 1'));
-      expect(text, isNot(contains('测试技能')));
-    });
+  late Directory support;
+
+  setUp(() async {
+    support =
+        await Directory.systemTemp.createTemp('gstore_agent_skills_test_');
   });
 
-  group('AgentSkills.renderCompactBriefs', () {
-    test('仅含名称，且比完整目录更短', () {
-      final zh = AgentSkills.renderCompactBriefs(language: PromptLanguage.zh);
-      final en = AgentSkills.renderCompactBriefs(language: PromptLanguage.en);
-      expect(zh, contains('推荐应用'));
-      expect(en, contains('App Recommendation'));
-      expect(zh.length,
-          lessThan(AgentSkills.renderBriefs(language: PromptLanguage.zh).length));
-      expect(en.length,
-          lessThan(AgentSkills.renderBriefs(language: PromptLanguage.en).length));
-      // 不含触发场景
-      expect(zh, isNot(contains('用户询问')));
-    });
+  tearDown(() async {
+    if (await support.exists()) {
+      await support.delete(recursive: true);
+    }
   });
 
-  group('AgentSkills.renderAll', () {
-    test('默认渲染英文', () {
-      final text = AgentSkills.renderAll();
-      expect(text, contains('[Skill: App Recommendation]'));
-      expect(text, isNot(contains('推荐应用')));
+  AgentSkillStore createStore() => AgentSkillStore(
+        supportDirectory: () async => support,
+      );
+
+  group('AgentSkillStore', () {
+    test('extracts all 14 bundled SKILL.md files and removes stale skills',
+        () async {
+      final stale =
+          File(p.join(support.path, 'agent_skills', 'stale', 'SKILL.md'));
+      await stale.parent.create(recursive: true);
+      await stale.writeAsString('stale');
+
+      final store = createStore();
+      final dir = await store.ensureExtracted();
+      final skillFiles = dir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => p.basename(file.path) == 'SKILL.md')
+          .toList();
+
+      expect(skillFiles, hasLength(14));
+      expect(await stale.exists(), isFalse);
+      expect(store.directory?.path, dir.path);
     });
 
-    test('中文渲染包含全部中文技能', () {
-      final text = AgentSkills.renderAll(language: PromptLanguage.zh);
-      expect(text, contains('推荐应用'));
-      expect(text, contains('下载安装流程'));
-      expect(text, contains('应用更新检查'));
-      expect(text, contains('备份与恢复'));
-      expect(text, contains('已安装应用管理'));
-      expect(text, contains('敏感操作与选择'));
-      expect(text, contains('下载管理'));
-      expect(text, contains('F-Droid 仓库'));
-      expect(text, contains('WebDAV 云备份'));
-      expect(text, contains('问题诊断与失败处理'));
-    });
+    test('every skill has valid frontmatter and a matching directory name',
+        () async {
+      final dir = await createStore().ensureExtracted();
+      final frontmatter = RegExp(r'^---\n([\s\S]*?)\n---');
+      final namePattern = RegExp(r'^[a-z0-9]+(?:-[a-z0-9]+)*$');
 
-    test('英文渲染包含全部英文技能', () {
-      final text = AgentSkills.renderAll(language: PromptLanguage.en);
-      expect(text, contains('App Recommendation'));
-      expect(text, contains('Download & Install Flow'));
-      expect(text, contains('App Update Check'));
-      expect(text, contains('Backup & Restore'));
-      expect(text, contains('Installed Apps Management'));
-      expect(text, contains('Sensitive Operations & Choices'));
-      expect(text, contains('Download Management'));
-      expect(text, contains('F-Droid Repository'));
-      expect(text, contains('WebDAV Cloud Backup'));
-      expect(text, contains('Troubleshooting & Failure Handling'));
-    });
+      for (final entity in dir.listSync()) {
+        if (entity is! Directory) continue;
+        final name = p.basename(entity.path);
+        final file = File(p.join(entity.path, 'SKILL.md'));
+        expect(await file.exists(), isTrue, reason: name);
+        expect(namePattern.hasMatch(name), isTrue, reason: name);
 
-    test('全部技能默认启用', () {
-      const all = AgentSkills.all;
-      expect(all.every((s) => s.enabled), true);
-      expect(all.length, greaterThanOrEqualTo(10));
-    });
-
-    test('所有技能均提供中英双语字段', () {
-      for (final skill in AgentSkills.all) {
-        expect(skill.name.trim(), isNotEmpty);
-        expect(skill.nameEn.trim(), isNotEmpty);
-        expect(skill.triggers.trim(), isNotEmpty);
-        expect(skill.triggersEn.trim(), isNotEmpty);
-        expect(skill.workflow.trim(), isNotEmpty);
-        expect(skill.workflowEn.trim(), isNotEmpty);
+        final content = await file.readAsString();
+        final match = frontmatter.firstMatch(content);
+        expect(match, isNotNull, reason: name);
+        final yaml = match!.group(1)!;
+        expect(yaml, contains(RegExp('^name:\\s*$name\\s*\$', multiLine: true)),
+            reason: name);
+        expect(
+            yaml, contains(RegExp(r'^description:\s*\S.*$', multiLine: true)),
+            reason: name);
+        expect(content, contains('# '), reason: name);
       }
+    });
+
+    test('reads a skill by directory name', () async {
+      final content = await createStore().readSkill('app-recommendation');
+      expect(content, contains('name: app-recommendation'));
+      expect(content, contains('# 推荐应用'));
+      expect(content, contains('searchApp'));
+    });
+
+    test('rejects unknown and traversal skill names', () async {
+      final store = createStore();
+      await expectLater(store.readSkill('missing-skill'), throwsStateError);
+      await expectLater(
+          store.readSkill('../app-recommendation'), throwsArgumentError);
     });
   });
 }

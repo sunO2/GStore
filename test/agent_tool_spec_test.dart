@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
@@ -123,30 +122,6 @@ void main() {
     });
   });
 
-  group('技能目录按需加载', () {
-    test('renderBriefs 只含名称与触发场景，不含工作流正文', () {
-      final briefs = AgentSkills.renderBriefs(language: PromptLanguage.zh);
-      expect(briefs, contains('推荐应用'));
-      expect(briefs, isNot(contains('Workflow')));
-      // 完整工作流的步骤不应出现在目录中
-      expect(briefs, isNot(contains('从用户描述中提取核心需求')));
-    });
-
-    test('protocolFor 可取回完整工作流（中/英文名均可）', () {
-      final zh = AgentSkills.protocolFor('推荐应用', language: PromptLanguage.zh);
-      expect(zh, isNotNull);
-      expect(zh, contains('从用户描述中提取核心需求'));
-
-      final en = AgentSkills.protocolFor('App Recommendation');
-      expect(en, isNotNull);
-      expect(en, contains('Extract the core need'));
-    });
-
-    test('未知技能返回 null', () {
-      expect(AgentSkills.protocolFor('不存在的技能'), isNull);
-    });
-  });
-
   group('AgentToolParam 类型', () {
     test('downloadApp 的 installAfterDownload 为 bool 类型', () {
       final spec = AgentToolCatalog.byName('downloadApp')!;
@@ -169,8 +144,8 @@ void main() {
 
     test('参数类型映射：bool→boolean / int→integer / json→object', () {
       final schema = toolParamsJsonSchema(const [
-        AgentToolParam(name: 'flag', description: '开关', type: 'bool',
-            required: true),
+        AgentToolParam(
+            name: 'flag', description: '开关', type: 'bool', required: true),
         AgentToolParam(name: 'count', description: '数量', type: 'int'),
         AgentToolParam(name: 'payload', description: '原始对象', type: 'json'),
       ]);

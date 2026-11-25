@@ -13,6 +13,7 @@
 /// - 工具名被用户直接提及时给最高权重（如"用 backup 导出"）。
 library;
 
+import 'package:gstore/core/agent/agent_inline_cards.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
 
 /// 一次工具选择的结果
@@ -61,6 +62,9 @@ class AgentToolSelector {
 
   /// 单轮最多下发的工具数（含核心工具）。
   static const int maxTools = 16;
+
+  /// 配置控件工具名（用户提到白名单配置时必须保留）。
+  static const String _configControlToolName = 'showConfigControl';
 
   /// 选择本轮工具。
   ///
@@ -115,6 +119,12 @@ class AgentToolSelector {
       if (selected.length >= maxTools) break;
       // 阈值过滤：只靠一个通用词（如"应用"）命中的工具不进候选
       if ((scores[spec.name] ?? 0) >= 4) selected.add(spec.name);
+    }
+
+    // 用户明确提到白名单配置项时，强制保留控件工具：否则检索裁剪后模型
+    // 可能没有 showConfigControl，只能文字回答（前端退化成兜底卡片）。
+    if (AgentInlineCards.controlsInText(userText).isNotEmpty) {
+      selected.add(_configControlToolName);
     }
 
     // 按注册表顺序输出（提示词与 schema 顺序稳定）

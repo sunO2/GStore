@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
+import 'package:gstore/core/agent/genkit_read_only_shadow.dart';
 import 'package:gstore/core/agent/openai_model_catalog.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
@@ -309,6 +310,39 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
             ),
           ),
         ),
+
+        if (genkitReadOnlyShadowEnabled)
+          Card(
+            elevation: 0,
+            margin: const EdgeInsets.only(bottom: AppSpacing.md),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              side: BorderSide(
+                color: Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withValues(alpha: 0.5),
+              ),
+            ),
+            child: Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                onTap: () => context.push(AppRoute.agentShadowCompare),
+                leading: CircleAvatar(
+                  backgroundColor:
+                      Theme.of(context).colorScheme.secondaryContainer,
+                  child: Icon(
+                    TablerIcons.scale,
+                    color:
+                        Theme.of(context).colorScheme.onSecondaryContainer,
+                  ),
+                ),
+                title: const Text('Genkit 对比实验'),
+                subtitle: const Text('同一问题对比现有 Loop 与 defineCustomAgent'),
+                trailing: const Icon(TablerIcons.chevron_right),
+              ),
+            ),
+          ),
 
         // 清除全部
         TextButton.icon(

@@ -25,6 +25,7 @@ class AppRoute {
   static String agentSettings = "/GStore/agentSettings";
   static String agentMcp = "/GStore/agentMcp";
   static String agentTraces = "/GStore/agentTraces";
+  static String agentShadowCompare = "/GStore/agentShadowCompare";
   static String localLlm = "/GStore/localLlm";
   static String installedApps = "/GStore/installedApps";
   static String moduleManage = "/GStore/moduleManage";

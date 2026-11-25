@@ -211,7 +211,22 @@ class AgentInlineCards {
         '2': '深色',
       },
       valueType: 'int',
-      aliases: <String>['主题模式', '深色模式', '浅色模式'],
+      aliases: <String>[
+        '主题模式',
+        '深色模式',
+        '浅色模式',
+        '深浅色主题',
+        '主题设置',
+        '主题切换',
+        '明暗主题',
+        '夜间模式',
+        '暗色模式',
+        '深色主题',
+        '浅色主题',
+        'theme mode',
+        'dark mode',
+        'light mode',
+      ],
     ),
   ];
 
@@ -275,8 +290,8 @@ class AgentInlineCards {
     return controlForKey(key, kind: 'switch');
   }
 
-  /// 从用户文本识别提到的配置控件（标题/key/别名），按白名单顺序去重。
-  /// 仅用于给模型注入"可展示控件"提示，不直接渲染卡片。
+  /// 从对话文本识别提到的配置控件（标题/key/别名），按白名单顺序去重。
+  /// 既用于给模型注入"可展示控件"提示，也用于模型未显式出卡时的兜底渲染。
   static List<AgentInlineSwitchSpec> controlsInText(String text) {
     final normalized = _normalize(text);
     if (normalized.isEmpty) return const <AgentInlineSwitchSpec>[];

@@ -69,6 +69,7 @@ export 'package:gstore/core/event/database_event.dart';
 // Agent 智能助手
 export 'package:gstore/core/agent/agent_model_store.dart';
 export 'package:gstore/core/agent/agent_session_store.dart';
+export 'package:gstore/core/agent/agent_session_tokens.dart';
 export 'package:gstore/core/agent/agent_service.dart';
 export 'package:gstore/core/agent/platform_arch.dart';
 

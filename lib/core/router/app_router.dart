@@ -183,6 +183,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const AgentTracesPage(),
     ),
     GoRoute(
+      path: AppRoute.agentShadowCompare,
+      builder: (context, state) => const GenkitShadowComparePage(),
+    ),
+    GoRoute(
       path: AppRoute.installedApps,
       builder: (context, state) => const InstalledAppsPage(),
     ),

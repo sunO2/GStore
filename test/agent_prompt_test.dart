@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
-import 'package:gstore/core/agent/agent_skills.dart';
 
 void main() {
   test('AgentPrompt 默认 profile 为 compact', () {
@@ -53,10 +52,10 @@ void main() {
       expect(prompt, contains('=== AVAILABLE TOOLS ==='));
     });
 
-    test('包含英文技能知识库', () {
+    test('技能目录由 Genkit Middleware 注入，不在基础提示词中重复', () {
       final prompt = AgentPrompt.build('platform');
-      expect(prompt, contains('SKILL KNOWLEDGE BASE'));
-      expect(prompt, contains('App Recommendation'));
+      expect(prompt, isNot(contains('SKILL KNOWLEDGE BASE')));
+      expect(prompt, isNot(contains('App Recommendation')));
     });
 
     test('包含敏感操作清单', () {
@@ -94,11 +93,11 @@ void main() {
       expect(prompt, contains('webdavSync'));
     });
 
-    test('包含中文技能知识库', () {
+    test('技能目录由 Genkit Middleware 注入，不在基础提示词中重复', () {
       final prompt = AgentPrompt.build('platform');
-      expect(prompt, contains('技能知识库'));
-      expect(prompt, contains('推荐应用'));
-      expect(prompt, contains('WebDAV 云备份'));
+      expect(prompt, isNot(contains('技能知识库')));
+      expect(prompt, isNot(contains('推荐应用')));
+      expect(prompt, isNot(contains('网盘中的备份列表')));
     });
 
     test('包含敏感操作清单', () {
@@ -128,11 +127,13 @@ void main() {
       final compactZh = AgentPrompt.build('platform');
       expect(compactZh, contains('showConfigControl'));
       expect(compactZh, contains('分段下载开关状态'));
+      expect(compactZh, contains('必须'));
 
       AgentPrompt.useEnglish();
       final compactEn = AgentPrompt.build('platform');
       expect(compactEn, contains('showConfigControl'));
       expect(compactEn, contains('segmented download status'));
+      expect(compactEn, contains('MUST'));
     });
 
     test('full 中英提示词均含工具名与示例短语', () {

@@ -125,7 +125,7 @@ class AgentToolSpec {
   /// MCP 工具的原始 JSON Schema（覆盖由 [params] 生成的 schema）
   final Map<String, Object?>? rawInputJsonSchema;
 
-  /// 是否为元能力工具（读取其它工具/技能协议；由 AgentService 内部实现，
+  /// 是否为元能力工具（读取其它工具协议；由 AgentService 内部实现，
   /// 不作为可插拔模块参与上下线）
   final bool meta;
 
@@ -633,7 +633,7 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
     name: 'showConfigControl',
     group: AgentToolGroup.interact,
     label: '展示配置控件',
-    brief: '展示配置控件卡片；key 可用配置键或中文别名（分段下载/并发下载/自动更新策略/主题模式）；由你判断是否需要。',
+    brief: '展示配置控件卡片；用户查看/调整配置时默认调用；key 可用配置键或中文别名（分段下载/并发下载/自动更新策略/主题模式）。',
     params: [
       AgentToolParam(
         name: 'key',
@@ -646,7 +646,7 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
       ),
     ],
     protocol: '''
-1. 是否展示控件由你判断：用户想查看/调整某个配置，或明确希望看到可操作控件时调用；只需文字说明时可直接回答。
+1. 用户想查看/调整配置时必须调用本工具展示控件，不要只回文字或让用户去设置里操作；只有纯概念解释可以不调用。
 2. key 必须是以下之一：
    - 开关（switch）：download.multi_segment.enabled（多段下载/分段下载）、download.wifi_only（仅 Wi-Fi 下载）、update.silent_update（静默更新）、update.ignore_prerelease（忽略预发布版本）
    - 滑块（slider）：download.max_concurrent（最大并发下载数 1-10）、download.max_retries（下载重试次数 0-5）、download.default_connections（默认连接数）、update.check_interval_hours（检查更新间隔 1-168）
@@ -783,7 +783,7 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 5. detail：查看单份快照概要（需 id）。
 6. delete：删除快照（需 id），属敏感操作，**必须先 confirmAction 确认**。
 7. 典型用法：更新前 create(note="更新前") → 更新后再 create(note="更新后")
-   → snapshotCompare 出差异 → 结合「版本差异分析」技能解读。
+   → snapshotCompare 出差异 → 用 use_skill 加载 version-diff-analysis 技能解读。
 8. 采集较重（要扫描 APK / DEX / 资源），一次只对一个应用操作，不要对未安装应用反复重试。''',
   ),
   AgentToolSpec(
@@ -856,21 +856,20 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
     readOnly: true,
     group: AgentToolGroup.meta,
     label: '读取协议',
-    brief: '按需读取工具或技能的完整协议（参数/用法/步骤）。不确定时先读再执行。',
+    brief: '按需读取工具完整协议（参数/用法/步骤）。技能请使用 use_skill。',
     meta: true,
     params: [
       AgentToolParam(
           name: 'target',
-          description: '工具名（如 downloadApp）或技能名（如 下载安装流程）；传 "all" 列出全部',
+          description: '工具名（如 downloadApp）；传 "all" 列出全部工具协议',
           required: true),
     ],
     protocol: '''
-1. 系统提示里只有"工具目录（一行简介）"和"技能目录（名称+触发场景）"；
-   调用本工具可取完整协议。
-2. target 优先按工具名匹配，其次按技能名匹配（中/英文名均可）。
-3. 适用于：不确定参数名/取值、需要完整使用规则、需要技能的具体执行步骤、
-   或要确认敏感操作的前置条件。
-4. target 传 "all" 返回全部工具与技能协议（内容很长，仅在没有其他线索时使用）。''',
+1. 系统提示里只有工具目录；调用本工具可取完整工具协议。
+2. target 按工具名精确匹配。
+3. 适用于不确定参数名/取值、需要完整使用规则，或要确认敏感操作的前置条件。
+4. target 传 "all" 返回全部工具协议（内容很长，仅在没有其他线索时使用）。
+5. 技能不属于本工具；需要技能流程时调用 use_skill 并传技能目录名。''',
   ),
   AgentToolSpec(
     name: 'remember',

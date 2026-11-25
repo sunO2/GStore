@@ -1,18 +1,13 @@
 /// Agent 系统提示词构建器（唯一来源）
 ///
-/// 提示词中的工具清单、敏感操作清单、技能清单**全部由注册表生成**：
-/// - 工具：`AgentToolCatalog.compactDirectory()`（紧凑，默认）或
-///   `AgentToolCatalog.briefDirectory()`（完整，分组 + 一行简介）
-/// - 敏感操作：`AgentToolCatalog.sensitiveLines`（由 spec 的敏感动作派生）
-/// - 技能：`AgentSkills.renderCompactBriefs()`（紧凑，默认）或
-///   `AgentSkills.renderBriefs()`（完整，名称 + 触发场景）
-///
-/// 目的：消除此前散落 4 处的工具描述硬编码，并把"全文常驻"改为"目录常驻 + 按需取详情"，
-/// 大幅压缩系统提示长度（技能正文是此前最大的一块）。
+/// 工具清单和敏感操作清单由 [AgentToolCatalog] 生成。Skills 由 Genkit 的
+/// `skills()` Middleware 在生成阶段注入，这里不再重复维护技能目录。
 library;
 
-import 'agent_skills.dart';
 import 'agent_tool_spec.dart';
+
+/// 提示词语言。
+enum PromptLanguage { en, zh }
 
 /// 提示词配置：compact（默认，低 token）或 full（保留完整目录）。
 enum AgentPromptProfile { compact, full }
@@ -61,44 +56,24 @@ class AgentPrompt {
           ? AgentToolCatalog.compactDirectory(toolNames)
           : AgentToolCatalog.briefDirectory(toolNames);
 
-  /// 技能目录（紧凑 = 仅名称；完整 = 名称 + 触发场景）
-  static String _skillDirectory() => profile == AgentPromptProfile.compact
-      ? AgentSkills.renderCompactBriefs(language: language)
-      : AgentSkills.renderBriefs(language: language);
-
   /// 工具区引导语
   static String _toolIntroEn() => profile == AgentPromptProfile.compact
       ? 'Tool names are listed here; each function-calling schema already '
           'carries the parameter names/types/required flags — call tools '
-          'directly from the schema. Use loadProtocol only for workflows, '
+          'directly from the schema. Use loadProtocol only for tool workflows, '
           'rules or caveats.'
       : 'Only one-line briefs are listed here (grouped). Parameter details '
           'are already in the function-calling schema; use `loadProtocol` '
-          'when you need the full workflow / rules / caveats, not to guess '
+          'when you need the full tool workflow / rules / caveats, not to guess '
           'parameter names.';
 
   static String _toolIntroZh() => profile == AgentPromptProfile.compact
       ? '这里只列工具名；参数名/类型/必填项已经由 function-calling schema 下发，'
-          '按 schema 直接调用。只有工作流、规则或注意事项不确定时才调用 '
+          '按 schema 直接调用。只有工具工作流、规则或注意事项不确定时才调用 '
           'loadProtocol。'
       : '这里只列出一行简介（按分组）。参数细节已经在 function-calling schema 中，'
-          '直接按 schema 调用；需要完整工作流/规则/注意事项时再调用 `loadProtocol`，'
+          '直接按 schema 调用；需要完整工具工作流/规则/注意事项时再调用 `loadProtocol`，'
           '不要为了猜参数名而调用。';
-
-  /// 技能区引导语
-  static String _skillIntroEn() => profile == AgentPromptProfile.compact
-      ? 'Skills are task playbooks (names only here). When a scenario matches, '
-          'call loadProtocol with the skill name to read the full workflow, then '
-          'follow it.'
-      : 'Skills are task playbooks (name + trigger shown). When a scenario '
-          'matches a skill,\ncall `loadProtocol` with the skill name to read its '
-          'full step-by-step workflow,\nthen follow those steps strictly.';
-
-  static String _skillIntroZh() => profile == AgentPromptProfile.compact
-      ? '技能是一类任务的操作手册（此处只列名称）。'
-          '场景命中时先调用 loadProtocol(技能名) 读取完整步骤，再执行。'
-      : '技能是一类任务的操作手册（此处只列名称与触发场景）。当场景命中某个技能时，\n'
-          '先调用 `loadProtocol`（传技能名）读取完整步骤，再严格按步骤执行。';
 
   /// 错误处理指引（紧凑 = 4 行概括；完整 = 11 条细则）
   static String _errorGuidanceEn() => profile == AgentPromptProfile.compact
@@ -193,18 +168,13 @@ CHOICE SCENARIOS: also use confirmAction (with options) when the user must decid
 (2+ valid options), and pass multiSelect=true when several options can be picked
 together (e.g. cleaning multiple cache categories).
 
-=== SKILL KNOWLEDGE BASE ===
-${_skillIntroEn()}
-
-${_skillDirectory()}
-
 ${_errorGuidanceEn()}
 
 USAGE RULES:
 - When the user explicitly asks you to remember a long-term preference/fact (e.g. "remember", "from now on", "I always..."), call remember. Never record one-off tasks. Never invent memories.
 - After download, ask whether to install; on confirmation call installApp.
-- Whether to show an interactive configuration control is your call: when the user wants to view/adjust a config item or explicitly asks for a control, call showConfigControl (optional type=switch/slider/segmented); plain text is fine for simple explanations.
-  Examples: "segmented download status" -> showConfigControl(key="segmented download"); "set max concurrent downloads to 5" -> showConfigControl(key="最大并发下载数"); "set auto-update policy to Wi-Fi only" -> showConfigControl(key="自动更新策略").
+- When the user wants to view or change a config item, you MUST call showConfigControl (optional type=switch/slider/segmented) to render the interactive control. Do NOT answer with text only, and do NOT tell the user to open settings or click to expand. Only pure conceptual questions (e.g. "what is segmented download") may be answered in text. If the user explicitly asks to apply a value (e.g. "set max concurrent to 5"), you may change it first via configManager/themeControl and then call showConfigControl to show the current state.
+  Examples: "segmented download status" -> showConfigControl(key="segmented download"); "set max concurrent downloads to 5" -> showConfigControl(key="最大并发下载数"); "set auto-update policy to Wi-Fi only" -> showConfigControl(key="自动更新策略"); "switch to dark theme" -> showConfigControl(key="主题模式").
 - Respond concisely.
 ''';
 
@@ -236,19 +206,14 @@ ${_sensitiveList(toolNames)}
 选择场景：需要用户在 2 个以上方案中选择时，也用 confirmAction（传 options）让用户点选；
 需要勾选多项时额外传 multiSelect=true（如清理多个缓存类别）。
 
-=== 技能知识库 ===
-${_skillIntroZh()}
-
-${_skillDirectory()}
-
 ${_errorGuidanceZh()}
 
 使用规则：
 - 用户明确要求记住长期偏好/事实（如“记住”“以后都”“我习惯…”）时调用 remember；
   一次性任务不要记录，不要编造记忆。
 - 下载完成后询问用户是否安装；确认后调用 installApp。
-- 是否在对话中展示可交互配置控件由你判断：当用户想查看/调整某个配置项，或明确希望看到可操作控件时，调用 showConfigControl（可选 type=switch/slider/segmented）；只需文字说明时可直接回答。
-  示例：用户说“分段下载开关状态”→调用 showConfigControl(key="分段下载")；用户说“把最大并发调到 5”→调用 showConfigControl(key="最大并发下载数")；用户说“自动更新策略改成仅 Wi-Fi”→调用 showConfigControl(key="自动更新策略")。
+- 用户想查看/调整配置时，**必须**调用 showConfigControl（可选 type=switch/slider/segmented）展示可操作控件；不要只回文字，也不要让用户“去设置里打开”或“点击展开”。只有纯概念性提问（如“分段下载是什么”）才直接用文字解释。如果用户明确要求直接改某个值（如“把并发调到 5”），可以先用 configManager/themeControl 改好，再调用 showConfigControl 展示当前状态。
+  示例：用户说“分段下载开关状态”→调用 showConfigControl(key="分段下载")；用户说“把最大并发调到 5”→调用 showConfigControl(key="最大并发下载数")；用户说“自动更新策略改成仅 Wi-Fi”→调用 showConfigControl(key="自动更新策略")；用户说“切换深浅色主题”→调用 showConfigControl(key="主题模式")。
 - 回答简洁，中文回复。
 - 需要给用户"下一步选项"时，在回复**最后单独一行**输出：
   建议：选项1|选项2|选项3
