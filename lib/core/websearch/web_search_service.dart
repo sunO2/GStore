@@ -10,6 +10,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:gstore/core/http/cookie_sync.dart';
+
 import 'tavily_client.dart';
 import 'web_fetch_client.dart';
 import 'web_search_config.dart';
@@ -117,7 +119,7 @@ class WebSearchService {
   }
 
   /// 抓取网页正文（受缓存与配额约束）。
-  Future<WebFetchPage> fetch(String url, {int maxChars = 8000}) async {
+  Future<WebFetchPage> fetch(String url, {int maxChars = 32000}) async {
     final config = await this.config();
     if (!config.enabled || config.provider == 'none') {
       throw WebSearchException('disabled', '联网检索已在设置中关闭');
@@ -137,19 +139,19 @@ class WebSearchService {
   ///
   /// [json] 与 [body] 二选一；[json] 会自动序列化并补 `Content-Type:
   /// application/json`（调用方已显式设置时不覆盖）。
-  /// 与 [fetch] 共用同一份联网抓取配额，避免被无限调用。
+  ///
+  /// 这是通用 HTTP 探测能力：**不占用联网检索/网页抓取配额，也不受
+  /// 「联网检索」开关影响**；仍保留公网地址校验、重定向与超时等安全限制。
   Future<WebHttpResponse> httpRequest(
     String url, {
     String method = 'GET',
     Map<String, String> headers = const <String, String>{},
     String? body,
     Object? json,
-    int maxChars = 4000,
+    int maxChars = 32000,
+    CookieSyncPort? cookies,
   }) async {
     final config = await this.config();
-    if (!config.enabled || config.provider == 'none') {
-      throw WebSearchException('disabled', '联网检索已在设置中关闭');
-    }
     final verb = method.trim().toUpperCase();
     if (!WebFetchClient.requestMethods.contains(verb)) {
       throw WebSearchException(
@@ -177,14 +179,14 @@ class WebSearchService {
       _setDefaultHeader(effectiveHeaders, 'Content-Type', 'application/json');
     }
 
-    await _consumeQuota(fetch: 1);
     final client = _ensureFetchClient(config);
     return client.request(
       url,
       method: verb,
       headers: effectiveHeaders,
       body: payload,
-      maxChars: maxChars.clamp(500, 8000),
+      maxChars: maxChars.clamp(500, 128000),
+      cookies: cookies,
     );
   }
 
@@ -199,7 +201,8 @@ class WebSearchService {
   }
 
   /// 搜索 → 回灌模型的文本（带来源与注入防护提示）。
-  String formatSearch(String query, List<WebSearchHit> hits, WebSearchConfig config) {
+  String formatSearch(
+      String query, List<WebSearchHit> hits, WebSearchConfig config) {
     if (hits.isEmpty) {
       return '[联网搜索] 关键词「$query」没有找到结果。可以换更具体的词，或直接给我一个网址。';
     }
@@ -219,7 +222,7 @@ class WebSearchService {
         buf.writeln('   发布：${hit.publishedAt}');
       }
     }
-    return _clip(buf.toString().trimRight(), 4000);
+    return _clip(buf.toString().trimRight(), 8000);
   }
 
   /// 网页正文 → 回灌模型的文本。
@@ -253,8 +256,7 @@ class WebSearchService {
   // -------------------------------------------------------------------------
 
   TavilyClient _ensureSearchClient(WebSearchConfig config) {
-    final signature =
-        '${config.baseUrl}|${config.apiKey}|${config.isKeyless}';
+    final signature = '${config.baseUrl}|${config.apiKey}|${config.isKeyless}';
     if (_searchClient == null || signature != _clientSignature) {
       _searchClient?.dispose();
       _searchClient = _searchClientFactory(config);
@@ -332,7 +334,7 @@ class WebSearchService {
       throw WebSearchException(
         'quota_exceeded',
         '今日联网搜索次数已用完（上限 ${config.dailySearchQuota} 次），'
-        '可在「联网检索」设置里调整配额。',
+            '可在「联网检索」设置里调整配额。',
       );
     }
     if (fetch > 0 &&
@@ -341,7 +343,7 @@ class WebSearchService {
       throw WebSearchException(
         'quota_exceeded',
         '今日网页抓取次数已用完（上限 ${config.dailyFetchQuota} 次），'
-        '可在「联网检索」设置里调整配额。',
+            '可在「联网检索」设置里调整配额。',
       );
     }
     final prefs = await SharedPreferences.getInstance();

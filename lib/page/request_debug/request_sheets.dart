@@ -19,6 +19,7 @@ Future<String?> promptDebugName(
   String? subtitle,
   String hint = '名称',
   String initial = '',
+  bool allowEmpty = false,
 }) {
   return AppSheet.showCustom<String>(
     context: context,
@@ -27,6 +28,7 @@ Future<String?> promptDebugName(
       subtitle: subtitle,
       hint: hint,
       initial: initial,
+      allowEmpty: allowEmpty,
     ),
   );
 }
@@ -45,12 +47,14 @@ class _NamePromptSheet extends StatefulWidget {
     this.subtitle,
     required this.hint,
     required this.initial,
+    required this.allowEmpty,
   });
 
   final String title;
   final String? subtitle;
   final String hint;
   final String initial;
+  final bool allowEmpty;
 
   @override
   State<_NamePromptSheet> createState() => _NamePromptSheetState();
@@ -68,7 +72,10 @@ class _NamePromptSheetState extends State<_NamePromptSheet> {
 
   void _confirm() {
     final value = _controller.text.trim();
-    Navigator.of(context).pop(value.isEmpty ? null : value);
+    // 普通命名：空值 = 取消（null）；允许清空的场景（请求重命名）返回 ''。
+    Navigator.of(context).pop(
+      value.isEmpty && !widget.allowEmpty ? null : value,
+    );
   }
 
   @override

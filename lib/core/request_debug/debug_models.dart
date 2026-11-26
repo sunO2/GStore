@@ -332,12 +332,10 @@ class DebugAuth {
   }) =>
       DebugAuth(
         type: type ?? this.type,
-        username: identical(username, _unset)
-            ? this.username
-            : username as String?,
-        password: identical(password, _unset)
-            ? this.password
-            : password as String?,
+        username:
+            identical(username, _unset) ? this.username : username as String?,
+        password:
+            identical(password, _unset) ? this.password : password as String?,
         token: identical(token, _unset) ? this.token : token as String?,
         apiKeyName: identical(apiKeyName, _unset)
             ? this.apiKeyName
@@ -345,9 +343,8 @@ class DebugAuth {
         apiKeyValue: identical(apiKeyValue, _unset)
             ? this.apiKeyValue
             : apiKeyValue as String?,
-        apiKeyIn: identical(apiKeyIn, _unset)
-            ? this.apiKeyIn
-            : apiKeyIn as String?,
+        apiKeyIn:
+            identical(apiKeyIn, _unset) ? this.apiKeyIn : apiKeyIn as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -473,6 +470,21 @@ class DebugRequest {
   /// 是否跳过 TLS 证书校验；`null`/`false` = 严格校验（默认）。
   final bool? skipTlsVerify;
 
+  /// 是否设置了用户可读的自定义名称 / 描述。
+  ///
+  /// 兼容旧数据：早先版本会把 URL 自动写进 `name`，这类值与 URL 相同或为
+  /// “未命名请求”，不视为真实名称，展示时回退到 URL。
+  bool get hasCustomName {
+    final trimmed = name.trim();
+    return trimmed.isNotEmpty && trimmed != url && trimmed != '未命名请求';
+  }
+
+  /// 自定义名称（无有效名称时为空串）。
+  String get customName => hasCustomName ? name.trim() : '';
+
+  /// 列表 / 详情标题：优先自定义名称，否则请求 URL。
+  String get displayName => hasCustomName ? name.trim() : url;
+
   /// 可空字段使用哨兵语义：缺省保留原值，**显式传 `null` 清空**
   /// （`auth` / `overrides` / `collectionId` / `binaryFilePath` / 每请求网络选项）。
   DebugRequest copyWith({
@@ -518,9 +530,8 @@ class DebugRequest {
         overrides: identical(overrides, _unset)
             ? this.overrides
             : overrides as DebugResponseOverride?,
-        timeoutMs: identical(timeoutMs, _unset)
-            ? this.timeoutMs
-            : timeoutMs as int?,
+        timeoutMs:
+            identical(timeoutMs, _unset) ? this.timeoutMs : timeoutMs as int?,
         followRedirects: identical(followRedirects, _unset)
             ? this.followRedirects
             : followRedirects as bool?,
@@ -630,9 +641,8 @@ class DebugCollection {
       DebugCollection(
         id: id ?? this.id,
         name: name ?? this.name,
-        parentId: identical(parentId, _unset)
-            ? this.parentId
-            : parentId as String?,
+        parentId:
+            identical(parentId, _unset) ? this.parentId : parentId as String?,
         requests: requests ?? this.requests,
         vars: vars ?? this.vars,
         secretVars: secretVars ?? this.secretVars,

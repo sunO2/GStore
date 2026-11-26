@@ -1,15 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
+import 'package:gstore/core/agent/agent_cookie_settings.dart';
 import 'package:gstore/core/agent/genkit_read_only_shadow.dart';
 import 'package:gstore/core/agent/openai_model_catalog.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/websearch/web_search_config.dart';
+import 'package:gstore/page/agent/agent_tool_overview.dart';
+import 'package:gstore/page/agent/agent_webview_debug_page.dart';
 import 'package:gstore/page/agent/web_search_settings_sheet.dart';
 
-/// Agent 模型管理设置页
-/// 支持：添加多个模型、选择使用哪个、编辑、删除
+enum _SettingsTab { models, tools }
+
+/// Agent 设置页
+///
+/// 顶部用分段胶囊切换两个子页面：
+/// - 模型：模型列表与回合记录；
+/// - 工具：联网检索、文件工作区、WebView 调试、MCP 服务器。
 class AgentSettingsPage extends StatefulWidget {
   const AgentSettingsPage({super.key});
 
@@ -20,12 +28,19 @@ class AgentSettingsPage extends StatefulWidget {
 class _AgentSettingsPageState extends State<AgentSettingsPage> {
   AgentModelStore? _store;
   bool _loading = true;
+  _SettingsTab _tab = _SettingsTab.models;
+
+  /// 两个子页面左右滑动切换。
+  late final PageController _pageController;
 
   /// 联网检索配置（用于卡片副标题）
   WebSearchConfig? _webSearchConfig;
 
   /// 是否允许 AI 访问文件工作区（用于卡片开关）
   bool _fileAccessEnabled = false;
+
+  /// httpRequest 是否自动携带 WebView 登录 Cookie
+  bool _useWebViewCookies = true;
 
   /// 本地推理模块是否可用（APK 内置或已下载）；不可用则不显示入口
   late final Future<bool> _llmAvailable =
@@ -34,6 +49,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _tab.index);
     _load();
   }
 
@@ -47,11 +63,13 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     final service = ModuleManager.instance.get<AgentService>();
     final fileAccessEnabled = service?.fileAccessEnabled.value ??
         await AgentFileSettings.loadEnabled();
+    final useWebViewCookies = await AgentCookieSettings.loadEnabled();
     if (mounted) {
       setState(() {
         _store = store;
         _webSearchConfig = webSearchConfig;
         _fileAccessEnabled = fileAccessEnabled;
+        _useWebViewCookies = useWebViewCookies;
         _loading = false;
       });
     }
@@ -65,6 +83,11 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
       await AgentFileSettings.saveEnabled(enabled);
     }
     if (mounted) setState(() => _fileAccessEnabled = enabled);
+  }
+
+  Future<void> _toggleWebViewCookies(bool enabled) async {
+    await AgentCookieSettings.saveEnabled(enabled);
+    if (mounted) setState(() => _useWebViewCookies = enabled);
   }
 
   Future<void> _openWebSearchSettings() async {
@@ -84,6 +107,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   @override
   void dispose() {
     _store?.removeListener(_onStoreChanged);
+    _pageController.dispose();
     super.dispose();
   }
 
@@ -116,23 +140,35 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('模型管理'),
+        title: const Text('AI 设置'),
         actions: [
-          // 没有 llm 模块（既非内置也未下载）时不显示"本地模型"入口
-          FutureBuilder<bool>(
-            future: _llmAvailable,
-            builder: (context, snap) {
-              if (snap.data != true) return const SizedBox.shrink();
-              return IconButton(
-                tooltip: '本地模型',
-                icon: const Icon(TablerIcons.cpu_2),
-                onPressed: () => context.push(AppRoute.localLlm),
-              );
-            },
+          // 与主题切换同款的分段式开关胶囊
+          Center(
+            child: AppSegmentedButton<_SettingsTab>(
+              value: _tab,
+              enabled: !_loading,
+              density: AppSegmentedButton.mediumDensity,
+              segments: const [
+                AppSegment(
+                  value: _SettingsTab.models,
+                  label: '模型',
+                  icon: TablerIcons.brain,
+                  key: Key('agent-settings-tab-models'),
+                ),
+                AppSegment(
+                  value: _SettingsTab.tools,
+                  label: '工具',
+                  icon: TablerIcons.tool,
+                  key: Key('agent-settings-tab-tools'),
+                ),
+              ],
+              onChanged: _goToTab,
+            ),
           ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
-      floatingActionButton: _loading
+      floatingActionButton: _loading || _tab != _SettingsTab.models
           ? null
           : FloatingActionButton.extended(
               onPressed: () => _openModelDialog(),
@@ -143,11 +179,35 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     );
   }
 
+  /// 分段胶囊切换：同时驱动 PageView 动画。
+  void _goToTab(_SettingsTab tab) {
+    if (tab == _tab) return;
+    setState(() => _tab = tab);
+    _pageController.animateToPage(
+      tab.index,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   Widget _buildBody(BuildContext context) {
     if (_loading) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
     }
+    return PageView(
+      controller: _pageController,
+      onPageChanged: (index) {
+        final tab = _SettingsTab.values[index];
+        if (tab != _tab) setState(() => _tab = tab);
+      },
+      children: [
+        _buildModelsBody(context),
+        _buildToolsBody(context),
+      ],
+    );
+  }
 
+  Widget _buildModelsBody(BuildContext context) {
     // Agent 模块未启用：模型选择区显示未启用文案（禁用编辑）
     if (ModuleManager.instance.get<AgentService>() == null) {
       return Center(
@@ -183,7 +243,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            const Icon(
               TablerIcons.brain,
               size: AppTypography.iconXXXL,
               color: AppColors.grey400,
@@ -224,6 +284,135 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 
         const SizedBox(height: AppSpacing.xl),
 
+        // 本地模型入口（仅当 llm 模块内置或已下载时显示）
+        FutureBuilder<bool>(
+          future: _llmAvailable,
+          builder: (context, snap) {
+            if (snap.data != true) return const SizedBox.shrink();
+            return Card(
+              elevation: 0,
+              margin: const EdgeInsets.only(bottom: AppSpacing.md),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                side: BorderSide(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: 0.5),
+                ),
+              ),
+              child: Material(
+                type: MaterialType.transparency,
+                child: ListTile(
+                  onTap: () => context.push(AppRoute.localLlm),
+                  leading: CircleAvatar(
+                    backgroundColor:
+                        Theme.of(context).colorScheme.primaryContainer,
+                    child: Icon(
+                      TablerIcons.cpu_2,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  title: const Text('本地模型'),
+                  subtitle: const Text('下载或管理本地推理模型'),
+                  trailing: const Icon(TablerIcons.chevron_right),
+                ),
+              ),
+            );
+          },
+        ),
+
+        // 回合记录（P3-1 可观测性）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: () => context.push(AppRoute.agentTraces),
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.tertiaryContainer,
+                child: Icon(
+                  TablerIcons.activity,
+                  color: Theme.of(context).colorScheme.onTertiaryContainer,
+                ),
+              ),
+              title: const Text('回合记录'),
+              subtitle: const Text('查看每轮耗时、token 与工具调用（诊断用）'),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
+
+        if (genkitReadOnlyShadowEnabled)
+          Card(
+            elevation: 0,
+            margin: const EdgeInsets.only(bottom: AppSpacing.md),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              side: BorderSide(
+                color: Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withValues(alpha: 0.5),
+              ),
+            ),
+            child: Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                onTap: () => context.push(AppRoute.agentShadowCompare),
+                leading: CircleAvatar(
+                  backgroundColor:
+                      Theme.of(context).colorScheme.secondaryContainer,
+                  child: Icon(
+                    TablerIcons.scale,
+                    color: Theme.of(context).colorScheme.onSecondaryContainer,
+                  ),
+                ),
+                title: const Text('Genkit 对比实验'),
+                subtitle: const Text('同一问题对比现有 Loop 与 defineCustomAgent'),
+                trailing: const Icon(TablerIcons.chevron_right),
+              ),
+            ),
+          ),
+
+        // 清除全部
+        TextButton.icon(
+          onPressed: () async {
+            await _store!.clearAll();
+            if (mounted) setState(() {});
+          },
+          icon: const Icon(TablerIcons.trash_x),
+          label: const Text('清除所有模型'),
+          style: TextButton.styleFrom(foregroundColor: AppColors.error),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildToolsBody(BuildContext context) {
+    return ListView(
+      padding: AppSpacing.allLG,
+      children: [
+        Padding(
+          padding: AppSpacing.onlyBottomMD,
+          child: Text(
+            '管理 AI 可用的外部能力与调试入口。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+          ),
+        ),
         // 联网检索（P3-7）
         Card(
           elevation: 0,
@@ -242,8 +431,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
             child: ListTile(
               onTap: _openWebSearchSettings,
               leading: CircleAvatar(
-                backgroundColor:
-                    Theme.of(context).colorScheme.primaryContainer,
+                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
                 child: Icon(
                   TablerIcons.world,
                   color: Theme.of(context).colorScheme.onPrimaryContainer,
@@ -317,6 +505,42 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           ),
         ),
 
+        // WebView 调试（登录/验证码）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const AgentWebViewDebugPage(),
+                ),
+              ),
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.tertiaryContainer,
+                child: Icon(
+                  TablerIcons.world,
+                  color: Theme.of(context).colorScheme.onTertiaryContainer,
+                ),
+              ),
+              title: const Text('WebView 调试'),
+              subtitle: const Text('可视化打开网页/登录；与 AI 的 webView 共用 Cookie'),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
+
         // MCP 服务器（外部工具接入）
         Card(
           elevation: 0,
@@ -349,7 +573,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           ),
         ),
 
-        // 回合记录（P3-1 可观测性）
+        // httpRequest 是否复用 WebView 登录态
         Card(
           elevation: 0,
           margin: const EdgeInsets.only(bottom: AppSpacing.md),
@@ -364,75 +588,38 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           ),
           child: Material(
             type: MaterialType.transparency,
-            child: ListTile(
-              onTap: () => context.push(AppRoute.agentTraces),
-              leading: CircleAvatar(
-                backgroundColor:
-                    Theme.of(context).colorScheme.tertiaryContainer,
-                child: Icon(
-                  TablerIcons.activity,
-                  color: Theme.of(context).colorScheme.onTertiaryContainer,
-                ),
+            child: SwitchListTile(
+              value: _useWebViewCookies,
+              onChanged: _toggleWebViewCookies,
+              secondary: Icon(
+                _useWebViewCookies
+                    ? TablerIcons.cookie
+                    : TablerIcons.cookie_off,
+                color: _useWebViewCookies
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
-              title: const Text('回合记录'),
-              subtitle: const Text('查看每轮耗时、token 与工具调用（诊断用）'),
-              trailing: const Icon(TablerIcons.chevron_right),
+              title: const Text('httpRequest 携带 WebView 登录态'),
+              subtitle: Text(
+                _useWebViewCookies
+                    ? '同域接口请求自动复用 WebView 登录 Cookie'
+                    : '已关闭：httpRequest 不读取/写入 WebView Cookie',
+              ),
             ),
           ),
         ),
 
-        if (genkitReadOnlyShadowEnabled)
-          Card(
-            elevation: 0,
-            margin: const EdgeInsets.only(bottom: AppSpacing.md),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(AppRadius.md),
-              side: BorderSide(
-                color: Theme.of(context)
-                    .colorScheme
-                    .outlineVariant
-                    .withValues(alpha: 0.5),
-              ),
-            ),
-            child: Material(
-              type: MaterialType.transparency,
-              child: ListTile(
-                onTap: () => context.push(AppRoute.agentShadowCompare),
-                leading: CircleAvatar(
-                  backgroundColor:
-                      Theme.of(context).colorScheme.secondaryContainer,
-                  child: Icon(
-                    TablerIcons.scale,
-                    color:
-                        Theme.of(context).colorScheme.onSecondaryContainer,
-                  ),
-                ),
-                title: const Text('Genkit 对比实验'),
-                subtitle: const Text('同一问题对比现有 Loop 与 defineCustomAgent'),
-                trailing: const Icon(TablerIcons.chevron_right),
-              ),
-            ),
-          ),
-
-        // 清除全部
-        TextButton.icon(
-          onPressed: () async {
-            await _store!.clearAll();
-            if (mounted) setState(() {});
-          },
-          icon: const Icon(TablerIcons.trash_x),
-          label: const Text('清除所有模型'),
-          style: TextButton.styleFrom(foregroundColor: AppColors.error),
-        ),
+        // 当前模型可用的全部工具与说明（内置 + 已注册 MCP）
+        const SizedBox(height: AppSpacing.sm),
+        const AgentToolOverview(),
       ],
     );
   }
 
   Widget _buildModelTile(
       BuildContext context, AgentModel model, bool isSelected) {
-    final providerLabel = model.provider == AgentLlmProvider.google
-        ? 'Gemini'
-        : 'OpenAI 兼容';
+    final providerLabel =
+        model.provider == AgentLlmProvider.google ? 'Gemini' : 'OpenAI 兼容';
 
     return Card(
       elevation: 0,
@@ -441,11 +628,14 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
         side: BorderSide(
           color: isSelected
               ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
+              : Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
           width: isSelected ? 2 : 1,
         ),
       ),
-      margin: EdgeInsets.only(bottom: AppSpacing.md),
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
       child: ListTile(
         onTap: () => _selectModel(model),
         leading: CircleAvatar(
@@ -643,7 +833,8 @@ class ModelEditSheetState extends State<ModelEditSheet> {
 
   /// 按当前 Base URL 选出要展示的模型列表（无缓存 → null，回落到内置预设）
   void _applyCatalog() {
-    final cached = _catalogCache[modelCatalogKey(_baseUrlController.text.trim())];
+    final cached =
+        _catalogCache[modelCatalogKey(_baseUrlController.text.trim())];
     _fetchedModels = (cached == null || cached.isEmpty) ? null : cached;
   }
 

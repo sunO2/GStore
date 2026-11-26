@@ -123,7 +123,8 @@ void main() {
       );
     });
 
-    test('401 → unauthorized；坏 JSON → bad_response；空 query → bad_response', () async {
+    test('401 → unauthorized；坏 JSON → bad_response；空 query → bad_response',
+        () async {
       final unauthorized = TavilyClient(
         config: _config(apiKey: 'bad'),
         client: MockClient((_) async => http.Response('{}', 401)),
@@ -168,7 +169,11 @@ void main() {
             return http.Response(
               jsonEncode({
                 'results': [
-                  {'title': 'A', 'url': 'https://a.example.com', 'content': 'hi'},
+                  {
+                    'title': 'A',
+                    'url': 'https://a.example.com',
+                    'content': 'hi'
+                  },
                 ],
               }),
               200,
@@ -473,11 +478,11 @@ void main() {
   });
 
   group('WebSearchService.httpRequest', () {
-    test('json 自动序列化并设置 Content-Type；不缓存且消耗抓取配额', () async {
+    test('json 自动序列化并设置 Content-Type；不缓存且不占抓取配额', () async {
       var calls = 0;
       late http.Request captured;
       final service = WebSearchService(
-        config: _config(dailyFetchQuota: 2),
+        config: _config(dailyFetchQuota: 1),
         fetchClientFactory: (config) => WebFetchClient(
           client: MockClient((request) async {
             calls++;
@@ -498,15 +503,13 @@ void main() {
       expect(jsonDecode(captured.body), {'q': 'termux'});
 
       // 同一 URL 再请求一次：不能命中缓存
-      await service.httpRequest('https://93.184.216.34/api', method: 'POST',
-          json: {'q': 'termux'});
+      await service.httpRequest('https://93.184.216.34/api',
+          method: 'POST', json: {'q': 'termux'});
       expect(calls, 2);
 
-      await expectLater(
-        service.httpRequest('https://93.184.216.34/api'),
-        throwsA(isA<WebSearchException>()
-            .having((e) => e.code, 'code', 'quota_exceeded')),
-      );
+      // 通用 HTTP 探测不消耗网页抓取配额（配额仍是 1）
+      final quota = await service.remainingQuota();
+      expect(quota.fetch, 1);
     });
 
     test('GET/HEAD 携带 Body 直接拒绝，不发请求', () async {
@@ -534,13 +537,16 @@ void main() {
       expect(calls, 0);
     });
 
-    test('联网检索关闭时拒绝执行', () async {
-      final service = WebSearchService(config: _config(enabled: false));
-      await expectLater(
-        service.httpRequest('https://93.184.216.34/api'),
-        throwsA(isA<WebSearchException>()
-            .having((e) => e.code, 'code', 'disabled')),
+    test('联网检索关闭时仍可执行（通用 HTTP 探测不依赖该开关）', () async {
+      final service = WebSearchService(
+        config: _config(enabled: false),
+        fetchClientFactory: (config) => WebFetchClient(
+          client: MockClient((_) async => http.Response('ok', 200)),
+        ),
       );
+      final response = await service.httpRequest('https://93.184.216.34/api');
+      expect(response.statusCode, 200);
+      expect(response.body, 'ok');
     });
   });
 

@@ -57,9 +57,9 @@ const List<AgentSlashCommand> kAgentSlashCommands = [
   AgentSlashCommand(
     id: 'model',
     command: '/model',
-    title: '模型设置',
-    subtitle: '切换模型或配置 API Key',
-    icon: TablerIcons.settings,
+    title: '切换模型',
+    subtitle: '从当前模型列表中选择要使用的模型',
+    icon: TablerIcons.brain,
   ),
   AgentSlashCommand(
     id: 'clear',

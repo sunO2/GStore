@@ -225,7 +225,7 @@ void main() {
 
     expect(find.text('新建会话'), findsOneWidget);
     expect(find.text('会话列表'), findsOneWidget);
-    expect(find.text('模型设置'), findsOneWidget);
+    expect(find.text('设置'), findsOneWidget);
     expect(find.text('压缩上下文'), findsOneWidget);
     expect(find.text('本会话 Tokens'), findsOneWidget);
     // 输入/输出用箭头胶囊表示

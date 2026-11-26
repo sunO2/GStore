@@ -217,7 +217,8 @@ void main() {
     test('moveCollection 改父级；拒绝移入自身 / 后代（不产生环）', () {
       final store = _memoryStore();
       final root = store.addCollection(id: 'root', name: 'Root');
-      final child = store.addCollection(id: 'child', name: 'Child', parentId: root.id);
+      final child =
+          store.addCollection(id: 'child', name: 'Child', parentId: root.id);
       final other = store.addCollection(id: 'other', name: 'Other');
 
       // 自身 / 后代：拒绝。
@@ -267,7 +268,8 @@ void main() {
     test('duplicateCollection 递归复制子集合并重映射 id', () {
       final store = _memoryStore();
       final root = store.addCollection(id: 'root', name: 'Root');
-      final child = store.addCollection(id: 'child', name: 'Child', parentId: root.id);
+      final child =
+          store.addCollection(id: 'child', name: 'Child', parentId: root.id);
       store.addRequest(child.id, _request('r1', name: 'A'));
       store.addRequest(root.id, _request('r2', name: 'B'));
 
@@ -277,9 +279,14 @@ void main() {
       expect(clone.parentId, isNull);
       expect(clone.name, 'Root 副本');
       // 新集合紧跟在原集合之后。
-      expect(store.collections[store.collections.indexOf(
-        store.collectionById('root')!,
-      ) + 1].id, clone.id);
+      expect(
+          store
+              .collections[store.collections.indexOf(
+                    store.collectionById('root')!,
+                  ) +
+                  1]
+              .id,
+          clone.id);
 
       // 后代被复制且 parentId 重映射到新副本。
       final clonedChild = store.collections.firstWhere(
@@ -375,8 +382,10 @@ void main() {
     testWidgets('拖拽后打开编辑器不抛 disposed-controller 异常', (tester) async {
       final facade = _facade();
       final col = facade.store.addCollection(id: 'c1', name: '集合');
-      facade.store.addRequest(col.id, _request('r1', name: '第一', url: 'https://a'));
-      facade.store.addRequest(col.id, _request('r2', name: '第二', url: 'https://b'));
+      facade.store
+          .addRequest(col.id, _request('r1', name: '第一', url: 'https://a'));
+      facade.store
+          .addRequest(col.id, _request('r2', name: '第二', url: 'https://b'));
 
       await tester.pumpWidget(_host(RequestDebugPage(facade: facade)));
       await tester.pumpAndSettle();
@@ -397,7 +406,7 @@ void main() {
       // 拖拽后点击请求进入编辑器，再返回：控制器不得已释放。
       await tester.tap(find.byKey(const Key('request-debug-request-r1')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('request-editor-name')), findsNothing);
+      expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       await tester.tap(find.byKey(const Key('request-editor-back')));
@@ -418,7 +427,8 @@ void main() {
       // 第一次：取消。
       await tester.tap(find.byKey(const Key('request-debug-request-menu-r1')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('request-debug-request-delete-r1')));
+      await tester
+          .tap(find.byKey(const Key('request-debug-request-delete-r1')));
       await tester.pumpAndSettle();
       expect(find.text('删除请求'), findsOneWidget, reason: '删除前必须有确认');
       await tester.tap(find.text('取消'));
@@ -428,7 +438,8 @@ void main() {
       // 第二次：确认。
       await tester.tap(find.byKey(const Key('request-debug-request-menu-r1')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('request-debug-request-delete-r1')));
+      await tester
+          .tap(find.byKey(const Key('request-debug-request-delete-r1')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('删除'));
       await tester.pumpAndSettle();
@@ -448,7 +459,8 @@ void main() {
 
       await tester.tap(find.byKey(const Key('request-debug-request-menu-r1')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('request-debug-request-duplicate-r1')));
+      await tester
+          .tap(find.byKey(const Key('request-debug-request-duplicate-r1')));
       await tester.pumpAndSettle();
       expect(facade.store.collectionById('c1')!.requests.length, 2);
       expect(tester.takeException(), isNull);

@@ -190,16 +190,14 @@ class DebugSender {
     }
 
     if (useCookies) {
-      final jarHeader = cookieJar.cookieHeaderFor(
-        uri.host,
-        path: uri.path,
-        secure: uri.scheme == 'https',
-      );
-      // 显式 `Cookie` 头（如编辑器 `_cookies` 合并而来）优先；jar 与显式同名
-      // 去重，避免同名 cookie 重复发送。
+      // 显式 `Cookie` 头（如编辑器 `_cookies` 合并而来）优先；jar / WebView
+      // 实时 Cookie 与显式同名去重，避免重复发送。
       final explicit =
           request.headers['Cookie'] ?? request.headers['cookie'] ?? '';
-      final merged = DebugCookieJar.mergeCookieHeader(explicit, jarHeader);
+      final merged = await cookieJar.cookieHeaderForUri(
+        uri,
+        explicit: explicit,
+      );
       if (merged.isNotEmpty) request.headers['Cookie'] = merged;
     }
 
@@ -257,7 +255,7 @@ class DebugSender {
         final finalUri = streamed is http.BaseResponseWithUrl
             ? (streamed as http.BaseResponseWithUrl).url
             : uri;
-        cookieJar.store(finalUri.host, response.headers, path: finalUri.path);
+        await cookieJar.captureResponse(finalUri, streamed.headers);
       }
       return response;
     } finally {

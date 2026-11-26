@@ -42,8 +42,10 @@ class AgentPrompt {
     String? extraToolLines,
   }) {
     return language == PromptLanguage.en
-        ? _buildEnglish(platformDescription, toolNames, memories, extraToolLines)
-        : _buildChinese(platformDescription, toolNames, memories, extraToolLines);
+        ? _buildEnglish(
+            platformDescription, toolNames, memories, extraToolLines)
+        : _buildChinese(
+            platformDescription, toolNames, memories, extraToolLines);
   }
 
   /// 生成式敏感操作清单（由注册表派生，可按工具子集过滤）
@@ -98,19 +100,22 @@ FILE WORKSPACE:
   static String _toolIntroEn() => profile == AgentPromptProfile.compact
       ? 'Tool names are listed here; each function-calling schema already '
           'carries the parameter names/types/required flags — call tools '
-          'directly from the schema. Use loadProtocol only for tool workflows, '
-          'rules or caveats.'
+          'directly from the schema. Numbers/booleans must use JSON native '
+          'types, not quoted strings. Use loadProtocol only for tool '
+          'workflows, rules or caveats.'
       : 'Only one-line briefs are listed here (grouped). Parameter details '
-          'are already in the function-calling schema; use `loadProtocol` '
-          'when you need the full tool workflow / rules / caveats, not to guess '
+          'are already in the function-calling schema; numbers/booleans must '
+          'use JSON native types (not quoted strings). Use `loadProtocol` when '
+          'you need the full tool workflow / rules / caveats, not to guess '
           'parameter names.';
 
   static String _toolIntroZh() => profile == AgentPromptProfile.compact
       ? '这里只列工具名；参数名/类型/必填项已经由 function-calling schema 下发，'
-          '按 schema 直接调用。只有工具工作流、规则或注意事项不确定时才调用 '
-          'loadProtocol。'
+          '按 schema 直接调用；数值/布尔参数用 JSON 原生类型，不要加引号。'
+          '只有工具工作流、规则或注意事项不确定时才调用 loadProtocol。'
       : '这里只列出一行简介（按分组）。参数细节已经在 function-calling schema 中，'
-          '直接按 schema 调用；需要完整工具工作流/规则/注意事项时再调用 `loadProtocol`，'
+          '直接按 schema 调用；数值/布尔参数用 JSON 原生类型，不要加引号。'
+          '需要完整工具工作流/规则/注意事项时再调用 `loadProtocol`，'
           '不要为了猜参数名而调用。';
 
   /// 错误处理指引（紧凑 = 4 行概括；完整 = 11 条细则）

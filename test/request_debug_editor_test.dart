@@ -251,11 +251,11 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）',
-        (tester) async {
+    testWidgets('文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）', (tester) async {
       final facade = _facade();
       final collection = facade.store.addCollection(name: 'API');
-      await tester.pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
+      await tester
+          .pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
       await tester.pumpAndSettle();
 
       await tester.tap(
@@ -263,7 +263,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(Key('request-debug-collection-new-request-${collection.id}')),
+        find.byKey(
+            Key('request-debug-collection-new-request-${collection.id}')),
       );
       await tester.pumpAndSettle();
 
@@ -280,7 +281,7 @@ void main() {
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
-      expect(saved.single.name, 'https://api.example/login');
+      expect(saved.single.name, isEmpty);
       expect(saved.single.url, 'https://api.example/login');
       expect(saved.single.method, 'POST');
       expect(saved.single.collectionId, collection.id);
@@ -295,10 +296,12 @@ void main() {
         collection.id,
         DebugRequest(id: 'r-del', name: 'del', url: 'https://a.example/x'),
       )!;
-      await tester.pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
+      await tester
+          .pumpWidget(_host(RequestDebugCollectionSection(facade: facade)));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(Key('request-debug-request-${request.id}')), findsOneWidget);
+      expect(find.byKey(Key('request-debug-request-${request.id}')),
+          findsOneWidget);
 
       await tester.tap(
         find.byKey(Key('request-debug-request-menu-${request.id}')),
@@ -319,8 +322,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('导入 cURL → 解析并写入集合（方法 / URL / Body 精确）',
-        (tester) async {
+    testWidgets('导入 cURL → 解析并写入集合（方法 / URL / Body 精确）', (tester) async {
       final facade = _facade();
       // Wave 8：「导入 cURL」在导航头「更多」菜单内，需 pump 完整页面。
       await tester.pumpWidget(_hostPage(facade));
@@ -334,13 +336,12 @@ void main() {
       await tester.enterText(
         find.byKey(const Key('request-debug-curl-field')),
         "curl -X POST https://api.example/x "
-            "-H 'Content-Type: application/json' -d '{\"a\":1}'",
+        "-H 'Content-Type: application/json' -d '{\"a\":1}'",
       );
       await tester.tap(find.byKey(const Key('request-debug-curl-confirm')));
       await tester.pumpAndSettle();
 
-      final host = facade.store.collections
-          .firstWhere((c) => c.name == '导入');
+      final host = facade.store.collections.firstWhere((c) => c.name == '导入');
       expect(host.requests, hasLength(1));
       final imported = host.requests.single;
       expect(imported.method, 'POST');
@@ -465,7 +466,7 @@ void main() {
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
-      expect(saved.single.name, 'https://api.example/users');
+      expect(saved.single.name, isEmpty);
       expect(saved.single.url, 'https://api.example/users');
       expect(saved.single.method, 'POST');
       expect(saved.single.collectionId, collection.id);
@@ -536,8 +537,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('生成代码 → 打开多语言片段弹层（默认 cURL，占位符保留）',
-        (tester) async {
+    testWidgets('生成代码 → 打开多语言片段弹层（默认 cURL，占位符保留）', (tester) async {
       final facade = _facade();
       final collection = facade.store.addCollection(name: 'API');
       final request = facade.store.addRequest(
@@ -586,7 +586,8 @@ void main() {
         find.byKey(const Key('request-editor-net-timeout')),
         findsOneWidget,
       );
-      expect(find.byKey(const Key('request-editor-net-follow')), findsOneWidget);
+      expect(
+          find.byKey(const Key('request-editor-net-follow')), findsOneWidget);
       expect(find.byKey(const Key('request-editor-net-jar')), findsOneWidget);
       expect(
         find.byKey(const Key('request-editor-net-skip-tls')),
@@ -735,10 +736,8 @@ void main() {
             .onPressed,
         isNotNull,
       );
-      expect(find.text('尚未发送请求'), findsOneWidget,
-          reason: '取消后必须回到就绪态，不展示残缺响应');
-      expect(facade.store.history, isEmpty,
-          reason: '取消绝不能追加半成品历史');
+      expect(find.text('尚未发送请求'), findsOneWidget, reason: '取消后必须回到就绪态，不展示残缺响应');
+      expect(facade.store.history, isEmpty, reason: '取消绝不能追加半成品历史');
       expect(tester.takeException(), isNull);
     });
 
@@ -796,8 +795,7 @@ void main() {
   });
 
   group('请求编辑器 · 未保存离开二次确认', () {
-    testWidgets('有未保存编辑时返回 → 确认拦截；继续编辑不离开；放弃才离开',
-        (tester) async {
+    testWidgets('有未保存编辑时返回 → 确认拦截；继续编辑不离开；放弃才离开', (tester) async {
       final facade = _facade();
       final collection = facade.store.addCollection(name: 'API');
       final request = facade.store.addRequest(
@@ -947,7 +945,8 @@ void main() {
       await tester.pumpAndSettle();
 
       final draft = tester
-          .widget<TextField>(find.byKey(const Key('request-editor-field-sheet-input')))
+          .widget<TextField>(
+              find.byKey(const Key('request-editor-field-sheet-input')))
           .controller!;
       expect(
         draft.text,
@@ -956,7 +955,8 @@ void main() {
       );
 
       // 确认 → 写回字段并刷新预览。
-      await tester.tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
+      await tester
+          .tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
       await tester.pumpAndSettle();
       expect(_urlDisplay('https://api.example/{{host}}'), findsOneWidget);
       expect(_previewText(tester), 'https://api.example/https://api.example');
@@ -1088,8 +1088,7 @@ void main() {
       await _tapMore(tester, const Key('request-editor-save'));
 
       final saved = facade.store.requestById('r-overrides')!;
-      expect(saved.overrides, isNotNull,
-          reason: 'overrides 必须在保存草稿时保留');
+      expect(saved.overrides, isNotNull, reason: 'overrides 必须在保存草稿时保留');
       expect(saved.overrides!.statusCode, 201);
       expect(saved.overrides!.body, 'saved-override');
       expect(tester.takeException(), isNull);
@@ -1337,15 +1336,138 @@ void main() {
       );
 
       // 参数段：KV 行渲染为键 / 值预览，页脚动作齐备（含排序切换），无 overflow。
-      expect(find.byKey(const Key('request-editor-param-name-0')), findsOneWidget);
-      expect(find.byKey(const Key('request-editor-param-value-0')), findsOneWidget);
+      expect(
+          find.byKey(const Key('request-editor-param-name-0')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-param-value-0')),
+          findsOneWidget);
       expect(find.byKey(const Key('request-editor-kv-sort')), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       // 请求头段：同样为 KV 段（allowDisable=true），窄屏下无异常。
       await tester.tap(find.byKey(const Key('request-editor-segment-headers')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('request-editor-header-name-0')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-header-name-0')),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('请求名称', () {
+    testWidgets('列表与详情导航头优先显示名称，未命名回退 URL', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final named = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-named',
+          name: '获取用户列表',
+          url: 'https://api.example/users',
+        ),
+      )!;
+      final unnamed = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-unnamed',
+          name: '',
+          url: 'https://api.example/posts',
+        ),
+      )!;
+
+      await tester.pumpWidget(
+        _host(RequestDebugCollectionSection(facade: facade)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('获取用户列表'), findsOneWidget);
+      expect(find.text('https://api.example/users'), findsOneWidget);
+      expect(find.text('https://api.example/posts'), findsOneWidget);
+
+      await tester.tap(find.byKey(Key('request-debug-request-${named.id}')));
+      await tester.pumpAndSettle();
+      expect(find.text('获取用户列表'), findsWidgets);
+      expect(find.text('接口详情'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('request-editor-back')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(Key('request-debug-request-${unnamed.id}')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('接口详情'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('编辑器可填写名称并保存，列表显示名称 + URL', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+
+      await tester.enterText(
+        find.byKey(const Key('request-editor-name')),
+        '查询订单',
+      );
+      await _setUrlViaSheet(tester, 'https://api.example/orders');
+      await _tapMore(tester, const Key('request-editor-save'));
+
+      final saved = facade.store.collectionById(collection.id)!.requests;
+      expect(saved, hasLength(1));
+      expect(saved.single.name, '查询订单');
+      expect(saved.single.displayName, '查询订单');
+
+      await tester.tap(find.byKey(const Key('request-editor-back')));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _host(RequestDebugCollectionSection(facade: facade)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('查询订单'), findsOneWidget);
+      expect(find.text('https://api.example/orders'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('列表菜单可重命名请求，留空后回退显示 URL', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-rename',
+          name: '旧名称',
+          url: 'https://api.example/rename',
+        ),
+      )!;
+      await tester.pumpWidget(
+        _host(RequestDebugCollectionSection(facade: facade)),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> renameTo(String value) async {
+        await tester.tap(
+          find.byKey(Key('request-debug-request-menu-${request.id}')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(Key('request-debug-request-rename-${request.id}')),
+        );
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('request-debug-prompt-field')),
+          value,
+        );
+        await tester.tap(
+          find.byKey(const Key('request-debug-prompt-confirm')),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await renameTo('新名称');
+      expect(facade.store.requestById(request.id)!.name, '新名称');
+      expect(find.text('新名称'), findsOneWidget);
+
+      await renameTo('');
+      expect(facade.store.requestById(request.id)!.name, isEmpty);
+      expect(find.text('https://api.example/rename'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

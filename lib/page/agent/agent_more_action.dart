@@ -80,10 +80,8 @@ class AgentMoreAction extends StatelessWidget {
         return [
           _menuItem(context, _MoreAction.newSession, TablerIcons.message_plus,
               '新建会话'),
-          _menuItem(
-              context, _MoreAction.sessions, TablerIcons.history, '会话列表'),
-          _menuItem(
-              context, _MoreAction.settings, TablerIcons.settings, '模型设置'),
+          _menuItem(context, _MoreAction.sessions, TablerIcons.history, '会话列表'),
+          _menuItem(context, _MoreAction.settings, TablerIcons.settings, '设置'),
           const PopupMenuDivider(),
           PopupMenuItem<_MoreAction>(
             enabled: false,
@@ -133,7 +131,8 @@ class AgentMoreAction extends StatelessWidget {
       enabled: enabled,
       child: Row(
         children: [
-          Icon(icon, size: AppTypography.iconMD, color: scheme.onSurfaceVariant),
+          Icon(icon,
+              size: AppTypography.iconMD, color: scheme.onSurfaceVariant),
           const SizedBox(width: AppSpacing.md),
           Text(label, style: Theme.of(context).textTheme.bodyMedium),
         ],
@@ -348,13 +347,15 @@ class _TokenStatsBlock extends StatelessWidget {
       ),
     );
   }
+
   Widget _arrowPill(BuildContext context, IconData icon, String text) {
     final scheme = Theme.of(context).colorScheme;
     return _TokenPill(
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: AppTypography.iconXS, color: scheme.onSurfaceVariant),
+          Icon(icon,
+              size: AppTypography.iconXS, color: scheme.onSurfaceVariant),
           const SizedBox(width: 2),
           Text(text),
         ],

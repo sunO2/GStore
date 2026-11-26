@@ -26,6 +26,10 @@ import 'package:gstore/core/agent/mcp/mcp_models.dart';
 import 'package:gstore/core/agent/mcp/mcp_server_store.dart';
 import 'package:gstore/core/agent/mcp/mcp_tool_registry.dart';
 import 'package:gstore/core/agent/agent_tool_selector.dart';
+import 'package:gstore/core/agent/agent_cookie_settings.dart';
+import 'package:gstore/core/agent/request_debug_tool.dart';
+import 'package:gstore/core/http/unified_cookie_jar.dart';
+import 'package:gstore/core/webview/webview_session_service.dart';
 import 'package:gstore/core/agent/agent_trace.dart';
 import 'package:gstore/core/agent/agent_trace_store.dart';
 import 'package:gstore/core/agent/agent_context_budget.dart';
@@ -78,6 +82,9 @@ enum AgentToolType {
   snapshot,
   mcp,
   web,
+  webView,
+  httpRequest,
+  requestDebug,
 }
 
 /// 工具执行状态
@@ -235,7 +242,8 @@ class AgentMessage {
         seq = seq ?? _seqCounter++;
 
   static int _idCounter = 0;
-  static String _generateId() => 'msg-${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}';
+  static String _generateId() =>
+      'msg-${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}';
 
   /// 全局序号计数器（跨会话递增，保证顺序唯一）
   static int _seqCounter = 0;
@@ -264,6 +272,8 @@ class AgentService {
   static const String webSearchToolName = 'webSearch';
   static const String webFetchToolName = 'webFetch';
   static const String httpRequestToolName = 'httpRequest';
+  static const String webViewToolName = 'webView';
+  static const String requestDebugToolName = 'requestDebug';
   static const String downloadToolName = 'downloadApp';
   static const String installToolName = 'installApp';
   static const String manageAppToolName = 'manageApp';
@@ -400,7 +410,8 @@ class AgentService {
 
     var stats = AgentSessionTokenStats.empty;
     try {
-      final raw = await _sessionStore?.readMeta(_sessionTokensMetaKey(session.id));
+      final raw =
+          await _sessionStore?.readMeta(_sessionTokensMetaKey(session.id));
       if (raw != null && raw.isNotEmpty) {
         stats = AgentSessionTokenStats.fromJson(
           Map<String, dynamic>.from(jsonDecode(raw) as Map),
@@ -429,8 +440,7 @@ class AgentService {
   /// 累加 provider 返回的 usage（每次模型调用）。
   void _recordSessionUsage(GenerationUsage usage) {
     // 生成本回合的会话（测试直接跑 loop 时未标记回合会话，退化为当前会话）
-    final turnSessionId =
-        _turnSessionId ?? _sessionStore?.current?.id;
+    final turnSessionId = _turnSessionId ?? _sessionStore?.current?.id;
     final currentId = _sessionStore?.current?.id;
     if (turnSessionId == null ||
         currentId != turnSessionId ||
@@ -733,6 +743,9 @@ class AgentService {
   final Set<String> _registeredMcpNames = <String>{};
   List<Message> _messages = [];
   bool _initialized = false;
+
+  /// 正在进行中的 [initialize]（并发调用复用同一任务，避免设置页返回时重复初始化）
+  Future<bool>? _initializing;
   bool _busy = false;
 
   /// 是否已给当前 store 挂上变更监听
@@ -819,6 +832,7 @@ class AgentService {
 
   /// 本地模型保留的历史轮数（1 轮 = 1 问 + 1 答）
   static const int _localKeepTurns = 3;
+
   /// 本地模型的提示字符上限（约 1~2k token，防止 CPU prefill 拖到分钟级）
   /// 提示字符上限：关闭工具时压到 4000（prefill 快）；开启工具时放宽以容纳工具清单。
   /// 配置了 [AgentModel.contextWindow] 时取两者较小值（小窗口不硬塞）。
@@ -915,8 +929,7 @@ class AgentService {
     while (out.length > 1 && _messageChars(out) > _localMaxChars) {
       out.removeAt(1);
     }
-    appLog.info(
-        'AgentService: 本地模型提示裁剪 ${_messages.length}→${out.length} 条, '
+    appLog.info('AgentService: 本地模型提示裁剪 ${_messages.length}→${out.length} 条, '
         '${_messageChars(out)} 字符（上限 $_localMaxChars）');
     return out;
   }
@@ -973,8 +986,7 @@ class AgentService {
         Message(role: Role.system, content: [TextPart(text: summary)]),
       ...kept,
     ];
-    appLog.info(
-        'AgentService: 云端提示裁剪 ${all.length}→${out.length} 条, '
+    appLog.info('AgentService: 云端提示裁剪 ${all.length}→${out.length} 条, '
         '${_messageChars(out)} 字符 / ${_messagesTokens(out)} tokens '
         '（预算 $budget tokens，回填 ${plan.retrievedIndexes.length} 条相关历史）'
         '${summary == null ? '' : '，含滚动摘要'}');
@@ -1101,6 +1113,10 @@ class AgentService {
         return _webFetch(params);
       case httpRequestToolName:
         return _httpRequest(params);
+      case webViewToolName:
+        return _webView(params);
+      case requestDebugToolName:
+        return _requestDebug(params);
       case downloadToolName:
         return _downloadApp(
           params['appId']?.toString() ?? '',
@@ -1109,8 +1125,7 @@ class AgentService {
           params['name']?.toString() ?? '',
           params['version']?.toString() ?? '',
           vivoId: params['vivoId']?.toString(),
-          installAfterDownload:
-              params['installAfterDownload'] == true ||
+          installAfterDownload: params['installAfterDownload'] == true ||
               params['installAfterDownload'] == 'true',
         );
       case installToolName:
@@ -1216,8 +1231,7 @@ class AgentService {
           params['params'],
         );
       case loadProtocolToolName:
-        return Future.value(
-            _loadProtocol(params['target']?.toString() ?? ''));
+        return Future.value(_loadProtocol(params['target']?.toString() ?? ''));
       case useSkillToolName:
         return _skillStore.readSkill(params['skillName']?.toString() ?? '');
       case rememberToolName:
@@ -1340,9 +1354,8 @@ class AgentService {
     }
 
     // 3. 分类执行：缓存类别名 → clearByNames；下载文件前缀 → deleteDownloads
-    final cacheNamesSelected = selected
-        .where((s) => !s.startsWith(_dlFilePrefix))
-        .toList();
+    final cacheNamesSelected =
+        selected.where((s) => !s.startsWith(_dlFilePrefix)).toList();
     final fileNames = selected
         .where((s) => s.startsWith(_dlFilePrefix))
         .map((s) => s.substring(_dlFilePrefix.length))
@@ -1477,9 +1490,8 @@ class AgentService {
   void _persistAsyncTaskToSession(AgentAsyncTask task) {
     final store = _sessionStore;
     if (store == null) return;
-    final session = store.sessions
-        .where((s) => s.id == task.sessionId)
-        .firstOrNull;
+    final session =
+        store.sessions.where((s) => s.id == task.sessionId).firstOrNull;
     if (session == null) return;
     // 找到该会话中对应的 running 下载工具消息，更新为终态
     for (var i = 0; i < session.messages.length; i++) {
@@ -1593,8 +1605,7 @@ class AgentService {
   String? get currentSessionId => _sessionStore?.currentSessionId;
 
   /// 对话消息（UI 监听；快照列表，元素对象引用稳定，字段变化后显式 notify）
-  final ValueNotifier<List<AgentMessage>> messages =
-      ValueNotifier(const []);
+  final ValueNotifier<List<AgentMessage>> messages = ValueNotifier(const []);
 
   /// 当前会话 token 统计（UI 监听：更多按钮进度环/菜单）
   final ValueNotifier<AgentSessionTokenStats> sessionTokens =
@@ -1693,8 +1704,21 @@ class AgentService {
     return out;
   }
 
-  /// 初始化 Agent（加载模型存储并初始化当前选中模型）
-  Future<bool> initialize() async {
+  /// 初始化 Agent（加载模型存储并初始化当前选中模型）。
+  ///
+  /// 并发调用会复用同一个任务：设置页返回、模型 store 变更触发的
+  /// reconfigure 与页面初始化不会同时跑两遍重初始化。
+  Future<bool> initialize() {
+    final active = _initializing;
+    if (active != null) return active;
+    final future = _doInitialize();
+    _initializing = future;
+    return future.whenComplete(() {
+      if (identical(_initializing, future)) _initializing = null;
+    });
+  }
+
+  Future<bool> _doInitialize() async {
     // 运行时提示词使用中文（AgentPrompt 是唯一提示词构建器，内容由协议注册表生成）
     AgentPrompt.useChinese();
     final store = await AgentModelStore.load();
@@ -1785,6 +1809,29 @@ class AgentService {
     }
   }
 
+  /// 设置页返回等场景的轻量同步。
+  ///
+  /// 设置页内的改动都是即时生效的：
+  /// - 模型切换 / 编辑由 [AgentModelStore] 监听器触发 [reconfigure]；
+  /// - 联网检索配置写入 [WebSearchService]；
+  /// - 文件权限直接更新 [fileAccessEnabled]。
+  ///
+  /// 因此这里不再无条件跑完整 [initialize]，只同步模型引用并等待可能正在
+  /// 进行的重配，避免每次返回都重载会话/记忆/MCP/Genkit 造成掉帧。
+  Future<bool> ensureCurrentModelReady() async {
+    final store = _store;
+    if (store == null) return initialize();
+    _model = store.selected;
+    if (_model == null) {
+      _initialized = false;
+      return false;
+    }
+    if (_initialized) return true;
+    final active = _initializing;
+    if (active != null) return active;
+    return initialize();
+  }
+
   /// 加载当前会话消息到 UI（分页：仅加载最近的 [initialTurnsCount] 个完整回合）
   /// 以用户消息为锚点：从尾部往前找最近的 N 条用户消息，
   /// 加载从最早那条用户消息到末尾的全部消息（完整回合，避免切分对话）
@@ -1813,9 +1860,8 @@ class AgentService {
     // 推进全局 seq 计数器到最大历史 seq + 1，
     // 防止应用重启后（_seqCounter 重置为 0）新消息 seq 与历史消息冲突导致顺序错乱
     if (_allSessionMessages.isNotEmpty) {
-      final maxSeq = _allSessionMessages
-          .map((m) => m.seq)
-          .reduce((a, b) => a > b ? a : b);
+      final maxSeq =
+          _allSessionMessages.map((m) => m.seq).reduce((a, b) => a > b ? a : b);
       if (maxSeq >= AgentMessage._seqCounter) {
         AgentMessage._seqCounter = maxSeq + 1;
       }
@@ -1862,14 +1908,16 @@ class AgentService {
             // 先清持久化中的 running 记录，避免重启后残留"待确认"UI
             _clearPendingConfirmation(msg.id);
             if (choice.isEmpty || choice == '取消') {
-              _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
+              _updateToolMessage(msg,
+                  status: AgentToolStatus.error, detail: '已取消');
             } else {
               _updateToolMessage(
                 msg,
                 status: AgentToolStatus.done,
-                detail: msg.confirmOptions != null && msg.confirmOptions!.isNotEmpty
-                    ? '已选择：$choice'
-                    : '已确认',
+                detail:
+                    msg.confirmOptions != null && msg.confirmOptions!.isNotEmpty
+                        ? '已选择：$choice'
+                        : '已确认',
               );
             }
             _pendingConfirmations.remove(msg.id);
@@ -2061,7 +2109,7 @@ class AgentService {
     if (model == null) return null;
     return '${model.id}|${model.provider.name}|${model.apiKey}|'
         '${model.model}|${model.baseUrl}|${model.toolsEnabled}|'
-        '${model.showReasoning}';
+        '${model.showReasoning}|${model.contextWindow}';
   }
 
   /// 共享 store 变化回调：模型配置/选中项变化 → 主动重新初始化 Agent
@@ -2210,9 +2258,8 @@ class AgentService {
 
     // 设置会话标题为首条用户消息
     if (msg.isUser && session.title == '新对话') {
-      session.title = msg.text.length > 20
-          ? msg.text.substring(0, 20)
-          : msg.text;
+      session.title =
+          msg.text.length > 20 ? msg.text.substring(0, 20) : msg.text;
     }
     session.messages.add(SessionMessage(
       isUser: msg.isUser,
@@ -2310,7 +2357,8 @@ class AgentService {
         final client = _newMcpClient(server);
         _mcpClients[server.id] = client;
         await client.connect().timeout(const Duration(seconds: 8));
-        final tools = await client.listTools().timeout(const Duration(seconds: 8));
+        final tools =
+            await client.listTools().timeout(const Duration(seconds: 8));
         for (final tool in tools) {
           final spec = McpToolRegistry.toSpec(server: server, tool: tool);
           if (_registeredMcpNames.contains(spec.name)) continue;
@@ -2447,7 +2495,8 @@ class AgentService {
   List<String>? _parseOptions(Object? raw) {
     List<String>? options;
     if (raw is List) {
-      options = raw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
+      options =
+          raw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
     } else if (raw is String && raw.trim().isNotEmpty) {
       options = raw
           .split(RegExp(r'[,，]'))
@@ -2665,7 +2714,8 @@ class AgentService {
       ..writeln('条目总数：${listing.totalFiles}　'
           '当前容器大小：${byteSize(listing.containerSize)}');
     if (listing.canGoUp) {
-      buf.writeln('可返回：${listing.parentDir.isEmpty ? '上一容器' : listing.parentDir}');
+      buf.writeln(
+          '可返回：${listing.parentDir.isEmpty ? '上一容器' : listing.parentDir}');
     }
     buf.writeln('── 条目 ──');
     final entries = listing.entries.take(200).toList();
@@ -2787,7 +2837,8 @@ class AgentService {
     final session = _sessionStore?.current;
     if (session == null) return;
     session.messages.removeWhere((m) =>
-        m.isToolResult && m.toolType == AgentToolType.confirm.name &&
+        m.isToolResult &&
+        m.toolType == AgentToolType.confirm.name &&
         m.toolDetail == question);
     session.messages.add(SessionMessage(
       isUser: false,
@@ -3086,8 +3137,7 @@ class AgentService {
           message: text,
         );
       }
-      if (!result.success &&
-          _lastTurnTrace?.turnId == _currentTurnId) {
+      if (!result.success && _lastTurnTrace?.turnId == _currentTurnId) {
         _lastTurnTrace!.toolErrors++;
       }
       // UI 保留完整结果；回灌模型的结果做长度保护，避免一次搜索/列表
@@ -3114,7 +3164,7 @@ class AgentService {
   }
 
   /// 回灌模型的工具结果字符上限（默认）
-  static const int _maxToolResultChars = 6000;
+  static const int _maxToolResultChars = 32000;
 
   /// 工具结果过长时截断并提示模型缩小范围（UI 展示不受影响）。
   ///
@@ -3147,21 +3197,85 @@ class AgentService {
   ) {
     if (spec == null || spec.params.isEmpty) return params;
     Map<String, dynamic>? out;
+    void put(String name, Object? value) {
+      out ??= Map<String, dynamic>.of(params);
+      out![name] = value;
+    }
+
     for (final p in spec.params) {
-      if (p.type != 'bool') continue;
       final v = params[p.name];
-      if (v is! String) continue;
-      final lower = v.toLowerCase();
-      if (lower == 'true') {
-        out ??= Map<String, dynamic>.of(params);
-        out[p.name] = true;
-      } else if (lower == 'false') {
-        out ??= Map<String, dynamic>.of(params);
-        out[p.name] = false;
+      if (v == null) continue;
+      final type = p.type.toLowerCase();
+      switch (type) {
+        case 'bool':
+        case 'boolean':
+          if (v is! String) break;
+          final lower = v.trim().toLowerCase();
+          if (lower == 'true') {
+            put(p.name, true);
+          } else if (lower == 'false') {
+            put(p.name, false);
+          }
+        case 'int':
+        case 'integer':
+          if (v is String) {
+            final parsed = num.tryParse(v.trim());
+            if (parsed != null) {
+              put(
+                p.name,
+                parsed is double && parsed == parsed.truncateToDouble()
+                    ? parsed.toInt()
+                    : parsed,
+              );
+            }
+          } else if (v is double && v == v.truncateToDouble()) {
+            put(p.name, v.toInt());
+          }
+        case 'number':
+        case 'double':
+          if (v is String) {
+            final parsed = num.tryParse(v.trim());
+            if (parsed != null) put(p.name, parsed);
+          }
+        case 'json':
+        case 'object':
+          if (v is String) {
+            final text = v.trim();
+            if (text.startsWith('{') && text.endsWith('}')) {
+              try {
+                final decoded = jsonDecode(text);
+                if (decoded is Map) put(p.name, decoded);
+              } catch (_) {
+                // 保留原始字符串，交给工具自身报可读错误。
+              }
+            }
+          }
+        case 'array':
+          if (v is String) {
+            final text = v.trim();
+            if (text.startsWith('[') && text.endsWith(']')) {
+              try {
+                final decoded = jsonDecode(text);
+                if (decoded is List) put(p.name, decoded);
+              } catch (_) {
+                // 保留原始字符串。
+              }
+            }
+          }
+        default:
+          break;
       }
     }
     return out ?? params;
   }
+
+  /// 测试接缝：验证模型参数归一化（字符串数字 / JSON 字符串等）。
+  @visibleForTesting
+  Map<String, dynamic> debugNormalizeParams(
+    Map<String, dynamic> params,
+    AgentToolSpec? spec,
+  ) =>
+      _normalizeParams(params, spec);
 
   /// 是否为异步长任务工具（工具调用后后台继续，消息卡保持 running 直到终态）
   bool _isAsyncTool(String name) =>
@@ -3188,8 +3302,7 @@ class AgentService {
       }
     } catch (e) {
       // 不再静默：chunk 结构异常会直接导致思考内容丢失，必须可见
-      _logAi('⚠ 读取 chunk.content 失败（思考可能丢失）',
-          data: {'error': e.toString()});
+      _logAi('⚠ 读取 chunk.content 失败（思考可能丢失）', data: {'error': e.toString()});
     }
     return '';
   }
@@ -3303,9 +3416,7 @@ class AgentService {
 
       final requestMessages = _requestMessages;
       final toolNames = toolsEnabled
-          ? (_lastTurnToolNames.isEmpty
-              ? _modelToolNames
-              : _lastTurnToolNames)
+          ? (_lastTurnToolNames.isEmpty ? _modelToolNames : _lastTurnToolNames)
           : const <String>[];
       final trace = AgentTurnTrace(
         turnId: _currentTurnId!,
@@ -3495,7 +3606,8 @@ class AgentService {
     final idx = messages.value.indexWhere((e) => e.id == msg.id);
     if (idx < 0) return;
     final current = messages.value[idx];
-    current.toolStatus = status ?? (done == true ? AgentToolStatus.done : AgentToolStatus.running);
+    current.toolStatus = status ??
+        (done == true ? AgentToolStatus.done : AgentToolStatus.running);
     if (detail != null) {
       current.toolDetail = detail;
       current.text = detail;
@@ -3543,7 +3655,8 @@ class AgentService {
       AgentNotificationService.instance.init();
       AgentNotificationService.instance.onToolDone(
         success: success,
-        message: '$toolLabel · ${message.length > 80 ? '${message.substring(0, 80)}…' : message}',
+        message:
+            '$toolLabel · ${message.length > 80 ? '${message.substring(0, 80)}…' : message}',
       );
     } catch (e) {
       appLog.error('AgentService: 工具终态通知失败 - $e');
@@ -3611,8 +3724,13 @@ class AgentService {
         return AgentToolType.snapshot;
       case webSearchToolName:
       case webFetchToolName:
-      case httpRequestToolName:
         return AgentToolType.web;
+      case webViewToolName:
+        return AgentToolType.webView;
+      case httpRequestToolName:
+        return AgentToolType.httpRequest;
+      case requestDebugToolName:
+        return AgentToolType.requestDebug;
       default:
         return name.startsWith('mcp__')
             ? AgentToolType.mcp
@@ -3673,19 +3791,49 @@ class AgentService {
   }
 
   /// 参数类型映射（协议注册表 type → AiAction 参数类型）
+  ///
+  /// The function-calling schema is generated from [AgentToolParam.type], so
+  /// the ActionController's [ActionParameter] types must match it: an integer
+  /// schema that is registered here as a string would reject every numeric
+  /// model argument ("limit must be a string"). Keep the switch total.
   ActionParameter _actionParameter(AgentToolParam p) {
-    if (p.type == 'bool') {
-      return ActionParameter.boolean(
-        name: p.name,
-        description: p.description,
-        required: p.required,
-      );
+    switch (p.type) {
+      case 'bool':
+      case 'boolean':
+        return ActionParameter.boolean(
+          name: p.name,
+          description: p.description,
+          required: p.required,
+        );
+      case 'int':
+      case 'integer':
+      case 'number':
+      case 'double':
+        return ActionParameter.number(
+          name: p.name,
+          description: p.description,
+          required: p.required,
+        );
+      case 'json':
+      case 'object':
+        return ActionParameter.object(
+          name: p.name,
+          description: p.description,
+          required: p.required,
+        );
+      case 'array':
+        return ActionParameter.array(
+          name: p.name,
+          description: p.description,
+          required: p.required,
+        );
+      default:
+        return ActionParameter.string(
+          name: p.name,
+          description: p.description,
+          required: p.required,
+        );
     }
-    return ActionParameter.string(
-      name: p.name,
-      description: p.description,
-      required: p.required,
-    );
   }
 
   /// 下载工具 AiAction（专用：同步段捕获消息卡/任务引用以驱动进度与续接）
@@ -3765,8 +3913,7 @@ class AgentService {
   Future<String> _webSearch(Map<String, dynamic> params) async {
     final query = params['query']?.toString().trim() ?? '';
     if (query.isEmpty) return '搜索关键词不能为空';
-    final count =
-        int.tryParse(params['count']?.toString() ?? '') ?? 0;
+    final count = int.tryParse(params['count']?.toString() ?? '') ?? 0;
     final freshness = params['freshness']?.toString();
     final site = params['site']?.toString();
     final service = WebSearchService.instance;
@@ -3801,12 +3948,12 @@ class AgentService {
     final url = params['url']?.toString().trim() ?? '';
     if (url.isEmpty) return 'URL 不能为空';
     final maxChars =
-        int.tryParse(params['maxChars']?.toString() ?? '') ?? 8000;
+        int.tryParse(params['maxChars']?.toString() ?? '') ?? 32000;
     final service = WebSearchService.instance;
     try {
       final page = await service.fetch(
         url,
-        maxChars: maxChars.clamp(500, 20000),
+        maxChars: maxChars.clamp(500, 128000),
       );
       _logAi('◆ 网页抓取', data: {
         'url': page.url,
@@ -3856,7 +4003,9 @@ class AgentService {
       return 'body 和 json 只能二选一';
     }
 
-    final maxChars = int.tryParse(params['maxChars']?.toString() ?? '') ?? 4000;
+    final maxChars =
+        int.tryParse(params['maxChars']?.toString() ?? '') ?? 32000;
+    final useCookies = await AgentCookieSettings.loadEnabled();
     try {
       final response = await WebSearchService.instance.httpRequest(
         url,
@@ -3865,6 +4014,7 @@ class AgentService {
         body: body,
         json: json,
         maxChars: maxChars,
+        cookies: useCookies ? UnifiedCookieJar.instance : null,
       );
       return _formatHttpResponse(response);
     } on WebSearchException catch (error) {
@@ -3903,8 +4053,7 @@ class AgentService {
   }
 
   String _formatHttpResponse(WebHttpResponse response) {
-    final status = StringBuffer()
-      ..write('[HTTP ${response.statusCode}');
+    final status = StringBuffer()..write('[HTTP ${response.statusCode}');
     if (response.reasonPhrase.isNotEmpty) {
       status.write(' ${response.reasonPhrase}');
     }
@@ -3934,6 +4083,24 @@ class AgentService {
     return buf.toString().trimRight();
   }
 
+  /// Headless WebView tool: render JS pages, interact, and collect requests.
+  Future<String> _webView(Map<String, dynamic> params) async {
+    try {
+      return await WebViewSessionService.instance.handle(params);
+    } catch (error) {
+      return 'WebView 失败：$error';
+    }
+  }
+
+  /// Request Debug library CRUD (save APIs discovered by the agent).
+  Future<String> _requestDebug(Map<String, dynamic> params) async {
+    try {
+      return await RequestDebugToolService.instance.handle(params);
+    } catch (error) {
+      return '请求调试失败：$error';
+    }
+  }
+
   Future<String> _searchApps(String keyword) async {
     if (keyword.isEmpty) return '搜索关键词不能为空';
 
@@ -3958,8 +4125,7 @@ class AgentService {
               if (channel == ChannelType.vivo && app.repositories.isNotEmpty) {
                 extraInfo = '  vivoId=${app.repositories}';
               }
-              results.add(
-                  '• ${app.name} (appId=${app.appId})'
+              results.add('• ${app.name} (appId=${app.appId})'
                   '$extraInfo\n'
                   '  简介: ${app.des}\n'
                   '  渠道: ${channel.code}');
@@ -3988,8 +4154,8 @@ class AgentService {
   /// [vivoId] vivo 渠道专用：vivo 应用在 vivo 应用市场的 ID（详情接口必需）
   /// [onStatus] 下载状态回调（用于 UI 显示进度）
   /// [installAfterDownload] 是否在下载完成后自动安装（默认 false，仅下载不安装）
-  Future<String> _downloadApp(String appId, String channel, String url,
-      String name, String version,
+  Future<String> _downloadApp(
+      String appId, String channel, String url, String name, String version,
       {String? vivoId,
       bool installAfterDownload = false,
       void Function(DownloadTask)? onStatus,
@@ -4004,7 +4170,8 @@ class AgentService {
       }
 
       // 方式1：已有完整 URL → 直接下载（只需下载服务，不依赖渠道注册）
-      if (url.isNotEmpty && (url.startsWith('http://') || url.startsWith('https://'))) {
+      if (url.isNotEmpty &&
+          (url.startsWith('http://') || url.startsWith('https://'))) {
         final task = await service.download(
           appId,
           name,
@@ -4041,8 +4208,8 @@ class AgentService {
         }
       }
 
-      final detailResult =
-          await manager.getAppDetailByCode(channel, detailAppId, forceRefresh: true);
+      final detailResult = await manager
+          .getAppDetailByCode(channel, detailAppId, forceRefresh: true);
       if (!detailResult.success || detailResult.data == null) {
         return '获取 $name 的下载信息失败: ${detailResult.error ?? '未知错误'}';
       }
@@ -4250,7 +4417,8 @@ class AgentService {
   /// [method] 统一通道分发的函数名（如 getConfig/versionOptions/switchVersion）；
   /// [params] 透传的参数 map。
   /// 数据读取经统一入口 `ChannelApi`/`RustChannelFacade`；未暴露的方法 → 提示降级。
-  Future<String> _runJsChannel(String channel, String method, dynamic params) async {
+  Future<String> _runJsChannel(
+      String channel, String method, dynamic params) async {
     if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
     if (method.isEmpty) return '执行脚本渠道方法需要 method';
 
@@ -4314,7 +4482,8 @@ class AgentService {
         for (final app in result.data!) {
           // 精确匹配包名
           if (app.appId == packageName && app.repositories.isNotEmpty) {
-            appLog.info('AgentService: 解析 vivoId - ${app.repositories} ($packageName)');
+            appLog.info(
+                'AgentService: 解析 vivoId - ${app.repositories} ($packageName)');
             return app.repositories;
           }
         }
@@ -4365,7 +4534,8 @@ class AgentService {
   }
 
   /// 管理已添加应用（list/add/remove/isAdded）
-  Future<String> _manageApp(String action, String appId, String channel, String name) async {
+  Future<String> _manageApp(
+      String action, String appId, String channel, String name) async {
     try {
       final addedAppsFacade = AddedAppsFacade.instance;
 
@@ -4373,9 +4543,8 @@ class AgentService {
         case 'list':
           final apps = await addedAppsFacade.list();
           if (apps.isEmpty) return '我的应用中还没有添加任何应用。';
-          final lines = apps
-              .map((a) => '• ${a.appId} 渠道: ${a.channelId}')
-              .toList();
+          final lines =
+              apps.map((a) => '• ${a.appId} 渠道: ${a.channelId}').toList();
           return '我的应用共 ${apps.length} 个：\n${lines.join('\n')}';
 
         case 'add':
@@ -4455,9 +4624,8 @@ class AgentService {
           if (result.data!.isEmpty) {
             return '$channelLabel 渠道暂无已添加应用';
           }
-          final lines = result.data!
-              .map((a) => '• ${a.name} (${a.appId})')
-              .toList();
+          final lines =
+              result.data!.map((a) => '• ${a.name} (${a.appId})').toList();
           return '$channelLabel 渠道应用共 ${result.data!.length} 个：\n${lines.join('\n')}';
 
         case 'add':
@@ -4566,7 +4734,8 @@ class AgentService {
         return '已检查所有应用，均是最新版本。';
       }
       final lines = updates
-          .map((u) => '• ${u.appName}: ${u.installedVersion} → ${u.latestVersion} ⬆ 可更新')
+          .map((u) =>
+              '• ${u.appName}: ${u.installedVersion} → ${u.latestVersion} ⬆ 可更新')
           .toList();
       return '发现 ${updates.length} 个可更新应用：\n${lines.join('\n')}';
     } catch (e) {
@@ -4600,8 +4769,10 @@ class AgentService {
           if (!await backupDir.exists()) {
             await backupDir.create(recursive: true);
           }
-          final timestamp =
-              DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+          final timestamp = DateTime.now()
+              .toIso8601String()
+              .replaceAll(':', '-')
+              .split('.')[0];
           final target = '${backupDir.path}/gstore_backup_$timestamp.tar.gz';
           await File(target).writeAsBytes(bytes);
           _updateToolStep('备份完成');
@@ -4644,7 +4815,8 @@ class AgentService {
           final items = await service.listTasks();
           if (items.isEmpty) return '暂无下载记录';
           final lines = items
-              .map((d) => '• ${d.appName} ${d.fileName} 状态: ${_statusLabel(d.status)}')
+              .map((d) =>
+                  '• ${d.appName} ${d.fileName} 状态: ${_statusLabel(d.status)}')
               .toList();
           return '下载记录共 ${items.length} 条：\n${lines.join('\n')}';
 
@@ -4753,8 +4925,7 @@ class AgentService {
     if (session == null) return false;
     final info = await workspaceService.selectWorkspace(workspaceId);
     if (info.isExternal &&
-        (info.uri == null ||
-            !await SafWorkspaceFs.hasPermission(info.uri!))) {
+        (info.uri == null || !await SafWorkspaceFs.hasPermission(info.uri!))) {
       throw const AgentWorkspaceException('外部工作区授权已失效，请重新选择目录');
     }
     currentWorkspace.value = info;
@@ -4812,9 +4983,7 @@ class AgentService {
   List<AgentToolSpec> _selectableToolSpecs() {
     final all = AgentToolCatalog.enabled;
     if (fileAccessEnabled.value) return all;
-    return all
-        .where((spec) => !_isFileTool(spec.name))
-        .toList(growable: false);
+    return all.where((spec) => !_isFileTool(spec.name)).toList(growable: false);
   }
 
   Future<String> _fileList(String dir) async {
@@ -4854,7 +5023,7 @@ class AgentService {
             '暂不返回内容';
       }
       final text = result.text!;
-      const maxChars = 16000;
+      const maxChars = 32000;
       final clipped = text.length > maxChars
           ? '${text.substring(0, maxChars)}\n…（已截断，原文件 ${_formatBytes(result.bytes)}）'
           : text;
@@ -4879,8 +5048,7 @@ class AgentService {
     final newText = params['newText']?.toString() ?? '';
     final replaceAll = params['replaceAll'] == true ||
         params['replaceAll']?.toString() == 'true';
-    if (!const {'write', 'create', 'edit', 'delete', 'move'}
-        .contains(action)) {
+    if (!const {'write', 'create', 'edit', 'delete', 'move'}.contains(action)) {
       return 'fileApprove 支持 action=write/create/edit/delete/move';
     }
     if (path.trim().isEmpty) return 'fileApprove 需要 path';
@@ -4906,7 +5074,9 @@ class AgentService {
           detail.write('大小：${_formatBytes(bytes)}\n');
           detail.write('操作：删除');
         case 'move':
-          if (target.trim().isEmpty) return 'fileApprove(action=move) 需要 target';
+          if (target.trim().isEmpty) {
+            return 'fileApprove(action=move) 需要 target';
+          }
           final result = await workspaceService.validateMove(path, target);
           bytes = result.bytes;
           detail.write('源：$path\n');
@@ -5093,7 +5263,8 @@ class AgentService {
   ///
   /// list/get 返回结构化 JSON（含类型/当前值/默认值/可选项/示例/分组），
   /// set/clear 返回结构化结果。修改后相关功能自动生效。
-  Future<String> _configManager(String action, String key, Object? value) async {
+  Future<String> _configManager(
+      String action, String key, Object? value) async {
     final service = ConfigService.instance;
     // Rust 注册表是唯一事实来源：先水合元数据，`has`/`isAgentAccessible`
     // 才能在首次工具调用时就拿到分组 key（C2）。
@@ -5226,8 +5397,8 @@ class AgentService {
   ///   消息体（当前 Rust/Dart 只拼 key）也不会泄露给 Agent。
   String _formatOpResult(ConfigOpResult result) {
     final key = result.key;
-    final sensitive = key != null &&
-        (ConfigService.instance.entry(key)?.sensitive ?? false);
+    final sensitive =
+        key != null && (ConfigService.instance.entry(key)?.sensitive ?? false);
     final value = sensitive && result.value != null ? '***' : result.value;
     final defaultValue =
         sensitive && result.defaultValue != null ? '***' : result.defaultValue;
@@ -5265,7 +5436,8 @@ class AgentService {
   }
 
   /// 主题控制
-  Future<String> _controlTheme(String action, String mode, String hexColor) async {
+  Future<String> _controlTheme(
+      String action, String mode, String hexColor) async {
     try {
       // 主题模块下线 → 注册表取不到服务，降级提示不抛
       final controller = ModuleManager.instance.get<IThemeService>();
@@ -5321,7 +5493,8 @@ class AgentService {
         case 'list':
           final sources = manager.getSources();
           if (sources.isEmpty) return '暂无 F-Droid 仓库';
-          final lines = sources.map((s) => '• ${s.name} (${s.repoUrl})').toList();
+          final lines =
+              sources.map((s) => '• ${s.name} (${s.repoUrl})').toList();
           return 'F-Droid 仓库共 ${sources.length} 个：\n${lines.join('\n')}';
 
         case 'load':
@@ -5356,7 +5529,8 @@ class AgentService {
   String _fdroidStatsLines(List<FdroidSourceStat> stats) {
     if (stats.isEmpty) return '暂无已配置的源';
     final lines = stats
-        .map((s) => '• ${s.source.name}: ${s.appCount} 个应用${s.enabled ? '' : '（未启用）'}')
+        .map((s) =>
+            '• ${s.source.name}: ${s.appCount} 个应用${s.enabled ? '' : '（未启用）'}')
         .toList();
     final total = stats.fold<int>(0, (sum, s) => sum + s.appCount);
     return '${lines.join('\n')}\n合计: $total 个应用';
@@ -5423,7 +5597,8 @@ class AgentService {
   }
 
   /// 已安装应用查询
-  Future<String> _installedApps(String action, String keyword, String packageName) async {
+  Future<String> _installedApps(
+      String action, String keyword, String packageName) async {
     try {
       switch (action) {
         case 'list':
@@ -5441,9 +5616,8 @@ class AgentService {
                           .contains(keyword.toLowerCase()))
                   .toList();
           if (matched.isEmpty) return '未找到包含"$keyword"的应用';
-          final lines = matched
-              .map((a) => '• ${a.name} (${a.packageName})')
-              .toList();
+          final lines =
+              matched.map((a) => '• ${a.name} (${a.packageName})').toList();
           final header = keyword.isEmpty
               ? '已安装应用共 ${matched.length} 个（完整列表）：'
               : '找到 ${matched.length} 个包含"$keyword"的应用（完整列表）：';
@@ -5452,7 +5626,9 @@ class AgentService {
         case 'check':
           if (packageName.isEmpty) return '检查需要 packageName';
           final isInstalled = await InstalledApps.isAppInstalled(packageName);
-          return (isInstalled == true) ? '$packageName 已安装' : '$packageName 未安装';
+          return (isInstalled == true)
+              ? '$packageName 已安装'
+              : '$packageName 未安装';
 
         case 'uninstall':
         case 'clearData':
@@ -5470,7 +5646,8 @@ class AgentService {
   }
 
   /// 管理已安装应用（卸载/清理/停止，需 Shizuku）
-  Future<String> _manageInstalledPackage(String action, String packageName) async {
+  Future<String> _manageInstalledPackage(
+      String action, String packageName) async {
     // 安装模块下线 → 注册表取不到服务，降级提示不抛
     final manager = ModuleManager.instance.get<InstallManager>();
     if (manager == null) return '安装模块未启用';
@@ -5497,7 +5674,9 @@ class AgentService {
       _ => false,
     };
 
-    return ok ? '已$actionLabel $packageName' : '$actionLabel失败，请检查 Shizuku 权限或应用是否可操作';
+    return ok
+        ? '已$actionLabel $packageName'
+        : '$actionLabel失败，请检查 Shizuku 权限或应用是否可操作';
   }
 
   /// 停止当前生成（对话流 + 工具调用）
@@ -5587,8 +5766,7 @@ class AgentService {
       if (configured.provider == AgentLlmProvider.openai) {
         shadowHttpClient = await buildAgentHttpClient();
       }
-      final plugin =
-          _buildPlugin(configured, httpClient: shadowHttpClient);
+      final plugin = _buildPlugin(configured, httpClient: shadowHttpClient);
       final ai = Genkit(plugins: [plugin, SkillsPlugin()]);
       final skillDir = await _skillStore.ensureExtracted();
       final runtime = GenkitReadOnlyShadowRuntime.create(
@@ -5619,8 +5797,7 @@ class AgentService {
       if (configured.provider == AgentLlmProvider.openai) {
         shadowHttpClient = await buildAgentHttpClient();
       }
-      final plugin =
-          _buildPlugin(configured, httpClient: shadowHttpClient);
+      final plugin = _buildPlugin(configured, httpClient: shadowHttpClient);
       final ai = Genkit(plugins: [plugin, SkillsPlugin()]);
       final skillDir = await _skillStore.ensureExtracted();
       final runtime = GenkitReadOnlyShadowRuntime.create(
@@ -5806,12 +5983,17 @@ class AgentService {
     final ai = debugAiOverride ?? _ai!;
     // 无工具模式（包括达到最大步数后的强制总结）不加载 Skills Middleware，
     // 避免它自动追加 use_skill 工具。
-    final skillDir = toolNames.isEmpty ? null : await _skillStore.ensureExtracted();
+    final skillDir =
+        toolNames.isEmpty ? null : await _skillStore.ensureExtracted();
     final stream = ai.generateStream<dynamic, void>(
       model: model,
       messages: messages,
       toolNames: toolNames.isEmpty ? null : toolNames,
-      use: skillDir == null ? null : [skills(skillPaths: [skillDir.path])],
+      use: skillDir == null
+          ? null
+          : [
+              skills(skillPaths: [skillDir.path])
+            ],
       // 本循环自己执行工具；maxTurns=1 防止 Genkit 再次进入内部工具循环
       maxTurns: 1,
       returnToolRequests: true,
@@ -5993,7 +6175,8 @@ class AgentService {
   void _accumulateUsage(AgentTurnTrace trace, GenerateResult<dynamic> result) {
     final usage = result.usage;
     if (usage == null) return;
-    int? sum(int? a, int? b) => (a == null && b == null) ? null : (a ?? 0) + (b ?? 0);
+    int? sum(int? a, int? b) =>
+        (a == null && b == null) ? null : (a ?? 0) + (b ?? 0);
     trace.inputTokens = sum(trace.inputTokens, usage.inputTokens);
     trace.outputTokens = sum(trace.outputTokens, usage.outputTokens);
     trace.totalTokens = sum(trace.totalTokens, usage.totalTokens);
@@ -6005,7 +6188,7 @@ class AgentService {
     if (!_initialized) {
       final ok = await initialize();
       if (!ok) {
-        _addAssistantMessage('请先在设置中配置 LLM 模型（我的 → AI 助手 → 模型设置）。',
+        _addAssistantMessage('请先在设置中配置 LLM 模型（我的 → AI 助手 → 设置）。',
             isToolResult: true);
         return;
       }
@@ -6226,8 +6409,7 @@ class AgentService {
       if (m.role != Role.system) return false;
       return m.content.any((p) {
         final text = p.text ?? '';
-        return text.startsWith('[UI hint]') ||
-            text.startsWith('[早期对话摘要]');
+        return text.startsWith('[UI hint]') || text.startsWith('[早期对话摘要]');
       });
     });
   }
@@ -6243,9 +6425,7 @@ class AgentService {
   }
 
   void _addAssistantMessage(String text,
-      {AgentToolType? toolType,
-      bool isToolResult = false,
-      String? turnId}) {
+      {AgentToolType? toolType, bool isToolResult = false, String? turnId}) {
     final msg = AgentMessage(
       isUser: false,
       text: text,

@@ -15,6 +15,8 @@ import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 
+import 'package:gstore/core/http/cookie_sync.dart';
+
 import 'url_guard.dart';
 import 'web_search_models.dart';
 
@@ -24,8 +26,8 @@ class WebFetchClient {
     this.jinaApiKey = '',
     this.timeout = const Duration(seconds: 10),
     this.jinaTimeout = const Duration(seconds: 12),
-  }) : _client = client ?? http.Client(),
-       _ownsClient = client == null;
+  })  : _client = client ?? http.Client(),
+        _ownsClient = client == null;
 
   final String jinaApiKey;
   final Duration timeout;
@@ -74,7 +76,7 @@ class WebFetchClient {
   static final RegExp _headerNamePattern =
       RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
 
-  Future<WebFetchPage> fetch(String rawUrl, {int maxChars = 8000}) async {
+  Future<WebFetchPage> fetch(String rawUrl, {int maxChars = 32000}) async {
     final uri = UrlGuard.parseHttpUrl(rawUrl);
     await UrlGuard.assertPublicHost(uri);
 
@@ -105,9 +107,7 @@ class WebFetchClient {
       if (error is WebSearchException && error.code == 'blocked_url') {
         rethrow; // 内网/非法跳转必须原样上抛，不能降级成"网络失败"
       }
-      failure = error is WebSearchException
-          ? error.message
-          : '直连抓取失败：$error';
+      failure = error is WebSearchException ? error.message : '直连抓取失败：$error';
       debugPrint('WebFetchClient: $failure');
     }
 
@@ -161,6 +161,7 @@ class WebFetchClient {
     Map<String, String> headers = const <String, String>{},
     String? body,
     int maxChars = 4000,
+    CookieSyncPort? cookies,
   }) async {
     final verb = method.trim().toUpperCase();
     if (!requestMethods.contains(verb)) {
@@ -185,13 +186,41 @@ class WebFetchClient {
     }
 
     for (var hop = 0; hop <= UrlGuard.maxRedirects; hop++) {
+      final hopHeaders = Map<String, String>.of(safeHeaders);
+      if (cookies != null) {
+        var explicit = '';
+        for (final entry in hopHeaders.entries) {
+          if (entry.key.toLowerCase() == 'cookie') {
+            explicit = entry.value;
+            break;
+          }
+        }
+        hopHeaders.removeWhere((key, _) => key.toLowerCase() == 'cookie');
+        try {
+          final merged = await cookies.cookieHeaderForUri(
+            uri,
+            explicit: explicit,
+          );
+          if (merged.isNotEmpty) hopHeaders['Cookie'] = merged;
+        } catch (error) {
+          debugPrint('WebFetchClient: Cookie 同步失败 - $error');
+        }
+      }
+
       final request = http.Request(currentMethod, uri)
         ..followRedirects = false
-        ..headers.addAll(_mergedRequestHeaders(safeHeaders));
+        ..headers.addAll(_mergedRequestHeaders(hopHeaders));
       if (currentBody != null && currentBody.isNotEmpty) {
         request.body = currentBody;
       }
       final streamed = await _client.send(request).timeout(timeout);
+      if (cookies != null) {
+        try {
+          await cookies.captureResponse(uri, streamed.headers);
+        } catch (error) {
+          debugPrint('WebFetchClient: Cookie 回写失败 - $error');
+        }
+      }
       final response = await http.Response.fromStream(streamed);
       final location = response.headers['location'];
       final isRedirect = response.statusCode >= 300 &&
@@ -260,7 +289,8 @@ class WebFetchClient {
   Map<String, String> _mergedRequestHeaders(Map<String, String> custom) {
     final out = <String, String>{
       'User-Agent': _userAgent,
-      'Accept': 'application/json, text/plain;q=0.9, text/html;q=0.8, */*;q=0.5',
+      'Accept':
+          'application/json, text/plain;q=0.9, text/html;q=0.8, */*;q=0.5',
     };
     for (final entry in custom.entries) {
       _putHeader(out, entry.key, entry.value);
@@ -379,8 +409,9 @@ class WebFetchClient {
     final key = jinaApiKey.trim();
     if (key.isNotEmpty) headers['Authorization'] = 'Bearer $key';
 
-    final response =
-        await _client.get(Uri.parse(target), headers: headers).timeout(jinaTimeout);
+    final response = await _client
+        .get(Uri.parse(target), headers: headers)
+        .timeout(jinaTimeout);
     if (response.statusCode != 200) {
       throw WebSearchException(
         'network',
@@ -436,8 +467,7 @@ class WebFetchClient {
         // 落到 UTF-8（容错解码）
       }
     }
-    return const Utf8Decoder(allowMalformed: true)
-        .convert(response.bodyBytes);
+    return const Utf8Decoder(allowMalformed: true).convert(response.bodyBytes);
   }
 
   /// HTML → 正文：去掉脚本/样式/导航/页脚等，块级元素按段落拼接。
@@ -451,7 +481,8 @@ class WebFetchClient {
       doc.querySelector('title')?.text,
     ]);
     final publishedAt = _firstText([
-      doc.querySelector('meta[property="article:published_time"]')
+      doc
+          .querySelector('meta[property="article:published_time"]')
           ?.attributes['content'],
       doc.querySelector('time')?.attributes['datetime'],
     ]);
@@ -490,9 +521,29 @@ class WebFetchClient {
   }
 
   static const Set<String> _blockTags = {
-    'p', 'div', 'section', 'article', 'li', 'ul', 'ol', 'table', 'tr',
-    'blockquote', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br',
-    'dd', 'dt', 'figure', 'figcaption',
+    'p',
+    'div',
+    'section',
+    'article',
+    'li',
+    'ul',
+    'ol',
+    'table',
+    'tr',
+    'blockquote',
+    'pre',
+    'code',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'br',
+    'dd',
+    'dt',
+    'figure',
+    'figcaption',
   };
 
   static void _collectBlocks(dom.Element element, List<String> out) {

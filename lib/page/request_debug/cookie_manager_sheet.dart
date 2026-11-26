@@ -4,14 +4,15 @@
 /// 手动新增。全部经**统一底部弹层系统**（[AppSheet] / [AppSheetScaffold]）
 /// 呈现，颜色 / 字号取主题令牌，符合 `AGENTS.md` 设计系统约束。
 ///
-/// **持久化默认关闭**：本弹层**不**把 jar 落盘到任何 store 键。理由是会话 /
-/// 认证 cookie 属敏感值，明文落盘不安全；待安全存储（plan todo 9）接入后再
-/// 以「默认关 + 显式开启」的方式持久化。当前 jar 仅存活于运行期内存。
+/// **统一 Cookie 层**：jar 生产实例由 [UnifiedCookieJar] 提供，Cookie 会
+/// 持久化到安全存储，并与 Android WebView 原生 Cookie 双向同步。清除操作
+/// 会同时清理 WebView 对应登录态（全部清除会清空 WebView Cookie）。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
@@ -24,15 +25,18 @@ class CookieManagerSheet extends StatefulWidget {
   /// 待管理的 jar（由调用方持有，变更就地进行）。
   final DebugCookieJar jar;
 
-  /// 以统一底部弹层打开管理器。
+  /// 以统一底部弹层打开管理器（先加载持久化 Cookie）。
   static Future<void> show(
     BuildContext context, {
     required DebugCookieJar jar,
-  }) =>
-      AppSheet.showCustom<void>(
-        context: context,
-        builder: (_) => CookieManagerSheet(jar: jar),
-      );
+  }) async {
+    await jar.ensureLoaded();
+    if (!context.mounted) return;
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (_) => CookieManagerSheet(jar: jar),
+    );
+  }
 
   @override
   State<CookieManagerSheet> createState() => _CookieManagerSheetState();
@@ -52,21 +56,28 @@ class _CookieManagerSheetState extends State<CookieManagerSheet> {
     super.dispose();
   }
 
-  void _clearAll() {
-    setState(() {
-      widget.jar.clear();
-      _error = null;
-    });
+  Future<void> _clearAll() async {
+    if (widget.jar.hasWebViewBridge) {
+      final ok = await AppDialogs.showConfirmSheet(
+        title: '清除全部 Cookie',
+        message: '将同时清除 WebView 登录态（所有站点），并删除持久化 Cookie。',
+        confirmText: '清除',
+        isDangerous: true,
+      );
+      if (ok != true || !mounted) return;
+    }
+    await widget.jar.clearAllCookies(includeWebView: true);
+    if (!mounted) return;
+    setState(() => _error = null);
   }
 
-  void _clearHost(String host) {
-    setState(() {
-      widget.jar.clearHost(host);
-      _error = null;
-    });
+  Future<void> _clearHost(String host) async {
+    await widget.jar.clearHostCookies(host, includeWebView: true);
+    if (!mounted) return;
+    setState(() => _error = null);
   }
 
-  void _add() {
+  Future<void> _add() async {
     final host = _host.text.trim();
     final name = _name.text.trim();
     final value = _value.text;
@@ -74,10 +85,18 @@ class _CookieManagerSheetState extends State<CookieManagerSheet> {
       setState(() => _error = 'Host 与 Cookie 名不能为空');
       return;
     }
-    // 经标准 `Set-Cookie` 解析路径写入，复用 jar 既有的安全校验，不新增写 API。
-    widget.jar.store(host, <String, List<String>>{
-      'set-cookie': <String>['$name=$value; Path=/'],
-    });
+    final uri = Uri.tryParse('https://$host/');
+    if (uri == null || uri.host.isEmpty) {
+      setState(() => _error = 'Host 格式无效');
+      return;
+    }
+    // 走标准 Set-Cookie 解析路径，复用 domain/path 校验；同时持久化并同步
+    // 到 WebView，避免只在请求调试里生效。
+    await widget.jar.captureResponse(
+      uri,
+      <String, String>{'set-cookie': '$name=$value; Path=/'},
+    );
+    if (!mounted) return;
     setState(() {
       _host.clear();
       _name.clear();
@@ -93,7 +112,7 @@ class _CookieManagerSheetState extends State<CookieManagerSheet> {
     final snapshot = widget.jar.snapshot();
     return AppSheetScaffold(
       title: 'Cookie 管理',
-      subtitle: '按域名查看与管理请求调试使用的 Cookie jar',
+      subtitle: '与 WebView 登录态同步，持久化到安全存储',
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

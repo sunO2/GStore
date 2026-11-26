@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 
 import 'curl_codec.dart' as curl_codec;
+import 'debug_cookie_jar.dart';
 import 'debug_models.dart';
 import 'debug_response.dart';
 import 'debug_secrets.dart';
@@ -62,8 +63,7 @@ class UnavailableCaptureRulesPort implements CaptureRulesPort {
   const UnavailableCaptureRulesPort();
 
   /// 未接线提示（测试据此断言）。
-  static const String message =
-      '捕获改写规则端口尚未接线（生产适配器在 todo 35 提供）';
+  static const String message = '捕获改写规则端口尚未接线（生产适配器在 todo 35 提供）';
 
   @override
   Future<List<DebugRewriteRule>> getRules() =>
@@ -212,6 +212,7 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
     DebugStoreDirectoryProvider? directoryProvider,
     DebugSecureStorage? secureStorage,
     DebugSender? sender,
+    DebugCookieJar? cookieJar,
     CaptureRulesPort? captureRules,
   }) =>
       DefaultRequestDebugFacade(
@@ -219,7 +220,10 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
           directoryProvider: directoryProvider,
           secureStorage: secureStorage ?? const FlutterDebugSecureStorage(),
         ),
-        sender: sender ?? DebugSender(),
+        sender: sender ??
+            DebugSender(
+              cookieJar: cookieJar ?? DebugCookieJar(),
+            ),
         captureRules: captureRules,
       );
 
@@ -284,7 +288,8 @@ class DefaultRequestDebugFacade implements RequestDebugFacade {
       );
 
   @override
-  curl_codec.CurlParseResult parseCurl(String curlText) => curl_codec.parseCurl(curlText);
+  curl_codec.CurlParseResult parseCurl(String curlText) =>
+      curl_codec.parseCurl(curlText);
 
   @override
   String toCurl(DebugRequest request) => curl_codec.toCurl(request);

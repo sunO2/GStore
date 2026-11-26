@@ -972,6 +972,12 @@ Color _timelineToolColor(AgentToolType? type) {
       return Colors.teal;
     case AgentToolType.web:
       return Colors.lightBlue;
+    case AgentToolType.webView:
+      return Colors.deepOrange;
+    case AgentToolType.httpRequest:
+      return Colors.blueGrey;
+    case AgentToolType.requestDebug:
+      return Colors.amber;
     case null:
     case AgentToolType.confirm:
       return Colors.indigo;
@@ -1014,6 +1020,12 @@ IconData _timelineToolIcon(AgentToolType? type) {
       return TablerIcons.plug_connected;
     case AgentToolType.web:
       return TablerIcons.world;
+    case AgentToolType.webView:
+      return TablerIcons.browser;
+    case AgentToolType.httpRequest:
+      return TablerIcons.api;
+    case AgentToolType.requestDebug:
+      return TablerIcons.bookmark;
     case null:
     case AgentToolType.confirm:
       return TablerIcons.help_circle;
@@ -1023,42 +1035,48 @@ IconData _timelineToolIcon(AgentToolType? type) {
 String _timelineToolLabel(AgentToolType? type) {
   switch (type) {
     case AgentToolType.search:
-      return '🔍 搜索应用';
+      return '搜索应用';
     case AgentToolType.download:
-      return '⬇️ 下载应用';
+      return '下载应用';
     case AgentToolType.install:
-      return '📦 安装应用';
+      return '安装应用';
     case AgentToolType.manageApp:
-      return '🗂️ 管理应用';
+      return '管理应用';
     case AgentToolType.appInfo:
-      return 'ℹ️ 应用详情';
+      return '应用详情';
     case AgentToolType.update:
-      return '🔄 检查更新';
+      return '检查更新';
     case AgentToolType.backup:
-      return '💾 备份管理';
+      return '备份管理';
     case AgentToolType.manageDownload:
-      return '⬇️ 下载管理';
+      return '下载管理';
     case AgentToolType.theme:
-      return '🎨 主题设置';
+      return '主题设置';
     case AgentToolType.fdroid:
-      return '🧪 F-Droid 仓库';
+      return 'F-Droid 仓库';
     case AgentToolType.webdav:
-      return '☁️ WebDAV 同步';
+      return 'WebDAV 同步';
     case AgentToolType.installed:
-      return '📱 已安装应用';
+      return '已安装应用';
     case AgentToolType.config:
-      return '⚙️ 配置管理';
+      return '配置管理';
     case AgentToolType.files:
-      return '📁 文件工作区';
+      return '文件工作区';
     case AgentToolType.snapshot:
-      return '📸 应用快照';
+      return '应用快照';
     case AgentToolType.mcp:
-      return '🔌 MCP 工具';
+      return 'MCP 工具';
     case AgentToolType.web:
-      return '🌐 联网检索';
+      return '联网检索';
+    case AgentToolType.webView:
+      return '网页调试';
+    case AgentToolType.httpRequest:
+      return 'HTTP 接口';
+    case AgentToolType.requestDebug:
+      return '请求调试';
     case null:
     case AgentToolType.confirm:
-      return '❓ 确认操作';
+      return '确认操作';
   }
 }
 

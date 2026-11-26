@@ -20,7 +20,13 @@
 /// * **跨子域同名**：回发时按「名 + Path」去重，避免重复发送。
 library;
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show HttpDate;
+
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import 'package:gstore/core/http/cookie_sync.dart';
 
 import 'debug_models.dart';
 
@@ -31,6 +37,7 @@ class _StoredCookie {
     this.expiresAt, {
     this.hostOnly = false,
     this.secure = false,
+    this.httpOnly = false,
     this.sameSite,
   });
 
@@ -45,6 +52,9 @@ class _StoredCookie {
   /// 带 `Secure` 属性 → 仅经 https 回发。
   final bool secure;
 
+  /// 服务端 HttpOnly 标记（仅用于回写 WebView / 持久化）。
+  final bool httpOnly;
+
   /// `SameSite` 属性（规范化为 `Strict` / `Lax` / `None`）；无 / 非法为 `null`。
   ///
   /// 模型 [DebugCookie] 无该字段，故仅内部存储，供诊断 / 未来回发策略使用。
@@ -57,13 +67,36 @@ class _StoredCookie {
 }
 
 /// 手写 Cookie jar：解析 `Set-Cookie`、按 host 存、可查看 / 清除 / 回发。
-class DebugCookieJar {
+///
+/// 生产环境额外注入 [CookieBridgePort]（WebView 原生 Cookie 存储）与
+/// [CookiePersistencePort]（安全存储），即可作为 WebView / httpRequest /
+/// 请求调试共用的统一 Cookie 层。
+class DebugCookieJar implements CookieSyncPort {
+  DebugCookieJar({
+    CookieBridgePort? bridge,
+    CookiePersistencePort? persistence,
+  })  : _bridge = bridge,
+        _persistence = persistence;
+
+  final CookieBridgePort? _bridge;
+  final CookiePersistencePort? _persistence;
+
+  /// 是否已完成持久化 Cookie 的首次加载。
+  bool _loaded = false;
+  Future<void>? _loading;
+
+  /// 串行化落盘，避免并发 Set-Cookie 写入互相覆盖。
+  Future<void> _saveChain = Future<void>.value();
+
   /// host（小写）→ cookie 键 → 条目。cookie 键 = `domain|path|name`。
   final Map<String, Map<String, _StoredCookie>> _byHost =
       <String, Map<String, _StoredCookie>>{};
 
   /// 是否没有任何 cookie（含全部 host）。
   bool get isEmpty => _byHost.values.every((m) => m.isEmpty);
+
+  /// 是否接入了 WebView 原生 Cookie 存储（用于 UI 清除前确认）。
+  bool get hasWebViewBridge => _bridge != null;
 
   /// 从某个 host 的响应头收集 `Set-Cookie` 并存入 jar。
   ///
@@ -83,7 +116,8 @@ class DebugCookieJar {
     if (rawValues.isEmpty) return;
     final hostKey = _canonicalHost(host);
     final defaultPath = _defaultPath(path);
-    final bucket = _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
+    final bucket =
+        _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
     for (final raw in rawValues) {
       for (final stored in _parseStored(
         raw,
@@ -107,7 +141,8 @@ class DebugCookieJar {
   ///
   /// [secure] 表示本次请求是否 https；非 https 时不回发 `Secure` cookie。
   /// 无匹配 / 全部过期时返回空串。
-  String cookieHeaderFor(String host, {String path = '/', bool secure = false}) {
+  String cookieHeaderFor(String host,
+      {String path = '/', bool secure = false}) {
     // 跨子域同名去重：同名 + 同 Path 只保留一个（最新存储者胜出，等价于
     // RFC 6265 单存储覆盖语义）；同名但不同 Path 仍各自保留。
     final order = <String>[];
@@ -177,6 +212,315 @@ class DebugCookieJar {
     return Map<String, List<DebugCookie>>.unmodifiable(result);
   }
 
+  // ==================== 统一 Cookie 同步（WebView / 持久化） ====================
+
+  @override
+  Future<void> ensureLoaded() {
+    if (_loaded) return Future<void>.value();
+    final active = _loading;
+    if (active != null) return active;
+    final future = _loadPersisted();
+    _loading = future;
+    return future.whenComplete(() {
+      if (identical(_loading, future)) _loading = null;
+    });
+  }
+
+  Future<void> _loadPersisted() async {
+    final persistence = _persistence;
+    if (persistence != null) {
+      final raw = await persistence.read();
+      if (raw != null && raw.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            _importState(
+              decoded.map((key, value) => MapEntry(key.toString(), value)),
+            );
+          }
+        } catch (error) {
+          debugPrint('DebugCookieJar: 解析持久化 Cookie 失败 - $error');
+        }
+      }
+    }
+    _loaded = true;
+  }
+
+  /// 导出可持久化的完整状态（含属性、过期时间与 host-only 标记）。
+  String exportJson() {
+    final cookies = <Map<String, dynamic>>[];
+    for (final entry in _byHost.entries) {
+      entry.value.removeWhere((_, value) => value.isExpired);
+      for (final stored in entry.value.values) {
+        cookies.add(<String, dynamic>{
+          'host': entry.key,
+          ..._toSyncCookie(stored).toJson(),
+        });
+      }
+    }
+    _byHost.removeWhere((_, bucket) => bucket.isEmpty);
+    return jsonEncode(<String, dynamic>{
+      'version': 1,
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      'cookies': cookies,
+    });
+  }
+
+  void _importState(Map<String, dynamic> root) {
+    final rawCookies = root['cookies'];
+    if (rawCookies is! List) return;
+    _byHost.clear();
+    for (final raw in rawCookies) {
+      if (raw is! Map) continue;
+      final map = raw.map((key, value) => MapEntry(key.toString(), value));
+      final cookie = SyncCookie.fromJson(map);
+      if (cookie.name.isEmpty || cookie.isExpired) continue;
+      final host = (map['host']?.toString() ?? cookie.domain ?? '').trim();
+      if (host.isEmpty) continue;
+      _putSyncCookie(host, cookie, persist: false);
+    }
+  }
+
+  /// 从 WebView 导入一批 Cookie（同 host 下按 domain/path/name 覆盖）。
+  void importSyncCookies(String host, Iterable<SyncCookie> cookies) {
+    var changed = false;
+    for (final cookie in cookies) {
+      changed = _putSyncCookie(host, cookie, persist: false) || changed;
+    }
+    if (changed) unawaited(_persist());
+  }
+
+  @override
+  Future<String> cookieHeaderForUri(Uri uri, {String explicit = ''}) async {
+    await ensureLoaded();
+    final bridge = _bridge;
+    if (bridge != null) {
+      try {
+        final webCookies = await bridge.readCookies(uri);
+        if (webCookies != null) {
+          var changed = _reconcileFromWebView(uri, webCookies);
+          for (final cookie in webCookies) {
+            changed =
+                _putSyncCookie(uri.host, cookie, persist: false) || changed;
+          }
+          if (changed) await _persist();
+        }
+      } catch (error) {
+        debugPrint('DebugCookieJar: 同步 WebView Cookie 失败 - $error');
+      }
+    }
+    final jarHeader = cookieHeaderFor(
+      uri.host,
+      path: uri.path,
+      secure: uri.scheme == 'https',
+    );
+    return mergeCookieHeader(explicit, jarHeader);
+  }
+
+  @override
+  Future<void> captureResponse(
+    Uri uri,
+    Map<String, String> headers,
+  ) async {
+    await ensureLoaded();
+    final rawValues = <String>[];
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() == 'set-cookie' &&
+          entry.value.trim().isNotEmpty) {
+        rawValues.add(entry.value);
+      }
+    }
+    if (rawValues.isEmpty) return;
+
+    final hostKey = _canonicalHost(uri.host);
+    if (hostKey.isEmpty) return;
+    final defaultPath = _defaultPath(uri.path);
+    final bucket =
+        _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
+    final accepted = <SyncCookie>[];
+    final expired = <SyncCookie>[];
+    for (final raw in rawValues) {
+      for (final stored in _parseStored(
+        raw,
+        defaultDomain: hostKey,
+        defaultPath: defaultPath,
+      )) {
+        if (!_isAllowedForHost(stored, hostKey)) continue;
+        final key = _cookieKey(stored.cookie);
+        final sync = _toSyncCookie(stored);
+        if (stored.isExpired) {
+          bucket.remove(key);
+          expired.add(sync);
+        } else {
+          bucket[key] = stored;
+          accepted.add(sync);
+        }
+      }
+    }
+    bucket.removeWhere((_, value) => value.isExpired);
+    if (bucket.isEmpty) _byHost.remove(hostKey);
+
+    if (accepted.isNotEmpty || expired.isNotEmpty) {
+      await _persist();
+    }
+
+    final bridge = _bridge;
+    if (bridge != null) {
+      for (final cookie in accepted) {
+        await bridge.writeCookie(uri, cookie);
+      }
+      for (final cookie in expired) {
+        await bridge.deleteCookie(uri, cookie);
+      }
+    }
+  }
+
+  /// 清空 jar + 持久化；[includeWebView] 为 true 时同步清空 WebView 登录态。
+  Future<void> clearAllCookies({bool includeWebView = false}) async {
+    _byHost.clear();
+    final persistence = _persistence;
+    if (persistence != null) {
+      await persistence.clear();
+    } else {
+      await _persist();
+    }
+    if (includeWebView) {
+      await _bridge?.deleteAllCookies();
+    }
+  }
+
+  /// 清除某个 host 的 Cookie；[includeWebView] 时同步删除 WebView 对应项。
+  Future<void> clearHostCookies(
+    String host, {
+    bool includeWebView = false,
+  }) async {
+    final hostKey = _canonicalHost(host);
+    final cookies = snapshot()[hostKey] ?? const <DebugCookie>[];
+    _byHost.remove(hostKey);
+    await _persist();
+    if (includeWebView && _bridge != null) {
+      final base = Uri(scheme: 'https', host: hostKey);
+      for (final cookie in cookies) {
+        await _bridge.deleteCookie(
+          base,
+          _toSyncCookieFromDebug(hostKey, cookie),
+        );
+      }
+    }
+  }
+
+  SyncCookie _toSyncCookie(_StoredCookie stored) => SyncCookie(
+        name: stored.cookie.name,
+        value: stored.cookie.value,
+        domain: stored.cookie.domain,
+        path: stored.cookie.path ?? '/',
+        expiresAt: stored.expiresAt,
+        hostOnly: stored.hostOnly,
+        secure: stored.secure,
+        httpOnly: stored.httpOnly,
+        sameSite: stored.sameSite,
+      );
+
+  SyncCookie _toSyncCookieFromDebug(String host, DebugCookie cookie) =>
+      SyncCookie(
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain ?? host,
+        path: cookie.path ?? '/',
+        hostOnly: cookie.domain == null || cookie.domain == host,
+        secure: true,
+        httpOnly: true,
+      );
+
+  _StoredCookie _storedFromSync(String hostKey, SyncCookie cookie) =>
+      _StoredCookie(
+        DebugCookie(
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain ?? hostKey,
+          path: cookie.path,
+        ),
+        cookie.expiresAt,
+        hostOnly: cookie.hostOnly,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        sameSite: cookie.sameSite,
+      );
+
+  /// 以 WebView 为准，删除该 URL 路径生效但 WebView 已不存在的 Cookie。
+  ///
+  /// 用于“在 WebView 里退出登录”后不再从持久化 jar 回发旧登录态。
+  /// 只对当前请求 host/path 生效的条目对账；读取失败（null）时不做删除。
+  bool _reconcileFromWebView(Uri uri, List<SyncCookie> webCookies) {
+    final hostKey = _canonicalHost(uri.host);
+    if (hostKey.isEmpty) return false;
+    final webKeys = <String>{
+      for (final cookie in webCookies)
+        _cookieKey(_storedFromSync(hostKey, cookie).cookie),
+    };
+    var changed = false;
+    for (final entry in _byHost.entries.toList()) {
+      entry.value.removeWhere((key, stored) {
+        if (!_hostMatches(stored, hostKey)) return false;
+        if (!_pathMatches(uri.path, _cookiePath(stored.cookie))) return false;
+        if (webKeys.contains(key)) return false;
+        // 会话 Cookie 必须跨重启保留：WebView 的 session cookie 是否落盘
+        // 取决于系统版本，不能因为本次读不到就删除。仅对带过期时间的
+        // Cookie 做“WebView 已删除”对账。
+        if (stored.expiresAt == null) return false;
+        changed = true;
+        return true;
+      });
+      if (entry.value.isEmpty) _byHost.remove(entry.key);
+    }
+    return changed;
+  }
+
+  bool _putSyncCookie(
+    String host,
+    SyncCookie cookie, {
+    bool persist = true,
+  }) {
+    final hostKey = _canonicalHost(host);
+    if (hostKey.isEmpty || cookie.name.isEmpty) return false;
+    final stored = _storedFromSync(hostKey, cookie);
+    if (!_isAllowedForHost(stored, hostKey)) return false;
+
+    final bucket =
+        _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
+    final key = _cookieKey(stored.cookie);
+    if (stored.isExpired) {
+      final existed = bucket.remove(key) != null;
+      if (bucket.isEmpty) _byHost.remove(hostKey);
+      if (persist && existed) unawaited(_persist());
+      return existed;
+    }
+
+    final previous = bucket[key];
+    final changed = previous == null ||
+        previous.cookie.value != stored.cookie.value ||
+        previous.expiresAt != stored.expiresAt ||
+        previous.hostOnly != stored.hostOnly ||
+        previous.secure != stored.secure ||
+        previous.httpOnly != stored.httpOnly ||
+        previous.sameSite != stored.sameSite;
+    bucket[key] = stored;
+    if (persist && changed) unawaited(_persist());
+    return changed;
+  }
+
+  Future<void> _persist() {
+    final persistence = _persistence;
+    if (persistence == null) return Future<void>.value();
+    final data = exportJson();
+    _saveChain = _saveChain.then((_) => persistence.write(data)).catchError(
+      (Object error, StackTrace stack) {
+        debugPrint('DebugCookieJar: 持久化失败 - $error');
+      },
+    );
+    return _saveChain;
+  }
+
   // ==================== Cookie 头合并（静态，可单测） ====================
 
   /// 合并「显式 `Cookie` 头」与「jar 生成的 `Cookie` 头」。
@@ -213,8 +557,7 @@ class DebugCookieJar {
   ///
   /// 关键点：`Expires=Wed, 21 Oct 2099 07:28:00 GMT` 内的逗号**不得**误切
   /// ——仅当逗号后是一个 `name=` 形态才视为新 cookie 起始。
-  static List<String> splitSetCookieHeader(String raw) =>
-      _splitJoined(raw);
+  static List<String> splitSetCookieHeader(String raw) => _splitJoined(raw);
 
   // ==================== 私有 ====================
 
@@ -229,7 +572,7 @@ class DebugCookieJar {
   }
 
   static String _cookieKey(DebugCookie cookie) =>
-      '${cookie.domain ?? ''}|${cookie.path ?? '/'}|${cookie.name}';
+      '${_normalizeDomain(cookie.domain ?? '')}|${cookie.path ?? '/'}|${cookie.name}';
 
   /// 规范化 host / domain：小写、去前导与尾随 `.`、IDN 百分号编码对齐。
   static String _normalizeDomain(String domain) => _canonicalHost(domain);
@@ -394,14 +737,14 @@ class DebugCookieJar {
     var domainSpecified = false;
     var maxAgeSpecified = false;
     var secure = false;
+    var httpOnly = false;
 
     for (var i = 1; i < segments.length; i++) {
       final segment = segments[i].trim();
       if (segment.isEmpty) continue;
       final sep = segment.indexOf('=');
-      final attr = (sep < 0 ? segment : segment.substring(0, sep))
-          .trim()
-          .toLowerCase();
+      final attr =
+          (sep < 0 ? segment : segment.substring(0, sep)).trim().toLowerCase();
       final attrValue = sep < 0 ? '' : segment.substring(sep + 1).trim();
       switch (attr) {
         case 'domain':
@@ -417,7 +760,7 @@ class DebugCookieJar {
           secure = true;
           break;
         case 'httponly':
-          // 服务端语义（不在 JS 暴露），对回发无影响：解析后忽略。
+          httpOnly = true;
           break;
         case 'samesite':
           sameSite = _normalizeSameSite(attrValue);
@@ -453,6 +796,7 @@ class DebugCookieJar {
       effectiveExpiresAt,
       hostOnly: hostOnly,
       secure: secure,
+      httpOnly: httpOnly,
       sameSite: sameSite,
     );
   }
@@ -525,7 +869,20 @@ class DebugCookieJar {
     final isLower = code >= 0x61 && code <= 0x7A;
     if (isDigit || isUpper || isLower) return true;
     return const <String>[
-      '!', '#', r'$', '%', '&', "'", '*', '+', '-', '.', '^', '_', '`', '|',
+      '!',
+      '#',
+      r'$',
+      '%',
+      '&',
+      "'",
+      '*',
+      '+',
+      '-',
+      '.',
+      '^',
+      '_',
+      '`',
+      '|',
       '~',
     ].contains(ch);
   }

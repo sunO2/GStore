@@ -77,6 +77,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     'OPTIONS',
   ];
 
+  late final TextEditingController _name;
   late final TextEditingController _url;
   late final TextEditingController _body;
   late final TextEditingController _authUser;
@@ -157,6 +158,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     final initialParams = storedQuery.isEmpty
         ? parsed.params
         : mergeParams(parsed.params, storedQuery);
+    _name = TextEditingController(text: request?.customName ?? '');
     _url = TextEditingController(
       text: rebuildUrl(parsed.base, parsed.fragment, initialParams),
     );
@@ -166,7 +168,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _binarySource = request?.binarySource ?? DebugBinarySource.raw;
     _authType = request?.auth?.type ?? DebugAuthType.none;
     _apiKeyIn = request?.auth?.apiKeyIn ?? 'header';
-    _timeoutMs = request?.timeoutMs ?? DebugSender.defaultTimeout.inMilliseconds;
+    _timeoutMs =
+        request?.timeoutMs ?? DebugSender.defaultTimeout.inMilliseconds;
     _followRedirects = request?.followRedirects ?? true;
     _useCookieJar = request?.useCookieJar ?? true;
     _skipTlsVerify = request?.skipTlsVerify ?? false;
@@ -174,8 +177,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _authPass = TextEditingController(text: request?.auth?.password ?? '');
     _authToken = TextEditingController(text: request?.auth?.token ?? '');
     _authKeyName = TextEditingController(text: request?.auth?.apiKeyName ?? '');
-    _authKeyValue = TextEditingController(text: request?.auth?.apiKeyValue ?? '');
+    _authKeyValue =
+        TextEditingController(text: request?.auth?.apiKeyValue ?? '');
     for (final controller in <TextEditingController>[
+      _name,
       _url,
       _body,
       _authUser,
@@ -199,6 +204,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   @override
   void dispose() {
+    _name.dispose();
     _url.dispose();
     _body.dispose();
     _authUser.dispose();
@@ -226,7 +232,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     setState(() => _dirty = true);
   }
 
-  DebugKvRow _newRow({String name = '', String value = '', bool enabled = true}) {
+  DebugKvRow _newRow(
+      {String name = '', String value = '', bool enabled = true}) {
     final row = DebugKvRow(
       id: generateDebugId('kv'),
       name: name,
@@ -448,10 +455,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   DebugRequest _composeDraft() {
     // 规范化持久化：显示 URL 的查询移入 `query[]`，`url` 只留 path + `#fragment`。
     final parsed = parseUrlQuery(_url.text.trim());
-    final url = rebuildUrl(parsed.base, parsed.fragment, const <DebugQueryParam>[]);
+    final url =
+        rebuildUrl(parsed.base, parsed.fragment, const <DebugQueryParam>[]);
     return DebugRequest(
       id: _draftId,
-      name: url.isEmpty ? '未命名请求' : url,
+      name: _name.text.trim(),
       method: _method,
       url: url,
       headers: _headers
@@ -466,9 +474,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       body: _body.text,
       bodyKind: _bodyKind,
       binarySource: _binarySource,
-      binaryFilePath: _binarySource == DebugBinarySource.file
-          ? _body.text.trim()
-          : null,
+      binaryFilePath:
+          _binarySource == DebugBinarySource.file ? _body.text.trim() : null,
       multipartFields: widget.request?.multipartFields ?? const [],
       overrides: widget.request?.overrides,
       auth: _composeAuth(),
@@ -505,7 +512,8 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     var last = 0;
     for (final match in _placeholder.allMatches(text)) {
       if (match.start > last) {
-        spans.add(TextSpan(text: text.substring(last, match.start), style: base));
+        spans.add(
+            TextSpan(text: text.substring(last, match.start), style: base));
       }
       final name = match.group(1)!.trim();
       final value = env.vars[name];
@@ -961,7 +969,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     final draft = _composeDraft();
     final clone = draft.copyWith(
       id: generateDebugId('req'),
-      name: '${draft.name} 副本',
+      name: draft.name.trim().isEmpty ? '' : '${draft.name.trim()} 副本',
       collectionId: collectionId,
     );
     _facade.store.addRequest(collectionId, clone);
@@ -1076,7 +1084,17 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             icon: const Icon(TablerIcons.arrow_left),
             onPressed: _handleLeave,
           ),
-          title: const Text('接口详情'),
+          title: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: _name,
+            builder: (context, value, _) {
+              final name = value.text.trim();
+              return Text(
+                name.isEmpty ? '接口详情' : name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              );
+            },
+          ),
           actions: <Widget>[_buildMethodBadge(context)],
         ),
         body: Column(
@@ -1120,13 +1138,27 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   Widget _buildTopBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // URL 请求栏：方法已上移到 AppBar 胶囊，请求名称由 URL 自动派生，
-    // 此处只保留 URL，构成干净的一条顶部区域。
+    // 顶部：可选请求名称 / 描述 + URL；方法在 AppBar 胶囊中。
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          TextField(
+            key: const Key('request-editor-name'),
+            controller: _name,
+            minLines: 1,
+            maxLines: 2,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: '请求名称 / 描述（可选）',
+              hintText: '留空则列表中显示请求地址',
+              isDense: true,
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(TablerIcons.tag),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
           Container(
             padding: AppSpacing.allSM,
             decoration: BoxDecoration(
@@ -1271,8 +1303,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                       visualDensity: VisualDensity.compact,
                       backgroundColor:
                           Theme.of(context).colorScheme.errorContainer,
-                      labelStyle: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: Theme.of(context).colorScheme.onErrorContainer,
+                      labelStyle: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(
+                            color:
+                                Theme.of(context).colorScheme.onErrorContainer,
                           ),
                     ),
                 ],
@@ -2338,4 +2374,3 @@ class _CodeGenSheetState extends State<_CodeGenSheet> {
     );
   }
 }
-

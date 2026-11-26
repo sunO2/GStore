@@ -49,6 +49,16 @@ void main() {
       expect(names, contains('httpRequest'));
     });
 
+    test('保存接口：命中 requestDebug', () {
+      final names = namesFor('把这个接口保存到请求调试库');
+      expect(names, contains('requestDebug'));
+    });
+
+    test('网页调试：命中 webView', () {
+      final names = namesFor('用 webview 打开这个网页并抓一下接口请求');
+      expect(names, contains('webView'));
+    });
+
     test('最近对话可补足指代（低权重）', () {
       final names = namesFor('继续', recent: ['帮我备份一下当前数据']);
       expect(names, contains('backup'));

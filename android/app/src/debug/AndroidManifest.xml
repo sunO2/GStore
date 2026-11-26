@@ -4,4 +4,6 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug-only: integration tests use a local http://127.0.0.1 server. -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>

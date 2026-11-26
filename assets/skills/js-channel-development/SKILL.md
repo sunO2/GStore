@@ -1,6 +1,6 @@
 ---
 name: js-channel-development
-description: 用户要新增或改造 js_ 脚本渠道、接入新的应用数据源、编写或调试 entry.js / detail.js / meta.json 渠道包（三者必须齐全），或排查 CORE_E_SCRIPT_*、pack_* 报错时使用。
+description: 用户要新增或改造 js_ 脚本渠道、接入新的应用数据源、编写或调试 entry.js / detail.js / meta.json 渠道包（三者必须齐全）、用 webView 调试 JS 页面或抓接口，或排查 CORE_E_SCRIPT_*、pack_* 报错时使用。
 ---
 
 # 脚本渠道（js_*）开发
@@ -40,6 +40,15 @@ description: 用户要新增或改造 js_ 脚本渠道、接入新的应用数�
 | 更新判断字段 | `versionCode` / `versionName` / build 号 |
 | 是否需要选版本 / 环境 | 决定 `detail.js` 里要实现哪些方法（文件本身必须提供） |
 
+**工具选择（先看这里）：**
+
+- 静态 HTML / 可直接请求的 JSON：`webFetch` / `httpRequest`
+- **JS 渲染、SPA、需要登录态、要抓 XHR/fetch：必须用 `webView`**
+  - `webView open` → `wait`（selector/networkIdle）→ `content`
+  - `webView requests` 看页面实际发出的接口
+- 需要人工登录/验证码：先让用户到「AI 设置 → WebView 调试」登录；
+  登录后 Cookie 共享，再 `webView open` 同一 URL
+
 规则：
 
 - **没有接口样例就不要编。** 先向用户要 curl、抓包或接口文档。
@@ -49,6 +58,8 @@ description: 用户要新增或改造 js_ 脚本渠道、接入新的应用数�
   - GET/HEAD 无副作用；POST/PUT/PATCH/DELETE 只用于查询型接口或用户明确要求的接口；
   - 内网/回环地址会被拒绝，跨源重定向会丢弃 Authorization/Cookie。
 - `webFetch` 只用于抓网页正文（HTML→可读文本，带 Jina 兜底），不要拿它探测 JSON 接口。
+- 如果文档站/接口页面依赖 JS 渲染，用 `webView` 的 `open` + `content` 读取渲染后内容，
+  用 `requests` 看页面实际发出的 XHR/fetch；静态 HTML 仍优先 `webFetch`。
 - 不要用 HTML 页面猜接口：运行环境没有 HTML 解析库，只有字符串和正则，维护成本极高。优先找 JSON 接口。
 - 不确定的字段先少映射，保证 `appId` + `name` 正确，其余后续再补。
 
@@ -973,6 +984,10 @@ runJsChannel(channel='js_<stem>', method='detailMenu', params={'appId':'...'})
 ### 8.3 和其它工具配合
 
 - 接口结构和鉴权方式不确定时，先用 `httpRequest` 探测（见第 1 节），再写 `entry.js` / `detail.js`。
+- 如果接口文档/示例页面依赖 JS 渲染：用 `webView open` → `content` → `requests`；
+  需要登录先让用户走「AI 设置 → WebView 调试」，Cookie 会共享。
+- 调通稳定接口后，用 `requestDebug save` 保存到「请求调试」库（可指定集合）；
+  后续用 `requestDebug list/get` 查看，避免每次重新抓包。
 - `getAppInfo`（工具）支持 `channel: js_xxx`，可以查单个应用。
 - `downloadApp` 支持 `channel: js_xxx`，会走渠道详情里的 `downloads`。
 - `updateApps` 支持按 `appId + channel` 检查更新。

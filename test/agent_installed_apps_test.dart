@@ -72,18 +72,28 @@ void main() {
     expect(text, isNot(contains('Other')));
   });
 
-  test('installedApps 回灌模型不按 6000 字符截断，其他工具仍截断', () {
+  test('installedApps/httpRequest/webFetch 不截断，其他工具默认 32000 字符', () {
     final svc = AgentService();
     addTearDown(svc.dispose);
 
-    // 协议声明 maxResultChars = 0 → 不截断
-    expect(AgentToolCatalog.byName('installedApps')?.maxResultChars, 0);
+    // 这几个工具必须把完整数据交给模型（内部各自有更小的边界）。
+    for (final name in ['installedApps', 'httpRequest', 'webFetch', 'fileRead']) {
+      expect(AgentToolCatalog.byName(name)?.maxResultChars, 0, reason: name);
+    }
+    expect(AgentToolCatalog.byName('webView')?.maxResultChars, 64000);
 
-    final long = 'x' * 9000;
-    expect(svc.debugTruncateToolResult(long, toolName: 'installedApps'), long);
+    final long = 'x' * 40000;
+    for (final name in ['installedApps', 'httpRequest', 'webFetch']) {
+      expect(svc.debugTruncateToolResult(long, toolName: name), long,
+          reason: name);
+    }
 
+    // 普通工具仍保留 32000 的上下文安全上限。
+    final exact = 'x' * 32000;
+    expect(svc.debugTruncateToolResult(exact, toolName: 'searchApp'), exact);
     final clipped = svc.debugTruncateToolResult(long, toolName: 'searchApp');
     expect(clipped.length, lessThan(long.length));
     expect(clipped, contains('结果过长已截断'));
+    expect(clipped, contains('32000'));
   });
 }

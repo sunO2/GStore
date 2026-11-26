@@ -151,8 +151,24 @@ class RequestDebugCollectionSectionState
     await _persist();
   }
 
+  Future<void> _renameRequest(DebugRequest request) async {
+    final name = await promptDebugName(
+      context,
+      title: '重命名请求',
+      subtitle: '留空则列表中显示请求 URL',
+      hint: '请求名称 / 描述',
+      initial: request.customName,
+      allowEmpty: true,
+    );
+    if (name == null || !mounted) return;
+    final next = name.trim();
+    if (next == request.name.trim()) return;
+    _facade.store.updateRequest(request.copyWith(name: next));
+    await _persist();
+  }
+
   Future<void> _deleteRequest(DebugRequest request) async {
-    final label = request.name.isEmpty ? request.url : request.name;
+    final label = request.displayName;
     final ok = await AppDialogs.showConfirmSheet(
       title: '删除请求',
       message: '将删除请求「$label」，此操作无法撤销。',
@@ -233,7 +249,8 @@ class RequestDebugCollectionSectionState
       );
 
   /// 导入目标：复用名为「导入」的顶层集合；不存在则新建。
-  DebugCollection _importTarget() {    for (final c in _facade.store.collections) {
+  DebugCollection _importTarget() {
+    for (final c in _facade.store.collections) {
       if (c.parentId == null && c.name == '导入') return c;
     }
     return _facade.store.addCollection(name: '导入');
@@ -414,12 +431,14 @@ class RequestDebugCollectionSectionState
             },
             itemBuilder: (_) => [
               PopupMenuItem<String>(
-                key: Key('request-debug-collection-new-request-${collection.id}'),
+                key: Key(
+                    'request-debug-collection-new-request-${collection.id}'),
                 value: 'request',
                 child: const Text('新建请求'),
               ),
               PopupMenuItem<String>(
-                key: Key('request-debug-collection-new-folder-${collection.id}'),
+                key:
+                    Key('request-debug-collection-new-folder-${collection.id}'),
                 value: 'folder',
                 child: const Text('新建子文件夹'),
               ),
@@ -488,8 +507,7 @@ class RequestDebugCollectionSectionState
               physics: const NeverScrollableScrollPhysics(),
               buildDefaultDragHandles: false,
               onReorderItem: (oldIndex, newIndex) {
-                _facade.store
-                    .reorderRequest(collection.id, oldIndex, newIndex);
+                _facade.store.reorderRequest(collection.id, oldIndex, newIndex);
                 _persist();
               },
               children: [
@@ -542,7 +560,7 @@ class RequestDebugCollectionSectionState
         borderRadius: AppRadius.allSM,
         child: Padding(
           padding: AppSpacing.horizontalMD_verticalSM,
-          child: Text(request.url),
+          child: Text(request.displayName),
         ),
       ),
       childWhenDragging: Opacity(
@@ -567,10 +585,21 @@ class RequestDebugCollectionSectionState
       ),
       leading: _methodChip(context, request.method),
       title: Text(
-        request.url,
+        request.displayName,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
+      subtitle: request.hasCustomName
+          ? Text(
+              request.url,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            )
+          : null,
+      isThreeLine: false,
       onTap: () => _openEditor(
         collectionId: request.collectionId ?? '',
         request: request,
@@ -597,6 +626,8 @@ class RequestDebugCollectionSectionState
             icon: const Icon(TablerIcons.dots),
             onSelected: (value) {
               switch (value) {
+                case 'rename':
+                  _renameRequest(request);
                 case 'duplicate':
                   _duplicateRequest(request);
                 case 'delete':
@@ -604,6 +635,11 @@ class RequestDebugCollectionSectionState
               }
             },
             itemBuilder: (_) => [
+              PopupMenuItem<String>(
+                key: Key('request-debug-request-rename-${request.id}'),
+                value: 'rename',
+                child: const Text('重命名'),
+              ),
               PopupMenuItem<String>(
                 key: Key('request-debug-request-duplicate-${request.id}'),
                 value: 'duplicate',

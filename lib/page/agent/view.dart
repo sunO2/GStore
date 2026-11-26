@@ -14,8 +14,10 @@ import 'logic.dart';
 import 'chat_list_view.dart';
 import 'keyboard_inset_layout.dart';
 import 'agent_more_action.dart';
+import 'model_picker_sheet.dart';
 import 'slash_commands.dart';
 import 'slash_command_palette.dart';
+import 'workspace_files_sheet.dart';
 import 'workspace_picker.dart';
 
 class AgentPage extends ConsumerStatefulWidget {
@@ -73,7 +75,6 @@ class _AgentPageState extends ConsumerState<AgentPage>
 
   /// 输入控制器引用（dispose 时 ref 已不可用，不能经 _notifier 取）
   TextEditingController? _inputController;
-
 
   AgentNotifier get _notifier => ref.read(agentProvider.notifier);
 
@@ -187,7 +188,10 @@ class _AgentPageState extends ConsumerState<AgentPage>
       case 'new':
         await logic.newSession();
       case 'model':
-        await logic.openSettings();
+        final selected = await showAgentModelPicker(context);
+        if (selected != null && mounted) {
+          AppDialogs.showSuccess('已切换到 ${selected.displayName}');
+        }
       case 'clear':
         final ok = await AppDialogs.showConfirmSheet(
           title: '清空当前对话',
@@ -235,8 +239,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
     if (service == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     // 与输入框文字左对齐（胶囊内边距 + 返回按钮 + 输入框内边距）
-    final left = AppSpacing.lg +
-        (showBack ? _inputButtonSize + AppSpacing.xs : 0);
+    final left =
+        AppSpacing.lg + (showBack ? _inputButtonSize + AppSpacing.xs : 0);
     return Positioned(
       left: left,
       bottom: 5,
@@ -246,7 +250,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
           final name = info?.name ?? '默认工作区';
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => _pickWorkspace(context, service),
+            onTap: () => showAgentWorkspaceFilesSheet(context, service),
             child: Container(
               key: const Key('agent-workspace-pill'),
               constraints: BoxConstraints(
@@ -344,9 +348,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
                     child: Text(
                       command.title,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                   ),
@@ -424,8 +427,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
       if (older.isEmpty) {
         return;
       }
-      debugPrint(
-          'AgentView loaded older: ${older.length} 条（自绘列表自动增量插入）');
+      debugPrint('AgentView loaded older: ${older.length} 条（自绘列表自动增量插入）');
     } catch (e) {
       appLog.error('AgentView: 加载更早历史失败 - $e');
     } finally {
@@ -446,10 +448,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
     // messageCount 由自绘列表内部消费（空态欢迎页），页面本身不监听它。
     final isInitialized =
         ref.watch(agentProvider.select((s) => s.isInitialized));
-    final isGenerating =
-        ref.watch(agentProvider.select((s) => s.isGenerating));
-    final errorMessage =
-        ref.watch(agentProvider.select((s) => s.errorMessage));
+    final isGenerating = ref.watch(agentProvider.select((s) => s.isGenerating));
+    final errorMessage = ref.watch(agentProvider.select((s) => s.errorMessage));
     final logic = ref.read(agentProvider.notifier);
     // AI tab 激活时导航胶囊滑出，输入胶囊落到胶囊原位（同时显示返回按钮）
     final aiActive = widget.isTabEmbedded &&
@@ -493,8 +493,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
           final keyboard = _keyboardInset;
           final layout = AgentKeyboardLayout.of(
             keyboard: keyboard,
-            inputBarInset:
-                _inputBarBottomInset(context, aiActive: aiActive),
+            inputBarInset: _inputBarBottomInset(context, aiActive: aiActive),
           );
           return Stack(
             children: [
@@ -840,8 +839,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                                       minLines: 1,
                                       maxLines: 4,
                                       keyboardType: TextInputType.multiline,
-                                      textInputAction:
-                                          TextInputAction.newline,
+                                      textInputAction: TextInputAction.newline,
                                       decoration: InputDecoration(
                                         isDense: true,
                                         hintText: '输入你的需求...',
@@ -993,13 +991,13 @@ class _AgentPageState extends ConsumerState<AgentPage>
       ),
       tooltip: tooltip,
       icon: icon,
-      onPressed: () =>
-          ref.read(homeProvider.notifier).jumpToPage(sourceIndex),
+      onPressed: () => ref.read(homeProvider.notifier).jumpToPage(sourceIndex),
     );
   }
 
   /// 显示会话列表弹窗（切换/删除）
-  Future<void> _showSessionList(BuildContext context, AgentNotifier logic) async {
+  Future<void> _showSessionList(
+      BuildContext context, AgentNotifier logic) async {
     if (logic.agentUnavailable) return;
     // 确保 Agent 已初始化（会话存储已加载）
     await logic.ensureInitialized();
@@ -1030,12 +1028,10 @@ class _AgentPageState extends ConsumerState<AgentPage>
                     children: [
                       Text(
                         '会话列表',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(
-                              fontWeight: AppTypography.weightSemiBold,
-                            ),
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: AppTypography.weightSemiBold,
+                                ),
                       ),
                       const Spacer(),
                       TextButton.icon(
@@ -1054,10 +1050,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                       padding: AppSpacing.allXL,
                       child: Text(
                         '暂无会话，点击"新建"开始对话',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                               color: AppColors.textSecondary,
                             ),
                       ),
@@ -1107,8 +1100,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                                   ),
                             ),
                             trailing: IconButton(
-                              icon: const Icon(TablerIcons.trash,
-                                  size: 18),
+                              icon: const Icon(TablerIcons.trash, size: 18),
                               onPressed: () async {
                                 Navigator.pop(context);
                                 await logic.deleteSession(session.id);

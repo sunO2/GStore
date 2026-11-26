@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
@@ -102,7 +101,7 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
     return const AgentState();
   }
 
-  /// 初始化 Agent（首帧 + 设置返回后重载）
+  /// 初始化 Agent（首帧 / 服务尚未初始化时）
   Future<void> _init() async {
     final svc = service;
     if (svc == null) {
@@ -122,7 +121,8 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
       _onBusyChanged();
 
       // 消息变化 → 流式时滚底（分页加载历史时跳过）
-      _serviceListeners.add(() => svc.messages.removeListener(_onMessagesChanged));
+      _serviceListeners
+          .add(() => svc.messages.removeListener(_onMessagesChanged));
       svc.messages.addListener(_onMessagesChanged);
     }
 
@@ -267,9 +267,32 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
 
   /// 打开设置
   Future<void> openSettings() async {
+    final svc = service;
+    final wasInitialized = state.isInitialized;
+    final wasModelLabel = currentModelName;
     await appRouter.push(AppRoute.agentSettings);
-    // 返回后重新加载配置并初始化（配置可能已变化）
-    await _init();
+    // 设置页内配置即时生效；返回时只等待可能正在进行的模型重配，
+    // 不再全量 initialize（会重载会话/记忆/MCP/Genkit，导致返回掉帧）。
+    if (svc != null) {
+      await svc.ensureCurrentModelReady();
+    }
+    if (_disposed) return;
+    final initialized = svc?.isInitialized ?? false;
+    final modelLabel = currentModelName;
+    final error = svc == null ? 'Agent 模块未启用' : '';
+    // 配置没变化时不做任何状态更新/滚动，避免返回时多触发一次整页重建。
+    if (initialized == wasInitialized &&
+        modelLabel == wasModelLabel &&
+        error == state.errorMessage) {
+      return;
+    }
+    state = state.copyWith(
+      isInitialized: initialized,
+      errorMessage: error,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
   }
 
   /// 滚动到底部（库使用 reverse 列表，offset 0 = 视觉底部/最新消息）。
@@ -293,9 +316,8 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
       _userScrolledAway = false;
     } else if (!shouldFollowOutput(
       userScrolledAway: _userScrolledAway,
-      pixels: scrollController.hasClients
-          ? scrollController.position.pixels
-          : 0,
+      pixels:
+          scrollController.hasClients ? scrollController.position.pixels : 0,
     )) {
       return;
     } else {
@@ -307,7 +329,9 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
     // 从底部平滑长出（列表自动保持 offset 0，无需任何滚动干预）**。
     // 所以仅当确实偏离底部（force 滚底场景除外）才需要 jumpTo(0) 拉回，
     // 否则每次流式 chunk 都 schedule 一次强制滚动，反而与增长竞争产生跳动。
-    if (!force && _hasClients && scrollController.position.pixels <= kScrollDragSlop) {
+    if (!force &&
+        _hasClients &&
+        scrollController.position.pixels <= kScrollDragSlop) {
       return;
     }
 
@@ -320,7 +344,8 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
       // 没有新帧被调度，postFrame 回调永远挂起 → jumpTo 永不执行。
       // Timer 本身已提供延迟，直接跳即可（jump 对布局无强依赖）。
       if (_pointerActive || _uiPaused) return;
-      if (_initialLoaded && scrollController.hasClients &&
+      if (_initialLoaded &&
+          scrollController.hasClients &&
           scrollController.position.pixels > kScrollDragSlop) {
         scrollController.jumpTo(0);
       }
@@ -508,8 +533,7 @@ class AgentNotifier extends AutoDisposeNotifier<AgentState> {
 /// AI 助手页 provider（页面级 autoDispose：
 /// 页面挂载时被 watch 创建，独立路由 pop / 页面销毁后自动释放
 /// 控制器与订阅；作为首页 tab keepAlive 时切走不销毁，状态保留）。
-final agentProvider =
-    NotifierProvider.autoDispose<AgentNotifier, AgentState>(
+final agentProvider = NotifierProvider.autoDispose<AgentNotifier, AgentState>(
   AgentNotifier.new,
 );
 

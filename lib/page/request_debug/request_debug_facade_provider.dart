@@ -35,11 +35,18 @@ class RequestDebugFacadeProvider {
   static RequestDebugFacade get instance =>
       _override ?? (_shared ??= _createProduction());
 
-  /// 生产组合：真实 store / sender + 经 [ProxyModule] 的改写规则端口。
-  static RequestDebugFacade _createProduction() =>
-      DefaultRequestDebugFacade.production(
-        captureRules: ProxyModuleCaptureRulesPort(),
-      );
+  /// 生产组合：共享 store / sender + 经 [ProxyModule] 的改写规则端口。
+  ///
+  /// store/sender 来自 [RequestDebugShared]，与 Agent 的 `requestDebug` 工具
+  /// 共用同一个文档，避免双门面保存时互相覆盖。
+  static RequestDebugFacade _createProduction() {
+    final shared = RequestDebugShared.instance;
+    return DefaultRequestDebugFacade(
+      store: shared.store,
+      sender: shared.sender,
+      captureRules: ProxyModuleCaptureRulesPort(),
+    );
+  }
 
   /// 注入门面（测试 / 宿主 seam）。传 `null` 等价于仅清除注入。
   static void overrideFacade(RequestDebugFacade? facade) {
@@ -52,5 +59,6 @@ class RequestDebugFacadeProvider {
   static void reset() {
     _override = null;
     _shared = null;
+    RequestDebugShared.reset();
   }
 }

@@ -9,6 +9,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/agent/agent_settings_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 放大测试视口，保证表单全部字段被布局出来（可断言相对位置）
 void _useTallView(WidgetTester tester) {
@@ -72,6 +73,7 @@ Future<void> tapRefresh(WidgetTester tester, {String apiKey = 'sk-test'}) async 
 void main() {
   setUp(() {
     // 每个用例从「未初始化配置」开始：既保证读到空缓存，也避免缓存串场
+    SharedPreferences.setMockInitialValues({});
     AgentModelStore.resetForTest();
     ConfigStore.instance.resetForTest();
   });
@@ -181,6 +183,12 @@ void main() {
       ),
     );
     await tester.pump(); // AgentModelStore.load()
+    await tester.pump();
+    // 设置页的 _load 依赖真实异步 I/O（配置 + SharedPreferences），
+    // 先让出真实事件循环再等 FAB 入场动画结束。
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 200)),
+    );
     await tester.pump();
     // 等 FAB 入场缩放动画结束，否则点击点会落在缩放后的实际区域之外
     await tester.pump(const Duration(milliseconds: 400));
