@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:app_installer/app_installer.dart';
+import 'package:gstore/core/service/app_installer_channel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
@@ -134,9 +134,9 @@ class InstallManager implements IInstallService {
   @visibleForTesting
   static DateTime Function() clock = DateTime.now;
 
-  /// 系统安装器接缝（生产：[AppInstaller.installApk]），测试可注入假件。
+  /// 系统安装器接缝（生产：[AppInstallerChannel.installApk]），测试可注入假件。
   static Future<void> Function(String path) _appInstaller =
-      AppInstaller.installApk;
+      AppInstallerChannel.installApk;
 
   @visibleForTesting
   static set appInstallerForTest(
@@ -433,7 +433,7 @@ class InstallManager implements IInstallService {
     installPollTimeout = const Duration(seconds: 180);
     installPendingDeadline = const Duration(seconds: 90);
     clock = DateTime.now;
-    _appInstaller = AppInstaller.installApk;
+    _appInstaller = AppInstallerChannel.installApk;
     _installedVersionCheck = null;
     _installedSnapshotCheck = _defaultInstalledSnapshot;
   }
@@ -1271,7 +1271,7 @@ class InstallManager implements IInstallService {
 
     // 回退系统安装：仅"发起"系统安装器 Intent，真正的结果由系统界面决定。
     try {
-      await AppInstaller.installApk(filePath);
+      await AppInstallerChannel.installApk(filePath);
       return (InstallOutcome.launched, InstallMethod.system);
     } catch (e) {
       appLog.error('InstallManager: 系统安装失败 - $e');

@@ -19,8 +19,7 @@ class DownloadPaths {
   /// `<files-path path="."/>`（= `/data/user/0/<pkg>/files`）、
   /// `<external-files-path path="downloads"/>` 和 `<external-path path="."/>`。
   /// FileProvider 的根目录必须包含 APK，否则 `FileProvider.getUriForFile` 会
-  /// 抛异常；而 `app_installer` 的 Dart 封装是 fire-and-forget（`invokeMethod`
-  /// 未 `await`），异常被吞掉 → 我们仍报告"已发起安装"，系统安装界面却永远
+  /// 抛异常；而本地 `gstore/app_installer` 通道若异常被吞掉 → 我们仍报告"已发起安装"，系统安装界面却永远
   /// 不出现，90 秒后只能超时。旧默认值 `getDownloadsDirectory()`
   /// （`Android/data/<pkg>/files/downloads`，本机还会返回 null）与
   /// `getApplicationDocumentsDirectory()`（`app_flutter`）都不在 FileProvider

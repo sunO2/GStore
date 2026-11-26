@@ -181,6 +181,11 @@ class MainActivity : FlutterActivity() {
         // （120Hz 等）。不新增依赖 / 权限，逻辑全在 DisplayRefreshChannel。
         DisplayRefreshChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
         NotificationBridge.register(flutterEngine.dartExecutor.binaryMessenger)
+        // 系统 APK 安装器入口（替代 app_installer 插件）。
+        AppInstallerChannel.register(
+            flutterEngine.dartExecutor.binaryMessenger,
+            applicationContext,
+        )
         // Android 16 Live Updates：验证码倒计时通知（厂商灵动岛/胶囊）专用通道。
         LoginLiveUpdateChannel.register(
             flutterEngine.dartExecutor.binaryMessenger,

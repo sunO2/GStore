@@ -75,7 +75,7 @@ env:
   # sccache 与增量编译互斥；CI 关闭增量以获得稳定、可复用的缓存命中。
   CARGO_INCREMENTAL: '0'
   SCCACHE_CACHE_SIZE: 10G
-  FLUTTER_VERSION: '3.44.8'
+  FLUTTER_VERSION: '3.50.1'
 
 jobs:
   linux-qa:

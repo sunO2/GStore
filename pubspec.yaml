@@ -53,14 +53,13 @@ dependencies:
 
   installed_apps:
     git:
-      url: https://github.com/shatanikmahanty/installed_apps.git
-      ref: master
+      url: https://github.com/sunO2/installed_apps.git
+      ref: 8d4861f4acf879840642351cb6d008157955f7ba
   jovial_svg: any
   path_provider: any
   crypto: any
   dio: any
   rhttp: ^0.15.1
-  app_installer: any
   dynamic_color: ^1.7.0
   floor: ^1.4.2
   shared_preferences: ^2.3.2
@@ -189,3 +188,11 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+dependency_overrides:
+  flutter_inappwebview_android:
+    path: third_party/flutter_inappwebview_android
+  dynamic_color:
+    path: third_party/dynamic_color
+  rhttp:
+    path: third_party/rhttp
