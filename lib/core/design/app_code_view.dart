@@ -32,6 +32,8 @@ class AppCodeView extends StatefulWidget {
     this.maxFontSize = 32,
     this.maxHighlightBytes = 256 * 1024,
     this.padding = const EdgeInsets.all(AppSpacing.sm),
+    this.hint,
+    this.verticalScrollController,
     this.onChanged,
     this.onFontSizeChanged,
   });
@@ -68,6 +70,14 @@ class AppCodeView extends StatefulWidget {
   final int maxHighlightBytes;
 
   final EdgeInsetsGeometry padding;
+
+  /// 空内容占位文案（编辑模式的 hint）。
+  final String? hint;
+
+  /// 可选纵向滚动控制器；嵌入 `NestedScrollView` 时传
+  /// `PrimaryScrollController.maybeOf(context)`，让代码滚动驱动外层
+  /// SliverAppBar 收起。
+  final ScrollController? verticalScrollController;
 
   /// 编辑内容变化回调（参数为当前全文）。
   final ValueChanged<String>? onChanged;
@@ -162,6 +172,7 @@ class _AppCodeViewState extends State<AppCodeView> {
   CodeLineEditingController? _ownedController;
   late ValueNotifier<double> _fontSize;
   late bool _ownsFontSize;
+  ScrollController? _horizontalScrollController;
 
   final Map<int, Offset> _pointers = {};
   double? _pinchStartDistance;
@@ -213,6 +224,7 @@ class _AppCodeViewState extends State<AppCodeView> {
 
   @override
   void dispose() {
+    _horizontalScrollController?.dispose();
     _ownedController?.dispose();
     if (_ownsFontSize) _fontSize.dispose();
     super.dispose();
@@ -275,6 +287,14 @@ class _AppCodeViewState extends State<AppCodeView> {
         : theme.copyWith(colorScheme: scheme);
     final language =
         widget.language ?? AppCodeLanguage.forPath(widget.filePath);
+    final vertical = widget.verticalScrollController;
+    final scrollController = vertical == null
+        ? null
+        : CodeScrollController(
+            verticalScroller: vertical,
+            horizontalScroller: _horizontalScrollController ??=
+                ScrollController(),
+          );
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -290,10 +310,12 @@ class _AppCodeViewState extends State<AppCodeView> {
             data: effectiveTheme,
             child: CodeEditor(
               controller: _controller,
+              scrollController: scrollController,
               readOnly: widget.readOnly,
               showCursorWhenReadOnly: false,
               wordWrap: widget.wordWrap,
               padding: widget.padding,
+              hint: widget.hint,
               clipBehavior: Clip.hardEdge,
               style: CodeEditorStyle(
                 fontSize: fontSize,

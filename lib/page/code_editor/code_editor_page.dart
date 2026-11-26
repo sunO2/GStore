@@ -172,7 +172,8 @@ class _CodeEditorPageState extends State<CodeEditorPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final document = _document;
-    final editable = document?.editable == true;
+    // 显式 readOnly: true 时即使来源可写，也不展示编辑入口。
+    final editable = document?.editable == true && widget.readOnly != true;
 
     return PopScope(
       canPop: !_dirty,

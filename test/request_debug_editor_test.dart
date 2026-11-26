@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/request_debug/debug_cookie_jar.dart';
@@ -1195,7 +1196,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         tester
-            .widget<TextField>(find.byKey(const Key('request-editor-body')))
+            .widget<AppCodeView>(find.byKey(const Key('request-editor-body')))
             .controller!
             .text,
         isEmpty,
@@ -1238,8 +1239,19 @@ void main() {
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
       final list = find.byType(ReorderableListView);
       expect(list, findsOneWidget);
+      final initialTop =
+          tester.getTopLeft(find.byKey(const Key('request-editor-url'))).dy;
 
-      // 上滑参数列表越过 24px 阈值 → URL 行收起（子树消失，而非仅平移）。
+      // 小幅上滑：顶部 URL 行随滚动连续上移，而不是到阈值才整块消失。
+      await tester.drag(list, const Offset(0, -40));
+      await tester.pumpAndSettle();
+      final partialTop =
+          tester.getTopLeft(find.byKey(const Key('request-editor-url'))).dy;
+      expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
+      expect(partialTop, lessThan(initialTop));
+      expect(initialTop - partialTop, lessThan(120));
+
+      // 继续上滑 → URL 行完全滚出（子树消失）。
       await tester.drag(list, const Offset(0, -300));
       await tester.pumpAndSettle();
       expect(

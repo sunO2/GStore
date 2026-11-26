@@ -17,6 +17,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/request_debug/debug_cookie_jar.dart';
@@ -268,7 +269,8 @@ void main() {
       await _pumpEditor(
         tester,
         facade: facade,
-        request: _request('r1', method: 'POST', url: 'https://api.example/create'),
+        request:
+            _request('r1', method: 'POST', url: 'https://api.example/create'),
       );
 
       await tester.tap(find.byKey(const Key('request-editor-send')));
@@ -320,7 +322,8 @@ void main() {
 
       expect(snapshot.truncated, true);
       expect(snapshot.bodyText.length, DebugResponseSnapshot.maxBodyChars);
-      expect(snapshot.bodyText, body.substring(0, DebugResponseSnapshot.maxBodyChars));
+      expect(snapshot.bodyText,
+          body.substring(0, DebugResponseSnapshot.maxBodyChars));
       expect(snapshot.sizeBytes, body.length + 999, reason: '真实大小不受截断影响');
       expect(snapshot.statusCode, 200);
     });
@@ -358,7 +361,11 @@ void main() {
               'bodyKind': 'none',
               'cookies': <Object>[],
             },
-            'responseSummary': {'statusCode': 200, 'durationMs': 3, 'sizeBytes': 4},
+            'responseSummary': {
+              'statusCode': 200,
+              'durationMs': 3,
+              'sizeBytes': 4
+            },
           },
         ],
       };
@@ -467,7 +474,8 @@ void main() {
         ),
       );
 
-      await tester.pumpWidget(_host(RequestDebugHistorySection(facade: facade)));
+      await tester
+          .pumpWidget(_host(RequestDebugHistorySection(facade: facade)));
       await tester.pumpAndSettle();
 
       final entry = facade.store.history.single;
@@ -481,17 +489,14 @@ void main() {
       );
       expect(
         tester
-            .widget<Text>(find.byKey(const Key('request-editor-response-status')))
+            .widget<Text>(
+                find.byKey(const Key('request-editor-response-status')))
             .data,
         '418',
       );
-      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
-      expect(
-        tester
-            .widget<SelectableText>(find.byKey(const Key('response-body-text')))
-            .data,
-        'snapshot-body',
-      );
+      final code = find.byKey(const Key('response-body-code'));
+      expect(code, findsOneWidget);
+      expect(tester.widget<AppCodeView>(code).text, 'snapshot-body');
       expect(tester.takeException(), isNull);
     });
   });

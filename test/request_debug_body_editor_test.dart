@@ -14,6 +14,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/request_debug/debug_cookie_jar.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
@@ -22,6 +23,7 @@ import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
 import 'package:gstore/page/request_debug/request_editor_page.dart';
+import 'package:re_editor/re_editor.dart';
 
 /// 假发送器：**不触碰网络**（本测试不发送，仅满足门面依赖）。
 class _FakeSender implements DebugSender {
@@ -92,7 +94,7 @@ Future<void> _pumpBodyEditor(
 
 /// 当前 body 控制器的文本。
 String _bodyText(WidgetTester tester) => tester
-    .widget<TextField>(find.byKey(const Key('request-editor-body')))
+    .widget<AppCodeView>(find.byKey(const Key('request-editor-body')))
     .controller!
     .text;
 
@@ -102,6 +104,16 @@ String _pretty(String raw) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('请求体全屏查看进入只读编辑页', (tester) async {
+    await _pumpBodyEditor(tester, body: '{"a":1}');
+    await tester.tap(find.byKey(const Key('request-editor-body-fullscreen')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('请求体'), findsOneWidget);
+    expect(find.byType(CodeEditor), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     '非法 JSON 显示 request-editor-body-format-error 且 body 不变',
@@ -152,6 +164,8 @@ void main() {
 
       expect(_bodyText(tester), _pretty(raw));
       expect(tester.takeException(), isNull);
+      // 让 re_editor 光标的 100ms 延迟回调在 fake-async 中结束。
+      await tester.pump(const Duration(milliseconds: 150));
     },
   );
 
@@ -176,15 +190,33 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.enterText(
-      find.byKey(const Key('request-editor-body')),
-      '{"ok":1}',
-    );
+    tester
+        .widget<AppCodeView>(find.byKey(const Key('request-editor-body')))
+        .controller!
+        .text = '{"ok":1}';
     await tester.pump();
 
     expect(
       find.byKey(const Key('request-editor-body-format-error')),
       findsNothing,
     );
+    // 让 re_editor 光标的 100ms 延迟回调在 fake-async 中结束。
+    await tester.pump(const Duration(milliseconds: 150));
+  });
+
+  testWidgets('请求体代码区上滑也能驱动顶部 URL 栏收起', (tester) async {
+    final body = List.generate(200, (i) => 'line $i').join('\n');
+    await _pumpBodyEditor(
+      tester,
+      body: body,
+      kind: DebugBodyKind.text,
+    );
+    expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
+
+    await tester.drag(find.byType(CodeEditor), const Offset(0, -300));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('request-editor-url')), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 }

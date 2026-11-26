@@ -22,10 +22,14 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
+import 'package:gstore/core/editor/app_code_language.dart';
+import 'package:gstore/core/editor/code_document_source.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/core/utils/unit.dart';
+import 'package:gstore/page/code_editor/code_editor_page.dart';
 
 import 'response_save_actions.dart';
 
@@ -55,6 +59,7 @@ class ResponseViewer extends StatefulWidget {
     this.url,
     this.onSaveAsRewrite,
     this.saveFile,
+    this.bodyScrollController,
   });
 
   /// 待展示的响应快照。
@@ -73,6 +78,10 @@ class ResponseViewer extends StatefulWidget {
 
   /// 「保存响应体」的文件保存接缝（测试注入；为空时走 [FilePicker]）。
   final DebugSaveFile? saveFile;
+
+  /// 可选纵向滚动控制器：嵌入 NestedScrollView 时传 innerController，
+  /// 让响应体代码滚动也能驱动外层 SliverAppBar。
+  final ScrollController? bodyScrollController;
 
   /// 单个文本分块的字符上限（超出即折叠，避免一次性布局超长文本）。
   static const int chunkChars = 20000;
@@ -493,29 +502,65 @@ class _ResponseViewerState extends State<ResponseViewer> {
   }
 
   Widget _buildBody(BuildContext context) {
-    return _ResponseBodyPane(
-      key: const ValueKey<String>('response-body-pane'),
+    // 二进制保留安全占位；文本统一使用 re_editor 只读代码视图。
+    if (_bodyKind == ResponseBodyKind.binary) {
+      return _ResponseBodyPane(
+        key: const ValueKey<String>('response-body-pane'),
+        rawText: _response.bodyText,
+        bodyKind: _bodyKind,
+        format: _format,
+        sizeBytes: _response.sizeBytes,
+        keyPrefix: 'response-body',
+        onFullscreen: _openFullScreenBody,
+        onCopy: _copyBody,
+      );
+    }
+    return _ResponseBodyCodeView(
+      key: const ValueKey<String>('response-body-code-view'),
       rawText: _response.bodyText,
       bodyKind: _bodyKind,
       format: _format,
-      sizeBytes: _response.sizeBytes,
       keyPrefix: 'response-body',
       onFullscreen: _openFullScreenBody,
-      onCopy: _copyBody,
+      verticalScrollController: widget.bodyScrollController,
     );
   }
 
-  /// 打开全屏响应体查看（搜索仅在此处提供）。
+  /// 响应体高亮语言：JSON / XML / HTML；纯文本不做高亮。
+  AppCodeLanguage? get _responseLanguage => switch (_bodyKind) {
+        ResponseBodyKind.json => AppCodeLanguage.json,
+        ResponseBodyKind.xml || ResponseBodyKind.html => AppCodeLanguage.xml,
+        ResponseBodyKind.text || ResponseBodyKind.binary => null,
+      };
+
+  /// 全屏查看响应体：文本统一进入 [CodeEditorPage] 只读模式。
+  ///
+  /// 二进制仍走原安全占位全屏（CodeEditorPage 只处理文本）。
   Future<void> _openFullScreenBody() async {
+    if (_bodyKind == ResponseBodyKind.binary) {
+      await Navigator.of(context, rootNavigator: false).push<void>(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => _ResponseBodyFullScreen(
+            rawText: _response.bodyText,
+            bodyKind: _bodyKind,
+            format: _format,
+            sizeBytes: _response.sizeBytes,
+            onCopy: _copyBody,
+          ),
+        ),
+      );
+      return;
+    }
+
     await Navigator.of(context, rootNavigator: false).push<void>(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
-        builder: (_) => _ResponseBodyFullScreen(
-          rawText: _response.bodyText,
-          bodyKind: _bodyKind,
-          format: _format,
-          sizeBytes: _response.sizeBytes,
-          onCopy: _copyBody,
+        builder: (_) => CodeEditorPage(
+          source: CodeDocumentSource.text(_displayText, title: '响应体'),
+          readOnly: true,
+          language: _responseLanguage,
+          showLineNumbers: true,
         ),
       ),
     );
@@ -532,7 +577,8 @@ class _ResponseViewerState extends State<ResponseViewer> {
       children: [
         _cookieHeaderRow(context, theme),
         const Divider(height: 1),
-        for (var i = 0; i < rows.length; i++) _cookieRow(context, theme, rows[i], i),
+        for (var i = 0; i < rows.length; i++)
+          _cookieRow(context, theme, rows[i], i),
       ],
     );
   }
@@ -602,6 +648,75 @@ class _ResponseViewerState extends State<ResponseViewer> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 行内响应体代码视图：re_editor 只读 + 行号 + 语法高亮。
+class _ResponseBodyCodeView extends StatelessWidget {
+  const _ResponseBodyCodeView({
+    super.key,
+    required this.rawText,
+    required this.bodyKind,
+    required this.format,
+    required this.keyPrefix,
+    this.onFullscreen,
+    this.verticalScrollController,
+  });
+
+  final String rawText;
+  final ResponseBodyKind bodyKind;
+  final ResponseBodyFormat format;
+  final String keyPrefix;
+  final VoidCallback? onFullscreen;
+  final ScrollController? verticalScrollController;
+
+  AppCodeLanguage? get _language => switch (bodyKind) {
+        ResponseBodyKind.json => AppCodeLanguage.json,
+        ResponseBodyKind.xml || ResponseBodyKind.html => AppCodeLanguage.xml,
+        ResponseBodyKind.text || ResponseBodyKind.binary => null,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _displayResponseBodyText(
+      rawText: rawText,
+      bodyKind: bodyKind,
+      format: format,
+    );
+    if (text.isEmpty) {
+      return _buildEmptyState(context, '响应体为空');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (onFullscreen != null)
+          Padding(
+            padding: AppSpacing.onlyHorizontalLG,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                key: Key('$keyPrefix-fullscreen'),
+                onPressed: onFullscreen,
+                icon:
+                    const Icon(Icons.open_in_full, size: AppTypography.iconSM),
+                label: const Text('全屏查看'),
+              ),
+            ),
+          ),
+        Expanded(
+          child: AppCodeView(
+            key: Key('$keyPrefix-code'),
+            text: text,
+            language: _language,
+            readOnly: true,
+            showLineNumbers: true,
+            wordWrap: false,
+            verticalScrollController: verticalScrollController,
+            padding: AppSpacing.allMD,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1566,8 +1681,7 @@ String? tryPrettyJson(String raw) {
 }
 
 /// 轻量 XML 美化（仅按标签缩进；混合内容可能不完美，但绝不抛异常）。
-String prettyXml(String raw) =>
-    raw.isEmpty ? raw : _prettyXmlImpl(raw);
+String prettyXml(String raw) => raw.isEmpty ? raw : _prettyXmlImpl(raw);
 
 String _prettyXmlImpl(String input) {
   final buffer = StringBuffer();

@@ -19,9 +19,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:re_editor/re_editor.dart';
 
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
-import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
 import 'package:gstore/core/request_debug/debug_response.dart';
@@ -53,13 +55,14 @@ DebugResponse _response({
       truncated: truncated,
     );
 
-Widget _host(Widget child) => MaterialApp(      navigatorKey: appNavigatorKey,
+Widget _host(Widget child) => MaterialApp(
+      navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: Scaffold(body: child),
     );
 
 Future<void> _pump(WidgetTester tester, DebugResponse response,
-        {ResponseViewer? viewer}) async {
+    {ResponseViewer? viewer}) async {
   await tester.pumpWidget(
     _host(viewer ?? ResponseViewer(response: response)),
   );
@@ -67,26 +70,14 @@ Future<void> _pump(WidgetTester tester, DebugResponse response,
 }
 
 /// 行内 Body → 点「全屏查看」进入全屏响应体页。
-Future<void> _openFullscreen(WidgetTester tester, DebugResponse response) async {
+Future<void> _openFullscreen(
+    WidgetTester tester, DebugResponse response) async {
   await _pump(tester, response);
   await tester.tap(find.byKey(const Key('response-body-fullscreen')));
   await tester.pumpAndSettle();
 }
 
-/// 缩放相关 key（全屏页）。
-const Key _zoomIn = Key('response-fullscreen-zoom-in');
-const Key _zoomOut = Key('response-fullscreen-zoom-out');
-const Key _zoomReset = Key('response-fullscreen-zoom-reset');
-const Key _zoomLevel = Key('response-fullscreen-zoom-level');
-
-/// 读取缩放级别标签文本。
-String _zoomLabel(WidgetTester tester) =>
-    tester.widget<Text>(find.byKey(_zoomLevel)).data ?? '';
-
-/// 读取某个 key 下文本控件（`Text` / `SelectableText`）的纯文本。
-///
-/// 新的高亮/搜索渲染使用 `Text.rich` / `SelectableText.rich`（`data == null`，
-/// `textSpan != null`），故不能只读 `SelectableText.data`。
+/// 读取某个 key 下文本控件的纯文本（`Text` / `SelectableText`）。
 String _plainTextOf(WidgetTester tester, String key) {
   final finder = find.byKey(Key(key));
   if (finder.evaluate().isEmpty) return '';
@@ -100,40 +91,13 @@ String _plainTextOf(WidgetTester tester, String key) {
   return '';
 }
 
-String _bodyText(WidgetTester tester, {String prefix = 'response-body'}) =>
-    _plainTextOf(tester, '$prefix-text');
-
-/// JSON 高亮树中渲染的全部文本（含 gutter 行号）。
-String _treeText(WidgetTester tester) {
-  final buffer = StringBuffer();
-  final finder = find.descendant(
-    of: find.byKey(const Key('response-body-tree')),
-    matching: find.byType(Text),
-  );
-  for (final element in finder.evaluate()) {
-    final text = element.widget as Text;
-    buffer.writeln(text.data ?? text.textSpan?.toPlainText() ?? '');
+/// 当前响应体文本：代码视图优先读 AppCodeView.text，二进制/旧路径回退。
+String _bodyText(WidgetTester tester, {String prefix = 'response-body'}) {
+  final code = find.byKey(Key('$prefix-code'));
+  if (code.evaluate().isNotEmpty) {
+    return tester.widget<AppCodeView>(code).text;
   }
-  return buffer.toString();
-}
-
-/// JSON 高亮树中出现的 token 颜色集合（用于证明存在多种 token 样式）。
-Set<Color?> _treeTokenColors(WidgetTester tester) {
-  final colors = <Color?>{};
-  final finder = find.descendant(
-    of: find.byKey(const Key('response-body-tree')),
-    matching: find.byType(Text),
-  );
-  for (final element in finder.evaluate()) {
-    final text = element.widget as Text;
-    text.textSpan?.visitChildren((span) {
-      if (span is TextSpan && span.text != null && span.style != null) {
-        colors.add(span.style!.color);
-      }
-      return true;
-    });
-  }
-  return colors;
+  return _plainTextOf(tester, '$prefix-text');
 }
 
 /// 真实 loopback 客户端覆盖：绕过 `TestWidgetsFlutterBinding` 注入的假客户端
@@ -179,7 +143,7 @@ void main() {
   });
 
   group('Body · 按 Content-Type 渲染 + 格式化切换', () {
-    testWidgets('application/json → 高亮树格式化；原始为单行原文', (tester) async {
+    testWidgets('application/json → 代码视图格式化；原始为单行原文', (tester) async {
       const raw = '{"a":1,"b":[2,3]}';
       await _pump(
         tester,
@@ -191,9 +155,9 @@ void main() {
         ),
       );
 
-      expect(find.byKey(const Key('response-body-tree')), findsOneWidget);
-      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
-      final formatted = _treeText(tester);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      final formatted = _bodyText(tester);
       expect(formatted, contains('"a": 1'));
       expect(formatted, contains('\n'));
 
@@ -253,7 +217,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('非法 JSON → 回退原文并提示解析失败', (tester) async {
+    testWidgets('非法 JSON → 回退原文', (tester) async {
       const raw = '{not json}';
       await _pump(
         tester,
@@ -265,8 +229,7 @@ void main() {
         ),
       );
       expect(_bodyText(tester), raw);
-      expect(find.textContaining('JSON 解析失败'), findsOneWidget);
-      expect(find.byKey(const Key('response-body-tree')), findsNothing);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -288,8 +251,8 @@ void main() {
     });
   });
 
-  group('JSON 高亮树 · token / gutter / 折叠 / 搜索', () {
-    testWidgets('多类型 JSON → 多种 token 样式 + gutter', (tester) async {
+  group('行内响应体 · 代码视图', () {
+    testWidgets('JSON → CodeEditor + 行号，无搜索框', (tester) async {
       await _pump(
         tester,
         _response(
@@ -300,65 +263,15 @@ void main() {
         ),
       );
 
-      final tree = find.byKey(const Key('response-body-tree'));
-      expect(tree, findsOneWidget);
-      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
-      // RichText / TextSpan 数量 > 1（高亮要求多种 token 样式）。
-      expect(
-        find.descendant(of: tree, matching: find.byType(RichText)),
-        findsWidgets,
-      );
-      expect(_treeTokenColors(tester).length, greaterThan(1));
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('折叠子树 → 该子树文本消失', (tester) async {
-      const raw = '{"outer":{"marker":"unique1337"},"tail":1}';
-      await _pump(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: raw,
-        ),
-      );
-
-      expect(find.textContaining('unique1337'), findsOneWidget);
-      final lines = tryPrettyJson(raw)!.split('\n');
-      final markerLine = lines.indexWhere((line) => line.contains('unique1337'));
-      final region = jsonFoldRegions(lines).firstWhere(
-        (r) => r.openLine < markerLine && r.closeLine >= markerLine,
-      );
-      expect(region.id, isNonNegative);
-
-      await tester.tap(
-        find.byKey(Key('response-body-collapse-${region.id}')),
-      );
-      await tester.pumpAndSettle();
-      expect(find.textContaining('unique1337'), findsNothing);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('inline Body（JSON 树）不渲染搜索框，仅提供全屏入口', (tester) async {
-      await _pump(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: '{"a":1}',
-        ),
-      );
-
-      expect(find.byKey(const Key('response-body-tree')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byType(DefaultCodeLineNumber), findsOneWidget);
       expect(find.byKey(const Key('response-body-search')), findsNothing);
-      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
       expect(find.byKey(const Key('response-body-fullscreen')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('inline Body（分块纯文本）不渲染搜索框，仅提供全屏入口', (tester) async {
+    testWidgets('纯文本 → CodeEditor，无分块按钮', (tester) async {
       final huge = 'A' * 120000;
       await _pump(
         tester,
@@ -370,65 +283,14 @@ void main() {
         ),
       );
 
-      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
-      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
-      expect(find.byKey(const Key('response-body-search')), findsNothing);
-      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
-      expect(find.byKey(const Key('response-body-fullscreen')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byKey(const Key('response-body-more')), findsNothing);
+      expect(_bodyText(tester).length, huge.length);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('全屏查看：搜索基于完整 bodyText 并展开命中，关闭返回 Body', (tester) async {
-      const marker = 'NEEDLE_AT_TAIL_917';
-      final huge = 'A' * 190000 + marker + 'B' * 9000;
-      await _pump(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['text/plain'],
-          },
-          body: huge,
-        ),
-      );
-
-      expect(find.byKey(const Key('response-body-search-input')), findsNothing);
-      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
-      await tester.pumpAndSettle();
-
-      expect(
-        find.byKey(const Key('response-body-fullscreen-view')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('response-fullscreen-search-input')),
-        findsOneWidget,
-      );
-      // 搜索前只渲染首个分块，命中不在可见文本中。
-      expect(
-        _bodyText(tester, prefix: 'response-fullscreen').contains(marker),
-        isFalse,
-      );
-
-      await tester.enterText(
-        find.byKey(const Key('response-fullscreen-search-input')),
-        marker,
-      );
-      await tester.pumpAndSettle();
-
-      // 全量搜索：可见文本已包含命中且超过单块长度。
-      final shown = _bodyText(tester, prefix: 'response-fullscreen');
-      expect(shown.contains(marker), isTrue);
-      expect(shown.length, greaterThan(ResponseViewer.chunkChars));
-
-      // 关闭全屏返回 Body 分段。
-      await tester.tap(find.byKey(const Key('response-body-fullscreen-close')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('response-body-fullscreen-view')), findsNothing);
-      expect(find.byKey(const Key('response-tab-body')), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('全屏查看：>256KB JSON 走分块路径，关闭无异常', (tester) async {
+    testWidgets('超过 256KB 的 JSON → CodeEditor 无异常', (tester) async {
       final big = '{"data":"${'x' * (256 * 1024)}"}';
       await _pump(
         tester,
@@ -440,60 +302,15 @@ void main() {
         ),
       );
 
-      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-more')), findsNothing);
       expect(find.byKey(const Key('response-body-tree')), findsNothing);
-
-      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('response-fullscreen-more')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const Key('response-fullscreen-tree')), findsNothing);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('全屏查看：非法 JSON 回退纯文本无异常', (tester) async {
-      const raw = '{not json}';
-      await _pump(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: raw,
-        ),
-      );
-
-      await tester.tap(find.byKey(const Key('response-body-fullscreen')));
-      await tester.pumpAndSettle();
-
-      expect(_bodyText(tester, prefix: 'response-fullscreen'), raw);
-      expect(find.textContaining('JSON 解析失败'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('超过 256KB 的 JSON → 分块纯文本路径，无异常', (tester) async {
-      final big = '{"data":"${'x' * (256 * 1024)}"}';
-      await _pump(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: big,
-        ),
-      );
-
-      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
-      expect(find.byKey(const Key('response-body-tree')), findsNothing);
-      expect(find.byKey(const Key('response-body-gutter')), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
 
-  group('全屏缩放 · 行号对齐', () {
-    testWidgets('放大 → JSON 字号与 gutter 行高同比增大且始终对齐', (tester) async {
+  group('全屏查看 · CodeEditorPage', () {
+    testWidgets('JSON 响应体：只读代码页 + 行号', (tester) async {
       await _openFullscreen(
         tester,
         _response(
@@ -504,116 +321,15 @@ void main() {
         ),
       );
 
-      final gutterFinder = find.byKey(const Key('response-fullscreen-gutter'));
-      final jsonFinder = find.byKey(const Key('response-fullscreen-json'));
-      expect(gutterFinder, findsOneWidget);
-      expect(jsonFinder, findsOneWidget);
-
-      double contentFontSize() =>
-          tester.widget<Text>(jsonFinder).style!.fontSize!;
-      double gutterHeight() => tester.getSize(gutterFinder).height;
-      double jsonHeight() => tester.getSize(jsonFinder).height;
-
-      final font0 = contentFontSize();
-      final gutter0 = gutterHeight();
-      expect(font0, AppTypography.sizeSM);
-      // 1.0 时行号 gutter 与 JSON 内容等高（对齐）。
-      expect(gutter0, closeTo(jsonHeight(), 0.01));
-
-      // 放大一步（1.0 → 1.25）：字号按步长增大，gutter 同步变高。
-      await tester.tap(find.byKey(_zoomIn));
-      await tester.pumpAndSettle();
-      expect(contentFontSize(), closeTo(font0 * 1.25, 0.001));
-      expect(gutterHeight(), greaterThan(gutter0));
-      // 放大后行号仍与内容行等高（对齐）。
-      expect(gutterHeight(), closeTo(jsonHeight(), 0.01));
-
-      // 放大到 2.0：缩放因子为整数倍，字号与 gutter 行高来自同一缩放源，
-      // 均为 2×（行盒取整的误差在此归零）。
-      for (var i = 0; i < 3; i++) {
-        await tester.tap(find.byKey(_zoomIn));
-        await tester.pumpAndSettle();
-      }
-      final fontMax = contentFontSize();
-      final gutterMax = gutterHeight();
-      expect(fontMax, closeTo(font0 * 2.0, 0.001));
-      expect(gutterMax / gutter0, closeTo(fontMax / font0, 1e-6));
-      expect(gutterMax, closeTo(jsonHeight(), 0.01));
+      expect(find.text('响应体'), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byType(DefaultCodeLineNumber), findsOneWidget);
+      // 显式只读：不展示编辑入口
+      expect(find.byIcon(TablerIcons.edit), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('缩小 / 级别标签 / 重置回 1.0', (tester) async {
-      await _openFullscreen(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: '{"a":1}',
-        ),
-      );
-
-      final jsonFinder = find.byKey(const Key('response-fullscreen-json'));
-      double fontSize() => tester.widget<Text>(jsonFinder).style!.fontSize!;
-
-      expect(_zoomLabel(tester), '100%');
-      final base = fontSize();
-
-      await tester.tap(find.byKey(_zoomIn));
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '125%');
-
-      await tester.tap(find.byKey(_zoomOut));
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '100%');
-
-      await tester.tap(find.byKey(_zoomIn));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(_zoomIn));
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '150%');
-
-      await tester.tap(find.byKey(_zoomReset));
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '100%');
-      expect(fontSize(), closeTo(base, 0.001));
-
-      // 缩小：字号变小。
-      await tester.tap(find.byKey(_zoomOut));
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '75%');
-      expect(fontSize(), lessThan(base));
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('在上下限 0.75 / 2.0 处钳制且不抛异常', (tester) async {
-      await _openFullscreen(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: '{"a":1}',
-        ),
-      );
-
-      for (var i = 0; i < 8; i++) {
-        await tester.tap(find.byKey(_zoomIn));
-        await tester.pump();
-      }
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '200%');
-
-      for (var i = 0; i < 8; i++) {
-        await tester.tap(find.byKey(_zoomOut));
-        await tester.pump();
-      }
-      await tester.pumpAndSettle();
-      expect(_zoomLabel(tester), '75%');
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('分块纯文本同样按缩放因子变大', (tester) async {
+    testWidgets('纯文本响应体：CodeEditorPage 只读', (tester) async {
       await _openFullscreen(
         tester,
         _response(
@@ -624,21 +340,12 @@ void main() {
         ),
       );
 
-      final textFinder = find.byKey(const Key('response-fullscreen-text'));
-      expect(textFinder, findsOneWidget);
-      double fontSize() =>
-          tester.widget<SelectableText>(textFinder).style!.fontSize!;
-
-      final base = fontSize();
-      expect(base, AppTypography.sizeSM);
-
-      await tester.tap(find.byKey(_zoomIn));
-      await tester.pumpAndSettle();
-      expect(fontSize(), closeTo(base * 1.25, 0.001));
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.text('响应体'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('行内 Body 无缩放控件且保持默认字号', (tester) async {
+    testWidgets('行内 Body 无独立缩放控件（缩放由全屏代码页提供）', (tester) async {
       await _pump(
         tester,
         _response(
@@ -649,47 +356,9 @@ void main() {
         ),
       );
 
-      final jsonFinder = find.byKey(const Key('response-body-json'));
-      expect(jsonFinder, findsOneWidget);
-      expect(tester.widget<Text>(jsonFinder).style!.fontSize,
-          AppTypography.sizeSM);
-      expect(find.byKey(_zoomIn), findsNothing);
-      expect(find.byKey(_zoomOut), findsNothing);
-      expect(find.byKey(_zoomLevel), findsNothing);
-      expect(find.byKey(_zoomReset), findsNothing);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('放大到 2.0× → gutter 行号框宽度同步 2×，不裁切/不抛异常', (tester) async {
-      // ≥10 行 JSON：行号可达两位数。
-      final body = '{"k0":0,${[for (var i = 1; i < 12; i++) '"k$i":$i'].join(',')}}';
-      await _openFullscreen(
-        tester,
-        _response(
-          headers: const <String, List<String>>{
-            'content-type': <String>['application/json'],
-          },
-          body: body,
-        ),
-      );
-
-      // 行数 ≥ 10（含两位数行号）。
-      expect(tryPrettyJson(body)!.split('\n').length, greaterThanOrEqualTo(10));
-
-      final numFinder = find.byKey(const Key('response-fullscreen-num-0'));
-      expect(numFinder, findsOneWidget);
-      final width0 = tester.getSize(numFinder).width;
-      expect(width0, greaterThan(0));
-
-      // 放大到 2.0×（1.0 → 1.25 → 1.5 → 1.75 → 2.0）。
-      for (var i = 0; i < 4; i++) {
-        await tester.tap(find.byKey(_zoomIn));
-        await tester.pumpAndSettle();
-      }
-      expect(_zoomLabel(tester), '200%');
-
-      final widthMax = tester.getSize(numFinder).width;
-      expect(widthMax / width0, closeTo(2.0, 0.001));
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byIcon(TablerIcons.zoom_in), findsNothing);
+      expect(find.byIcon(TablerIcons.zoom_out), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
@@ -706,7 +375,8 @@ void main() {
         },
         body: 'ok',
         cookies: const <DebugCookie>[
-          DebugCookie(name: 'sid', value: 'abc', domain: 'api.example.com', path: '/'),
+          DebugCookie(
+              name: 'sid', value: 'abc', domain: 'api.example.com', path: '/'),
           DebugCookie(name: 'theme', value: 'dark', domain: '.example.com'),
         ],
       );
@@ -715,7 +385,8 @@ void main() {
       await tester.tap(find.byKey(const Key('response-tab-cookies')));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('response-cookie-row-sid-0')), findsOneWidget);
+      expect(
+          find.byKey(const Key('response-cookie-row-sid-0')), findsOneWidget);
       expect(
         tester
             .widget<Text>(find.byKey(const Key('response-cookie-sid-name')))
@@ -744,7 +415,8 @@ void main() {
       );
       expect(
         tester
-            .widget<Text>(find.byKey(const Key('response-cookie-theme-expires')))
+            .widget<Text>(
+                find.byKey(const Key('response-cookie-theme-expires')))
             .data,
         '会话',
       );
@@ -840,14 +512,14 @@ void main() {
 
       // 重发：换一个响应实例，查看器应重置回 Body + 格式化（高亮树）。
       await _pump(tester, second);
-      expect(_treeText(tester), contains('"second": 2'));
-      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
+      expect(_bodyText(tester), contains('"second": 2'));
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });
 
-  group('超长 Body 分块', () {
-    testWidgets('首屏只建首个分块，展开更多后字符数增长且不崩', (tester) async {
+  group('大 Body · 代码视图', () {
+    testWidgets('超过 chunkChars 的文本直接交给 CodeEditor，无分块按钮', (tester) async {
       final huge = 'A' * 200000;
       await _pump(
         tester,
@@ -859,14 +531,10 @@ void main() {
         ),
       );
 
-      expect(_bodyText(tester).length, ResponseViewer.chunkChars);
-      final more = find.byKey(const Key('response-body-more'));
-      expect(more, findsOneWidget);
-      expect(find.textContaining('剩余 180000 字符'), findsOneWidget);
-
-      await tester.tap(more);
-      await tester.pumpAndSettle();
-      expect(_bodyText(tester).length, ResponseViewer.chunkChars * 2);
+      expect(_bodyText(tester).length, huge.length);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byKey(const Key('response-body-more')), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
@@ -904,7 +572,16 @@ void main() {
 
     testWidgets('二进制复制 → base64，解码后字节完全一致；卡片可点击', (tester) async {
       final bytes = <int>[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF,
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        0x0D,
+        0x0A,
+        0x1A,
+        0x0A,
+        0x00,
+        0xFF,
       ];
       final copied = <String>[];
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -1024,7 +701,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('大响应回退分块渲染且无异常', (tester) async {
+    testWidgets('大响应交给 CodeEditor，无异常', (tester) async {
       await _pump(
         tester,
         _response(
@@ -1034,13 +711,17 @@ void main() {
           body: 'A' * 120000,
         ),
       );
-      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-code')), findsOneWidget);
+      expect(find.byType(CodeEditor), findsOneWidget);
+      expect(find.byKey(const Key('response-body-more')), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
 
   group('保存为改写响应 · 头卫生 / 错误禁存', () {
-    test('剥离 hop-by-hop / content-encoding / content-length / transfer-encoding', () {
+    test(
+        '剥离 hop-by-hop / content-encoding / content-length / transfer-encoding',
+        () {
       final response = _response(
         headers: const <String, List<String>>{
           'content-type': <String>['application/json'],
@@ -1075,8 +756,8 @@ void main() {
         reason: '语义头必须保留',
       );
       expect(
-        headers.any(
-            (h) => h.name.toLowerCase() == 'x-extra' && h.value == 'v1'),
+        headers
+            .any((h) => h.name.toLowerCase() == 'x-extra' && h.value == 'v1'),
         isTrue,
         reason: '普通头必须保留',
       );
@@ -1215,9 +896,10 @@ void main() {
 
   group('JSON 词法 / 折叠（纯逻辑）', () {
     test('tokenizeJsonLine 识别 key / string / number / keyword / 标点', () {
-      final kinds = tokenizeJsonLine('  "name": "value", "ok": true, "n": -3.5e2')
-          .map((token) => token.kind)
-          .toSet();
+      final kinds =
+          tokenizeJsonLine('  "name": "value", "ok": true, "n": -3.5e2')
+              .map((token) => token.kind)
+              .toSet();
       expect(kinds, contains(JsonTokenKind.key));
       expect(kinds, contains(JsonTokenKind.string));
       expect(kinds, contains(JsonTokenKind.number));

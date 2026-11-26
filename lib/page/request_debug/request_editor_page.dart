@@ -16,13 +16,18 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
+import 'package:gstore/core/editor/app_code_language.dart';
+import 'package:gstore/core/editor/code_document_source.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
+import 'package:gstore/page/code_editor/code_editor_page.dart';
+import 'package:re_editor/re_editor.dart';
 
 import 'cookie_manager_sheet.dart';
 import 'debug_kv_editor.dart';
@@ -80,6 +85,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   late final TextEditingController _name;
   late final TextEditingController _url;
   late final TextEditingController _body;
+  late final CodeLineEditingController _bodyCode;
   late final TextEditingController _authUser;
   late final TextEditingController _authPass;
   late final TextEditingController _authToken;
@@ -122,9 +128,20 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   DebugCancellationToken? _cancelToken;
   bool _dirty = false;
 
-  /// 当前分段内容滚动越过阈值时收起顶部 URL 栏，回到顶部时展开。
-  /// 仅影响顶部栏的显示高度（URL 编辑走底部弹层，不打断编辑）。
-  bool _urlCollapsed = false;
+  /// SliverAppBar 顶部栏的展开高度（首帧后按真实内容测量，避免固定高度
+  /// 在环境预览/多行名称时裁切或留白）。
+  double _topBarExtent = 220;
+
+  /// 顶部栏真实内容高度的测量 key。
+  final GlobalKey _topBarMeasureKey = GlobalKey();
+
+  /// 避免同一帧重复排队测量。
+  bool _measureScheduled = false;
+
+  /// NestedScrollView 的 innerController：给 AppCodeView 作为纵向滚动控制器，
+  /// 让代码区滚动同样能驱动 SliverAppBar 收起。
+  final GlobalKey<NestedScrollViewState> _nestedScrollKey =
+      GlobalKey<NestedScrollViewState>();
 
   /// 请求体 JSON 格式化失败的内联错误；成功格式化或再次编辑后清除。
   String? _bodyError;
@@ -132,6 +149,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   /// URL ⇄ 参数同步的重入保护：任一方向的同步过程中绝不再次触发同步，
   /// 避免显示 URL 的程序化回写被误判为一次新提交而振荡。
   bool _syncing = false;
+
+  /// 请求体 TextEditingController ⇄ CodeLineEditingController 双向同步保护。
+  bool _syncingBody = false;
 
   /// 处于排序模式的 KV 段前缀集合（参数 / 请求头 / Cookie 各自独立）；
   /// 仅当某段处于排序模式时，其行尾才渲染拖拽手柄。
@@ -163,6 +183,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       text: rebuildUrl(parsed.base, parsed.fragment, initialParams),
     );
     _body = TextEditingController(text: request?.body ?? '');
+    _bodyCode = CodeLineEditingController.fromText(_body.text);
+    _body.addListener(_syncBodyCodeFromText);
+    _bodyCode.addListener(_syncBodyTextFromCode);
     _method = request?.method ?? 'GET';
     _bodyKind = request?.bodyKind ?? DebugBodyKind.none;
     _binarySource = request?.binarySource ?? DebugBinarySource.raw;
@@ -206,6 +229,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   void dispose() {
     _name.dispose();
     _url.dispose();
+    _body.removeListener(_syncBodyCodeFromText);
+    _bodyCode.removeListener(_syncBodyTextFromCode);
+    _bodyCode.dispose();
     _body.dispose();
     _authUser.dispose();
     _authPass.dispose();
@@ -230,6 +256,61 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     if (!mounted) return;
     // 始终 setState：文本变化后需要刷新派生 UI（如 URL 环境预览）。
     setState(() => _dirty = true);
+  }
+
+  /// 请求体高亮语言：JSON 类型按 JSON；其余类型按纯文本。
+  AppCodeLanguage? get _bodyLanguage =>
+      _bodyKind == DebugBodyKind.json ? AppCodeLanguage.json : null;
+
+  /// 工具栏 / 格式化 / 导入等程序化写入 [_body] 后，同步到 re_editor。
+  void _syncBodyCodeFromText() {
+    if (_syncingBody) return;
+    final text = _body.text;
+    if (_bodyCode.text == text) return;
+    _syncingBody = true;
+    try {
+      _bodyCode.text = text;
+    } finally {
+      _syncingBody = false;
+    }
+  }
+
+  /// re_editor 输入后，把全文同步回发送/编码使用的 [_body]。
+  void _syncBodyTextFromCode() {
+    if (_syncingBody) return;
+    final text = _bodyCode.text;
+    if (_body.text == text) return;
+    if (_bodyError != null) {
+      setState(() => _bodyError = null);
+    }
+    final selection = _bodyCode.selection;
+    final base = selection.baseOffset.clamp(0, text.length);
+    final extent = selection.extentOffset.clamp(0, text.length);
+    _syncingBody = true;
+    try {
+      _body.value = _body.value.copyWith(
+        text: text,
+        selection: TextSelection(baseOffset: base, extentOffset: extent),
+        composing: TextRange.empty,
+      );
+    } finally {
+      _syncingBody = false;
+    }
+  }
+
+  /// 全屏查看当前请求体：跳到统一编辑组件页的只读模式。
+  Future<void> _openBodyFullScreen() async {
+    await Navigator.of(context, rootNavigator: true).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => CodeEditorPage(
+          source: CodeDocumentSource.text(_body.text, title: '请求体'),
+          readOnly: true,
+          language: _bodyLanguage,
+          showLineNumbers: true,
+        ),
+      ),
+    );
   }
 
   DebugKvRow _newRow(
@@ -1100,32 +1181,55 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 顶部 URL 栏：分段内容向上滚动越过阈值时收起（动画），回到顶部还原。
-            AnimatedSize(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOut,
-              alignment: Alignment.topCenter,
-              child: _urlCollapsed
-                  ? const SizedBox(width: double.infinity)
-                  : _buildTopBar(context),
-            ),
-            _buildSegmentSwitch(context),
-            const Divider(height: 1),
             Expanded(
-              // 监听任意后代可滚动区域的滚动通知：无需 controller 即可驱动收起。
-              child: NotificationListener<ScrollNotification>(
-                onNotification: (notification) {
-                  if (notification is ScrollUpdateNotification ||
-                      notification is ScrollMetricsNotification) {
-                    final bool collapsed = notification.metrics.pixels > 24;
-                    if (collapsed != _urlCollapsed) {
-                      setState(() => _urlCollapsed = collapsed);
-                    }
-                  }
-                  // 不消费通知：让滚动继续传递给其它监听者。
-                  return false;
+              // 顶部栏作为真正的 sliver 随内容滚动收起；分段 tab 用
+              // SliverPersistentHeader 常驻，底部动作保持固定。
+              child: NestedScrollView(
+                key: _nestedScrollKey,
+                headerSliverBuilder: (context, innerBoxIsScrolled) {
+                  _scheduleTopBarMeasure();
+                  return <Widget>[
+                    SliverAppBar(
+                      primary: false,
+                      pinned: false,
+                      toolbarHeight: 0,
+                      automaticallyImplyLeading: false,
+                      elevation: 0,
+                      scrolledUnderElevation: 0,
+                      backgroundColor:
+                          Theme.of(context).scaffoldBackgroundColor,
+                      surfaceTintColor: Colors.transparent,
+                      expandedHeight: _topBarExtent,
+                      flexibleSpace: FlexibleSpaceBar(
+                        collapseMode: CollapseMode.pin,
+                        background: ColoredBox(
+                          color: Theme.of(context).scaffoldBackgroundColor,
+                          child: OverflowBox(
+                            alignment: Alignment.topCenter,
+                            maxHeight: double.infinity,
+                            child: KeyedSubtree(
+                              key: _topBarMeasureKey,
+                              child: _buildTopBar(context),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    SliverPersistentHeader(
+                      pinned: true,
+                      delegate: _SegmentSwitchHeaderDelegate(
+                        extent: 49,
+                        child: Column(
+                          children: [
+                            Expanded(child: _buildSegmentSwitch(context)),
+                            const Divider(height: 1),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ];
                 },
-                child: _buildSegmentBody(context),
+                body: _buildSegmentBody(context),
               ),
             ),
             const Divider(height: 1),
@@ -1136,12 +1240,27 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
   }
 
+  void _scheduleTopBarMeasure() {
+    if (_measureScheduled) return;
+    _measureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _measureScheduled = false;
+      if (!mounted) return;
+      final render = _topBarMeasureKey.currentContext?.findRenderObject();
+      if (render is! RenderBox || !render.hasSize) return;
+      final height = render.size.height;
+      if (height <= 0 || (height - _topBarExtent).abs() <= 1) return;
+      setState(() => _topBarExtent = height);
+    });
+  }
+
   Widget _buildTopBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     // 顶部：可选请求名称 / 描述 + URL；方法在 AppBar 胶囊中。
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
@@ -1597,6 +1716,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                   onPressed: _formatBodyJson,
                 ),
               ],
+              const SizedBox(width: AppSpacing.sm),
+              IconButton(
+                key: const Key('request-editor-body-fullscreen'),
+                tooltip: '全屏查看',
+                icon: const Icon(Icons.open_in_full),
+                onPressed: _openBodyFullScreen,
+              ),
             ],
           ),
           if (isBinary) ...[
@@ -1643,22 +1769,31 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             ),
           const SizedBox(height: AppSpacing.sm),
           Expanded(
-            child: TextField(
-              key: const Key('request-editor-body'),
-              controller: _body,
-              maxLines: null,
-              expands: true,
-              textAlignVertical: TextAlignVertical.top,
-              decoration: InputDecoration(
-                hintText: _bodyHintText(),
-                border: const OutlineInputBorder(),
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: theme.colorScheme.outline),
+                borderRadius: AppRadius.allSM,
               ),
-              onChanged: (_) {
-                setState(() {
-                  _dirty = true;
-                  _bodyError = null;
-                });
-              },
+              clipBehavior: Clip.antiAlias,
+              child: AppCodeView(
+                key: const Key('request-editor-body'),
+                controller: _bodyCode,
+                readOnly: false,
+                showLineNumbers: true,
+                language: _bodyLanguage,
+                hint: _bodyHintText(),
+                wordWrap: false,
+                verticalScrollController:
+                    _nestedScrollKey.currentState?.innerController,
+                minFontSize: 9,
+                maxFontSize: 28,
+                onChanged: (_) {
+                  setState(() {
+                    _dirty = true;
+                    _bodyError = null;
+                  });
+                },
+              ),
             ),
           ),
         ],
@@ -1820,6 +1955,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       method: _method,
       url: url,
       onSaveAsRewrite: _facade.setCaptureRule,
+      bodyScrollController: _nestedScrollKey.currentState?.innerController,
     );
   }
 
@@ -2373,4 +2509,40 @@ class _CodeGenSheetState extends State<_CodeGenSheet> {
       ],
     );
   }
+}
+
+/// 常驻的分段 tab 头（固定高度，SliverAppBar 收起后仍可见）。
+class _SegmentSwitchHeaderDelegate extends SliverPersistentHeaderDelegate {
+  const _SegmentSwitchHeaderDelegate({
+    required this.extent,
+    required this.child,
+  });
+
+  final double extent;
+  final Widget child;
+
+  @override
+  double get minExtent => extent;
+
+  @override
+  double get maxExtent => extent;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return SizedBox(
+      height: extent,
+      child: ColoredBox(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        child: child,
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _SegmentSwitchHeaderDelegate oldDelegate) =>
+      true;
 }
