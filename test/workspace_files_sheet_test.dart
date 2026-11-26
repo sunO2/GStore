@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/page/agent/workspace_files_sheet.dart';
+import 'package:re_editor/re_editor.dart';
 
 class _FakeWorkspace extends AgentWorkspaceService {
   _FakeWorkspace(this.info) : super();
@@ -46,7 +47,7 @@ class _FakeWorkspace extends AgentWorkspaceService {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('工作区 pill 弹层显示当前文件、可预览、标题右侧可切换', (tester) async {
+  testWidgets('工作区 pill 弹层显示当前文件、点击进入编辑页、标题右侧可切换', (tester) async {
     final workspace = _FakeWorkspace(const AgentWorkspaceInfo(
       id: AgentWorkspaceService.defaultWorkspaceId,
       name: '默认工作区',
@@ -77,7 +78,7 @@ void main() {
     await tester.tap(find.text('notes/hello.txt'));
     await tester.pumpAndSettle();
 
-    expect(find.text('hello workspace'), findsOneWidget);
-    expect(find.text('文件'), findsOneWidget);
+    expect(find.byType(CodeEditor), findsOneWidget);
+    expect(find.text('notes/hello.txt'), findsOneWidget);
   });
 }

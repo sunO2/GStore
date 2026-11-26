@@ -10,6 +10,8 @@ export 'app_shadows.dart';
 export 'app_animations.dart';
 export 'app_animation.dart';
 export 'app_components.dart';
+export 'app_code_view.dart';
+export 'app_markdown_code_block.dart';
 export 'app_sheet.dart';
 export 'app_dialogs.dart';
 export 'app_bottom_capsule.dart';

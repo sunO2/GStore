@@ -809,6 +809,46 @@ class AgentWorkspaceService {
     );
   }
 
+  /// 直接写入文本（工作区页面手动编辑，不经 AI 审批）。
+  ///
+  /// 仍复用 [validateWrite] 的配额/大小/路径校验，并写入审计日志。
+  Future<AgentWorkspaceWriteResult> writeTextDirect({
+    required String path,
+    required String content,
+  }) async {
+    await validateWrite(action: 'write', path: path, content: content);
+    final fs = await _fsInstance();
+    final resolved = await fs.resolve(path, forWrite: true);
+    final bytes = utf8.encode(content);
+    try {
+      await fs.writeBytes(
+        resolved.relative,
+        bytes,
+        create: !resolved.exists,
+      );
+    } catch (error) {
+      await _audit(
+        action: 'write',
+        path: resolved.relative,
+        bytes: bytes.length,
+        ok: false,
+        message: '$error',
+      );
+      throw AgentWorkspaceException('写入失败：$error');
+    }
+    await _audit(
+      action: 'write',
+      path: resolved.relative,
+      bytes: bytes.length,
+      ok: true,
+      message: 'manual editor',
+    );
+    return AgentWorkspaceWriteResult(
+      path: resolved.relative,
+      bytes: bytes.length,
+    );
+  }
+
   /// 创建工作区目录（低风险，无需审批）。
   Future<void> mkdir(String path) async {
     if (path.trim().isEmpty) {

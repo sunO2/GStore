@@ -93,10 +93,10 @@ class SectionCard extends StatelessWidget {
   }
 }
 
-/// 自定义代码块构建器（flutter_markdown_plus）- 添加复制按钮
+/// 自定义代码块构建器（flutter_markdown_plus）
 ///
-/// 对应旧 flutter_html 的 CodeBlockExtension：README 代码块复用
-/// [_CodeBlockWidget]（工具栏 + 复制按钮 + 深色主题）。
+/// README 代码块统一交给 [AppMarkdownCodeBlock]：语言标签 + 复制 +
+/// re_editor 只读视图（语法高亮/长行横向滚动）。
 class _ReadmeCodeBlockBuilder extends MarkdownElementBuilder {
   @override
   bool isBlockElement() => true;
@@ -111,117 +111,22 @@ class _ReadmeCodeBlockBuilder extends MarkdownElementBuilder {
     final codeText = element.textContent.replaceFirst(RegExp(r'\n+$'), '');
     if (codeText.trim().isEmpty) return const SizedBox.shrink();
 
-    return _CodeBlockWidget(
-      codeText: codeText,
-      buildContext: context,
-    );
-  }
-}
-
-/// 代码块组件 - 带复制按钮
-class _CodeBlockWidget extends StatelessWidget {
-  final String codeText;
-  final BuildContext buildContext;
-
-  const _CodeBlockWidget({
-    required this.codeText,
-    required this.buildContext,
-  });
-
-  Future<void> _copyToClipboard() async {
-    await Clipboard.setData(ClipboardData(text: codeText));
-    if (buildContext.mounted) {
-      ScaffoldMessenger.of(buildContext).showSnackBar(
-        SnackBar(
-          content: const Text('代码已复制'),
-          duration: const Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-          margin: EdgeInsets.only(
-            bottom: MediaQuery.of(buildContext).size.height - 120,
-            left: AppSpacing.md,
-            right: AppSpacing.md,
-          ),
-        ),
-      );
+    var language = '';
+    for (final child in element.children ?? const <md.Node>[]) {
+      if (child is md.Element && child.tag == 'code') {
+        final cls = child.attributes['class'] ?? '';
+        final idx = cls.indexOf('language-');
+        if (idx >= 0) {
+          language = cls.substring(idx + 'language-'.length).trim();
+        }
+        break;
+      }
     }
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: EdgeInsets.only(bottom: AppSpacing.xs),
-      decoration: BoxDecoration(
-        color: AppColors.codeEditorBackground,
-        borderRadius: AppRadius.allMD,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 工具栏（包含复制按钮）
-          Container(
-            padding: EdgeInsets.symmetric(
-              horizontal: AppSpacing.md,
-              vertical: AppSpacing.xs,
-            ),
-            decoration: BoxDecoration(
-              color: AppColors.codeEditorToolbar,
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(AppRadius.md),
-                topRight: Radius.circular(AppRadius.md),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                InkWell(
-                  onTap: _copyToClipboard,
-                  borderRadius: AppRadius.allSM,
-                  child: Container(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: AppSpacing.sm,
-                      vertical: AppSpacing.xs,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          TablerIcons.copy,
-                          size: AppTypography.iconSM,
-                          color: AppColors.codeEditorText,
-                        ),
-                        SizedBox(width: AppSpacing.xs),
-                        Text(
-                          '复制',
-                          style: TextStyle(
-                            color: AppColors.codeEditorText,
-                            fontSize: AppTypography.sizeXS,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // 代码内容：保留原始换行，长行横向滚动（不软换行，避免缩进错乱）
-          Container(
-            padding: EdgeInsets.all(AppSpacing.md),
-            width: double.infinity,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SelectableText(
-                codeText,
-                style: TextStyle(
-                  color: AppColors.codeEditorText,
-                  fontFamily: 'monospace',
-                  fontSize: AppTypography.sizeSM,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+    return AppMarkdownCodeBlock(
+      code: codeText,
+      language: language,
+      showLineNumbers: true,
     );
   }
 }
@@ -1130,7 +1035,8 @@ class _ReadmeSectionState extends State<ReadmeSection> {
           ),
         );
       },
-      // README 代码块：复制按钮 + 深色工具栏（复用旧 _CodeBlockWidget）
+      // README 代码块：统一由 AppMarkdownCodeBlock 渲染（语言标签 + 复制 +
+      // re_editor 只读视图）。
       builders: {
         'pre': _ReadmeCodeBlockBuilder(),
       },
@@ -1246,7 +1152,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
   /// - body（sizeMD/1.5/onSurface）→ p；p/li 原 lineHeight 1.6 由 blockSpacing 补偿
   /// - 标题原 margin+padding 合并进 h*Padding（块间距由 blockSpacing 承担）
   /// - 行内 code 原 padding(6,3) 无法表达 → 保留背景/颜色/字体
-  /// - pre 原背景/内边距由 _CodeBlockWidget 自带，codeblock* 清空避免双重样式
+  /// - pre 原背景/内边距由 AppMarkdownCodeBlock 自带，codeblock* 清空避免双重样式
   /// - td 原 border-top → TableBorder.all 近似（flutter_markdown_plus 无逐行边框）
   MarkdownStyleSheet _buildReadmeStyleSheet(
       BuildContext context, ThemeData theme) {
@@ -1309,7 +1215,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
         fontSize: AppTypography.sizeSM - 1,
       ),
 
-      // 代码块：样式由 _CodeBlockWidget 自带（复制按钮 + 深色工具栏），
+      // 代码块：样式由 AppMarkdownCodeBlock 自带（复制按钮 + 深色工具栏），
       // 清掉 fromTheme 默认装饰避免双重样式
       codeblockPadding: EdgeInsets.zero,
       codeblockDecoration: const BoxDecoration(),

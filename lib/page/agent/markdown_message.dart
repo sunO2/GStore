@@ -1,7 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
@@ -38,7 +37,7 @@ bool hasUnclosedCodeBlock(String text, {bool inFence = false}) {
 /// 对话消息 Markdown 渲染组件（增强版）
 ///
 /// 增强能力：
-/// - 代码块：语言标签、复制按钮、深色主题、圆角、行内滚动
+/// - 代码块：语言标签、复制按钮、re_editor 只读高亮视图、深色主题、行内滚动
 /// - 图片：圆角、加载占位、点击全屏预览
 /// - 链接：主题色 + 下划线，点击跳转内置浏览器
 /// - 表格：表头高亮、边框、斑马纹
@@ -239,7 +238,8 @@ class AgentMarkdownMessage extends StatelessWidget {
   String _proxiedImageUrl(Uri uri) {
     final url = uri.toString();
     final proxied = applyProxyIfNeeded(url, getProxy());
-    debugPrint('AgentMarkdown 图片: url=$url proxied=$proxied proxy=${getProxy().isEmpty ? '(空)' : getProxy()}');
+    debugPrint(
+        'AgentMarkdown 图片: url=$url proxied=$proxied proxy=${getProxy().isEmpty ? '(空)' : getProxy()}');
     return proxied;
   }
 
@@ -324,7 +324,11 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     if (compact) {
       return _CompactCodeBlock(text: code, language: language);
     }
-    return _CodeBlock(text: code, language: language);
+    return AppMarkdownCodeBlock(
+      code: code,
+      language: language,
+      maxHeight: 320,
+    );
   }
 }
 
@@ -359,142 +363,6 @@ class _CompactCodeBlock extends StatelessWidget {
     );
   }
 }
-
-/// 代码块展示组件
-class _CodeBlock extends StatefulWidget {
-  final String text;
-  final String language;
-
-  const _CodeBlock({required this.text, required this.language});
-
-  @override
-  State<_CodeBlock> createState() => _CodeBlockState();
-}
-
-class _CodeBlockState extends State<_CodeBlock> {
-  bool _copied = false;
-
-  Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.text));
-    if (mounted) {
-      setState(() => _copied = true);
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) setState(() => _copied = false);
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    // AnimatedSize：流式闭合瞬间（compact 等宽文本 → 完整代码卡片）高度跳变
-    // 平滑过渡，避免视觉"咔哒"跳动；正常静态消息无高度变化，动画不触发。
-    return AnimatedSize(
-      duration: const Duration(milliseconds: 150),
-      curve: Curves.easeOutCubic,
-      alignment: Alignment.topCenter,
-      child: Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        color: _codeBackground,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white.withAlpha(12)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 顶栏：语言标签 + 复制按钮
-          Container(
-            color: Colors.white.withAlpha(10),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Row(
-              children: [
-                if (widget.language.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: scheme.primary.withAlpha(80),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      widget.language,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: scheme.onPrimaryContainer,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  )
-                else
-                  const Icon(
-                    TablerIcons.code,
-                    size: 14,
-                    color: Colors.white54,
-                  ),
-                const Spacer(),
-                InkWell(
-                  onTap: _copy,
-                  borderRadius: BorderRadius.circular(4),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _copied ? TablerIcons.check : TablerIcons.copy,
-                          size: 14,
-                          color: _copied
-                              ? const Color(0xFF7CF29C)
-                              : Colors.white60,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _copied ? '已复制' : '复制',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: _copied
-                                ? const Color(0xFF7CF29C)
-                                : Colors.white60,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // 代码内容
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.all(12),
-            child: SelectableText(
-              widget.text,
-              style: const TextStyle(
-                fontSize: 12.5,
-                fontFamily: 'monospace',
-                height: 1.5,
-                color: Color(0xFFE6E6E6),
-              ),
-            ),
-          ),
-        ],
-      ),
-      ),
-    );
-  }
-}
-
-/// 深色代码背景
-const Color _codeBackground = Color(0xFF1E1E2E);
 
 /// 表格构建器：斑马纹行
 class _StyledTableBuilder extends MarkdownElementBuilder {

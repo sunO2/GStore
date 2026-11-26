@@ -5,6 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/editor/code_document_source.dart';
+import 'package:gstore/page/code_editor/code_editor_page.dart';
 import 'workspace_picker.dart';
 
 /// AI 文件工作区：查看/开关/清空/预览。
@@ -327,29 +329,16 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
       );
       return;
     }
-    try {
-      final result = await service.workspaceService.read(entry.path);
-      if (!mounted) return;
-      if (result.binary || result.text == null) {
-        await AppDialogs.showAlertSheet(
-          title: entry.path,
-          message: '二进制文件（${_formatBytes(result.bytes)}），暂不支持预览',
-        );
-        return;
-      }
-      final text = result.text!;
-      await AppDialogs.showContentSheet(
-        title: entry.path,
-        subtitle: '${_formatBytes(result.bytes)}'
-            '${result.truncated ? ' · 已截断' : ''}',
-        content: SelectableText(
-          text,
-          style: Theme.of(context).textTheme.bodySmall,
+    await Navigator.of(context, rootNavigator: true).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CodeEditorPage(
+          source: CodeDocumentSource.workspace(
+            service.workspaceService,
+            entry.path,
+          ),
         ),
-      );
-    } catch (error) {
-      if (mounted) AppDialogs.showError('读取失败：$error');
-    }
+      ),
+    );
   }
 
   @override

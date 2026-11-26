@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/editor/code_document_source.dart';
+import 'package:gstore/page/code_editor/code_editor_page.dart';
 
 import 'workspace_picker.dart';
 
@@ -39,11 +41,8 @@ class _WorkspaceFilesSheetState extends State<_WorkspaceFilesSheet> {
   String? _error;
 
   AgentWorkspaceEntry? _preview;
-  String? _previewText;
   Uint8List? _previewImage;
   int _previewBytes = 0;
-  bool _previewTruncated = false;
-  bool _previewBinary = false;
   bool _previewLoading = false;
   String? _previewError;
 
@@ -58,7 +57,6 @@ class _WorkspaceFilesSheetState extends State<_WorkspaceFilesSheet> {
       _loading = true;
       _error = null;
       _preview = null;
-      _previewText = null;
       _previewImage = null;
       _previewError = null;
     });
@@ -102,32 +100,33 @@ class _WorkspaceFilesSheetState extends State<_WorkspaceFilesSheet> {
   }
 
   Future<void> _openPreview(AgentWorkspaceEntry entry) async {
+    if (!_isImage(entry.path)) {
+      await Navigator.of(context, rootNavigator: true).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => CodeEditorPage(
+            source: CodeDocumentSource.workspace(
+              widget.service.workspaceService,
+              entry.path,
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _preview = entry;
       _previewLoading = true;
       _previewError = null;
-      _previewText = null;
       _previewImage = null;
     });
     try {
       final workspace = widget.service.workspaceService;
-      if (_isImage(entry.path)) {
-        final bytes = await workspace.readBytes(entry.path);
-        if (!mounted) return;
-        setState(() {
-          _previewImage = Uint8List.fromList(bytes);
-          _previewBytes = bytes.length;
-          _previewLoading = false;
-        });
-        return;
-      }
-      final result = await workspace.read(entry.path);
+      final bytes = await workspace.readBytes(entry.path);
       if (!mounted) return;
       setState(() {
-        _previewText = result.text;
-        _previewBinary = result.binary;
-        _previewBytes = result.bytes;
-        _previewTruncated = result.truncated;
+        _previewImage = Uint8List.fromList(bytes);
+        _previewBytes = bytes.length;
         _previewLoading = false;
       });
     } catch (error) {
@@ -142,7 +141,6 @@ class _WorkspaceFilesSheetState extends State<_WorkspaceFilesSheet> {
   void _backToList() {
     setState(() {
       _preview = null;
-      _previewText = null;
       _previewImage = null;
       _previewError = null;
     });
@@ -293,33 +291,10 @@ class _WorkspaceFilesSheetState extends State<_WorkspaceFilesSheet> {
         ),
       );
     }
-    if (_previewBinary || (_previewText ?? '').isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(AppSpacing.xl),
-        child: Text(
-          _previewBinary
-              ? '二进制文件（${_formatBytes(_previewBytes)}），暂不支持文本预览。'
-              : '文件为空。',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
-        ),
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      child: SelectableText(
-        _previewText!,
-        style: theme.textTheme.bodySmall,
-      ),
-    );
+    return const SizedBox.shrink();
   }
 
-  String _previewSubtitle() {
-    final parts = <String>[_formatBytes(_previewBytes)];
-    if (_previewTruncated) parts.add('已截断');
-    return parts.join(' · ');
-  }
+  String _previewSubtitle() => _formatBytes(_previewBytes);
 
   static bool _isImage(String path) {
     final lower = path.toLowerCase();

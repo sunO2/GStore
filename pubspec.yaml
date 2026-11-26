@@ -40,6 +40,10 @@ dependencies:
   go_router: ^14.6.2
   flutter_markdown_plus: ^1.0.12
   markdown: ^7.2.0
+  # 代码编辑/高亮（re_editor 自带只读、折叠、行号、大文本优化）
+  re_editor: ^0.10.0
+  # re_editor 的语法高亮引擎；直接 import 语言/主题需显式声明
+  re_highlight: ^0.0.3
   # 联网检索：HTML 正文抽取（webFetch）
   html: ^0.15.4
   async: ^2.11.0

@@ -14,6 +14,7 @@ import 'package:gstore/page/detail/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:re_editor/re_editor.dart';
 
 /// 假 path_provider：截图 CachedNetworkImage 的 cache_manager 依赖
 /// getApplicationSupportDirectory/getTemporaryDirectory（runAsync 真实异步下
@@ -198,7 +199,8 @@ void main() {
     expect(find.byType(CachedNetworkImage), findsNothing);
   });
 
-  testWidgets('loading: true → 轻量占位（卡片标题 + AppLoading），不渲染正文/截图', (tester) async {
+  testWidgets('loading: true → 轻量占位（卡片标题 + AppLoading），不渲染正文/截图',
+      (tester) async {
     final info = _FakeDetailInfo()
       ..readmeValue = '# 标题\n详细介绍文本'
       ..screenshotsValue = [
@@ -300,9 +302,9 @@ void main() {
     expect(find.byType(Table), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     expect(find.text('2'), findsOneWidget);
-    // 代码块：_CodeBlockWidget 工具栏（复制）+ 代码文本
+    // 代码块：AppMarkdownCodeBlock 工具栏（复制）+ re_editor 只读视图
     expect(find.text('复制'), findsOneWidget);
-    expect(find.text('final x = 1;'), findsOneWidget);
+    expect(find.byType(CodeEditor), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

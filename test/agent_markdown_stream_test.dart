@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/page/agent/markdown_message.dart';
+import 'package:re_editor/re_editor.dart';
 
 /// 回归测试：流式输出时未闭合代码块的高度暴涨防护。
 ///
@@ -76,13 +77,16 @@ void main() {
         home: Scaffold(
           body: Container(
             constraints: const BoxConstraints(maxWidth: 320),
-            child: const AgentMarkdownMessage(text: '```dart\nvoid main() {}\n```'),
+            child: const AgentMarkdownMessage(
+                text: '```dart\nvoid main() {}\n```'),
           ),
         ),
       ));
       await tester.pump();
       // 完整卡片：语言标签 dart 可见（compact 模式没有语言标签）
       expect(find.text('dart'), findsOneWidget);
+      // 代码内容由 re_editor 只读视图渲染
+      expect(find.byType(CodeEditor), findsOneWidget);
     });
 
     testWidgets('未闭合代码块：不渲染语言标签卡片（compact 模式）', (tester) async {
