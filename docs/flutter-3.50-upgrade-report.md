@@ -135,7 +135,9 @@ Flutter 3.50.1 升级**已完成到可构建、可安装、可启动**：
 ## 当前分支状态
 
 - `GStore-update` 分支 `chore/flutter-3.50-upgrade`
-- 已提交：`4044bae5 chore(android): migrate to Flutter 3.50.1 / AGP 9 / Gradle 9.5`
+- 已提交：
+  - `4044bae5` Android 工具链迁移与插件替换
+  - `df9da46c` / `3e26ff6e` 构建结果与 Pixel 4 回归报告
 - 未推送（`origin` 指向本地主仓库，避免污染主仓库分支）
 - Android 工具链、插件替换、vendor 补丁、文档均已就绪
 - release APK 已构建并安装验证
