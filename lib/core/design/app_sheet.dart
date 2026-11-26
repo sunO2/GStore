@@ -337,9 +337,13 @@ class AppSheetScaffold extends StatelessWidget {
                   AppSpacing.xl,
                   AppSpacing.lg,
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: _withGaps(actions),
+                // Wrap instead of Row so three or more actions never overflow
+                // on narrow devices (they wrap to a second run instead).
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
+                  children: actions,
                 ),
               ),
             )
@@ -350,13 +354,4 @@ class AppSheetScaffold extends StatelessWidget {
     );
   }
 
-  /// 操作按钮之间插入统一间距
-  static List<Widget> _withGaps(List<Widget> items) {
-    final spaced = <Widget>[];
-    for (var i = 0; i < items.length; i++) {
-      if (i > 0) spaced.add(const SizedBox(width: AppSpacing.sm));
-      spaced.add(items[i]);
-    }
-    return spaced;
-  }
 }

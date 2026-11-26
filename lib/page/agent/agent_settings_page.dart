@@ -24,6 +24,9 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   /// 联网检索配置（用于卡片副标题）
   WebSearchConfig? _webSearchConfig;
 
+  /// 是否允许 AI 访问文件工作区（用于卡片开关）
+  bool _fileAccessEnabled = false;
+
   /// 本地推理模块是否可用（APK 内置或已下载）；不可用则不显示入口
   late final Future<bool> _llmAvailable =
       RustModuleLoader.instance.isAvailable('llm');
@@ -41,13 +44,27 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     }
     store.addListener(_onStoreChanged);
     final webSearchConfig = await WebSearchConfig.load();
+    final service = ModuleManager.instance.get<AgentService>();
+    final fileAccessEnabled = service?.fileAccessEnabled.value ??
+        await AgentFileSettings.loadEnabled();
     if (mounted) {
       setState(() {
         _store = store;
         _webSearchConfig = webSearchConfig;
+        _fileAccessEnabled = fileAccessEnabled;
         _loading = false;
       });
     }
+  }
+
+  Future<void> _toggleFileAccess(bool enabled) async {
+    final service = ModuleManager.instance.get<AgentService>();
+    if (service != null) {
+      await service.setFileAccessEnabled(enabled);
+    } else {
+      await AgentFileSettings.saveEnabled(enabled);
+    }
+    if (mounted) setState(() => _fileAccessEnabled = enabled);
   }
 
   Future<void> _openWebSearchSettings() async {
@@ -244,6 +261,59 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
               ),
               trailing: const Icon(TablerIcons.chevron_right),
             ),
+          ),
+        ),
+
+        // 文件工作区
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Column(
+            children: [
+              Material(
+                type: MaterialType.transparency,
+                child: ListTile(
+                  onTap: () => context.push(AppRoute.agentWorkspace),
+                  leading: CircleAvatar(
+                    backgroundColor:
+                        Theme.of(context).colorScheme.primaryContainer,
+                    child: Icon(
+                      TablerIcons.folder,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  title: const Text('文件工作区'),
+                  subtitle: const Text('查看 AI 工作区文件与最近操作记录'),
+                  trailing: const Icon(TablerIcons.chevron_right),
+                ),
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                value: _fileAccessEnabled,
+                onChanged: _toggleFileAccess,
+                secondary: Icon(
+                  TablerIcons.shield_lock,
+                  color: _fileAccessEnabled
+                      ? AppColors.warning
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                title: const Text('允许 AI 读写文件'),
+                subtitle: Text(
+                  _fileAccessEnabled
+                      ? '仅访问应用内工作区；写入/创建会逐次确认'
+                      : '默认关闭，文件工具不会下发给模型',
+                ),
+              ),
+            ],
           ),
         ),
 

@@ -964,6 +964,8 @@ Color _timelineToolColor(AgentToolType? type) {
       return Colors.lime;
     case AgentToolType.config:
       return Colors.blueGrey;
+    case AgentToolType.files:
+      return Colors.brown;
     case AgentToolType.snapshot:
       return Colors.deepPurple;
     case AgentToolType.mcp:
@@ -1004,6 +1006,8 @@ IconData _timelineToolIcon(AgentToolType? type) {
       return TablerIcons.circle_check;
     case AgentToolType.config:
       return TablerIcons.settings;
+    case AgentToolType.files:
+      return TablerIcons.folder;
     case AgentToolType.snapshot:
       return TablerIcons.camera;
     case AgentToolType.mcp:
@@ -1044,6 +1048,8 @@ String _timelineToolLabel(AgentToolType? type) {
       return '📱 已安装应用';
     case AgentToolType.config:
       return '⚙️ 配置管理';
+    case AgentToolType.files:
+      return '📁 文件工作区';
     case AgentToolType.snapshot:
       return '📸 应用快照';
     case AgentToolType.mcp:

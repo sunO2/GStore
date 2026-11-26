@@ -70,6 +70,8 @@ export 'package:gstore/core/event/database_event.dart';
 export 'package:gstore/core/agent/agent_model_store.dart';
 export 'package:gstore/core/agent/agent_session_store.dart';
 export 'package:gstore/core/agent/agent_session_tokens.dart';
+export 'package:gstore/core/agent/agent_file_settings.dart';
+export 'package:gstore/core/agent/agent_workspace_service.dart';
 export 'package:gstore/core/agent/agent_service.dart';
 export 'package:gstore/core/agent/platform_arch.dart';
 

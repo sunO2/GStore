@@ -25,7 +25,7 @@ void main() {
       );
 
   group('AgentSkillStore', () {
-    test('extracts all 14 bundled SKILL.md files and removes stale skills',
+    test('extracts all 15 bundled SKILL.md files and removes stale skills',
         () async {
       final stale =
           File(p.join(support.path, 'agent_skills', 'stale', 'SKILL.md'));
@@ -40,7 +40,7 @@ void main() {
           .where((file) => p.basename(file.path) == 'SKILL.md')
           .toList();
 
-      expect(skillFiles, hasLength(14));
+      expect(skillFiles, hasLength(15));
       expect(await stale.exists(), isFalse);
       expect(store.directory?.path, dir.path);
     });

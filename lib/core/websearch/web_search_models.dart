@@ -57,6 +57,39 @@ class WebFetchPage {
   final bool truncated;
 }
 
+/// 原始 HTTP 响应（接口探测/联调用，不走正文抽取）
+class WebHttpResponse {
+  const WebHttpResponse({
+    required this.url,
+    required this.method,
+    required this.statusCode,
+    this.reasonPhrase = '',
+    this.headers = const <String, String>{},
+    this.contentType = '',
+    this.body = '',
+    this.truncated = false,
+    this.binary = false,
+    this.bytes = 0,
+  });
+
+  final String url;
+  final String method;
+  final int statusCode;
+  final String reasonPhrase;
+
+  /// 响应头（已去掉 Set-Cookie 等敏感项，值超长会截断）。
+  final Map<String, String> headers;
+  final String contentType;
+
+  /// 文本响应体；二进制响应为空字符串。
+  final String body;
+  final bool truncated;
+  final bool binary;
+
+  /// 响应体原始字节数（二进制响应也保留）。
+  final int bytes;
+}
+
 /// 联网检索的统一异常：`code` 用于给模型/用户可操作的提示。
 class WebSearchException implements Exception {
   WebSearchException(this.code, this.message, {this.retryAfterSeconds});

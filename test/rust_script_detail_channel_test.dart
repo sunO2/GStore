@@ -9,10 +9,11 @@
 /// The Rust host collapses "no detail" — the pack having no `getAppDetail` case
 /// (undefined), a `{ok:false, data:null, error}` envelope, and a JS throw — into
 /// the typed `not_found` error (`rust/gstore_core/src/channel/script/channel.rs`
-/// `MISSING_DETAIL`). [RustScriptDetailChannel.load] therefore keeps the prefill
-/// already rendered on `not_found` (no hard error) instead of replacing the body
-/// with the error view; only a non-`not_found` failure sets a typed
-/// `errorMessage`.
+/// `MISSING_DETAIL`). [RustScriptDetailChannel.load] therefore tries the entry
+/// lane once on `not_found` (a pack may implement `getAppDetail` only in
+/// `entry.js`) and keeps the prefill already rendered when neither lane has
+/// detail (no hard error) instead of replacing the body with the error view;
+/// only a non-`not_found` failure sets a typed `errorMessage`.
 library;
 
 import 'dart:convert';
@@ -274,6 +275,9 @@ class _DetailLaneFacadeBackend extends _FakeFacadeBackend
     implements ScriptDetailAppDetailSource {
   _DetailLaneFacadeBackend({super.replies});
 
+  /// When non-null, the detail.js lane throws it (e.g. no `detail.js`).
+  Object? scriptDetailError;
+
   final List<Map<String, Object?>> scriptGetAppDetailCalls = [];
 
   @override
@@ -286,6 +290,8 @@ class _DetailLaneFacadeBackend extends _FakeFacadeBackend
       'key': key,
       'params': jsonEncode(params),
     });
+    final error = scriptDetailError;
+    if (error != null) throw error;
     final raw = _raw('getAppDetail', jsonEncode(params));
     final Object? decoded = jsonDecode(raw);
     if (decoded is! Map) return null;
@@ -639,6 +645,45 @@ void main() {
 
       expect(backend.runCalls.first['method'], 'getAppDetail');
       expect(state.detailInfo, isNotNull);
+    });
+
+    test('detail.js absent (not_found) → entry lane fallback loads detail', () async {
+      final backend = _DetailLaneFacadeBackend(replies: {
+        'getAppDetail': jsonEncode({
+          'appId': 'com.example.one',
+          'name': 'Entry App',
+          'description': '来自 entry.js',
+          'sections': ['downloads'],
+          'downloads': [
+            {
+              'url': 'https://example.com/a.apk',
+              'name': 'a.apk',
+              'version': '1.0',
+            },
+          ],
+        }),
+        'detailMenu': 'null',
+      })
+        ..scriptDetailError = const ChannelApiException(
+          'not_found',
+          'script pack `js_probe` has no detail.js',
+        );
+      final (channel, state, cb) = build(backend);
+
+      await channel.load();
+
+      expect(backend.scriptGetAppDetailCalls, hasLength(1));
+      expect(
+        backend.runCalls.map((c) => c['method']),
+        contains('getAppDetail'),
+        reason: 'no detail.js must fall back to the entry lane',
+      );
+      expect(state.errorMessage, isEmpty);
+      expect(cb.errors, isEmpty);
+      expect(state.detailInfo!.name, 'Entry App');
+      expect(state.detailInfo!.downloads, hasLength(1));
+      expect(cb.refreshCalls, hasLength(2),
+          reason: 'prefill + entry-lane detail');
     });
 
     test('detail.js returns null → entry lane fallback keeps the page', () async {

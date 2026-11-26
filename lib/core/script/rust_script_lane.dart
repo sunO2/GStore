@@ -177,6 +177,18 @@ class RustScriptChannelLane {
     await _api.addApp(key: code, app: channelAppInfoFromSummary(app));
   }
 
+  /// Removes [appId] from [code]'s saved `channel_apps` rows.
+  ///
+  /// Uses the unified channel entry (`ChannelApi.removeApp`), which resolves the
+  /// script driver and deletes the row from the same table [storedApps] reads.
+  /// Removing a missing app is a no-op.
+  Future<void> removeApp(String code, String appId) async {
+    if (!enabled) {
+      throw const ScriptApiDisabledException();
+    }
+    await RustChannelFacade.instance.removeApp(key: code, appId: appId);
+  }
+
   /// Decodes the `ScriptApi.storedApps` JSON payload (snake_case `AppSummary`
   /// rows) into [AppSummary]. Exposed for tests.
   @visibleForTesting

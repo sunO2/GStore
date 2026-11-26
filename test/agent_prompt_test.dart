@@ -114,6 +114,34 @@ void main() {
     });
   });
 
+  group('文件工作区提示', () {
+    tearDown(() {
+      AgentPrompt.useEnglish();
+      AgentPrompt.useCompact();
+    });
+
+    test('包含文件工具时提示审批规则', () {
+      AgentPrompt.useChinese();
+      final prompt = AgentPrompt.build(
+        'platform',
+        toolNames: const ['fileList', 'fileWrite'],
+      );
+      expect(prompt, contains('文件工作区'));
+      expect(prompt, contains('fileApprove'));
+      expect(prompt, contains('512KB'));
+    });
+
+    test('不含文件工具时不注入文件规则', () {
+      AgentPrompt.useChinese();
+      final prompt = AgentPrompt.build(
+        'platform',
+        toolNames: const ['searchApp', 'downloadApp'],
+      );
+      expect(prompt, isNot(contains('文件工作区：')));
+      expect(prompt, isNot(contains('fileApprove')));
+    });
+  });
+
   group('showConfigControl 提示与示例', () {
     tearDown(() {
       AgentPrompt.useEnglish();

@@ -86,6 +86,10 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == SafWorkspaceChannel.REQUEST_PICK_TREE) {
+            SafWorkspaceChannel.onActivityResult(requestCode, resultCode, data)
+            return
+        }
         if (requestCode != REQUEST_PREPARE_VPN) return
         val pending = pendingPrepareResult ?: return
         pendingPrepareResult = null
@@ -171,6 +175,8 @@ class MainActivity : FlutterActivity() {
         BatteryChannel.register(flutterEngine, applicationContext)
         // 平台能力 / 通知 / 安装终端事件：Dart 侧的行为入口（替代已删除的 JNI 桥）。
         PlatformChannel.register(flutterEngine.dartExecutor.binaryMessenger)
+        // SAF 外部工作区：目录选择 + content:// 文档操作。
+        SafWorkspaceChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
         // 高刷新率请求通道：Dart 启动时调用，读设备支持模式并应用最高 fps
         // （120Hz 等）。不新增依赖 / 权限，逻辑全在 DisplayRefreshChannel。
         DisplayRefreshChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)

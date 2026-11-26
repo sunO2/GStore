@@ -154,6 +154,7 @@ flutter:
      - assets/skills/app-config-management/SKILL.md
      - assets/skills/troubleshooting/SKILL.md
      - assets/skills/js-channel-app-operations/SKILL.md
+     - assets/skills/js-channel-development/SKILL.md
      - assets/skills/js-channel-method-execution/SKILL.md
      - assets/skills/version-diff-analysis/SKILL.md
      - assets/app/db/

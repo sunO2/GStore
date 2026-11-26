@@ -710,3 +710,63 @@ fn pack_import_legacy_rollback_mid_install_keeps_prior_pack() {
         temp_entries(packs.root())
     );
 }
+
+/// 回归：只有 entry.js 的渠道包也必须能导入；detail.js / meta.json 均可选。
+///
+/// 这条契约容易被 `scripts/channels/pack.sh` 的旧校验或"把文件夹压进 zip"
+/// 误导成"detail/meta 必须"，这里用真实 `PackStore` 固化行为。
+#[test]
+fn pack_import_detail_and_meta_are_optional() {
+    let dir = TempDir::new("optional");
+    let db = DbHandle::open(&dir.path().join("data")).unwrap();
+    let packs = PackStore::new(dir.path().join("packs"), db);
+
+    let entry = b"async function main() { return { ok: true, data: [] }; }\n";
+
+    let only_path = dir.path().join("only_entry.zip");
+    write_zip(
+        &only_path,
+        &[ZipEntry {
+            name: "entry.js",
+            data: entry,
+        }],
+    );
+    let installed = packs
+        .import_pack(&only_path)
+        .expect("entry-only pack must import");
+    assert!(installed.pack.detail_js.is_none(), "detail.js is optional");
+    assert!(
+        installed.pack.required_env_vars.is_empty(),
+        "meta.json is optional"
+    );
+    assert!(!installed.dir.join("detail.js").exists());
+    assert!(!installed.dir.join("meta.json").exists());
+
+    let meta = b"{\"name\":\"No Detail\"}";
+    let meta_path = dir.path().join("entry_meta.zip");
+    write_zip(
+        &meta_path,
+        &[
+            ZipEntry {
+                name: "entry.js",
+                data: entry,
+            },
+            ZipEntry {
+                name: "meta.json",
+                data: meta,
+            },
+        ],
+    );
+    let installed = packs
+        .import_pack(&meta_path)
+        .expect("entry+meta pack must import");
+    assert!(installed.pack.detail_js.is_none());
+    assert_eq!(
+        installed
+            .pack
+            .meta_json
+            .get("name")
+            .and_then(|value| value.as_str()),
+        Some("No Detail")
+    );
+}

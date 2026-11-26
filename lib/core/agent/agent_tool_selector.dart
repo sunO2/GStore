@@ -66,6 +66,54 @@ class AgentToolSelector {
   /// 配置控件工具名（用户提到白名单配置时必须保留）。
   static const String _configControlToolName = 'showConfigControl';
 
+  /// 文件工具名（用户提到文件读写时强制保留）。
+  static const Set<String> _fileToolNames = {
+    'fileList',
+    'fileRead',
+    'fileApprove',
+    'fileWrite',
+    'fileEdit',
+    'fileMkdir',
+    'fileDelete',
+    'fileMove',
+  };
+
+  /// 判断用户是否在说文件操作（仅当文件工具在本轮可用时才生效）。
+  static bool _looksLikeFileTask(String text) {
+    final lower = text.toLowerCase();
+    const keywords = <String>[
+      '文件',
+      '文件夹',
+      '目录',
+      '工作区',
+      '保存到',
+      '写入',
+      '读取',
+      '读取文件',
+      '修改文件',
+      '编辑文件',
+      '替换',
+      '创建文件',
+      '新建文件',
+      '删除文件',
+      '移动文件',
+      '重命名',
+      '创建目录',
+      '新建目录',
+      'txt',
+      'md',
+      'json',
+      'yaml',
+      'yml',
+      'csv',
+      'log',
+      '.txt',
+      '.md',
+      '.json',
+    ];
+    return keywords.any(lower.contains);
+  }
+
   /// 选择本轮工具。
   ///
   /// [userText] 本轮用户输入；[recentTexts] 最近对话（仅低权重参考，可空）。
@@ -125,6 +173,13 @@ class AgentToolSelector {
     // 可能没有 showConfigControl，只能文字回答（前端退化成兜底卡片）。
     if (AgentInlineCards.controlsInText(userText).isNotEmpty) {
       selected.add(_configControlToolName);
+    }
+
+    // 用户提到文件读写时，强制保留文件工具（仅当本轮 all 里包含这些工具，
+    // 即设置里已开启文件访问）。
+    if (_looksLikeFileTask(userText)) {
+      final available = enabled.map((s) => s.name).toSet();
+      selected.addAll(_fileToolNames.where(available.contains));
     }
 
     // 按注册表顺序输出（提示词与 schema 顺序稳定）

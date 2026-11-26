@@ -12,7 +12,7 @@
 #   src/<channel>/
 #   ├── entry.js    (必须: 发现页脚本)
 #   ├── detail.js   (必须: 详情页脚本)
-#   ├── meta.json   (可选: 渠道元信息)
+#   ├── meta.json   (必须: 渠道元信息)
 #   └── icons/      (可选: 图标资源)
 #
 # 输出: <channel>.zip (与 scripts/channels/ 同级)
@@ -66,7 +66,7 @@ GStore 渠道包打包脚本
   src/<channel>/
   ├── entry.js    (必须: 发现页脚本)
   ├── detail.js   (必须: 详情页脚本)
-  ├── meta.json   (可选: 渠道元信息)
+  ├── meta.json   (必须: 渠道元信息)
   └── icons/      (可选: 图标资源)
 
 输出:
@@ -113,14 +113,17 @@ validate_channel() {
     return 1
   fi
 
-  # 检查必须文件
+  # 交付规范：entry.js / detail.js / meta.json 三者缺一不可
   if [ ! -f "$dir/entry.js" ]; then
     error "[$name] 缺少 entry.js"
     return 1
   fi
-
   if [ ! -f "$dir/detail.js" ]; then
-    error "[$name] 缺少 detail.js"
+    error "[$name] 缺少 detail.js（按渠道包规范必须提供）"
+    return 1
+  fi
+  if [ ! -f "$dir/meta.json" ]; then
+    error "[$name] 缺少 meta.json（按渠道包规范必须提供）"
     return 1
   fi
 
@@ -164,13 +167,7 @@ pack_channel() {
   rm -f "$zip_file"
 
   # 收集要打包的文件
-  local files=()
-  files+=("entry.js")
-  files+=("detail.js")
-
-  if [ -f "$dir/meta.json" ]; then
-    files+=("meta.json")
-  fi
+  local files=("entry.js" "detail.js" "meta.json")
 
   # 打包 icons/ 目录（如果存在）
   if [ -d "$dir/icons" ]; then

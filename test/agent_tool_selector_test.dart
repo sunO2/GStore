@@ -44,6 +44,11 @@ void main() {
       expect(names, contains('backup'));
     });
 
+    test('接口调试：命中 httpRequest', () {
+      final names = namesFor('帮我用 POST 请求这个接口，带上 Authorization 头');
+      expect(names, contains('httpRequest'));
+    });
+
     test('最近对话可补足指代（低权重）', () {
       final names = namesFor('继续', recent: ['帮我备份一下当前数据']);
       expect(names, contains('backup'));

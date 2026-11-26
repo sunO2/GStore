@@ -98,6 +98,23 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
+    // 输入胶囊内部、输入框下方显示当前工作区名称
+    expect(find.text('默认工作区'), findsOneWidget);
+    // 默认单行输入时胶囊高度不变
+    final capsule = tester.getRect(find.byKey(const Key('agent-input-capsule')));
+    expect(capsule.height, AppBottomCapsule.height);
+    // 发送按钮居中于胶囊；输入框文字比胶囊中线高 4dp（视觉更居中）
+    final sendRect = tester.getRect(find.byKey(const Key('agent-send-button')));
+    final fieldRect = tester.getRect(find.byType(TextField));
+    expect(sendRect.center.dy, closeTo(capsule.center.dy, 0.5));
+    expect(fieldRect.center.dy, closeTo(capsule.center.dy - 4, 0.5));
+    // 工作区胶囊居中于「输入框底部 - 胶囊底部」之间，且不压到输入框
+    final pillRect =
+        tester.getRect(find.byKey(const Key('agent-workspace-pill')));
+    expect(pillRect.center.dy,
+        closeTo((fieldRect.bottom + capsule.bottom) / 2, 1.5));
+    expect(pillRect.top, greaterThanOrEqualTo(fieldRect.bottom));
+
     final send = find.byKey(const Key('agent-send-button'));
     final closedBottom = tester.getRect(send).bottom;
     final list = find.byType(ListView);
@@ -135,6 +152,35 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     expect(tester.getRect(send).bottom, closeTo(closedBottom, 0.5));
     expect(listBottom(), closeTo(108, 1e-9));
+  });
+
+  testWidgets('多行输入时工作区胶囊让位到文字下方，不重叠', (tester) async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: AgentPage()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.enterText(find.byType(TextField), 'x' * 160);
+    await tester.pump();
+
+    final capsule = tester.getRect(find.byKey(const Key('agent-input-capsule')));
+    final fieldRect = tester.getRect(find.byType(TextField));
+    final pillRect =
+        tester.getRect(find.byKey(const Key('agent-workspace-pill')));
+    // 多行时胶囊随内容增高，但文字顶部留白与单行一致（18），不会贴顶
+    expect(capsule.height, greaterThan(AppBottomCapsule.height));
+    expect(fieldRect.top - capsule.top, closeTo(18, 0.5));
+    expect(capsule.height, closeTo(fieldRect.height + 18 + 26, 0.5));
+    // 工作区胶囊仍在文字下方，且不被胶囊裁掉
+    expect(pillRect.top, greaterThanOrEqualTo(fieldRect.bottom));
+    expect(pillRect.bottom, lessThanOrEqualTo(capsule.bottom));
   });
 
   testWidgets('右上角更多菜单与上下文进度环', (tester) async {
@@ -195,6 +241,34 @@ void main() {
     // 关闭菜单
     await tester.tapAt(const Offset(10, 10));
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('斜杠命令联想：/work → /workspace，/pho → /photo', (tester) async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: AgentPage()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final field = find.byType(TextField);
+    await tester.enterText(field, '/work');
+    await tester.pump();
+    expect(find.text('快捷指令'), findsOneWidget);
+    expect(find.text('/workspace'), findsOneWidget);
+
+    await tester.enterText(field, '/pho');
+    await tester.pump();
+    expect(find.text('/photo'), findsOneWidget);
+
+    await tester.enterText(field, '普通消息');
+    await tester.pump();
+    expect(find.text('快捷指令'), findsNothing);
   });
 }
 

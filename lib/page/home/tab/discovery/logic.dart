@@ -852,25 +852,27 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     String appId, {
     bool showSnack = true,
   }) async {
-    // Rust 脚本通道（js_*）既不在 Dart 渠道表、也不在 core channel 注册表里：
-    // 保持原有「不处理」语义（无 remove API）。
+    if (!_canWriteCode(code)) return false;
     final rustLane = RustScriptChannelLane.instance;
-    if (rustLane.enabled && rustLane.packFor(code) != null) return false;
-    final manager = _channelManager;
-    if (manager == null) return false;
-    final channelInstance = manager.getChannelByCode(code);
-    // 门面可用的枚举渠道（github/vivo/fdroid）即使没有 Dart 实例也可移除。
-    if (channelInstance == null && !manager.facadeEligible(code)) return false;
+    final isRustScript = _isRustLaneCode(code);
+
     try {
-      // 经 ChannelManager 门面路由：flag on 走 core，flag off 回落 Dart IChannel。
-      final result = await manager.removeAppByCode(code, appId);
-      if (!result.success) {
-        appLog.error(
-            'DiscoveryNotifier: $code 移除应用失败 - ${result.error}');
-        if (showSnack && !_disposed) {
-          AppDialogs.showError('${result.error ?? '未知错误'}', title: '移除失败');
+      if (isRustScript) {
+        // js_* 由 Rust 脚本通道拥有：直接删 channel_apps 行（脚本 driver 的
+        // remove_app 与 addApp 写的是同一张表）。它没有 Dart IChannel 实例，
+        // 不能走 manager.getChannelByCode / removeAppByCode 的 Dart 分支。
+        await rustLane.removeApp(code, appId);
+      } else {
+        // 经 ChannelManager 门面路由：flag on 走 core，flag off 回落 Dart IChannel。
+        final result = await _channelManager!.removeAppByCode(code, appId);
+        if (!result.success) {
+          appLog.error(
+              'DiscoveryNotifier: $code 移除应用失败 - ${result.error}');
+          if (showSnack && !_disposed) {
+            AppDialogs.showError('${result.error ?? '未知错误'}', title: '移除失败');
+          }
+          return false;
         }
-        return false;
       }
 
       // 若已添加到首页，同步移除——读/写同源经 facade（flag on core / flag off
@@ -1419,7 +1421,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
       if (parts.length != 2) continue;
       final channelCode = parts[0];
       final appId = parts[1];
-      if (_channelManager?.getChannelByCode(channelCode) == null) continue;
+      if (!_canWriteCode(channelCode)) continue;
 
       final ok = await removeFromChannel(channelCode, appId, showSnack: false);
       if (ok) {

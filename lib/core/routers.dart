@@ -23,6 +23,7 @@ class AppRoute {
   static String webdavConfig = "/GStore/webdavConfig";
   static String agent = "/GStore/agent";
   static String agentSettings = "/GStore/agentSettings";
+  static String agentWorkspace = "/GStore/agentWorkspace";
   static String agentMcp = "/GStore/agentMcp";
   static String agentTraces = "/GStore/agentTraces";
   static String agentShadowCompare = "/GStore/agentShadowCompare";

@@ -175,6 +175,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const AgentSettingsPage(),
     ),
     GoRoute(
+      path: AppRoute.agentWorkspace,
+      builder: (context, state) => const AgentWorkspacePage(),
+    ),
+    GoRoute(
       path: AppRoute.agentMcp,
       builder: (context, state) => const McpServersPage(),
     ),

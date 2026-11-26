@@ -25,6 +25,52 @@ void main() {
     });
   });
 
+  group('可选文件（真实契约：只有 entry.js 必须）', () {
+    Uint8List zipOf(Map<String, String> files) {
+      final archive = Archive();
+      files.forEach((name, content) {
+        archive.addFile(
+          ArchiveFile(name, content.length, Uint8List.fromList(content.codeUnits)),
+        );
+      });
+      final encoded = ZipEncoder().encode(archive);
+      expect(encoded, isNotNull);
+      return Uint8List.fromList(encoded!);
+    }
+
+    test('只有 entry.js：detail.js / meta.json 都可缺省', () {
+      final pkg = ChannelPackage.decode(zipOf({
+        'entry.js': "async function main(m) { return {ok:true,data:[]}; }",
+      }));
+      expect(pkg, isNotNull);
+      expect(pkg!.entryScript, contains('main'));
+      expect(pkg.detailScript, isNull);
+      expect(pkg.meta, isNull);
+      expect(pkg.requiredEnvVars, isEmpty);
+    });
+
+    test('entry.js + detail.js：meta.json 可缺省', () {
+      final pkg = ChannelPackage.decode(zipOf({
+        'entry.js': "async function main(m) { return null; }",
+        'detail.js': "async function main(m) { return null; }",
+      }));
+      expect(pkg, isNotNull);
+      expect(pkg!.detailScript, isNotNull);
+      expect(pkg.meta, isNull);
+    });
+
+    test('entry.js + meta.json：detail.js 可缺省', () {
+      final pkg = ChannelPackage.decode(zipOf({
+        'entry.js': "async function main(m) { return null; }",
+        'meta.json': '{"name":"No Detail"}',
+      }));
+      expect(pkg, isNotNull);
+      expect(pkg!.detailScript, isNull);
+      expect(pkg.meta, isNotNull);
+      expect(pkg.meta!['name'], 'No Detail');
+    });
+  });
+
   // 守卫：渠道 zip 为 gitignore 构建产物，任一缺失时跳过结构测试（不阻塞 CI）
   final pinganZipExists = File('scripts/channels/pingan.zip').existsSync();
   final vivoZipExists = File('scripts/channels/vivo.zip').existsSync();

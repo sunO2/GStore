@@ -133,6 +133,71 @@ class WebSearchService {
     return page;
   }
 
+  /// 发起一次原始 HTTP 请求（接口探测/联调），不走正文抽取、不加缓存。
+  ///
+  /// [json] 与 [body] 二选一；[json] 会自动序列化并补 `Content-Type:
+  /// application/json`（调用方已显式设置时不覆盖）。
+  /// 与 [fetch] 共用同一份联网抓取配额，避免被无限调用。
+  Future<WebHttpResponse> httpRequest(
+    String url, {
+    String method = 'GET',
+    Map<String, String> headers = const <String, String>{},
+    String? body,
+    Object? json,
+    int maxChars = 4000,
+  }) async {
+    final config = await this.config();
+    if (!config.enabled || config.provider == 'none') {
+      throw WebSearchException('disabled', '联网检索已在设置中关闭');
+    }
+    final verb = method.trim().toUpperCase();
+    if (!WebFetchClient.requestMethods.contains(verb)) {
+      throw WebSearchException(
+        'bad_response',
+        '不支持的请求方法：$method（支持 ${WebFetchClient.requestMethods.join('/')}）',
+      );
+    }
+
+    if ((verb == 'GET' || verb == 'HEAD') &&
+        (json != null || (body != null && body.isNotEmpty))) {
+      throw WebSearchException(
+        'bad_response',
+        '$verb 不支持请求体；需要发送 Body 时请改用 POST/PUT/PATCH。',
+      );
+    }
+
+    final effectiveHeaders = Map<String, String>.of(headers);
+    String? payload = body;
+    if (json != null) {
+      try {
+        payload = jsonEncode(json);
+      } catch (error) {
+        throw WebSearchException('bad_response', 'json 无法序列化：$error');
+      }
+      _setDefaultHeader(effectiveHeaders, 'Content-Type', 'application/json');
+    }
+
+    await _consumeQuota(fetch: 1);
+    final client = _ensureFetchClient(config);
+    return client.request(
+      url,
+      method: verb,
+      headers: effectiveHeaders,
+      body: payload,
+      maxChars: maxChars.clamp(500, 8000),
+    );
+  }
+
+  static void _setDefaultHeader(
+    Map<String, String> headers,
+    String name,
+    String value,
+  ) {
+    final lower = name.toLowerCase();
+    if (headers.keys.any((key) => key.toLowerCase() == lower)) return;
+    headers[name] = value;
+  }
+
   /// 搜索 → 回灌模型的文本（带来源与注入防护提示）。
   String formatSearch(String query, List<WebSearchHit> hits, WebSearchConfig config) {
     if (hits.isEmpty) {

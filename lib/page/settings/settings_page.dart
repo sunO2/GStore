@@ -350,8 +350,14 @@ class _SettingsPageState extends State<SettingsPage> {
             Text('名称: $name', style: textTheme.bodySmall),
           if (description != null && description.isNotEmpty)
             Text('描述: $description', style: textTheme.bodySmall),
-          Text('entry.js 大小: ${selected.pkg.entryScript.length} 字符',
-              style: textTheme.bodySmall),
+          Text(
+            'entry.js 大小: ${selected.pkg.entryScript.length} 字符'
+            ' · detail: ${selected.pkg.detailScript == null ? '未提供（必须）' : '已包含'}'
+            ' · meta: ${selected.pkg.meta == null ? '未提供（必须）' : '已包含'}',
+            style: textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
@@ -412,7 +418,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         final pkg = ChannelPackage.decode(picked.bytes);
                         if (pkg == null) {
                           AppDialogs.showError(
-                              '无效的渠道包：非 zip 文件 / 缺 entry.js / 含路径穿越');
+                              '无效的渠道包：zip 根目录必须直接包含 entry.js'
+                              '（不要套文件夹；detail.js / meta.json 也必须提供）');
                           return;
                         }
                         // 从 meta.json 读取必需环境变量，预填入编辑器

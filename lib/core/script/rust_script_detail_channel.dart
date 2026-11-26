@@ -24,12 +24,14 @@ import 'package:gstore/page/detail/state.dart';
 ///
 /// A script that returns no detail is **not** a hard failure: the Rust host
 /// collapses an unimplemented `getAppDetail` (undefined), a `{ok:false}` reply
-/// and a JS throw into the typed `not_found` error, so [load] keeps the prefill
-/// already rendered (appId/name/icon/description/packageName + empty
-/// `downloads`/`sections`) and logs a non-fatal signal — the page shows the
-/// request's basic info instead of a full-page error. Only a non-`not_found`
-/// failure sets a typed `errorMessage` on the bound state (the page shows the
-/// retryable error body) — never `SizedBox.shrink()`.
+/// and a JS throw into the typed `not_found` error. When `detail.js` is absent
+/// [load] first tries the same pack's entry lane (`entry.js getAppDetail`); if
+/// that also has no detail it keeps the prefill already rendered
+/// (appId/name/icon/description/packageName + empty `downloads`/`sections`) and
+/// logs a non-fatal signal — the page shows the request's basic info instead of
+/// a full-page error. Only a non-`not_found` failure sets a typed `errorMessage`
+/// on the bound state (the page shows the retryable error body) — never
+/// `SizedBox.shrink()`.
 class RustScriptDetailChannel implements IDetailChannel {
   RustScriptDetailChannel({
     required this.appId,
@@ -138,28 +140,15 @@ class RustScriptDetailChannel implements IDetailChannel {
             forceRefresh: false,
           );
         }
-        final map = _normalizeDetailMap(detailToMap(detail));
-        await callbacks.refreshDetail(detailData: map);
-        // 记录 pack 的当前版本/环境（pack `getAppDetail` :642-643 设
-        // `detail.version`/内部 `_currentVersion`；:539 设 `_currentEnv` =
-        // `cred.env`，后者经 buildDetailFromGroup 落进 detail 的 `extra.env`）。
-          _currentVersion = detail.version;
-          _currentEnv = (map['extra'] as Map?)?['env']?.toString();
-          _cacheHistoryFromDetail(map);
-          _cacheVersionOptionsFromDetail(map);
+        await _applyDetail(detail, callbacks);
       } on ChannelApiException catch (error) {
-        // "The script has no detail for this app". A JSON null / `{ok:false}` /
-        // a JS throw from `detail.js` falls back to the entry lane above; an
-        // unknown pack (or one without `detail.js`) surfaces as the typed
-        // `not_found` here. Neither is a failure: keep the prefill already
-        // rendered (the page shows the basic info, never a full-page error) and
-        // emit a non-fatal signal only. A non-`not_found` typed failure
-        // propagates to the outer catch and sets `errorMessage`.
+        // `not_found` means detail.js is absent (or the pack is unknown). A pack
+        // is allowed to implement `getAppDetail` only in entry.js, so try the
+        // entry lane once; only if that also has no detail do we keep the
+        // prefill. A non-`not_found` typed failure propagates to the outer
+        // catch and sets `errorMessage`.
         if (error.code != 'not_found') rethrow;
-        debugPrint(
-          '[RustScriptDetailChannel] no detail from $channelKey for $appId '
-          '($error); keeping the prefill',
-        );
+        await _loadEntryFallback(error, callbacks);
       }
       // The "更多" menu is independent of `getAppDetail`: refresh it on both the
       // typed-detail and the no-detail reply so the page keeps its custom actions.
@@ -172,6 +161,54 @@ class RustScriptDetailChannel implements IDetailChannel {
       state.readmeLoading = false;
       state.statisticsLoading = false;
     }
+  }
+
+  /// Applies a typed detail to the bound page and refreshes the page caches.
+  Future<void> _applyDetail(
+    rust.ChannelAppDetailInfo detail,
+    DetailCallbacks callbacks,
+  ) async {
+    final map = _normalizeDetailMap(detailToMap(detail));
+    await callbacks.refreshDetail(detailData: map);
+    // 记录 pack 的当前版本/环境（pack `getAppDetail` :642-643 设
+    // `detail.version`/内部 `_currentVersion`；:539 设 `_currentEnv` =
+    // `cred.env`，后者经 buildDetailFromGroup 落进 detail 的 `extra.env`）。
+    _currentVersion = detail.version;
+    _currentEnv = (map['extra'] as Map?)?['env']?.toString();
+    _cacheHistoryFromDetail(map);
+    _cacheVersionOptionsFromDetail(map);
+  }
+
+  /// `not_found` from the detail.js lane: try the entry lane once.
+  ///
+  /// Backends without [ScriptDetailAppDetailSource] already routed the first
+  /// call through the entry lane, so a retry there is pointless.
+  Future<void> _loadEntryFallback(
+    ChannelApiException first,
+    DetailCallbacks callbacks,
+  ) async {
+    if (_facade.backend is! ScriptDetailAppDetailSource) {
+      _logNoDetail(first);
+      return;
+    }
+    try {
+      final detail = await _facade.getAppDetail(
+        key: channelKey,
+        appId: appId,
+        forceRefresh: false,
+      );
+      await _applyDetail(detail, callbacks);
+    } on ChannelApiException catch (fallback) {
+      if (fallback.code != 'not_found') rethrow;
+      _logNoDetail(first);
+    }
+  }
+
+  void _logNoDetail(ChannelApiException error) {
+    debugPrint(
+      '[RustScriptDetailChannel] no detail from $channelKey for $appId '
+      '($error); keeping the prefill',
+    );
   }
 
   /// Prefill map from the bound request (non-empty fields only), matching
@@ -220,8 +257,15 @@ class RustScriptDetailChannel implements IDetailChannel {
       );
       _actions = [for (final action in menu) _toAction(action)];
     } catch (e) {
+      final noDetail = e is ChannelApiException &&
+          e.code == 'not_found' &&
+          e.message.contains('has no detail.js');
       debugPrint(
-        '[RustScriptDetailChannel] detailMenu failed for $channelKey/$appId: $e',
+        noDetail
+            ? '[RustScriptDetailChannel] $channelKey has no detail.js; '
+                'menu disabled'
+            : '[RustScriptDetailChannel] detailMenu failed for '
+                '$channelKey/$appId: $e',
       );
       _actions = const [];
     }

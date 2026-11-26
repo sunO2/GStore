@@ -37,6 +37,43 @@ class WebFetchClient {
       'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36 GStore-Agent';
 
+  /// `request()` 支持的 HTTP 方法。
+  static const Set<String> requestMethods = {
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'HEAD',
+  };
+
+  static const int _maxRequestBodyBytes = 64 * 1024;
+  static const int _maxRequestHeaders = 24;
+  static const int _maxRequestHeaderValueChars = 1024;
+  static const int _maxResponseHeaderValueChars = 512;
+
+  /// 这些头由 HTTP 客户端/传输层决定，脚本不允许覆盖。
+  static const Set<String> _blockedRequestHeaders = {
+    'host',
+    'content-length',
+    'connection',
+    'transfer-encoding',
+    'upgrade',
+    'proxy-connection',
+    'te',
+    'trailer',
+  };
+
+  /// 跨源重定向时必须丢弃的敏感请求头。
+  static const Set<String> _sensitiveRedirectHeaders = {
+    'authorization',
+    'cookie',
+    'proxy-authorization',
+  };
+
+  static final RegExp _headerNamePattern =
+      RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+
   Future<WebFetchPage> fetch(String rawUrl, {int maxChars = 8000}) async {
     final uri = UrlGuard.parseHttpUrl(rawUrl);
     await UrlGuard.assertPublicHost(uri);
@@ -108,6 +145,199 @@ class WebFetchClient {
       'network',
       failure ?? '抓取失败：页面没有可读正文',
     );
+  }
+
+  /// 发起一次原始 HTTP 请求（接口探测/联调）。
+  ///
+  /// 与 [fetch] 的区别：
+  /// - 不抽取 HTML 正文、不回退 Jina，原样返回状态码/响应头/响应体；
+  /// - 支持 GET/POST/PUT/PATCH/DELETE/HEAD 与自定义请求头/Body；
+  /// - 仍然逐跳做公网校验，最多 5 次重定向；
+  /// - 301/302/303 按浏览器语义改为 GET 并丢弃 Body；307/308 保留方法与 Body；
+  /// - 跨源重定向会丢弃 Authorization/Cookie/Proxy-Authorization。
+  Future<WebHttpResponse> request(
+    String rawUrl, {
+    String method = 'GET',
+    Map<String, String> headers = const <String, String>{},
+    String? body,
+    int maxChars = 4000,
+  }) async {
+    final verb = method.trim().toUpperCase();
+    if (!requestMethods.contains(verb)) {
+      throw WebSearchException(
+        'bad_response',
+        '不支持的请求方法：$method（支持 ${requestMethods.join('/')}）',
+      );
+    }
+
+    var uri = UrlGuard.parseHttpUrl(rawUrl);
+    await UrlGuard.assertPublicHost(uri);
+
+    final safeHeaders = _sanitizeRequestHeaders(headers);
+    var currentMethod = verb;
+    var currentBody = (verb == 'GET' || verb == 'HEAD') ? null : (body ?? '');
+    if (currentBody != null &&
+        utf8.encode(currentBody).length > _maxRequestBodyBytes) {
+      throw WebSearchException(
+        'bad_response',
+        '请求体过大（上限 ${_maxRequestBodyBytes ~/ 1024}KB）',
+      );
+    }
+
+    for (var hop = 0; hop <= UrlGuard.maxRedirects; hop++) {
+      final request = http.Request(currentMethod, uri)
+        ..followRedirects = false
+        ..headers.addAll(_mergedRequestHeaders(safeHeaders));
+      if (currentBody != null && currentBody.isNotEmpty) {
+        request.body = currentBody;
+      }
+      final streamed = await _client.send(request).timeout(timeout);
+      final response = await http.Response.fromStream(streamed);
+      final location = response.headers['location'];
+      final isRedirect = response.statusCode >= 300 &&
+          response.statusCode < 400 &&
+          location != null &&
+          location.isNotEmpty;
+      if (!isRedirect) {
+        return _finishHttp(
+          uri: uri,
+          method: currentMethod,
+          response: response,
+          maxChars: maxChars,
+        );
+      }
+
+      final next = uri.resolve(location);
+      final checked = UrlGuard.parseHttpUrl(next.toString());
+      await UrlGuard.assertPublicHost(checked);
+      if (uri.origin != checked.origin) {
+        safeHeaders.removeWhere(
+          (name, _) => _sensitiveRedirectHeaders.contains(name.toLowerCase()),
+        );
+      }
+      if (response.statusCode == 301 ||
+          response.statusCode == 302 ||
+          response.statusCode == 303) {
+        if (currentMethod != 'HEAD') currentMethod = 'GET';
+        currentBody = null;
+      }
+      uri = checked;
+    }
+    throw WebSearchException('network', '重定向次数过多');
+  }
+
+  Map<String, String> _sanitizeRequestHeaders(Map<String, String> headers) {
+    final out = <String, String>{};
+    for (final entry in headers.entries) {
+      if (out.length >= _maxRequestHeaders) {
+        throw WebSearchException(
+          'bad_response',
+          '请求头过多（上限 $_maxRequestHeaders 个）',
+        );
+      }
+      final name = entry.key.trim();
+      final value = entry.value;
+      if (name.isEmpty || !_headerNamePattern.hasMatch(name)) {
+        throw WebSearchException('bad_response', '非法请求头名称：${entry.key}');
+      }
+      if (_blockedRequestHeaders.contains(name.toLowerCase())) continue;
+      if (value.contains('\r') ||
+          value.contains('\n') ||
+          value.contains('\u0000')) {
+        throw WebSearchException('bad_response', '请求头 $name 含非法字符');
+      }
+      if (value.length > _maxRequestHeaderValueChars) {
+        throw WebSearchException(
+          'bad_response',
+          '请求头 $name 过长（上限 $_maxRequestHeaderValueChars 字符）',
+        );
+      }
+      _putHeader(out, name, value);
+    }
+    return out;
+  }
+
+  Map<String, String> _mergedRequestHeaders(Map<String, String> custom) {
+    final out = <String, String>{
+      'User-Agent': _userAgent,
+      'Accept': 'application/json, text/plain;q=0.9, text/html;q=0.8, */*;q=0.5',
+    };
+    for (final entry in custom.entries) {
+      _putHeader(out, entry.key, entry.value);
+    }
+    return out;
+  }
+
+  static void _putHeader(Map<String, String> map, String name, String value) {
+    final lower = name.toLowerCase();
+    map.removeWhere((key, _) => key.toLowerCase() == lower);
+    map[name] = value;
+  }
+
+  static WebHttpResponse _finishHttp({
+    required Uri uri,
+    required String method,
+    required http.Response response,
+    required int maxChars,
+  }) {
+    final contentType = response.headers['content-type'] ?? '';
+    final bytes = response.bodyBytes;
+    final binary = _isBinaryBody(contentType, bytes);
+
+    var body = '';
+    var truncated = false;
+    if (!binary) {
+      body = _decodeBody(response).trim();
+      final limit = maxChars <= 0 ? 0 : maxChars;
+      if (body.length > limit) {
+        truncated = true;
+        body = '${body.substring(0, limit)}…<截断>';
+      }
+    }
+
+    final headers = <String, String>{};
+    for (final entry in response.headers.entries) {
+      final lower = entry.key.toLowerCase();
+      if (lower == 'set-cookie' || lower == 'cookie') continue;
+      final value = entry.value.length > _maxResponseHeaderValueChars
+          ? '${entry.value.substring(0, _maxResponseHeaderValueChars)}…'
+          : entry.value;
+      headers[entry.key] = value;
+      if (headers.length >= 20) break;
+    }
+
+    return WebHttpResponse(
+      url: uri.toString(),
+      method: method,
+      statusCode: response.statusCode,
+      reasonPhrase: response.reasonPhrase ?? '',
+      headers: headers,
+      contentType: contentType,
+      body: body,
+      truncated: truncated,
+      binary: binary,
+      bytes: bytes.length,
+    );
+  }
+
+  static bool _isBinaryBody(String contentType, List<int> bytes) {
+    final type = contentType.toLowerCase();
+    if (type.startsWith('image/') ||
+        type.startsWith('audio/') ||
+        type.startsWith('video/') ||
+        type.startsWith('font/') ||
+        type.contains('application/octet-stream') ||
+        type.contains('application/zip') ||
+        type.contains('application/pdf') ||
+        type.contains('application/vnd.android.package-archive') ||
+        type.contains('application/x-gzip')) {
+      return true;
+    }
+    // 没有 content-type 的二进制（如部分图片接口）用 NUL 字节兜底判断
+    for (var i = 0; i < bytes.length && i < 512; i++) {
+      if (bytes[i] == 0) return true;
+    }
+    return false;
   }
 
   /// 手动跟随重定向，每跳都做公网校验。

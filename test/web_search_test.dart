@@ -341,6 +341,209 @@ void main() {
     });
   });
 
+  group('WebFetchClient.request', () {
+    test('POST + 自定义 Header + JSON 响应：状态码/头/体完整返回', () async {
+      late http.Request captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response(
+          '{"ok":true,"items":[1,2]}',
+          201,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'x-request-id': 'r1',
+            'set-cookie': 'sid=secret',
+          },
+        );
+      });
+      final fetcher = WebFetchClient(client: client);
+
+      final response = await fetcher.request(
+        'https://93.184.216.34/api/search',
+        method: 'POST',
+        headers: {'Authorization': 'Bearer token', 'X-Trace': '1'},
+        body: '{"q":"termux"}',
+      );
+
+      expect(captured.method, 'POST');
+      expect(captured.headers['authorization'], 'Bearer token');
+      expect(captured.headers['x-trace'], '1');
+      expect(captured.body, '{"q":"termux"}');
+
+      expect(response.statusCode, 201);
+      expect(response.method, 'POST');
+      expect(response.contentType, contains('application/json'));
+      expect(response.body, contains('"ok":true'));
+      expect(response.headers['x-request-id'], 'r1');
+      expect(response.headers.containsKey('set-cookie'), false);
+      expect(response.binary, false);
+    });
+
+    test('303 改 GET 并丢 Body；跨源重定向丢弃 Authorization/Cookie', () async {
+      final seen = <http.Request>[];
+      final client = MockClient((request) async {
+        seen.add(request);
+        if (request.url.host == '93.184.216.34') {
+          return http.Response('', 303,
+              headers: {'location': 'https://1.1.1.1/next'});
+        }
+        return http.Response('ok', 200,
+            headers: {'content-type': 'text/plain'});
+      });
+      final fetcher = WebFetchClient(client: client);
+
+      final response = await fetcher.request(
+        'https://93.184.216.34/api',
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer secret',
+          'Cookie': 'sid=1',
+          'X-Keep': '1',
+        },
+        body: 'a=1',
+      );
+
+      expect(seen, hasLength(2));
+      expect(seen[1].method, 'GET');
+      expect(seen[1].body, isEmpty);
+      expect(seen[1].headers.containsKey('authorization'), false);
+      expect(seen[1].headers.containsKey('cookie'), false);
+      expect(seen[1].headers['x-keep'], '1');
+      expect(response.statusCode, 200);
+    });
+
+    test('307 同源重定向保留方法与 Body', () async {
+      final seen = <http.Request>[];
+      final client = MockClient((request) async {
+        seen.add(request);
+        if (request.url.path == '/start') {
+          return http.Response('', 307, headers: {'location': '/next'});
+        }
+        return http.Response('ok', 200);
+      });
+      final fetcher = WebFetchClient(client: client);
+
+      await fetcher.request(
+        'https://93.184.216.34/start',
+        method: 'PATCH',
+        body: '{"a":1}',
+      );
+
+      expect(seen, hasLength(2));
+      expect(seen[1].url.path, '/next');
+      expect(seen[1].method, 'PATCH');
+      expect(seen[1].body, '{"a":1}');
+    });
+
+    test('二进制响应只给字节数；内网/非法方法被拒绝', () async {
+      final fetcher = WebFetchClient(
+        client: MockClient((_) async => http.Response.bytes(
+              [0x89, 0x50, 0x4E, 0x47],
+              200,
+              headers: {'content-type': 'image/png'},
+            )),
+      );
+      final response = await fetcher.request(
+        'https://93.184.216.34/logo.png',
+        maxChars: 100,
+      );
+      expect(response.binary, true);
+      expect(response.body, isEmpty);
+      expect(response.bytes, 4);
+
+      await expectLater(
+        fetcher.request('http://192.168.1.10/api'),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'blocked_url')),
+      );
+      await expectLater(
+        fetcher.request('https://93.184.216.34/api', method: 'TRACE'),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'bad_response')),
+      );
+      await expectLater(
+        fetcher.request(
+          'https://93.184.216.34/api',
+          headers: {'X-Bad': 'a\r\nb'},
+        ),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'bad_response')),
+      );
+    });
+  });
+
+  group('WebSearchService.httpRequest', () {
+    test('json 自动序列化并设置 Content-Type；不缓存且消耗抓取配额', () async {
+      var calls = 0;
+      late http.Request captured;
+      final service = WebSearchService(
+        config: _config(dailyFetchQuota: 2),
+        fetchClientFactory: (config) => WebFetchClient(
+          client: MockClient((request) async {
+            calls++;
+            captured = request;
+            return http.Response('{"ok":true}', 200,
+                headers: {'content-type': 'application/json'});
+          }),
+        ),
+      );
+
+      await service.httpRequest(
+        'https://93.184.216.34/api',
+        method: 'POST',
+        json: {'q': 'termux'},
+      );
+      expect(captured.method, 'POST');
+      expect(captured.headers['content-type'], 'application/json');
+      expect(jsonDecode(captured.body), {'q': 'termux'});
+
+      // 同一 URL 再请求一次：不能命中缓存
+      await service.httpRequest('https://93.184.216.34/api', method: 'POST',
+          json: {'q': 'termux'});
+      expect(calls, 2);
+
+      await expectLater(
+        service.httpRequest('https://93.184.216.34/api'),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'quota_exceeded')),
+      );
+    });
+
+    test('GET/HEAD 携带 Body 直接拒绝，不发请求', () async {
+      var calls = 0;
+      final service = WebSearchService(
+        config: _config(),
+        fetchClientFactory: (config) => WebFetchClient(
+          client: MockClient((_) async {
+            calls++;
+            return http.Response('ok', 200);
+          }),
+        ),
+      );
+      await expectLater(
+        service.httpRequest('https://93.184.216.34/api', json: {'a': 1}),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'bad_response')),
+      );
+      await expectLater(
+        service.httpRequest('https://93.184.216.34/api',
+            method: 'HEAD', body: 'x'),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'bad_response')),
+      );
+      expect(calls, 0);
+    });
+
+    test('联网检索关闭时拒绝执行', () async {
+      final service = WebSearchService(config: _config(enabled: false));
+      await expectLater(
+        service.httpRequest('https://93.184.216.34/api'),
+        throwsA(isA<WebSearchException>()
+            .having((e) => e.code, 'code', 'disabled')),
+      );
+    });
+  });
+
   group('UrlGuard', () {
     test('拒绝非 http(s) 与私网/保留地址', () async {
       for (final url in ['ftp://example.com', 'javascript:alert(1)']) {
