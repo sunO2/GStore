@@ -172,10 +172,13 @@ Pixel 4 实际后端是 Impeller OpenGLES。需要重点回归：
 ### Phase 4：真机回归
 
 - [x] Pixel 4（Android 13 / API 33 / Impeller OpenGLES）安装并启动
-- [ ] AI 助手对话页
-- [ ] AI 设置页模型/工具双子页
-- [ ] WebView 调试页
-- [ ] 请求调试页 / 请求编辑 / 响应查看 / Cookie 管理
+- [x] 首页 / 发现 / 我的
+- [x] AI 助手对话页
+- [x] AI 设置页模型/工具双子页
+- [x] WebView 调试页（实际加载 example.com）
+- [x] 请求调试页（集合/历史/环境/改写规则）
+- [x] 已安装应用（图标 / 包名 / 版本）
+- [x] App 内系统安装器（`gstore/app_installer` 拉起 PackageInstaller）
 - [ ] 文件工作区 / 模型选择 / MCP 工具展开
 - [ ] 首帧、滚动、返回过渡帧率
 

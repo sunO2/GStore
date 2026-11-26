@@ -124,14 +124,13 @@ Flutter 3.50.1 升级**已完成到可构建、可安装、可启动**：
 
 ## 建议下一步
 
-1. 在 Pixel 4 解锁后完成主要页面人工回归（AI 对话、WebView、请求调试、代理页）
-2. 验证 App 内「系统安装 APK」入口（`gstore/app_installer`）
-3. 等上游插件支持后，逐个移除 `third_party` vendor：
+1. 继续人工回归剩余交互：文件工作区、模型选择、MCP 工具展开、复杂列表帧率
+2. 等上游插件支持后，逐个移除 `third_party` vendor：
    - `dynamic_color` 升到 1.9.0+（需 Built-in Kotlin）
    - `flutter_inappwebview_android` 升到兼容 AGP 9 的版本
    - `rhttp` 升到 0.18.0+（需把 Rust 侧 FRB 升到 2.12+ 并重新生成绑定）
-4. 全部上游迁移完成后，把 `android.builtInKotlin` 改为 `true`，删除 legacy KGP 配置
-5. 通过后再合并回主仓库
+3. 全部上游迁移完成后，把 `android.builtInKotlin` 改为 `true`，删除 legacy KGP 配置
+4. 通过后再合并回主仓库
 
 ## 当前分支状态
 
@@ -279,6 +278,45 @@ core-bootstrap: push-inventory elapsedMs=58
 ```
 
 说明 `installed_apps` 的 `getInstalledApps` 在真机上正常工作。
+
+### 真机页面回归（Pixel 4 / Android 13）
+
+| 页面 | 结果 |
+|---|---|
+| 首页 / 发现 / 我的 | 正常 |
+| AI 助手对话页 | 正常（未配置模型时提示正确） |
+| AI 设置（模型 / 工具双子页） | 正常 |
+| WebView 调试 | 正常，实际加载 `https://example.com` |
+| 请求调试（集合/历史/环境/改写规则） | 正常 |
+| 已安装应用 | 正常，图标 / 包名 / 版本均正确 |
+| 深色模式切换 | 正常（系统 / 浅色 / 深色） |
+
+### App 内系统安装器验证
+
+用一个临时探针入口（验证后已删除）调用
+`AppInstallerChannel.installApk(...)`，系统 `PackageInstallerActivity`
+成功弹出「GStore 要更新此应用吗？」，确认安装后 APK 更新成功并恢复 release 包。
+
+```text
+mCurrentFocus=com.google.android.packageinstaller/PackageInstallerActivity
+versionName=1.0.37
+lastUpdateTime=2026-11-27 01:58:19
+```
+
+验证同时覆盖了：
+
+- `${applicationId}.fileProvider` authority 正确
+- `ACTION_VIEW` + `application/vnd.android.package-archive` 正确
+- `FLAG_GRANT_READ_URI_PERMISSION` 生效
+- 未知来源安装权限检查逻辑正常
+
+### 已知非阻塞现象
+
+- 开发者工具箱离线包：release 包默认不随包 `it-tools.zip`，
+  设备侧远端下载失败（`gh-proxy` 连接中断），页面显示「离线资源准备失败」。
+  这是离线包分发策略 + 网络问题，与 Flutter 3.50 升级无关。
+- 未配置 LLM / 代理配置时页面分别提示「请先配置 LLM 模型」、
+  `PROXY_CONFIG_PROFILE_REQUIRED`，均符合预期。
 
 ### 全量测试
 
