@@ -855,3 +855,17 @@ test/a2ui_lab_page_test.dart            4 项
 ```
 
 覆盖：合法/非法 payload、组件白名单、action 回传、禁用态、工具注册。
+
+### 时间轴布局修复（2026-11-27）
+
+首版工具卡片放在 `_TurnTimeline` 的 `IntrinsicHeight(Row(...))` 里，而 A2UI 的
+`List` 使用 `SingleChildScrollView`、表单使用 `TextField`，不支持 intrinsic
+高度，导致时间轴把卡片高度算小，后续「思考过程/文本」压在卡片上。
+
+修复：
+
+- `renderA2ui` 步骤不再使用 `IntrinsicHeight`
+- 改用 `Stack + Positioned` 画时间轴竖线，高度由卡片内容自然撑开
+- 新增两条 widget 测试：
+  - 卡片底部必须小于等于后续步骤顶部
+  - `List` 模板在时间轴中不触发 intrinsic 尺寸异常

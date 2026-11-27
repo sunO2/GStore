@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_service.dart';
+import 'package:gstore/page/agent/a2ui_tool_card.dart';
 import 'package:gstore/page/agent/chat_list_view.dart';
 
 /// 自绘消息列表核心行为测试：
@@ -376,11 +379,105 @@ void main() {
       expect(find.text('帮我下载 Termux'), findsNothing);
     });
   });
+
+  group('A2UI 卡片布局', () {
+    testWidgets('renderA2ui 卡片高度撑开，后续步骤不重叠', (tester) async {
+      final payload = File('assets/a2ui/app_card.json').readAsStringSync();
+      final controller = ScrollController();
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: '用卡片展示 Termux'),
+        _toolMsg(
+          id: 't1',
+          toolArgs: {'payload': payload},
+          turnId: 'turn-a2ui',
+        ),
+        _agentMsg(id: 'a1', text: '已渲染', turnId: 'turn-a2ui', seq: 4),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: false,
+            hasMoreHistory: false,
+            onSendExample: (_) {},
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(A2uiToolCard), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      final cardBottom =
+          tester.getBottomLeft(find.byType(A2uiToolCard)).dy;
+      final textTop = tester.getTopLeft(find.text('已渲染')).dy;
+      expect(textTop, greaterThanOrEqualTo(cardBottom),
+          reason: 'A2UI 卡片不能压住后续步骤');
+    });
+
+    testWidgets('列表模板在时间轴里不会触发 intrinsic 尺寸异常', (tester) async {
+      final payload = File('assets/a2ui/results_list.json').readAsStringSync();
+      final controller = ScrollController();
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: '列出应用'),
+        _toolMsg(
+          id: 't1',
+          toolArgs: {'payload': payload},
+          turnId: 'turn-list',
+        ),
+        _agentMsg(id: 'a1', text: '列表已渲染', turnId: 'turn-list', seq: 4),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: false,
+            hasMoreHistory: false,
+            onSendExample: (_) {},
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(A2uiToolCard), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      expect(find.text('Termux'), findsOneWidget);
+    });
+  });
 }
 
 AgentMessage _userMsg({required String id, required String text}) =>
     AgentMessage(id: id, isUser: true, text: text, seq: 1);
 
 AgentMessage _agentMsg(
-        {required String id, required String text, String? turnId}) =>
-    AgentMessage(id: id, isUser: false, text: text, seq: 2, turnId: turnId);
+        {required String id,
+        required String text,
+        String? turnId,
+        int seq = 2}) =>
+    AgentMessage(
+        id: id, isUser: false, text: text, seq: seq, turnId: turnId);
+AgentMessage _toolMsg({
+  required String id,
+  required Map<String, dynamic> toolArgs,
+  String? turnId,
+}) =>
+    AgentMessage(
+      id: id,
+      isUser: false,
+      text: 'UI 已渲染',
+      isToolResult: true,
+      toolType: AgentToolType.a2ui,
+      toolStatus: AgentToolStatus.done,
+      toolName: AgentService.renderA2uiToolName,
+      toolArgs: toolArgs,
+      toolResult: 'UI 已渲染',
+      turnId: turnId,
+      seq: 3,
+    );

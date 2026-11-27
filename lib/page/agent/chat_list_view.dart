@@ -593,6 +593,62 @@ class _TurnTimeline extends StatelessWidget {
     final isTool = msg.isToolResult;
     final nodeColor =
         isTool ? _timelineToolColor(msg.toolType) : scheme.primary;
+    final content = Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
+      child: isTool
+          ? (msg.toolType == AgentToolType.confirm
+              ? _buildConfirmNode(context, msg)
+              : _buildToolOrControl(context, msg))
+          : _buildText(context, msg),
+    );
+
+    final node = Container(
+      width: 18,
+      height: 18,
+      margin: const EdgeInsets.only(top: 4),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: nodeColor),
+      child: Center(
+        child: Text(
+          '$stepNumber',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+            color: scheme.onPrimary,
+          ),
+        ),
+      ),
+    );
+
+    // A2UI surface 内含 TextField/List 等不支持 intrinsic 尺寸的组件，
+    // 放进 IntrinsicHeight 会导致高度算小、后续步骤压到卡片上。
+    // 这里用 Stack + Positioned 画时间轴竖线，高度由内容自然撑开。
+    if (isTool && msg.toolName == AgentService.renderA2uiToolName) {
+      return Stack(
+        children: [
+          if (!isLast)
+            Positioned(
+              left: 9,
+              top: 22,
+              bottom: 0,
+              child: Container(
+                width: 2,
+                color: scheme.outlineVariant.withValues(alpha: 0.5),
+              ),
+            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 20,
+                child: Align(alignment: Alignment.topCenter, child: node),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: content),
+            ],
+          ),
+        ],
+      );
+    }
 
     return IntrinsicHeight(
       child: Row(
@@ -602,25 +658,7 @@ class _TurnTimeline extends StatelessWidget {
             width: 20,
             child: Column(
               children: [
-                Container(
-                  width: 18,
-                  height: 18,
-                  margin: const EdgeInsets.only(top: 4),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: nodeColor,
-                  ),
-                  child: Center(
-                    child: Text(
-                      '$stepNumber',
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.bold,
-                        color: scheme.onPrimary,
-                      ),
-                    ),
-                  ),
-                ),
+                node,
                 if (!isLast)
                   Expanded(
                     child: Container(
@@ -633,16 +671,7 @@ class _TurnTimeline extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
-              child: isTool
-                  ? (msg.toolType == AgentToolType.confirm
-                      ? _buildConfirmNode(context, msg)
-                      : _buildToolOrControl(context, msg))
-                  : _buildText(context, msg),
-            ),
-          ),
+          Expanded(child: content),
         ],
       ),
     );
