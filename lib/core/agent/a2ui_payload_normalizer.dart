@@ -12,6 +12,7 @@
 /// 字符串会被原样显示成占位符。这里在渲染前做一次保守归一化：
 ///
 /// - 整串绑定 `"$name"` → `{"@path": "name"}`，`"$/a/b"` → `{"@path": "/a/b"}`
+/// - 旧版绑定对象 `{"path": "name"}` → `{"@path": "name"}`（不含 componentId）
 /// - 混合文本 `"累计 $acc"` → `Row([Text("累计 "), Text({"@path": "acc"})])`
 /// - 只处理 `text` / `value` / `label` / `placeholder` / `description` / `url`
 ///   以及 `action.context` 里的值，不碰结构字段（id/child/children/组件名）
@@ -96,6 +97,8 @@ Map<String, Object?> _normalizeComponent(
 
   if (out['component'] == 'Text') {
     final text = out['text'];
+    final legacy = _coerceBinding(text);
+    if (legacy != null) out['text'] = legacy;
     if (text is String) {
       final segments = _segments(text);
       if (segments != null && segments.any((s) => s.isPath)) {
@@ -135,10 +138,8 @@ Map<String, Object?> _normalizeComponent(
   }
 
   for (final slot in _valueSlots) {
-    final value = out[slot];
-    if (value is! String) continue;
-    final path = _wholePath(value);
-    if (path != null) out[slot] = {'@path': path};
+    final coerced = _coerceBinding(out[slot]);
+    if (coerced != null) out[slot] = coerced;
   }
   return out;
 }
@@ -149,10 +150,28 @@ void _normalizeContext(Map<Object?, Object?> holder) {
   final rewritten = <String, Object?>{};
   for (final entry in context.entries) {
     final value = entry.value;
-    final path = value is String ? _wholePath(value) : null;
-    rewritten['${entry.key}'] = path == null ? value : {'@path': path};
+    final coerced = _coerceBinding(value);
+    rewritten['${entry.key}'] = coerced ?? value;
   }
   holder['context'] = rewritten;
+}
+
+/// 识别几种旧的绑定写法，返回 v1.0 的 `{"@path": ...}`。
+///
+/// - 字符串 `$name` / `$/a/b` / `${name}`
+/// - 旧版对象 `{"path": "name"}`（带 `componentId` 的是列表模板，必须保留）
+Map<String, Object?>? _coerceBinding(Object? value) {
+  if (value is String) {
+    final path = _wholePath(value);
+    return path == null ? null : {'@path': path};
+  }
+  if (value is Map && !value.containsKey('componentId')) {
+    final path = value['path'];
+    if (path is String && value.keys.every((k) => k == 'path')) {
+      return {'@path': path};
+    }
+  }
+  return null;
 }
 
 /// 整串就是一个绑定（`$name` / `$/a/b` / `${name}`）时返回路径。

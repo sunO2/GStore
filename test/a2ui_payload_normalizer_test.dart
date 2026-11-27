@@ -98,6 +98,34 @@ void main() {
       expect((components[2] as Map)['text'], {'@path': 'acc'});
     });
 
+    test('旧版 {"path": ...} 绑定也转换成 @path', () {
+      final messages = normalizeA2uiBindings([
+        _message([
+          {'id': 'a', 'component': 'Text', 'text': {'path': 'name'}},
+          {
+            'id': 'b',
+            'component': 'TextField',
+            'label': '关键词',
+            'value': {'path': '/form/keyword'},
+          },
+          {
+            'id': 'list',
+            'component': 'List',
+            'children': {'path': '/products', 'componentId': 'tpl'},
+          },
+        ]),
+      ]);
+      final components =
+          ((messages.single['createSurface'] as Map)['components'] as List);
+      expect((components[0] as Map)['text'], {'@path': 'name'});
+      expect((components[1] as Map)['value'], {'@path': '/form/keyword'});
+      // 列表模板（带 componentId）必须保持原样
+      expect((components[2] as Map)['children'], {
+        'path': '/products',
+        'componentId': 'tpl',
+      });
+    });
+
     test('混合文本拆成 Row + Text 片段', () {
       final messages = normalizeA2uiBindings([
         _message([
