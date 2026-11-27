@@ -1,4 +1,11 @@
-on: push
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      alpha:
+        description: "Build as an alpha prerelease"
+        type: boolean
+        default: false
 name: build and test app
 env:
   # sccache 与增量编译互斥；CI 统一关闭增量以获得稳定的缓存命中。
@@ -116,6 +123,36 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^version: \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' ./pubspec.yaml)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # 正式版本（main push / 版本 tag）发布 v<version>；
+      # 功能分支 push 或手动 alpha=true 发布 v<version>-alpha.<run_number> 预发布，
+      # 避免覆盖同版本号的正式 Release。
+      - name: Resolve release tag (stable / alpha)
+        id: release_meta
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.get_version.outputs.version }}"
+          EVENT="${{ github.event_name }}"
+          REF="${{ github.ref }}"
+          INPUT_ALPHA="${{ inputs.alpha }}"
+
+          if [[ "$EVENT" == "push" && "$REF" == refs/tags/* ]]; then
+            TAG="${REF#refs/tags/}"
+            if [[ "$TAG" == *-* ]]; then PRERELEASE="true"; else PRERELEASE="false"; fi
+          elif [[ "$INPUT_ALPHA" == "true" ]]; then
+            TAG="v${VERSION}-alpha.${GITHUB_RUN_NUMBER}"
+            PRERELEASE="true"
+          elif [[ "$EVENT" == "push" && "$REF" != "refs/heads/main" ]]; then
+            TAG="v${VERSION}-alpha.${GITHUB_RUN_NUMBER}"
+            PRERELEASE="true"
+          else
+            TAG="v${VERSION}"
+            PRERELEASE="false"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG (prerelease=$PRERELEASE)"
           
       # Cache flutter dependencies for faster builds
       - name: Cache Flutter pub
@@ -345,7 +382,7 @@ jobs:
             fi
           else
             # 分支 push：原逻辑（上一次 release tag 之后的所有 commit，无则全量）
-            CURRENT="v${{ steps.get_version.outputs.version }}"
+            CURRENT="${{ steps.release_meta.outputs.tag }}"
             PREV="${{ steps.prev_release.outputs.prev_tag }}"
             if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]]; then
               git log "$PREV..HEAD" --pretty=format:"* %s" > notes.txt
@@ -366,14 +403,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 官方 create-release@v1 已弃用，改用内置 gh CLI（幂等：tag 已存在时回退 edit）
-          gh release create "v${{ steps.get_version.outputs.version }}" \
-            --title "${{ steps.get_version.outputs.version }}" \
+          gh release create "${{ steps.release_meta.outputs.tag }}" \
+            --title "${{ steps.release_meta.outputs.tag }}" \
             --notes-file notes.txt \
             --target "${GITHUB_SHA}" \
             --draft=false \
-            --prerelease=false \
-          || gh release edit "v${{ steps.get_version.outputs.version }}" \
-            --notes-file notes.txt
+            --prerelease="${{ steps.release_meta.outputs.prerelease }}" \
+          || gh release edit "${{ steps.release_meta.outputs.tag }}" \
+            --notes-file notes.txt \
+            --prerelease="${{ steps.release_meta.outputs.prerelease }}"
       # 同一 Release 上传顺序固定：本次新版 .so（版本化名，--clobber）→ modules.json（提交标记）
       # → APK/AAB 与 it-tools → 最后按留存策略清理旧模块资产。
       # 约定：任何模块内容变更必须提升模块 version；--clobber 仅用于同版本重建兜底，客户端按
@@ -384,7 +422,7 @@ jobs:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
         run: |
           set -euo pipefail
-          TAG="v${{ steps.get_version.outputs.version }}"
+          TAG="${{ steps.release_meta.outputs.tag }}"
           MANIFEST="$GSTORE_MODULE_DIR/modules.json"
           python3 - "$MANIFEST" > module_assets.tsv <<'PY'
           import json, sys
@@ -433,7 +471,7 @@ jobs:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
         run: |
           set -euo pipefail
-          TAG="v${{ steps.get_version.outputs.version }}"
+          TAG="${{ steps.release_meta.outputs.tag }}"
           gh release upload "$TAG" "$GSTORE_MODULE_DIR/modules.json#modules.json" --clobber
 
       - name: Upload Release Assets
@@ -442,7 +480,7 @@ jobs:
         run: |
           # 官方 upload-release-asset@v1 已弃用，改用 gh release upload（file#name 保留原资产名）
           # 完整包与精简包均取自暂存目录（flutter-apk 下同名文件已被精简包覆盖）。
-          gh release upload "v${{ steps.get_version.outputs.version }}" \
+          gh release upload "${{ steps.release_meta.outputs.tag }}" \
             "./build/app/outputs/bundle/release/app-release.aab" \
             "./build/apk-release/GStore-armeabi-v7a-release.apk" \
             "./build/apk-release/GStore-arm64-v8a-release.apk" \
@@ -457,7 +495,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="v${{ steps.get_version.outputs.version }}"
+          TAG="${{ steps.release_meta.outputs.tag }}"
           gh release upload "$TAG" \
             "assets/it_tools/it-tools.zip" \
             "assets/it_tools/it_tools.json" \
@@ -472,7 +510,7 @@ jobs:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
         run: |
           set -euo pipefail
-          TAG="v${{ steps.get_version.outputs.version }}"
+          TAG="${{ steps.release_meta.outputs.tag }}"
           MANIFEST="$GSTORE_MODULE_DIR/modules.json"
           TTL_DAYS="${MODULE_MANIFEST_TTL_DAYS:-30}"
           NOW_EPOCH="$(date -u +%s)"

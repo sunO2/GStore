@@ -398,3 +398,27 @@ versionName=1.0.38
 
 - 真机验证：二维码页「生成 / 识别」正常，识别页相机预览与扫描框正常
 - 相关测试：qr scanner / qr tool / request-debug editor 共 91 项全部通过
+
+---
+
+## 13. GitHub Actions alpha 预发布
+
+正式发布（`main` push / 版本 tag）仍发布 `v<version>`，保持不变。
+为避免升级分支覆盖同版本号的正式 Release，`build.yml` 新增：
+
+- `workflow_dispatch`，带 `alpha` 布尔输入
+- 非 `main` 分支 push → 发布 `v<version>-alpha.<run_number>`，`prerelease=true`
+- `main` push / 版本 tag → 发布 `v<version>`，行为不变
+
+触发方式：
+
+```bash
+# 推送升级分支即触发 alpha 构建
+git push github chore/flutter-3.50-upgrade
+
+# 或手动触发（可指定 ref）
+gh workflow run build.yml --ref chore/flutter-3.50-upgrade -f alpha=true
+```
+
+注意：alpha 与正式 release 共用同一套构建、Rust 模块和 APK 产物，
+只是 release tag / prerelease 标记不同。
