@@ -32,7 +32,8 @@ class RhttpAdapter implements HttpClientAdapter {
         settings: ClientSettings(
           // 配置 TLS 设置：按 allowBadCertificate 决定是否校验证书。
           tlsSettings: TlsSettings(
-            trustRootCertificates: true,
+            // 0.18 起 trustRootCertificates 改为 rootCertSource。
+            rootCertSource: RootCertSource.webpki,
             trustedRootCertificates: const [],
             verifyCertificates: !allowBadCertificate,
             sni: true,

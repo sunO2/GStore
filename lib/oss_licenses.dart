@@ -7052,13 +7052,13 @@ SOFTWARE.''',
     devDependencies: [PackageRef('mockito'), PackageRef('stack_trace')],
   );
 
-/// flutter_rust_bridge 2.11.1
+/// flutter_rust_bridge 2.12.0
 const _flutter_rust_bridge = Package(
     name: 'flutter_rust_bridge',
     description: 'Flutter/Dart <-> Rust binding generator, feature-rich, but seamless and simple',
     repository: 'https://github.com/fzyzcjy/flutter_rust_bridge',
     authors: [],
-    version: '2.11.1',
+    version: '2.12.0',
     license: '''MIT License
 
 Copyright (c) 2021 fzyzcjy
@@ -12032,13 +12032,13 @@ SOFTWARE.''',
     devDependencies: [PackageRef('lints')],
   );
 
-/// rhttp 0.15.1
+/// rhttp 0.18.0
 const _rhttp = Package(
     name: 'rhttp',
     description: 'Make HTTP requests using Rust for Flutter developers. It uses FFI to call Rust functions from Dart. On the Rust side, it uses reqwest to make HTTP requests.',
     repository: 'https://codeberg.org/Tienisto/rhttp',
     authors: [],
-    version: '0.15.1',
+    version: '0.18.0',
     license: '''MIT License
 
 Copyright (c) 2024-2025 Tien Do Nam
@@ -12061,9 +12061,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
-    isSdk: true,
+    isSdk: false,
     dependencies: [PackageRef('flutter'), PackageRef('flutter_rust_bridge'), PackageRef('freezed_annotation'), PackageRef('http'), PackageRef('http_profile'), PackageRef('meta')],
-    devDependencies: [PackageRef('build_runner'), PackageRef('ffi'), PackageRef('flutter_lints'), PackageRef('integration_test')],
+    devDependencies: [PackageRef('build_runner'), PackageRef('ffi'), PackageRef('flutter_lints')],
   );
 
 /// riverpod 2.6.1

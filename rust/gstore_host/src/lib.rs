@@ -1,3 +1,7 @@
+// FRB 2.12 生成的代码会以 crate 自身的名字引用 `gstore_host::bridge::...`。
+// 在同 crate 内该名字默认不可见，用 self-alias 让生成代码无需手改即可编译。
+extern crate self as gstore_host;
+
 // FRB codegen emits `UiApi::default()` for the Wave-5 opaque unit struct, which
 // trips clippy::default_constructed_unit_structs at the generated call site.
 #[allow(clippy::default_constructed_unit_structs)]

@@ -6,13 +6,16 @@
 | 包 | 原版本 | 补丁内容 | 后续方案 |
 |---|---|---|---|
 | `flutter_inappwebview_android` | 1.1.3 | `proguard-android.txt` → `proguard-android-optimize.txt`（AGP 9 不再提供旧文件） | 等上游发布兼容 AGP 9 的版本后移除 |
-| `rhttp` | 0.15.1 | cargokit `plugin.gradle` 的 `project.exec` → `providers.exec`（Gradle 9 移除前者） | 升级到 0.18.0 需要 `flutter_rust_bridge ^2.12`，会牵动 Rust 绑定重新生成，暂缓 |
+
+已移除的 vendor：
+
+- `dynamic_color`：项目启用 Built-in Kotlin 后直接使用上游 1.9.0
+- `rhttp`：升级到 0.18.0（cargokit 已修复 Gradle 9），同时把
+  `flutter_rust_bridge` 升到 2.12.0 并重新生成绑定
 
 `installed_apps` 不在此目录：已 fork 到
 <https://github.com/sunO2/installed_apps>（Android 侧改写为 Java），
 `pubspec.yaml` 使用固定 commit `8d4861f4acf879840642351cb6d008157955f7ba`。
-
-`dynamic_color` 已不再 vendor：项目已启用 Built-in Kotlin，直接使用上游 1.9.0。
 
 ## 维护方式
 

@@ -242,7 +242,7 @@ distributionUrl=https\://services.gradle.org/distributions/gradle-9.5.0-bin.zip
 |---|---|---|
 | ~~`dynamic_color` 1.7.0~~ | 已移除 vendor，直接使用上游 1.9.0 | 已完成 |
 | `flutter_inappwebview_android` 1.1.3 | proguard 改 `-optimize` 版本 | 上游兼容 AGP 9 |
-| `rhttp` 0.15.1 | cargokit `providers.exec` | 升级 0.18.0+ 并升级 Rust FRB |
+| ~~`rhttp` 0.15.1~~ | 已升级 0.18.0（fork）并升级 Rust FRB 2.12 | 已完成 |
 
 `installed_apps` 不 vendor，使用 fork 的 GitHub commit。
 
@@ -487,4 +487,70 @@ sha256: a3bc7a83f4457226d65481503ab1f087ade3c71e2f00832742f043b57c0d7d0b
 
 - `flutter_secure_storage` 11.x 需等下一轮（先让 10.x 完成迁移）
 - `file_picker` 14 将移除 `saveFile` 的 `type` / `allowedExtensions`
-- 仍保留 vendor：`flutter_inappwebview_android`、`rhttp`
+- 仍保留 vendor：`flutter_inappwebview_android`（`rhttp` 已改为 fork 依赖）
+
+---
+
+## 15. rhttp 0.18 + flutter_rust_bridge 2.12
+
+### 依赖与绑定
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| `rhttp` | 0.15.1（`third_party` vendor） | 0.18.0（`sunO2/rhttp` fork commit `b4f6c36e`） |
+| `flutter_rust_bridge`（Dart） | 2.11.1 | 2.12.0 |
+| `flutter_rust_bridge`（Rust） | `=2.11.1` | `=2.12.0` |
+| 绑定生成器 | codegen 2.11.1 | codegen 2.12.0 |
+
+`rhttp` fork 只加了一个条件判断：AGP 9 + `android.builtInKotlin=true`
+时不再 apply Kotlin Gradle Plugin；cargokit 的 Gradle 9 修复已在 0.18.0 上游。
+
+### 代码改动
+
+- `lib/http/rhttp_adapter.dart`：
+  - `TlsSettings.trustRootCertificates` → `rootCertSource: RootCertSource.webpki`
+    （0.18 的 BREAKING change）
+- `rust/gstore_host/src/lib.rs`：
+  - 新增 `extern crate self as gstore_host;`，让 2.12 生成的
+    `gstore_host::bridge::...` 在同 crate 内可解析
+- 用 codegen 2.12.0 重新生成：
+  - `lib/core/rust/generated/**`
+  - `rust/gstore_host/src/frb_generated.rs`
+
+### Rust 构建
+
+- Linux host：`cargo build --release` 通过
+- Android host：4 个 ABI 全部重建（arm64-v8a / armeabi-v7a / x86 / x86_64）
+  - arm64 7.8M，armv7 5.4M，x86 9.0M，x86_64 9.1M
+  - `gstore_mod_download` 同步重建
+- `cargo test --release`：165 通过；8 个 dlopen 用例因未构建调试模块跳过
+  （`GSTORE_ALLOW_MISSING_MODULE=1` 后 0 失败）
+
+### 验证
+
+```text
+✓ Built app-release.apk (72.3MB)
+sha256: 19c327d7e9ce88bb62593472dcea6aa555b07ee2f031e679a5c2f8a35913c79d
+```
+
+Pixel 4 安装启动：
+
+```text
+core-bootstrap: critical-done elapsedMs=250
+rhttp initialized successfully
+BadgeService: 数据库更新红点 = true (0.0.12 -> 0.0.27)
+```
+
+GitHub API 请求走的就是 `RhttpAdapter`，说明 rhttp 0.18 的 TLS / HTTP
+链路在真机上正常；FRB 2.12 的宿主桥也正常初始化。
+
+相关测试（core_api / module bootstrap / rhttp fetcher / Rust lane）：53 通过，
+4 跳过。
+
+### vendor 现状
+
+```text
+third_party/flutter_inappwebview_android   # 仅剩这一个
+```
+
+`third_party/rhttp` 目录已删除，改为 GitHub commit 依赖。

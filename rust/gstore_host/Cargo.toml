@@ -31,7 +31,7 @@ serde_json = "1.0"
 # 结构化警告（pack 的 legacy-permissive 回退必须显式记录 key + 原因）。
 log = "0.4"
 # Flutter FFI
-flutter_rust_bridge = "=2.11.1"
+flutter_rust_bridge = "=2.12.0"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"], default-features = false }

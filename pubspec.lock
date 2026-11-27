@@ -686,10 +686,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_rust_bridge
-      sha256: "37ef40bc6f863652e865f0b2563ea07f0d3c58d8efad803cc01933a4b2ee067e"
+      sha256: e87d6b9ee934dcd24a128ccb2bd91905d2d5fe5c06245d6a8f5477d4907a437a
       url: "https://pub.dev"
     source: hosted
-    version: "2.11.1"
+    version: "2.12.0"
   flutter_secure_storage:
     dependency: "direct main"
     description:
@@ -1410,10 +1410,12 @@ packages:
   rhttp:
     dependency: "direct main"
     description:
-      path: "third_party/rhttp"
-      relative: true
-    source: path
-    version: "0.15.1"
+      path: "."
+      ref: b4f6c36edb862d8ea1aecfa8a0c171b8fbcf5cf0
+      resolved-ref: b4f6c36edb862d8ea1aecfa8a0c171b8fbcf5cf0
+      url: "https://github.com/sunO2/rhttp.git"
+    source: git
+    version: "0.18.0"
   riverpod:
     dependency: transitive
     description:
