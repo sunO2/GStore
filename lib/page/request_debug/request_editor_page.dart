@@ -25,6 +25,7 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/editor/app_code_language.dart';
 import 'package:gstore/core/editor/code_document_source.dart';
+import 'package:gstore/core/qr_scan/qr_scan_page.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 import 'package:gstore/page/code_editor/code_editor_page.dart';
 import 'package:re_editor/re_editor.dart';
@@ -708,6 +709,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   AppEditableFieldToolbarBuilder _sheetToolbar({
     required GlobalKey<AppEditableFieldState> fieldKey,
     bool allowInsertVar = false,
+    bool allowScan = false,
     List<String> Function()? suggestionsBuilder,
   }) {
     return (context, controller) {
@@ -720,6 +722,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             spacing: AppSpacing.xs,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              if (allowScan)
+                IconButton(
+                  key: const Key('request-editor-url-scan'),
+                  tooltip: '扫码填充',
+                  icon: const Icon(TablerIcons.scan),
+                  onPressed: () => _scanIntoField(context, controller),
+                ),
               if (allowInsertVar) _insertVarButton(controller),
               AppEditorToolbar(
                 controller: controller,
@@ -735,6 +744,21 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         ],
       );
     };
+  }
+
+  /// 扫码填充当前编辑草稿：识别结果写入 URL 字段，点「完成」后提交。
+  Future<void> _scanIntoField(
+    BuildContext context,
+    TextEditingController controller,
+  ) async {
+    final text = await QrScanPage.scan(context, title: '扫描请求地址');
+    if (!context.mounted || text == null) return;
+    final value = text.trim();
+    if (value.isEmpty) return;
+    controller.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
   }
 
   /// 当前分段下可聚焦的编辑字段顺序（仅枚举已挂载的字段）。
@@ -1302,6 +1326,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 toolbarBuilder: _sheetToolbar(
                   fieldKey: _urlFieldKey,
                   allowInsertVar: true,
+                  allowScan: true,
                 ),
               ),
             ),

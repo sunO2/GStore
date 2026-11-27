@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/page/qr_tool/zoom_controller.dart';
+import 'package:gstore/core/qr_scan/zoom_controller.dart';
 
 /// 变焦控制器单元测试。
 ///

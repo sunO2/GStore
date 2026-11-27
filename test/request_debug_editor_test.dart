@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/qr_scan/qr_scan_page.dart';
 import 'package:gstore/core/request_debug/debug_cookie_jar.dart';
 import 'package:gstore/core/request_debug/debug_models.dart';
 import 'package:gstore/core/request_debug/debug_response.dart';
@@ -1482,5 +1483,43 @@ void main() {
       expect(find.text('https://api.example/rename'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+  });
+
+  testWidgets('URL 编辑弹层扫码：识别结果写入弹层草稿并可确认', (tester) async {
+    QrScanPage.debugScanResult = () async => 'https://api.example/scan';
+    addTearDown(() => QrScanPage.debugScanResult = null);
+
+    final facade = _facade();
+    final collection = facade.store.addCollection(name: 'API');
+    await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+
+    await tester.tap(find.byKey(const Key('request-editor-url')));
+    await tester.pumpAndSettle();
+
+    final scanButton = find.byKey(const Key('request-editor-url-scan'));
+    expect(
+      scanButton,
+      findsOneWidget,
+      reason: '请求地址弹层应提供扫码填充按钮',
+    );
+
+    await tester.tap(scanButton);
+    await tester.pumpAndSettle();
+
+    final draft = tester
+        .widget<TextField>(
+            find.byKey(const Key('request-editor-field-sheet-input')))
+        .controller!;
+    expect(
+      draft.text,
+      'https://api.example/scan',
+      reason: '扫码结果应写入当前弹层草稿',
+    );
+
+    await tester
+        .tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
+    await tester.pumpAndSettle();
+    expect(_urlDisplay('https://api.example/scan'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
