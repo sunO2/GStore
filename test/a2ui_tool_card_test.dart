@@ -39,6 +39,37 @@ void main() {
     expect(find.textContaining('已提交'), findsOneWidget);
   });
 
+  testWidgets('legacy dollar bindings are normalized before rendering',
+      (tester) async {
+    const legacy = r'''
+[
+  {
+    "version": "1.0",
+    "createSurface": {
+      "surfaceId": "legacy",
+      "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+      "dataModel": {"products": [{"name": "稳稳盈 A", "acc": "1.23%"}]},
+      "components": [
+        {"id": "root", "component": "List",
+         "children": {"path": "/products", "componentId": "tpl"}},
+        {"id": "tpl", "component": "Column", "children": ["name", "acc"]},
+        {"id": "name", "component": "Text", "text": "$name"},
+        {"id": "acc", "component": "Text", "text": "累计 $acc"}
+      ]
+    }
+  }
+]
+''';
+    await tester.pumpWidget(_host(A2uiToolCard(payload: legacy)));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('稳稳盈 A'), findsOneWidget);
+    expect(find.text('累计'), findsOneWidget);
+    expect(find.text('1.23%'), findsOneWidget);
+    expect(find.textContaining(r'$name'), findsNothing);
+  });
+
   testWidgets('does not forward actions when disabled', (tester) async {
     final actions = <A2uiRendererAction>[];
     await tester.pumpWidget(

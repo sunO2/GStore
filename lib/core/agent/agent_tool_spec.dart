@@ -1245,9 +1245,11 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
    Image/Video/AudioPlayer 仅支持 http(s) URL；Image variant 可选 icon/avatar。
 5. components 是扁平邻接表，必须有一个 id="root" 的根组件；
    容器用 children:[id...]，Card/Button 用 child:id。
-6. 数据绑定用 {"@path":"/x"}；List 模板：
+6. 数据绑定用 {"@path":"/x"}；**不要**写成 "$name" 字符串（会被当成普通
+   文字原样显示）。List 模板：
    "children":{"path":"/apps","componentId":"rowTemplate"}
-   模板内相对路径不带前导 /（如 "name" 解析为 /apps/N/name）。
+   模板内相对路径不带前导 /（如 "name" 解析为 /apps/N/name）；
+   标签与数值拆成两个 Text（"累计" + {"@path":"acc"}），不要把绑定拼进句子。
 7. Button.action 只允许：
    {"event":{"name":"动作名","context":{...}}}
    context 值可以是字面量或 {"@path":...}；不要用 functionCall/openUrl。

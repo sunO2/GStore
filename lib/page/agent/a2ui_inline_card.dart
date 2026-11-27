@@ -4,6 +4,7 @@ import 'package:a2ui_flutter/basic_catalog.dart';
 // 全仓库仍使用 flutter/material.dart；迁移 material_ui 单独排期。
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
+import 'package:gstore/core/agent/a2ui_payload_normalizer.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 
 import 'a2ui_surface_shell.dart';
@@ -78,7 +79,7 @@ class _A2uiInlineCardState extends State<A2uiInlineCard> {
   void _applyNewMessages() {
     final processor = _processor;
     if (processor == null || _applied >= widget.messages.length) return;
-    final batch = widget.messages.sublist(_applied);
+    final batch = normalizeA2uiBindings(widget.messages.sublist(_applied));
     try {
       processor.processMessages(batch);
       _applied = widget.messages.length;

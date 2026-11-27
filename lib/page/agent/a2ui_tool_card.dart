@@ -4,6 +4,7 @@ import 'package:a2ui_core/a2ui_core.dart';
 import 'package:a2ui_flutter/a2ui_flutter.dart';
 import 'package:a2ui_flutter/basic_catalog.dart';
 import 'package:flutter/material.dart';
+import 'package:gstore/core/agent/a2ui_payload_normalizer.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 
 import 'a2ui_surface_shell.dart';
@@ -56,6 +57,12 @@ class _A2uiToolCardState extends State<A2uiToolCard> {
   void _load() {
     try {
       final decoded = jsonDecode(widget.payload);
+      final raw = decoded is List ? decoded : [decoded];
+      final messages = <Map<String, Object?>>[
+        for (final item in raw)
+          if (item is Map)
+            item.map((key, value) => MapEntry(key.toString(), value)),
+      ];
       final processor = MessageProcessor<ComponentImplementation>(
         catalogs: [basicCatalog(locale: 'zh-CN')],
       );
@@ -72,7 +79,7 @@ class _A2uiToolCardState extends State<A2uiToolCard> {
         setState(() => _lastAction = action);
         if (widget.enabled) widget.onAction?.call(action);
       });
-      processor.processMessages(decoded);
+      processor.processMessages(normalizeA2uiBindings(messages));
       _processor = processor;
     } on A2uiError catch (error) {
       _error = error;

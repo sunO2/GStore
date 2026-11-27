@@ -988,3 +988,34 @@ test/agent_chat_list_view_test.dart     3 项（A2UI 布局）
 
 真机截图核对：外层单边框、标题/状态行分隔清晰，A2UI 内部卡片为浅色块，
 暗色/亮色都走主题色。
+
+### 旧式绑定兼容：`$name` 占位符（2026-11-28）
+
+现象：列表卡片里的文字直接显示 `$name` / `$code` / `累计 $acc`。
+
+原因有两层：
+
+1. **模型输出**：Express 里 `Text($name)` 才会编译成 `{"@path":"name"}`；
+   写成 `Text("$name")`（带引号）就是普通字符串，`Text("累计 $acc")`
+   同理。模型在金融类场景里按旧版语法写成了带引号的占位符。
+2. **宿主**：v1.0 只认 `@path`，字符串原样渲染；`${...}` 插值也不作用于
+   `text`（实测），所以不会自动解析。
+
+修复分两层：
+
+- 新增 `lib/core/agent/a2ui_payload_normalizer.dart`，渲染前做保守归一化：
+  - 整串绑定 `"$name"` → `{"@path":"name"}`，`"$/a/b"` → `{"@path":"/a/b"}`
+  - 混合文本 `"累计 $acc"` → `Row([Text("累计"), Text({"@path":"acc"})])`
+    （Row 自带 8px 间距，字面量两端 trim）
+  - 覆盖 `text` / `value` / `label` / `placeholder` / `description` / `url`
+    与 `action.event.context`；不碰 id/child/children/组件名等结构字段
+  - `$9.99`、`${formatNumber(x)}` 这类无法确定的不改
+  - 工具式卡片与内联卡片共用同一次归一化
+- 提示词与工具协议补充明确规则：**引用数据不要加引号**，
+  标签和数值拆成两个 Text，列表模板内用相对路径。
+
+验证：
+
+- 单测 + widget：7 项归一化/渲染用例（含 id 冲突、结构字段不被误改）。
+- 真机用「编译后就是 `$name` 字面量」的 Express 复现，修复后正确显示
+  产品名/代码/累计/日涨跌/净值。
