@@ -93,15 +93,8 @@ sha256: afa3835995135cb0c4d493ce84b05746528bac804db57e415b89b51af9cc2c4f
 
 构建过程中解决的问题见第 12 节。
 
-剩余告警（不阻塞构建）：
-
-```text
-app 及 device_info_plus、flutter_foreground_task、package_info_plus、
-shared_preferences_android、shizuku_api 仍 apply KGP
-```
-
-Flutter 3.50 仍支持 legacy KGP 模式（`android.builtInKotlin=false`），
-但未来版本会移除；需要等所有上游插件迁移到 Built-in Kotlin 后再统一切换。
+KGP 告警已在第 14 节彻底消除：`android.builtInKotlin=true`，构建日志中
+不再出现任何 "apply Kotlin Gradle Plugin" 告警。
 
 ## 结论
 
@@ -230,7 +223,7 @@ installed_apps:
 | Java source/target | 11 | **17** |
 | compileSdk | 36 | 36 |
 | minSdk | 24 | 24 |
-| Built-in Kotlin | 关闭 | 关闭（legacy KGP 兼容模式） |
+| Built-in Kotlin | 关闭 | 开启（`android.builtInKotlin=true`） |
 
 Gradle wrapper 使用官方地址：
 
@@ -247,7 +240,7 @@ distributionUrl=https\://services.gradle.org/distributions/gradle-9.5.0-bin.zip
 
 | 包 | 补丁 | 移除条件 |
 |---|---|---|
-| `dynamic_color` 1.7.0 | compileSdk 36 / Kotlin 2.4.20 / Java 17 | 上游 1.9.0+ 且启用 Built-in Kotlin |
+| ~~`dynamic_color` 1.7.0~~ | 已移除 vendor，直接使用上游 1.9.0 | 已完成 |
 | `flutter_inappwebview_android` 1.1.3 | proguard 改 `-optimize` 版本 | 上游兼容 AGP 9 |
 | `rhttp` 0.15.1 | cargokit `providers.exec` | 升级 0.18.0+ 并升级 Rust FRB |
 
@@ -422,3 +415,73 @@ gh workflow run build.yml --ref chore/flutter-3.50-upgrade -f alpha=true
 
 注意：alpha 与正式 release 共用同一套构建、Rust 模块和 APK 产物，
 只是 release tag / prerelease 标记不同。
+
+---
+
+## 14. Built-in Kotlin 迁移
+
+### 依赖升级
+
+| 包 | 旧版本 | 新版本 | 说明 |
+|---|---|---|---|
+| `device_info_plus` | 12.4.0 | 13.3.0 | 条件 apply KGP，`builtInKotlin=true` 时不 apply |
+| `package_info_plus` | 8.0.0 | 10.2.2 | 同上 |
+| `shared_preferences_android` | 2.4.6 | 2.5.5 | 完全不 apply KGP |
+| `flutter_foreground_task` | 10.0.0 | 11.0.3 | 11.0.0 起迁移 Built-in Kotlin |
+| `dynamic_color` | 1.7.0（vendor） | 1.9.0 | 删除 `third_party/dynamic_color` |
+| `flutter_secure_storage` | 9.2.4 | 10.3.4 | 解决 win32 6 冲突；10.x 自动迁移旧数据 |
+| `file_picker` | 8.1.6 | 13.4.1 | 解决 win32 6 冲突，API 有破坏性变化 |
+
+> `device_info_plus 13` / `package_info_plus 10` 需要 `win32 ^6`，
+> 而 `file_picker 8` 与 `flutter_secure_storage 9` 仍锁 `win32 ^5`，
+> 因此必须同时升级后两者。
+
+### Gradle 迁移
+
+- `android/gradle.properties`：`android.builtInKotlin=true`
+- `android/app/build.gradle`：
+  - 移除 `id "kotlin-android"`
+  - 移除 `kotlinOptions`
+  - 新增 `kotlin { compilerOptions { jvmTarget = JVM_17 } }`
+- `android/settings.gradle`：移除 `org.jetbrains.kotlin.android` 声明
+- `packages/shizuku_api/android/build.gradle`：同样移除 KGP，改用 Built-in Kotlin
+
+构建日志中已无任何 `apply Kotlin Gradle Plugin` 告警。
+
+### file_picker 13 API 迁移
+
+- `FilePicker.platform.pickFiles` → `FilePicker.pickFiles` / `FilePicker.pickFile`
+- `withData` / `allowMultiple` / `lockParentWindow` 移除：
+  - 选文件改用 `pickFile()` + `readAsBytes()`
+  - 保存只传 `fileName` / `bytes`
+- `saveFile` 返回 `Uri?`：
+  - 通过接缝统一转成 `String?`，避免影响各页面已有签名
+  - 成功提示改为显示文件名，不再展示 Android SAF 的 `content://` 路径
+- 日志查看页新增 `LogViewerPage.saveFile` 注入接缝，测试不再依赖
+  `FilePicker.platform` 静态 setter
+
+### flutter_secure_storage 10
+
+- 使用 `migrateOnAlgorithmChange` 默认迁移 9.x 数据
+- 暂不升级 11.x：11 要求先经过 10.x 迁移
+
+### 验证
+
+```text
+✓ Built app-release.apk (71.3MB)
+sha256: a3bc7a83f4457226d65481503ab1f087ade3c71e2f00832742f043b57c0d7d0b
+```
+
+- `dart analyze lib test`：0 error
+- 相关测试（日志导出、代理导出/导入、设置渠道包、请求调试导入导出、
+  备份逻辑、工作区选择）：118 项全部通过
+- Pixel 4 安装 1.0.38 启动正常
+- 备份「导出到本地」走完 SAF：文件成功写入
+  `/sdcard/Download/gstore_backup_*.tar.gz`，应用正常返回
+- `dynamic_color` 1.9.0 正常渲染（深色/浅色主题切换已验证）
+
+### 后续
+
+- `flutter_secure_storage` 11.x 需等下一轮（先让 10.x 完成迁移）
+- `file_picker` 14 将移除 `saveFile` 的 `type` / `allowedExtensions`
+- 仍保留 vendor：`flutter_inappwebview_android`、`rhttp`

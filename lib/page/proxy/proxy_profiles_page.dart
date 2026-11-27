@@ -560,15 +560,13 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     required String fileName,
     required Uint8List bytes,
     required List<String> allowedExtensions,
-  }) {
-    return FilePicker.platform.saveFile(
+  }) async {
+    final uri = await FilePicker.saveFile(
       dialogTitle: '导出 Clash 配置',
       fileName: fileName,
-      lockParentWindow: true,
-      type: FileType.custom,
-      allowedExtensions: allowedExtensions,
       bytes: bytes,
     );
+    return uri?.toString();
   }
 
   // ==================== 删除 ====================
@@ -611,12 +609,9 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   }
 
   static Future<({String name, String text})?> _defaultPickFile() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
-    final files = result?.files;
-    if (files == null || files.isEmpty) return null;
-    final file = files.first;
-    final bytes = file.bytes;
-    if (bytes == null) return null;
+    final file = await FilePicker.pickFile();
+    if (file == null) return null;
+    final bytes = await file.readAsBytes();
     return (name: file.name, text: utf8.decode(bytes, allowMalformed: true));
   }
 

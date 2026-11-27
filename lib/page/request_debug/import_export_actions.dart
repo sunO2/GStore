@@ -44,15 +44,12 @@ const List<String> kDebugImportExtensions = <String>[
 Future<DebugPickedFile?> defaultDebugPickFile(
   List<String> allowedExtensions,
 ) async {
-  final result = await FilePicker.platform.pickFiles(
+  final file = await FilePicker.pickFile(
     type: FileType.custom,
     allowedExtensions: allowedExtensions,
-    withData: true,
   );
-  if (result == null || result.files.isEmpty) return null;
-  final file = result.files.first;
-  final bytes = file.bytes;
-  if (bytes == null) return null;
+  if (file == null) return null;
+  final bytes = await file.readAsBytes();
   return (name: file.name, content: utf8.decode(bytes, allowMalformed: true));
 }
 
@@ -61,12 +58,12 @@ Future<bool> defaultDebugSaveFile(
   String suggestedName,
   List<int> bytes,
 ) async {
-  final path = await FilePicker.platform.saveFile(
+  final uri = await FilePicker.saveFile(
     dialogTitle: '导出',
     fileName: suggestedName,
     bytes: Uint8List.fromList(bytes),
   );
-  return path != null;
+  return uri != null;
 }
 
 /// 选择文件并导入集合（自动识别 HAR / Postman / OpenAPI(JSON) / 原始 HTTP）。

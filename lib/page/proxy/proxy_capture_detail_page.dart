@@ -555,15 +555,13 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
     required String fileName,
     required Uint8List bytes,
     required List<String> allowedExtensions,
-  }) {
-    return FilePicker.platform.saveFile(
+  }) async {
+    final uri = await FilePicker.saveFile(
       dialogTitle: '保存正文',
       fileName: fileName,
-      lockParentWindow: true,
-      type: FileType.custom,
-      allowedExtensions: allowedExtensions,
       bytes: bytes,
     );
+    return uri?.toString();
   }
 }
 

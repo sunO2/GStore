@@ -882,15 +882,13 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     required String fileName,
     required Uint8List bytes,
     required List<String> allowedExtensions,
-  }) {
-    return FilePicker.platform.saveFile(
+  }) async {
+    final uri = await FilePicker.saveFile(
       dialogTitle: '保存请求记录',
       fileName: fileName,
-      lockParentWindow: true,
-      type: FileType.custom,
-      allowedExtensions: allowedExtensions,
       bytes: bytes,
     );
+    return uri?.toString();
   }
 
   /// 生产默认读取：读 Rust 侧生成的导出文件字节。

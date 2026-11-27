@@ -1,8 +1,14 @@
 plugins {
     id "com.android.application"
-    id "kotlin-android"
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    // Built-in Kotlin（Flutter 3.50 / AGP 9）不再单独 apply kotlin-android。
+    // The Flutter Gradle Plugin must be applied after the Android Gradle plugin.
     id "dev.flutter.flutter-gradle-plugin"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
 }
 
 android {
@@ -17,9 +23,6 @@ android {
         coreLibraryDesugaringEnabled true
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17
-    }
 
     // 使用 Flutter 的 --target-platform/--split-per-abi 自动管理 ABI：
     // 此处不设 abiFilters，避免与 --split-per-abi 的 splits.abi 冲突

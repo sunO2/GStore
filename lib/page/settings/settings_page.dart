@@ -301,22 +301,15 @@ class _SettingsPageState extends State<SettingsPage> {
     if (injected != null) return injected();
 
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final file = await FilePicker.pickFile(
         type: FileType.custom,
         allowedExtensions: ['zip'],
-        allowMultiple: false,
       );
-      if (result == null || result.files.isEmpty) {
+      if (file == null) {
         AppDialogs.showInfo('已取消选择文件');
         return null;
       }
-      final file = result.files.single;
-      final bytes = file.bytes ??
-          (file.path != null ? await File(file.path!).readAsBytes() : null);
-      if (bytes == null) {
-        AppDialogs.showError('无法读取所选渠道包内容');
-        return null;
-      }
+      final bytes = await file.readAsBytes();
       return (name: file.name, bytes: bytes);
     } catch (e) {
       AppDialogs.showError('读取渠道包文件失败: $e');

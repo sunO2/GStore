@@ -13,8 +13,17 @@ import 'package:gstore/core/logger/LogManager.dart';
 
 import 'providers.dart';
 
+/// 日志导出另存接缝（测试可注入；为空时走 [FilePicker.saveFile]）。
+typedef LogViewerSaveFile = Future<String?> Function({
+  required String fileName,
+  required Uint8List bytes,
+});
+
 class LogViewerPage extends ConsumerStatefulWidget {
-  const LogViewerPage({super.key});
+  const LogViewerPage({super.key, this.saveFile});
+
+  /// 导出另存接缝（测试可注入；为空时走 [FilePicker.saveFile]）。
+  final LogViewerSaveFile? saveFile;
 
   @override
   ConsumerState<LogViewerPage> createState() => _LogViewerPageState();
@@ -249,12 +258,9 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
 
     String? outputPath;
     try {
-      outputPath = await FilePicker.platform.saveFile(
-        dialogTitle: '保存日志文件',
+      final saveFile = widget.saveFile ?? _defaultSaveFile;
+      outputPath = await saveFile(
         fileName: fileName,
-        lockParentWindow: true,
-        type: FileType.custom,
-        allowedExtensions: ['txt'],
         bytes: Uint8List.fromList(utf8.encode(content)),
       );
     } catch (e) {
@@ -269,8 +275,21 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
     }
 
     final filterSuffix = hasFilter ? '（已应用过滤）' : '';
-    appLog.info('LogViewer: 日志已导出 - $outputPath（${logs.length} 条）$filterSuffix');
-    AppDialogs.showSuccess('已导出 ${logs.length} 条$filterSuffix日志到：$outputPath');
+    appLog.info('LogViewer: 日志已导出 - $fileName（${logs.length} 条）$filterSuffix');
+    AppDialogs.showSuccess('已导出 ${logs.length} 条$filterSuffix日志：$fileName');
+  }
+
+  /// 生产默认另存：系统保存对话框。
+  static Future<String?> _defaultSaveFile({
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    final uri = await FilePicker.saveFile(
+      dialogTitle: '保存日志文件',
+      fileName: fileName,
+      bytes: bytes,
+    );
+    return uri?.toString();
   }
 
   /// target 过滤输入弹层（app bottom sheet 风格；空输入 = 清除过滤）

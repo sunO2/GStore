@@ -264,14 +264,12 @@ class BackupLogic extends ChangeNotifier {
     String? outputPath;
 
     try {
-      outputPath = await FilePicker.platform.saveFile(
+      final savedUri = await FilePicker.saveFile(
         dialogTitle: '保存压缩备份文件',
         fileName: fileName,
-        lockParentWindow: true,
-        type: FileType.custom,
-        allowedExtensions: ['tar.gz'],
         bytes: compressedBytes,
       );
+      outputPath = savedUri?.toString();
       debugPrint('BackupLogic: 文件保存路径: $outputPath');
     } catch (e) {
       appLog.error('BackupLogic: FilePicker.saveFile 失败: $e');
@@ -287,7 +285,7 @@ class BackupLogic extends ChangeNotifier {
 
     appLog.info('BackupLogic: 导出成功');
     _update(_state.copyWith(isExporting: false));
-    AppDialogs.showSuccess('备份已保存到：$outputPath', title: '导出成功');
+    AppDialogs.showSuccess('备份已保存：$fileName', title: '导出成功');
   }
 
   /// 切换是否包含应用配置
@@ -365,18 +363,17 @@ class BackupLogic extends ChangeNotifier {
       debugPrint('BackupLogic: 开始选择导入文件');
 
       // 使用 FilePicker 选择文件（使用 SAF，不需要权限）
-      final result = await FilePicker.platform.pickFiles(
+      final file = await FilePicker.pickFile(
         type: FileType.custom,
         allowedExtensions: ['gz'],
-        allowMultiple: false,
       );
 
-      if (result == null || result.files.isEmpty) {
+      if (file == null) {
         debugPrint('BackupLogic: 用户取消选择文件');
         return;
       }
 
-      final filePath = result.files.single.path;
+      final filePath = file.path;
       if (filePath == null) {
         appLog.error('BackupLogic: 无法获取文件路径');
         AppDialogs.showError('无法获取选择的文件路径', title: '文件路径错误');

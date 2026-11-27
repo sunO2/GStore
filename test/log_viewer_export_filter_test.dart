@@ -10,7 +10,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,30 +21,19 @@ import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/generated/event_bridge.dart' show ModuleEvent;
 import 'package:gstore/page/log_viewer/view.dart';
 
-/// 假文件选择器：记录 saveFile 入参并返回固定路径（[result] 为 null = 取消）。
-///
-/// `FilePicker.platform` 是带 setter 的静态接缝，测试注入后走真实 `_exportLogs`
-/// 路径，无需改生产 API。
-class _FakeFilePicker extends FilePicker {
+/// 假保存接缝：记录 saveFile 入参并返回固定路径（[result] 为 null = 取消）。
+class _FakeSaveFile {
   String? result;
   int calls = 0;
   Uint8List? lastBytes;
   String? lastFileName;
-  List<String>? lastExtensions;
 
-  @override
-  Future<String?> saveFile({
-    String? dialogTitle,
-    String? fileName,
-    String? initialDirectory,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-    Uint8List? bytes,
-    bool lockParentWindow = false,
+  Future<String?> save({
+    required String fileName,
+    required Uint8List bytes,
   }) async {
     calls++;
     lastFileName = fileName;
-    lastExtensions = allowedExtensions;
     lastBytes = bytes;
     return result;
   }
@@ -64,11 +52,10 @@ void main() {
     LogManager.instance.clear();
     LogManager.instance.info('alpha 命中');
     LogManager.instance.info('beta 不命中');
-    final fake = _FakeFilePicker()..result = '/tmp/gstore_log.txt';
-    FilePicker.platform = fake;
+    final fake = _FakeSaveFile()..result = '/tmp/gstore_log.txt';
 
     await tester.pumpWidget(
-      ProviderScope(child: _host(const LogViewerPage())),
+      ProviderScope(child: _host(LogViewerPage(saveFile: fake.save))),
     );
     await tester.pump(const Duration(milliseconds: 100));
 
@@ -102,11 +89,10 @@ void main() {
     LogManager.instance.clear();
     LogManager.instance.info('alpha 命中');
     LogManager.instance.info('beta 不命中');
-    final fake = _FakeFilePicker()..result = '/tmp/gstore_log.txt';
-    FilePicker.platform = fake;
+    final fake = _FakeSaveFile()..result = '/tmp/gstore_log.txt';
 
     await tester.pumpWidget(
-      ProviderScope(child: _host(const LogViewerPage())),
+      ProviderScope(child: _host(LogViewerPage(saveFile: fake.save))),
     );
     await tester.pump(const Duration(milliseconds: 100));
 

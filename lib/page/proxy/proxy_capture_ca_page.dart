@@ -327,15 +327,13 @@ class _ProxyCaptureCaPageState extends State<ProxyCaptureCaPage> {
     required String fileName,
     required Uint8List bytes,
     required List<String> allowedExtensions,
-  }) {
-    return FilePicker.platform.saveFile(
+  }) async {
+    final uri = await FilePicker.saveFile(
       dialogTitle: '保存抓包证书',
       fileName: fileName,
-      lockParentWindow: true,
-      type: FileType.custom,
-      allowedExtensions: allowedExtensions,
       bytes: bytes,
     );
+    return uri?.toString();
   }
 
   // ==================== 分享（复制指纹 / 二维码）====================

@@ -227,12 +227,8 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
     final service = _service;
     if (service == null) return;
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
-        allowMultiple: false,
-        withData: false,
-      );
-      final path = result?.files.single.path;
+      final file = await FilePicker.pickFile(type: FileType.any);
+      final path = file?.path;
       if (path == null || path.isEmpty) return;
       await service.workspaceService.importFile(path);
       await _load();
@@ -248,13 +244,14 @@ class _AgentWorkspacePageState extends State<AgentWorkspacePage> {
     try {
       final bytes = await service.workspaceService.exportBytes(entry.path);
       final name = entry.path.split('/').last;
-      final saved = await FilePicker.platform.saveFile(
+      final savedUri = await FilePicker.saveFile(
         dialogTitle: '导出文件',
         fileName: name,
         bytes: Uint8List.fromList(bytes),
       );
+      final saved = savedUri?.toString();
       if (saved != null && mounted) {
-        AppDialogs.showSuccess('已导出到 $saved');
+        AppDialogs.showSuccess('已导出 $name');
       }
     } catch (error) {
       if (mounted) AppDialogs.showError('导出失败：$error');
