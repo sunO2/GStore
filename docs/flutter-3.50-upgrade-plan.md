@@ -45,7 +45,7 @@
 ### 本阶段明确不做
 
 - 不做 `material_ui` / `cupertino_ui` 全量迁移
-- 不迁移 Built-in Kotlin（保持 legacy KGP 兼容模式；Flutter 3.50 仍支持，但会告警）
+- ~~不迁移 Built-in Kotlin~~（已在本阶段完成，见执行报告第 14 节）
 - 不引入 JNIgen / FFIgen / Pigeon native interop
 - 不启用 HCPP
 - 不重构 Rust/FRB 架构
@@ -112,9 +112,9 @@
   - `dynamic_color`：优先尝试升级到 1.9.0（官方声明支持 AGP 9），否则保留 vendor
   - `rhttp`：vendor，cargokit 的 `project.exec` 改为 `providers.exec`
 - 本地插件 `packages/shizuku_api` 已升级到 AGP 9.3.1 / Kotlin 2.4.20 / Java 17
-- Built-in Kotlin 迁移暂缓：`device_info_plus`、`flutter_foreground_task`、
-  `package_info_plus`、`shared_preferences_android` 等上游插件仍 apply KGP，
-  当前继续使用 Flutter 的 legacy KGP 兼容模式（构建有告警但不阻塞）
+- Built-in Kotlin 已启用：`android.builtInKotlin=true`，app 与 `shizuku_api`
+  不再 apply KGP；四个 plus/foreground 插件升级到内置 Kotlin 版本，
+  `dynamic_color` 升级 1.9.0 并删除 vendor。构建已无 KGP 告警。
 
 ### R4. Impeller OpenGLES 视觉回归（中）
 
@@ -186,7 +186,7 @@ Pixel 4 实际后端是 Impeller OpenGLES。需要重点回归：
 
 - [x] CI `FLUTTER_VERSION` 改为 3.50.1
 - [x] 更新升级报告
-- [x] 确认无新增严重 warning（仅剩 KGP 迁移告警）
+- [x] 确认无新增严重 warning（KGP 告警已消除）
 - [x] 确认 release APK 产物与 SHA-256
 - [ ] 决定是否合并回主仓库
 
