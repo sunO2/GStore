@@ -11,6 +11,8 @@ import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 
+import 'a2ui_surface_shell.dart';
+
 /// A2UI 实验室（阶段 C：独立 Canvas）
 ///
 /// 不接 Agent，只加载本地静态 A2UI 消息，用 `a2ui_flutter` 的
@@ -311,9 +313,11 @@ class _A2uiLabPageState extends State<A2uiLabPage> {
         for (final surface in _surfaces)
           Padding(
             padding: const EdgeInsets.only(bottom: AppSpacing.md),
-            child: A2uiSurface(
-              key: ObjectKey(surface),
-              surface: surface,
+            child: A2uiSurfaceTheme(
+              child: A2uiSurface(
+                key: ObjectKey(surface),
+                surface: surface,
+              ),
             ),
           ),
       ],

@@ -5,9 +5,9 @@ import 'package:gstore/core/agent/tools/builtin_tools.dart';
 
 void main() {
   group('AgentToolCatalog 注册表', () {
-    test('内置工具协议唯一且完整（34 个可插拔 + 3 个元能力）', () {
+    test('内置工具协议唯一且完整（35 个可插拔 + 3 个元能力）', () {
       final all = AgentToolCatalog.all;
-      expect(all.length, 37);
+      expect(all.length, 38);
       final names = all.map((s) => s.name).toList();
       expect(names.toSet().length, names.length, reason: '工具名必须唯一');
       expect(all.where((s) => s.meta).map((s) => s.name),
@@ -27,7 +27,7 @@ void main() {
 
     test('BuiltinAgentTools 由注册表派生且不含元能力工具', () {
       final tools = BuiltinAgentTools.all;
-      expect(tools.length, 34);
+      expect(tools.length, 35);
       expect(tools.any((t) => t.toolName == 'loadProtocol'), false);
       for (final t in tools) {
         final spec = AgentToolCatalog.byName(t.toolName)!;
@@ -118,7 +118,7 @@ void main() {
       );
       AgentToolCatalog.register(spec);
       expect(AgentToolCatalog.byName('searchApp')!.label, '搜索(测试)');
-      expect(AgentToolCatalog.all.length, 37, reason: '覆盖不应新增条目');
+      expect(AgentToolCatalog.all.length, 38, reason: '覆盖不应新增条目');
     });
   });
 

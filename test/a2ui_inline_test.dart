@@ -82,9 +82,15 @@ void main() {
       // 先取数据再渲染，避免编造
       expect(section, contains('先调用工具'));
       // 新增组件已进入契约
-      for (final name in ['Tabs', 'Icon', 'Image', 'Slider', 'DateTimeInput']) {
+      for (final name in [
+        'Tabs', 'Icon', 'Image', 'Slider', 'DateTimeInput', 'Modal', 'Video',
+        'AudioPlayer',
+      ]) {
         expect(section, contains(name));
       }
+      // 统一风格规范
+      expect(section, contains('统一风格'));
+      expect(section, contains('primary'));
     });
 
     test('整块响应可解析出 createSurface', () {

@@ -20,9 +20,9 @@ class A2uiRenderValidation {
 
   /// 允许的 basic catalog 组件（工具与内联两套路径共用）。
   ///
-  /// 覆盖布局、文本、表单、列表、图标、图片、标签页等常用表达；
-  /// 刻意排除 Video/AudioPlayer（大体积媒体）与 Modal（弹层会遮挡对话），
-  /// 以及需要额外权限/原生能力的组件。
+  /// 覆盖 A2UI v1.0 basic catalog 的全部 18 个组件：布局、文本、表单、
+  /// 列表、图标、图片、标签页、滑杆、日期时间、弹层与音视频。
+  /// 媒体组件只接受 http(s) 地址，不会读取本地文件。
   static const Set<String> allowedComponents = {
     'Column',
     'Row',
@@ -39,6 +39,9 @@ class A2uiRenderValidation {
     'Image',
     'Slider',
     'DateTimeInput',
+    'Modal',
+    'Video',
+    'AudioPlayer',
   };
 
   /// 校验并返回规范化结果；失败抛 [A2uiError]（code 供模型修正）。

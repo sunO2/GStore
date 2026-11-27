@@ -959,3 +959,32 @@ test/agent_chat_list_view_test.dart     3 项（A2UI 布局）
   渲染：Card + Tabs + List + Row + Icon + 两级 Text + 安装按钮；`promptChars` 24.4k。
 - Tabs 切换、按钮 action 回传均正常。
 - 单测新增：结果型问句触发、工具信号触发、延续信号、白名单扩充（共 47 项通过）。
+
+### 组件全量 + 统一视觉层（2026-11-28）
+
+**组件**：白名单补齐 A2UI v1.0 basic catalog 全部 18 个组件，新增
+`Modal` / `Video` / `AudioPlayer`（媒体只接受 http(s) 地址，不读本地文件）。
+工具协议与内联契约同步。
+
+**统一视觉**：新增 `lib/page/agent/a2ui_surface_shell.dart`
+
+- `A2uiSurfaceShell`：工具式与内联两条路径共用同一套外壳 ——
+  标题行（布局图标 + 标题 + `A2UI` 徽标）、内容区、状态行，三段之间用
+  `outlineVariant` 分隔线；边框/圆角/底色/内边距全部来自设计令牌。
+- `A2uiSurfaceTheme`：把 A2UI 基础组件的默认 Material 皮肤收编到 GStore 主题：
+  - `Card` 改为无边框浅色块（外壳已有边框，消除"双层边框"）
+  - Button（filled/outlined/text）统一圆角、内边距、labelLarge 字号
+  - Divider / TabBar / CheckBox / Slider 使用主题色与统一间距
+  - TextField 沿用全局 `InputDecoration`，与 App 内表单一致
+- A2UI 实验室也套用同一主题，样例与对话里看到的效果一致。
+
+**风格规范（写入模型提示词与工具协议）**：
+
+- 一张卡片只放一个 `variant="primary"` 主按钮
+- 列表行固定 `Row([Icon, Column([标题, 说明(caption)]), 操作])` + `Divider`
+- 标题 ≤12 字、说明用 caption、数字带单位
+- `Card` 最多嵌套一层，层级更多用 Column/Row + Divider
+- 视图切换用 Tabs，详情/确认弹层用 Modal，媒体用 Video/AudioPlayer
+
+真机截图核对：外层单边框、标题/状态行分隔清晰，A2UI 内部卡片为浅色块，
+暗色/亮色都走主题色。

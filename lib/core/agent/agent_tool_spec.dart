@@ -1238,10 +1238,11 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
    只允许 createSurface / updateComponents / updateDataModel / deleteSurface。
 4. createSurface.catalogId 固定为：
    https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json
-   只允许组件：Column / Row / Card / Text / Button / Divider / TextField /
-   CheckBox / ChoicePicker / List / Tabs / Icon / Image / Slider / DateTimeInput。
+   只允许组件（v1.0 basic catalog 全部 18 个）：Column / Row / Card / Text /
+   Button / Divider / TextField / CheckBox / ChoicePicker / List / Tabs / Icon /
+   Image / Slider / DateTimeInput / Modal / Video / AudioPlayer。
    Text.variant 只支持 body/caption；Icon 用基础图标名（search/download/star 等）；
-   Image 仅支持 http(s) URL，variant 可选 icon/avatar。
+   Image/Video/AudioPlayer 仅支持 http(s) URL；Image variant 可选 icon/avatar。
 5. components 是扁平邻接表，必须有一个 id="root" 的根组件；
    容器用 children:[id...]，Card/Button 用 child:id。
 6. 数据绑定用 {"@path":"/x"}；List 模板：
@@ -1250,9 +1251,12 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 7. Button.action 只允许：
    {"event":{"name":"动作名","context":{...}}}
    context 值可以是字面量或 {"@path":...}；不要用 functionCall/openUrl。
-8. 禁止：Video / AudioPlayer / Modal；sendDataModel=true；local functionCall。
+8. 禁止：sendDataModel=true；local functionCall。
 9. 限制：1 个 surface，最多 60 个组件，任意字符串 <= 2000 字。
 10. 工具成功后只回复"已渲染"，不要重复输出 UI JSON；等待用户 action。
+11. 风格统一：一张卡片只放一个 variant="primary" 主按钮；列表行固定为
+    Row([Icon, Column([标题, 说明(caption)]), 操作按钮]) 并用 Divider 分隔；
+    标题简短、说明用 caption、数字带单位；Card 最多嵌套一层。
 
 示例（应用卡片）：
 [

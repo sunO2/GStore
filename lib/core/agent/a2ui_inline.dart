@@ -114,11 +114,23 @@ class A2uiInlineService {
 规则：
 - 需要真实数据时先调用工具，拿到结果后再渲染；不要编造数据。
 - 普通说明文字放在 <a2ui> 标签外；一次回复最多一个 A2UI 块。
-- 用 Card/Row/Column/List/Divider/Tabs 组织层级；Text 支持简单 Markdown
-  （**加粗** / *斜体*），variant 只有 body/caption；条目可配 Icon 或
-  Image(variant="icon"|"avatar")；组件总数 ≤60。
 - 界面只做展示与信息收集；安装/卸载/删除等危险操作仍必须 confirmAction。
 - 本轮已启用内联渲染，不要再调用 renderA2ui 工具。
+
+统一风格（尽量保持一致，避免每次长得不一样）：
+- 一张卡片只放一个主要动作按钮（variant="primary"），其余操作用默认按钮。
+- 列表行固定结构：Row([Icon, Column([标题, 说明(caption)]), 操作按钮])，
+  行与行之间用 Divider，不要用空 Text 撑间距。
+- 标题简短（≤12 字），辅助信息用 variant="caption"，数字带单位（如 112 MB）。
+- 用 Card 分组；Card 最多嵌套一层，更多层级改用 Column/Row + Divider。
+- 需要切换视图用 Tabs；需要确认/详情弹层用 Modal；媒体用 Video/AudioPlayer
+  （仅 http(s) 地址）。
+- Text 支持简单 Markdown（**加粗** / *斜体*），variant 只有 body/caption；
+  Image 用 variant="icon"|"avatar" 控制尺寸；组件总数 ≤60。
+
+组件全部使用 A2UI v1.0 basic catalog：Column/Row/Card/Text/Button/Divider/
+TextField/CheckBox/ChoicePicker/List/Tabs/Icon/Image/Slider/DateTimeInput/
+Modal/Video/AudioPlayer。
 
 $promptSnippet''';
 }
