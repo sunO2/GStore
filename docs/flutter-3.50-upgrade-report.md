@@ -547,6 +547,16 @@ GitHub API 请求走的就是 `RhttpAdapter`，说明 rhttp 0.18 的 TLS / HTTP
 相关测试（core_api / module bootstrap / rhttp fetcher / Rust lane）：53 通过，
 4 跳过。
 
+全量 `flutter test`：
+
+```text
++5265 ~28 -56
+```
+
+失败的 56 项与升级前基线完全一致（前四项仍为 app_image_loader /
+backup_config_roundtrip / backup_js_channel / fdroid_empty_repo_readiness），
+**无新增失败**。
+
 ### vendor 现状
 
 ```text
