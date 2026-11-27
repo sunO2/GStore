@@ -37,7 +37,8 @@ String? normalizeWebViewUrl(String? raw) {
   if (uri.scheme.isEmpty) {
     return _httpOrNull('https://$text');
   }
-  if (uri.scheme.toLowerCase() != 'http' && uri.scheme.toLowerCase() != 'https') {
+  if (uri.scheme.toLowerCase() != 'http' &&
+      uri.scheme.toLowerCase() != 'https') {
     return null;
   }
   return uri.toString();
@@ -48,3 +49,42 @@ String? _httpOrNull(String candidate) {
   if (uri == null || uri.host.isEmpty) return null;
   return uri.toString();
 }
+
+/// 默认搜索引擎（Bing；国内可直连，页面轻）。
+const String kWebSearchTemplate = 'https://www.bing.com/search?q=';
+
+/// 把关键词拼成搜索地址。
+String webSearchUrl(String query) =>
+    '$kWebSearchTemplate${Uri.encodeComponent(query.trim())}';
+
+/// 地址栏输入：网址直接打开，其它内容交给搜索引擎。
+///
+/// 判定「像网址」的条件（满足其一）：
+/// - 带 `http://` / `https://` 协议；
+/// - 主机名含点且顶级段以字母开头（`termux.dev` / `www.foo.com:8080`）；
+/// - IPv4 地址。
+/// 其余输入（`termux`、`怎么安装 termux`）走搜索。
+String? resolveWebInput(String raw) {
+  final text = raw.trim();
+  if (text.isEmpty) return null;
+
+  final lower = text.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) {
+    return normalizeWebViewUrl(text);
+  }
+
+  final authority = text.split('/').first.split('?').first.split('#').first;
+  final host = authority.split(':').first;
+  if (_ipv4.hasMatch(host)) return normalizeWebViewUrl(text);
+  final labels = host.split('.');
+  if (labels.length >= 2) {
+    final tld = labels.last;
+    if (tld.length >= 2 && _tld.hasMatch(tld)) {
+      return normalizeWebViewUrl(text);
+    }
+  }
+  return webSearchUrl(text);
+}
+
+final RegExp _ipv4 = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$');
+final RegExp _tld = RegExp(r'^[A-Za-z][A-Za-z0-9-]*$');

@@ -102,3 +102,25 @@ flutter test integration_test/webview_smoke_test.dart -d <deviceId>
 - 请求筛选/详情独立 UI
 - 多页面/多标签
 - Phase 3：本地 MCP/WS 适配层、CDP 开发调试、与 MITM 代理联动
+
+## 用户可见内置浏览器（2026-11-28）
+
+AI 对话里的 Markdown 链接此前跳到 `WebPage`，而该页只是个空 Scaffold
+（webview 代码被注释），所以是白屏。现在补成完整的浏览器页：
+
+- **地址/搜索栏**：点标题栏弹出输入框；`resolveWebInput` 判断网址还是搜索
+  （裸域名补 `https://`，IPv4 直接打开，其余走 Bing）。
+- **历史记录**：`WebBrowserStore` + SharedPreferences，按 URL 去重、
+  置顶、最多 200 条；过滤 `Redirecting…` 之类的重定向中间页。
+- **书签**：标题栏星标一键收藏/取消；列表可单独删除。
+- **更多菜单**：底部 `⋯` 弹出宫格（4 列）：输入网址 / 搜索网页 / 历史记录 /
+  书签 / 收藏页面 / 刷新 / 复制链接 / 清空历史。
+- **导航**：后退/前进/刷新（加载中变停止）/系统返回退出页面；
+  非 http(s) 协议（mailto/tel/intent…）不打开，避免白屏。
+
+测试：
+
+```text
+test/web_view_page_test.dart     10 项（URL 归一化、搜索判定、更多宫格、历史列表）
+test/web_browser_store_test.dart  6 项（去重置顶、上限、收藏、清空、持久化）
+```
