@@ -5194,7 +5194,7 @@ const _flutter_inappwebview_android = Package(
    See the License for the specific language governing permissions and
    limitations under the License.''',
     isMarkdown: false,
-    isSdk: true,
+    isSdk: false,
     dependencies: [PackageRef('flutter'), PackageRef('flutter_inappwebview_platform_interface')],
     devDependencies: [PackageRef('flutter_lints'), PackageRef('plugin_platform_interface')],
   );

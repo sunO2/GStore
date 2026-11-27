@@ -1,32 +1,16 @@
-# third_party 补丁包说明
+# third_party
 
-本目录只存放 **Flutter 3.50.1 / AGP 9.3.1 / Gradle 9.5.0** 升级阻塞相关的最小 vendor 补丁。
-所有包均通过 `pubspec.yaml` 的 `dependency_overrides` 指向本目录。
+本目录已不再存放任何 vendor 包。
 
-| 包 | 原版本 | 补丁内容 | 后续方案 |
-|---|---|---|---|
-| `flutter_inappwebview_android` | 1.1.3 | `proguard-android.txt` → `proguard-android-optimize.txt`（AGP 9 不再提供旧文件） | 等上游发布兼容 AGP 9 的版本后移除 |
+Flutter 3.50.1 / AGP 9 升级过程中需要的插件补丁，最终都改成了 GitHub commit 依赖：
 
-已移除的 vendor：
+| 包 | 处理方式 |
+|---|---|
+| `installed_apps` | fork：<https://github.com/sunO2/installed_apps>，Android 侧改写为 Java |
+| `rhttp` | fork：<https://github.com/sunO2/rhttp>，AGP 9 + Built-in Kotlin 条件 apply KGP |
+| `flutter_inappwebview_android` | fork：<https://github.com/sunO2/flutter_inappwebview_android>，proguard 默认文件改为 AGP 9 的 optimize 版本 |
 
-- `dynamic_color`：项目启用 Built-in Kotlin 后直接使用上游 1.9.0
-- `rhttp`：升级到 0.18.0（cargokit 已修复 Gradle 9），同时把
-  `flutter_rust_bridge` 升到 2.12.0 并重新生成绑定
+`dynamic_color` 已直接升级到上游 1.9.0，无需 fork。
 
-`installed_apps` 不在此目录：已 fork 到
-<https://github.com/sunO2/installed_apps>（Android 侧改写为 Java），
-`pubspec.yaml` 使用固定 commit `8d4861f4acf879840642351cb6d008157955f7ba`。
-
-## 维护方式
-
-升级任一上游包时：
-
-1. 删除对应 `dependency_overrides` 条目
-2. 执行 `flutter pub get`
-3. 重新跑 `flutter build apk --release --target-platform android-arm64`
-4. 构建通过后删除对应 `third_party/<包名>` 目录
-
-## 注意
-
-- 这些补丁只解决构建兼容，不改变 Dart API。
-- 不要在这些目录里做业务改动；业务代码一律放在 `lib/`。
+所有 fork 都固定到完整 commit，并在各自 README 中说明改动内容。
+上游发布兼容 AGP 9 的正式版后，可以逐个删除 `dependency_overrides` 并切回 pub.dev。

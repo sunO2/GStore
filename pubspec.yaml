@@ -194,4 +194,6 @@ flutter:
 
 dependency_overrides:
   flutter_inappwebview_android:
-    path: third_party/flutter_inappwebview_android
+    git:
+      url: https://github.com/sunO2/flutter_inappwebview_android.git
+      ref: f3842bbe5e794fab7373966eae4db96acea378cb

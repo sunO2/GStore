@@ -550,9 +550,11 @@ packages:
   flutter_inappwebview_android:
     dependency: "direct overridden"
     description:
-      path: "third_party/flutter_inappwebview_android"
-      relative: true
-    source: path
+      path: "."
+      ref: f3842bbe5e794fab7373966eae4db96acea378cb
+      resolved-ref: f3842bbe5e794fab7373966eae4db96acea378cb
+      url: "https://github.com/sunO2/flutter_inappwebview_android.git"
+    source: git
     version: "1.1.3"
   flutter_inappwebview_internal_annotations:
     dependency: transitive
