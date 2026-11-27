@@ -1,0 +1,29 @@
+[
+  {
+    "version": "1.0",
+    "createSurface": {
+      "surfaceId": "filter-form",
+      "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+      "dataModel": {
+        "filter": {
+          "query": "",
+          "category": ["utilities"],
+          "openSourceOnly": false
+        }
+      },
+      "components": [
+        { "id": "root", "component": "Column", "children": ["title", "desc", "query", "category", "openSource", "actions"] },
+        { "id": "title", "component": "Text", "text": "筛选应用" },
+        { "id": "desc", "component": "Text", "text": "选择条件后提交，表单数据会作为 action context 回传。", "variant": "caption" },
+        { "id": "query", "component": "TextField", "label": "关键词", "value": { "@path": "/filter/query" }, "placeholder": "例如：终端" },
+        { "id": "category", "component": "ChoicePicker", "label": "分类", "variant": "multipleSelection", "displayStyle": "chips", "options": [ { "label": "工具", "value": "utilities" }, { "label": "影音", "value": "media" }, { "label": "游戏", "value": "games" } ], "value": { "@path": "/filter/category" } },
+        { "id": "openSource", "component": "CheckBox", "label": "仅显示开源应用", "value": { "@path": "/filter/openSourceOnly" } },
+        { "id": "actions", "component": "Row", "children": ["submit", "reset"] },
+        { "id": "submit", "component": "Button", "child": "submitLabel", "variant": "primary", "action": { "event": { "name": "apply_filter", "context": { "query": { "@path": "/filter/query" }, "category": { "@path": "/filter/category" }, "openSourceOnly": { "@path": "/filter/openSourceOnly" } } } } },
+        { "id": "submitLabel", "component": "Text", "text": "应用筛选" },
+        { "id": "reset", "component": "Button", "child": "resetLabel", "action": { "event": { "name": "reset_filter" } } },
+        { "id": "resetLabel", "component": "Text", "text": "重置" }
+      ]
+    }
+  }
+]

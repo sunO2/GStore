@@ -1,0 +1,31 @@
+[
+  {
+    "version": "1.0",
+    "createSurface": {
+      "surfaceId": "results-list",
+      "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+      "dataModel": {
+        "apps": [
+          { "name": "Termux", "pkg": "com.termux", "version": "0.118.3" },
+          { "name": "F-Droid", "pkg": "org.fdroid.fdroid", "version": "1.21.1" },
+          { "name": "Bitwarden", "pkg": "com.x8bit.bitwarden", "version": "2026.11.1" },
+          { "name": "Krita", "pkg": "org.krita.android", "version": "5.2.13" },
+          { "name": "OsmAnd", "pkg": "net.osmand.plus", "version": "4.9.10" }
+        ]
+      },
+      "components": [
+        { "id": "root", "component": "Column", "children": ["title", "list"] },
+        { "id": "title", "component": "Text", "text": "搜索结果（5）" },
+        { "id": "list", "component": "List", "children": { "path": "/apps", "componentId": "appRow" } },
+        { "id": "appRow", "component": "Card", "child": "rowContent" },
+        { "id": "rowContent", "component": "Column", "children": ["row"] },
+        { "id": "row", "component": "Row", "children": ["info", "action"] },
+        { "id": "info", "component": "Column", "children": ["name", "pkg"] },
+        { "id": "name", "component": "Text", "text": { "@path": "name" } },
+        { "id": "pkg", "component": "Text", "text": { "@path": "pkg" }, "variant": "caption" },
+        { "id": "action", "component": "Button", "child": "actionLabel", "action": { "event": { "name": "install_app", "context": { "package": { "@path": "pkg" } } } } },
+        { "id": "actionLabel", "component": "Text", "text": "安装" }
+      ]
+    }
+  }
+]

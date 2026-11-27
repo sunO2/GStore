@@ -8,6 +8,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/websearch/web_search_config.dart';
 import 'package:gstore/page/agent/agent_tool_overview.dart';
+import 'package:gstore/page/agent/a2ui_lab_page.dart';
 import 'package:gstore/page/agent/agent_webview_debug_page.dart';
 import 'package:gstore/page/agent/web_search_settings_sheet.dart';
 
@@ -536,6 +537,42 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
               ),
               title: const Text('WebView 调试'),
               subtitle: const Text('可视化打开网页/登录；与 AI 的 webView 共用 Cookie'),
+              trailing: const Icon(TablerIcons.chevron_right),
+            ),
+          ),
+        ),
+
+        // A2UI 实验室（生成式界面 PoC）
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: AppSpacing.md),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            side: BorderSide(
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.5),
+            ),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListTile(
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const A2uiLabPage(),
+                ),
+              ),
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(context).colorScheme.secondaryContainer,
+                child: Icon(
+                  TablerIcons.flask,
+                  color: Theme.of(context).colorScheme.onSecondaryContainer,
+                ),
+              ),
+              title: const Text('A2UI 实验室'),
+              subtitle: const Text('用 A2UI 协议渲染生成式卡片 / 表单（实验）'),
               trailing: const Icon(TablerIcons.chevron_right),
             ),
           ),

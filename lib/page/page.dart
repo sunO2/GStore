@@ -19,6 +19,7 @@ export 'package:gstore/page/agent/agent_workspace_page.dart';
 export 'package:gstore/page/agent/mcp_servers_page.dart';
 export 'package:gstore/page/agent/agent_traces_page.dart';
 export 'package:gstore/page/agent/genkit_shadow_compare_page.dart';
+export 'package:gstore/page/agent/a2ui_lab_page.dart';
 export 'package:gstore/page/local_llm/view.dart';
 export 'package:gstore/page/installed_apps/view.dart';
 export 'package:gstore/page/installed_apps/sdk_analysis_page.dart';

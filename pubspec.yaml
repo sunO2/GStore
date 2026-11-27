@@ -100,6 +100,8 @@ dependencies:
   camera: ^0.12.1
   protobuf: ^3.1.0
   genkit_middleware: ^1.0.3
+  a2ui_flutter: ^0.5.0
+  a2ui_core: ^0.9.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -147,6 +149,7 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
      - assets/app/
+     - assets/a2ui/
      - assets/auth/
      - assets/skills/app-recommendation/SKILL.md
      - assets/skills/download-install-flow/SKILL.md

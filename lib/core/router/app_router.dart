@@ -191,6 +191,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const GenkitShadowComparePage(),
     ),
     GoRoute(
+      path: AppRoute.a2uiLab,
+      builder: (context, state) => const A2uiLabPage(),
+    ),
+    GoRoute(
       path: AppRoute.installedApps,
       builder: (context, state) => const InstalledAppsPage(),
     ),

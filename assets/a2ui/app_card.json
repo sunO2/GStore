@@ -1,0 +1,30 @@
+[
+  {
+    "version": "1.0",
+    "createSurface": {
+      "surfaceId": "app-card",
+      "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+      "dataModel": {
+        "app": {
+          "name": "Termux",
+          "package": "com.termux",
+          "version": "0.118.3",
+          "source": "F-Droid",
+          "openSource": true
+        }
+      },
+      "components": [
+        { "id": "root", "component": "Card", "child": "content" },
+        { "id": "content", "component": "Column", "children": ["title", "meta", "divider", "actions"] },
+        { "id": "title", "component": "Text", "text": { "@path": "/app/name" } },
+        { "id": "meta", "component": "Text", "text": "版本 0.118.3 · F-Droid · 开源", "variant": "caption" },
+        { "id": "divider", "component": "Divider" },
+        { "id": "actions", "component": "Row", "children": ["install", "detail"] },
+        { "id": "install", "component": "Button", "child": "installLabel", "variant": "primary", "action": { "event": { "name": "install_app", "context": { "package": { "@path": "/app/package" } } } } },
+        { "id": "installLabel", "component": "Text", "text": "安装" },
+        { "id": "detail", "component": "Button", "child": "detailLabel", "action": { "event": { "name": "open_app_detail", "context": { "package": { "@path": "/app/package" } } } } },
+        { "id": "detailLabel", "component": "Text", "text": "查看详情" }
+      ]
+    }
+  }
+]
