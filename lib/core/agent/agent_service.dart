@@ -947,21 +947,28 @@ class AgentService {
 
     // 关键：只有当"工具调用关闭"时才用精简提示；开启工具时必须保留完整系统提示
     //（精简提示里写着"不具备工具调用能力"，会把工具能力显式关死）。
-    final out = <Message>[
-      Message(
-        role: Role.system,
-        content: [
-          TextPart(
-            text: toolsEnabled ? _systemPromptForTurn : _localSystemPrompt,
-          ),
-        ],
-      ),
-      ...trimmed,
-    ];
-    // 仍超上限：从最旧的一条开始丢（保留 system）
-    while (out.length > 1 && _messageChars(out) > _localMaxChars) {
-      out.removeAt(1);
+    final system = Message(
+      role: Role.system,
+      content: [
+        TextPart(
+          text: toolsEnabled ? _systemPromptForTurn : _localSystemPrompt,
+        ),
+      ],
+    );
+
+    // 预算内从新到旧保留连续历史；最后一条消息始终保留（通常是本轮用户问题）。
+    // 旧实现从最旧开始丢，系统提示一旦超限（例如注入 A2UI 契约后），
+    // 会把用户问题也丢掉，模型只能看到 system。
+    final budget = _localMaxChars - _messageChars([system]);
+    final keep = <Message>[];
+    var used = 0;
+    for (var i = trimmed.length - 1; i >= 0; i--) {
+      final cost = _messageChars([trimmed[i]]);
+      if (keep.isNotEmpty && used + cost > budget) break;
+      keep.insert(0, trimmed[i]);
+      used += cost;
     }
+    final out = <Message>[system, ...keep];
     appLog.info('AgentService: 本地模型提示裁剪 ${_messages.length}→${out.length} 条, '
         '${_messageChars(out)} 字符（上限 $_localMaxChars）');
     return out;
