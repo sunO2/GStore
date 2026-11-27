@@ -1230,7 +1230,8 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
       AgentToolParam(name: 'title', description: '可选标题，用于时间轴展示'),
     ],
     protocol: r'''
-1. 仅在用户明确要"卡片/表单/列表/可视化结果"时调用；普通问答不要生成 UI。
+1. 当界面比长文本更清楚时主动使用：结果列表、对象详情、多方案选择、
+   筛选/参数表单、版本差异；一句话能答完的问答不要生成 UI。
 2. 首次使用先调用 loadProtocol('renderA2ui') 读取本契约；不要凭记忆写 A2UI。
 3. payload 是 JSON 数组字符串；每条消息形如：
    {"version":"1.0","createSurface":{...}}。
@@ -1238,7 +1239,9 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 4. createSurface.catalogId 固定为：
    https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json
    只允许组件：Column / Row / Card / Text / Button / Divider / TextField /
-   CheckBox / ChoicePicker / List。
+   CheckBox / ChoicePicker / List / Tabs / Icon / Image / Slider / DateTimeInput。
+   Text.variant 只支持 body/caption；Icon 用基础图标名（search/download/star 等）；
+   Image 仅支持 http(s) URL，variant 可选 icon/avatar。
 5. components 是扁平邻接表，必须有一个 id="root" 的根组件；
    容器用 children:[id...]，Card/Button 用 child:id。
 6. 数据绑定用 {"@path":"/x"}；List 模板：
@@ -1247,8 +1250,7 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 7. Button.action 只允许：
    {"event":{"name":"动作名","context":{...}}}
    context 值可以是字面量或 {"@path":...}；不要用 functionCall/openUrl。
-8. 禁止：Image / Video / AudioPlayer / Tabs / Modal / Slider / DateTimeInput；
-   sendDataModel=true；local functionCall。
+8. 禁止：Video / AudioPlayer / Modal；sendDataModel=true；local functionCall。
 9. 限制：1 个 surface，最多 60 个组件，任意字符串 <= 2000 字。
 10. 工具成功后只回复"已渲染"，不要重复输出 UI JSON；等待用户 action。
 

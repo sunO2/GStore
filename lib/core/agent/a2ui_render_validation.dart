@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:a2ui_core/a2ui_core.dart';
 
-/// A2UI payload 的本地校验与限额（阶段 A：工具式 renderA2ui）。
+/// A2UI payload 的本地校验与限额（工具式 renderA2ui 与内联 A2UI 共用）。
 ///
 /// 模型输出一律视为不可信输入：
 /// - 只接受协议 v1.0 的 createSurface/updateComponents/updateDataModel/deleteSurface
@@ -18,8 +18,11 @@ class A2uiRenderValidation {
   static const int maxSurfaces = 1;
   static const int maxStringChars = 2000;
 
-  /// 阶段 A 允许的组件。刻意排除 Image/Video/AudioPlayer（网络/体积）
-  /// 以及 Tabs/Modal/Slider/DateTimeInput（交互复杂度）。
+  /// 允许的 basic catalog 组件（工具与内联两套路径共用）。
+  ///
+  /// 覆盖布局、文本、表单、列表、图标、图片、标签页等常用表达；
+  /// 刻意排除 Video/AudioPlayer（大体积媒体）与 Modal（弹层会遮挡对话），
+  /// 以及需要额外权限/原生能力的组件。
   static const Set<String> allowedComponents = {
     'Column',
     'Row',
@@ -31,6 +34,11 @@ class A2uiRenderValidation {
     'CheckBox',
     'ChoicePicker',
     'List',
+    'Tabs',
+    'Icon',
+    'Image',
+    'Slider',
+    'DateTimeInput',
   };
 
   /// 校验并返回规范化结果；失败抛 [A2uiError]（code 供模型修正）。
@@ -86,7 +94,7 @@ class A2uiRenderValidation {
     }
     if (surfaceIds.length > maxSurfaces) {
       throw A2uiError(
-        '阶段 A 只允许 $maxSurfaces 个 surface，当前 ${surfaceIds.length} 个',
+        '只允许 $maxSurfaces 个 surface，当前 ${surfaceIds.length} 个',
         code: 'TOO_MANY_SURFACES',
       );
     }
@@ -136,7 +144,8 @@ class A2uiRenderValidation {
     };
     if (!allowedTypes.contains(type)) {
       throw A2uiError(
-        '不支持的消息类型：$type（阶段 A 只允许 $allowedTypes）',
+        '不支持的消息类型：$type（只允许 createSurface/updateComponents/'
+        'updateDataModel/deleteSurface）',
         code: 'UNSUPPORTED_MESSAGE',
       );
     }
@@ -162,7 +171,7 @@ class A2uiRenderValidation {
         }
         if (body['sendDataModel'] == true) {
           throw A2uiError(
-            '阶段 A 不允许 sendDataModel=true（避免数据模型回传）',
+            '不允许 sendDataModel=true（避免数据模型回传）',
             code: 'UNSUPPORTED_PRIVACY',
           );
         }
@@ -210,7 +219,7 @@ class A2uiRenderValidation {
       final name = component['component']?.toString() ?? '';
       if (!allowedComponents.contains(name)) {
         throw A2uiError(
-          '不支持的组件 "$name"（阶段 A 允许：${allowedComponents.join(', ')}）',
+          '不支持的组件 "$name"（允许：${allowedComponents.join(', ')}）',
           code: 'UNSUPPORTED_COMPONENT',
         );
       }
@@ -222,7 +231,7 @@ class A2uiRenderValidation {
       if (action is Map) {
         if (action['functionCall'] != null) {
           throw A2uiError(
-            '阶段 A 不允许 local functionCall（只支持 action.event）',
+            '不允许 local functionCall（只支持 action.event）',
             code: 'UNSUPPORTED_ACTION',
           );
         }

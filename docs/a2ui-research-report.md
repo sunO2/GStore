@@ -930,3 +930,32 @@ test/agent_chat_list_view_test.dart     3 项（A2UI 布局）
 - 一个回合内重复创建同 id surface 会让定稿压缩失败，此时保留增量消息
   （仍可渲染，但会话体积偏大）。
 - 意图判断是关键词规则，偏保守；后续可交给工具选择/轻量分类器。
+
+### 主动性调优与组件扩充（2026-11-27）
+
+首版只靠"卡片/表单/列表"等关键词触发，用户说"帮我找一个截图工具"时不会
+出现界面；组件也限制在布局+表单 10 个。
+
+改动：
+
+- **触发信号从 1 个扩展到 3 个**（任一命中即注入契约）：
+  1. 文本意图：新增 搜索/查找/推荐/对比/排序/筛选/详情/哪些/差异 等
+     结果型问句与 `recommend` / `show me` 等英文表达；
+  2. 工具信号：本轮工具选择命中 `searchApp` / `installedApps` / `getAppInfo` /
+     `updateApps` / `fdroidRepo` / `apkBrowser` / `appSnapshot` /
+     `snapshotCompare`（这些工具的结果通常值得结构化呈现）；
+  3. 延续信号：上一个回合刚渲染过界面（`hasRecentA2uiSurface`），
+     用户接着说"再加个排序"也能继续拿到契约；只回看 1 个回合，不会长期占用。
+- **提示词从"允许"改成"建议主动使用"**：新增何时用/何时不用、先取数再渲染、
+  一次一个块、组件层级与 Markdown 建议，避免模型只答文字或编造数据。
+- **组件白名单扩充**（工具与内联共用）：新增 `Tabs` / `Icon` / `Image` /
+  `Slider` / `DateTimeInput`；仍排除 `Video` / `AudioPlayer` / `Modal`。
+  契约体积 18.7k → 21.7k 字符（约 4.7k → 5.4k tokens），仅在命中时注入。
+- 工具协议同步更新（不再禁止 Image/Tabs/Slider/DateTimeInput）。
+
+真机验证（本地 mock）：
+
+- "recommend two open source tools"（未出现卡片/表单字样）→ 模型拿到契约并
+  渲染：Card + Tabs + List + Row + Icon + 两级 Text + 安装按钮；`promptChars` 24.4k。
+- Tabs 切换、按钮 action 回传均正常。
+- 单测新增：结果型问句触发、工具信号触发、延续信号、白名单扩充（共 47 项通过）。

@@ -272,6 +272,26 @@ class AgentMessage {
 /// - 搜索应用（跨渠道）
 /// - 下载应用
 /// - 安装应用
+/// 上一个回合是否刚渲染过 A2UI surface。
+///
+/// [messages] 末尾是本回合刚加入的用户消息；只回看它之前最多 6 条，
+/// 命中即返回，遇到更早的用户消息就停，避免整段会话一直背着 A2UI 契约。
+bool hasRecentA2uiSurface(List<AgentMessage> messages) {
+  var i = messages.length - 1;
+  // 跳过本回合刚加入的用户消息
+  while (i >= 0 && !messages[i].isUser) {
+    i--;
+  }
+  i--;
+  for (var seen = 0; i >= 0 && seen < 6; i--, seen++) {
+    final msg = messages[i];
+    if (msg.isUser) return false;
+    if (msg.isToolResult) continue;
+    if (msg.a2uiMessages?.isNotEmpty ?? false) return true;
+  }
+  return false;
+}
+
 class AgentService {
   AgentService({
     AgentSkillStore? skillStore,
@@ -6400,7 +6420,12 @@ class AgentService {
       final extraToolLines = extraModules.isEmpty
           ? null
           : '▸ 扩展工具\n${extraModules.map((t) => '  • ${t.toolName} — ${t.toolDescription}').join('\n')}';
-      final a2uiIntent = A2uiInlineService.instance.shouldEnable(userText);
+      // 三类信号任一命中就注入内联 A2UI：
+      // 1) 文本里的界面意图；2) 本轮选中的工具会产出结构化结果；
+      // 3) 上一个回合刚渲染过界面（用户大概率是在追加/修改条件）。
+      final a2uiIntent = A2uiInlineService.instance.shouldEnable(userText) ||
+          A2uiInlineService.instance.shouldEnableForTools(selection.names) ||
+          hasRecentA2uiSurface(messages.value);
       final selectedNames = <String>[
         if (toolsEnabled)
           for (final name in selection.names)

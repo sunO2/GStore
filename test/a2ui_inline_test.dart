@@ -49,12 +49,42 @@ void main() {
       expect(service.shouldEnable('今天天气怎么样'), isFalse);
     });
 
-    test('提示词包含 A2UI 契约与基本组件', () {
+    test('结果型问句也能触发（不必显式说卡片）', () {
+      final service = A2uiInlineService.instance;
+      for (final text in [
+        '帮我找到一个截图工具',
+        '我装了哪些应用',
+        '列出可以更新的应用',
+        '对比这两个版本的差异',
+        '按大小排序',
+        'recommend a terminal app',
+      ]) {
+        expect(service.shouldEnable(text), isTrue, reason: text);
+      }
+    });
+
+    test('结构化结果工具命中时也启用', () {
+      final service = A2uiInlineService.instance;
+      expect(service.shouldEnableForTools(['searchApp']), isTrue);
+      expect(service.shouldEnableForTools(['installedApps', 'webSearch']), isTrue);
+      expect(service.shouldEnableForTools(['themeControl']), isFalse);
+      expect(service.shouldEnableForTools(const []), isFalse);
+    });
+
+    test('提示词包含 A2UI 契约、组件与主动使用指引', () {
       final section = A2uiInlineService.instance.promptSection();
       expect(section, contains('A2UI Express'));
       expect(section, contains('Card'));
       expect(section, contains('<a2ui>'));
       expect(section, contains('confirmAction'));
+      // 主动性：不必等用户明确要求
+      expect(section, contains('不必等用户明确'));
+      // 先取数据再渲染，避免编造
+      expect(section, contains('先调用工具'));
+      // 新增组件已进入契约
+      for (final name in ['Tabs', 'Icon', 'Image', 'Slider', 'DateTimeInput']) {
+        expect(section, contains(name));
+      }
     });
 
     test('整块响应可解析出 createSurface', () {

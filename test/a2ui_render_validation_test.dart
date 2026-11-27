@@ -39,7 +39,7 @@ void main() {
     final surface = messages.first as Map;
     final components =
         (surface['createSurface'] as Map)['components'] as List;
-    (components.first as Map)['component'] = 'Image';
+    (components.first as Map)['component'] = 'Video';
     expect(
       () => A2uiRenderValidation.validate(messages),
       throwsA(
@@ -50,6 +50,16 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('accepts richer components in the whitelist', () {
+    for (final name in ['Tabs', 'Icon', 'Image', 'Slider', 'DateTimeInput']) {
+      expect(A2uiRenderValidation.allowedComponents, contains(name));
+    }
+    // 仍排除大体积媒体与弹层。
+    expect(A2uiRenderValidation.allowedComponents, isNot(contains('Video')));
+    expect(A2uiRenderValidation.allowedComponents, isNot(contains('AudioPlayer')));
+    expect(A2uiRenderValidation.allowedComponents, isNot(contains('Modal')));
   });
 
   test('rejects local functionCall actions', () {
