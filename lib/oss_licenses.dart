@@ -15646,12 +15646,12 @@ SOFTWARE.''',
     devDependencies: [PackageRef('path')],
   );
 
-/// gstore 1.0.37+1
+/// gstore 1.0.38+1
 const _gstore = Package(
     name: 'gstore',
     description: 'github 资源的应用商店',
     authors: [],
-    version: '1.0.37+1',
+    version: '1.0.38+1',
     license: '''GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

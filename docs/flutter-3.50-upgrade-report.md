@@ -135,9 +135,10 @@ Flutter 3.50.1 升级**已完成到可构建、可安装、可启动**：
 ## 当前分支状态
 
 - `GStore-update` 分支 `chore/flutter-3.50-upgrade`
-- 已提交（rebase 后）：
+- 已提交（rebase + merge 后）：
   - `073150bb` Android 工具链迁移与插件替换
   - `e7a439f2` / `4a460c5e` / `db77673c` / `7616d3a3` 构建、回归与 rebase 报告
+  - merge commit：同步 main 的 QR scanner 重构与 1.0.38+1
 - 已推送到 GitHub：`chore/flutter-3.50-upgrade`
 - 未推送（`origin` 指向本地主仓库，避免污染主仓库分支）
 - Android 工具链、插件替换、vendor 补丁、文档均已就绪
@@ -293,6 +294,7 @@ core-bootstrap: push-inventory elapsedMs=58
 | 请求调试（集合/历史/环境/改写规则） | 正常 |
 | 已安装应用 | 正常，图标 / 包名 / 版本均正确 |
 | 深色模式切换 | 正常（系统 / 浅色 / 深色） |
+| 二维码生成 / 识别 | 正常（相机预览 + 扫描框） |
 
 ### App 内系统安装器验证
 
@@ -370,3 +372,29 @@ sha256: afa3835995135cb0c4d493ce84b05746528bac804db57e415b89b51af9cc2c4f
 ssh://git@ssh.github.com:443/sunO2/GStore.git
 branch: chore/flutter-3.50-upgrade
 ```
+
+### merge 主仓库最新 main（1.0.38）
+
+主仓库继续新增：
+
+```text
+f23f3655 feat(qr): extract reusable scanner and add scan-to-URL fill
+da638a56 chore: bump version to 1.0.38+1
+```
+
+已用 `git merge --no-ff origin/main` 合入升级分支：
+
+- 无冲突
+- `pubspec.yaml` / `pubspec.lock` 保持 1.0.38+1
+- `lib/oss_licenses.dart` 重新生成，`gstore 1.0.38+1`
+- `dart analyze lib`：0 error，552 条 info
+- release APK 重新构建并安装：
+
+```text
+✓ Built app-release.apk (71.1MB)
+sha256: 048826fe9a72ebe5ab58764a5f1fcfef8aa2c40b5890dfe28854a1dad6b35a50
+versionName=1.0.38
+```
+
+- 真机验证：二维码页「生成 / 识别」正常，识别页相机预览与扫描框正常
+- 相关测试：qr scanner / qr tool / request-debug editor 共 91 项全部通过
