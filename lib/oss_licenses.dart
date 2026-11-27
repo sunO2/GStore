@@ -126,6 +126,8 @@ const allDependencies = <Package>[
   _integration_test,
   _intl,
   _io,
+  _isolate_contactor,
+  _isolate_manager,
   _jovial_misc,
   _jovial_svg,
   _js,
@@ -175,6 +177,8 @@ const allDependencies = <Package>[
   _qr,
   _qr_flutter,
   _rational,
+  _re_editor,
+  _re_highlight,
   _retrofit,
   _retrofit_generator,
   _rhttp,
@@ -257,6 +261,8 @@ const dependencies = <Package>[
   _go_router,
   _flutter_markdown_plus,
   _markdown,
+  _re_editor,
+  _re_highlight,
   _html,
   _async,
   _http,
@@ -9102,6 +9108,74 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.''',
     devDependencies: [],
   );
 
+/// isolate_contactor 4.1.0
+const _isolate_contactor = Package(
+    name: 'isolate_contactor',
+    description: 'An easy way to create a new Isolate, keep it active and communicate with it (supports `Worker` on the Web platform).',
+    homepage: 'https://github.com/lamnhan066/isolate_contactor',
+    authors: [],
+    version: '4.1.0',
+    license: '''MIT License
+
+Copyright (c) 2021 Fatasin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('stream_channel')],
+    devDependencies: [PackageRef('lints')],
+  );
+
+/// isolate_manager 4.1.5+1
+const _isolate_manager = Package(
+    name: 'isolate_manager',
+    description: 'An easy way to create multiple isolates for a function, also keep it active to send and receive data multiple times (also supports Worker on Web).',
+    homepage: 'https://github.com/lamnhan066/isolate_manager',
+    authors: [],
+    version: '4.1.5+1',
+    license: '''MIT License
+
+Copyright (c) 2022 Vursin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('isolate_contactor')],
+    devDependencies: [PackageRef('lints'), PackageRef('js')],
+  );
+
 /// jovial_misc 0.9.2
 const _jovial_misc = Package(
     name: 'jovial_misc',
@@ -11513,6 +11587,76 @@ const _rational = Package(
     devDependencies: [PackageRef('lints')],
   );
 
+/// re_editor 0.10.0
+const _re_editor = Package(
+    name: 're_editor',
+    description: 'Re-Editor is a powerful lightweight text and code editor widget.',
+    homepage: 'https://reqable.com',
+    repository: 'https://github.com/reqable/re-editor',
+    authors: [],
+    version: '0.10.0',
+    license: '''MIT License
+
+Copyright (c) 2024 Reqable
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('flutter'), PackageRef('re_highlight'), PackageRef('isolate_manager')],
+    devDependencies: [PackageRef('flutter_lints'), PackageRef('path')],
+  );
+
+/// re_highlight 0.0.3
+const _re_highlight = Package(
+    name: 're_highlight',
+    description: 'Re-Highlight is a powerful text syntax highlighting library.',
+    homepage: 'https://reqable.com',
+    repository: 'https://github.com/reqable/re-highlight',
+    authors: [],
+    version: '0.0.3',
+    license: '''MIT License
+
+Copyright (c) 2024 Reqable
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.''',
+    isMarkdown: false,
+    isSdk: false,
+    dependencies: [PackageRef('flutter'), PackageRef('path'), PackageRef('collection')],
+    devDependencies: [PackageRef('flutter_lints')],
+  );
+
 /// retrofit 4.4.2
 const _retrofit = Package(
     name: 'retrofit',
@@ -11612,7 +11756,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''',
     isMarkdown: false,
-    isSdk: false,
+    isSdk: true,
     dependencies: [PackageRef('flutter'), PackageRef('flutter_rust_bridge'), PackageRef('freezed_annotation'), PackageRef('http'), PackageRef('http_profile'), PackageRef('meta')],
     devDependencies: [PackageRef('build_runner'), PackageRef('ffi'), PackageRef('flutter_lints'), PackageRef('integration_test')],
   );
@@ -16184,7 +16328,7 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.''',
     isMarkdown: false,
     isSdk: false,
-    dependencies: [PackageRef('flutter'), PackageRef('cupertino_icons'), PackageRef('retrofit'), PackageRef('logger'), PackageRef('json_annotation'), PackageRef('flutter_riverpod'), PackageRef('go_router'), PackageRef('flutter_markdown_plus'), PackageRef('markdown'), PackageRef('html'), PackageRef('async'), PackageRef('http'), PackageRef('cached_network_image'), PackageRef('installed_apps'), PackageRef('jovial_svg'), PackageRef('path_provider'), PackageRef('crypto'), PackageRef('dio'), PackageRef('rhttp'), PackageRef('dynamic_color'), PackageRef('floor'), PackageRef('shared_preferences'), PackageRef('sprintf'), PackageRef('flutter_inappwebview'), PackageRef('qr_flutter'), PackageRef('pretty_dio_logger'), PackageRef('flutter_html'), PackageRef('sqflite'), PackageRef('flutter_secure_storage'), PackageRef('file_picker'), PackageRef('archive'), PackageRef('flutter_rust_bridge'), PackageRef('path'), PackageRef('xml'), PackageRef('genkit'), PackageRef('genkit_google_genai'), PackageRef('genkit_openai'), PackageRef('schemantic'), PackageRef('openai_dart'), PackageRef('device_info_plus'), PackageRef('shizuku_api'), PackageRef('flutter_local_notifications'), PackageRef('flutter_foreground_task'), PackageRef('flutter_gen_ai_chat_ui'), PackageRef('flutter_svg'), PackageRef('flutter_tabler_icons'), PackageRef('package_info_plus'), PackageRef('gal'), PackageRef('camera'), PackageRef('protobuf'), PackageRef('genkit_middleware')],
+    dependencies: [PackageRef('flutter'), PackageRef('cupertino_icons'), PackageRef('retrofit'), PackageRef('logger'), PackageRef('json_annotation'), PackageRef('flutter_riverpod'), PackageRef('go_router'), PackageRef('flutter_markdown_plus'), PackageRef('markdown'), PackageRef('re_editor'), PackageRef('re_highlight'), PackageRef('html'), PackageRef('async'), PackageRef('http'), PackageRef('cached_network_image'), PackageRef('installed_apps'), PackageRef('jovial_svg'), PackageRef('path_provider'), PackageRef('crypto'), PackageRef('dio'), PackageRef('rhttp'), PackageRef('dynamic_color'), PackageRef('floor'), PackageRef('shared_preferences'), PackageRef('sprintf'), PackageRef('flutter_inappwebview'), PackageRef('qr_flutter'), PackageRef('pretty_dio_logger'), PackageRef('flutter_html'), PackageRef('sqflite'), PackageRef('flutter_secure_storage'), PackageRef('file_picker'), PackageRef('archive'), PackageRef('flutter_rust_bridge'), PackageRef('path'), PackageRef('xml'), PackageRef('genkit'), PackageRef('genkit_google_genai'), PackageRef('genkit_openai'), PackageRef('schemantic'), PackageRef('openai_dart'), PackageRef('device_info_plus'), PackageRef('shizuku_api'), PackageRef('flutter_local_notifications'), PackageRef('flutter_foreground_task'), PackageRef('flutter_gen_ai_chat_ui'), PackageRef('flutter_svg'), PackageRef('flutter_tabler_icons'), PackageRef('package_info_plus'), PackageRef('gal'), PackageRef('camera'), PackageRef('protobuf'), PackageRef('genkit_middleware')],
     devDependencies: [PackageRef('integration_test'), PackageRef('retrofit_generator'), PackageRef('build_runner'), PackageRef('json_serializable'), PackageRef('floor_generator'), PackageRef('flutter_lints'), PackageRef('sqflite_common_ffi'), PackageRef('mockito'), PackageRef('dart_pubspec_licenses'), PackageRef('sqlite3'), PackageRef('flutter_secure_storage_platform_interface'), PackageRef('path_provider_platform_interface'), PackageRef('fake_async')],
   );
 

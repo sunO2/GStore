@@ -84,8 +84,8 @@ flutter build apk --release --target-platform android-arm64
 **已通过。**
 
 ```text
-✓ Built build/app/outputs/flutter-apk/app-release.apk (70.7MB)
-sha256: 1eab822fd209760b024ffd2a49709a7ff6ef4f3db9f642babb2233e98bb3281c
+✓ Built build/app/outputs/flutter-apk/app-release.apk (71.1MB)
+sha256: afa3835995135cb0c4d493ce84b05746528bac804db57e415b89b51af9cc2c4f
 ```
 
 已安装到 Pixel 4（Android 13 / API 33）并启动，主进程正常，
@@ -268,8 +268,8 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 结果：
 
 ```text
-✓ Built build/app/outputs/flutter-apk/app-release.apk (70.7MB)
-sha256: 1eab822fd209760b024ffd2a49709a7ff6ef4f3db9f642babb2233e98bb3281c
+✓ Built build/app/outputs/flutter-apk/app-release.apk (71.1MB)
+sha256: afa3835995135cb0c4d493ce84b05746528bac804db57e415b89b51af9cc2c4f
 ```
 
 Pixel 4 启动日志关键行：
@@ -334,3 +334,38 @@ flutter test
 
 失败集合完全一致，**无新增失败**。均为既有环境性失败
 （Rust `.so`、平台通道、本地资源等）。
+
+### rebase 到主仓库最新 main
+
+升级分支原先基于 `a7a5ae0a`，主仓库已推进到 `5256ae59`
+（request-debug 使用代码编辑器 / 折叠 Sliver 头部）。已执行：
+
+```bash
+git fetch origin
+git rebase origin/main
+```
+
+结果：
+
+- 无冲突，4 个提交全部重放成功
+- `pubspec.lock` 重新执行 `flutter pub get`，纳入 `re_editor ^0.10.0` / `re_highlight ^0.0.3`
+- `lib/oss_licenses.dart` 重新生成，包含新依赖
+- `dart analyze lib`：0 error，550 条 info
+- release APK 重新构建并安装：
+
+```text
+✓ Built app-release.apk (71.1MB)
+sha256: afa3835995135cb0c4d493ce84b05746528bac804db57e415b89b51af9cc2c4f
+```
+
+- 真机验证新增主仓库功能：新建集合 → 新建请求 → 体 = json，
+  `re_editor` 代码编辑器（行号 / 工具栏 / 展开）渲染正常
+- 放弃修改确认弹层、删除集合危险确认弹层均正常
+- 相关测试：request-debug / code-editor / install 共 128 项全部通过
+
+分支已推送到 GitHub 备份：
+
+```text
+ssh://git@ssh.github.com:443/sunO2/GStore.git
+branch: chore/flutter-3.50-upgrade
+```
