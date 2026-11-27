@@ -769,3 +769,89 @@ stream.close().forEach(deliver);
   - <https://pub.dev/packages/a2ui_flutter>
   - <https://pub.dev/packages/a2ui_core>
   - <https://pub.dev/packages/a2ui_agent>
+
+---
+
+## 15. 阶段 A 实现记录（2026-11-27）
+
+### 已实现
+
+新增 Agent 工具：
+
+```text
+renderA2ui(payload, title?)
+```
+
+流程：
+
+```text
+模型调用 renderA2ui
+  -> A2uiRenderValidation 校验（协议/白名单/限额）
+  -> 原始 payload 写入 toolArgs
+  -> 工具消息卡片 A2uiToolCard 渲染 surface
+  -> 用户点击按钮
+  -> action 转成一条用户消息回传 Agent
+```
+
+### 校验规则
+
+`lib/core/agent/a2ui_render_validation.dart`：
+
+- 只接受 A2UI v1.0：`createSurface` / `updateComponents` /
+  `updateDataModel` / `deleteSurface`
+- `catalogId` 必须是 basic catalog
+- 组件白名单：
+  `Column / Row / Card / Text / Button / Divider / TextField / CheckBox /
+  ChoicePicker / List`
+- 拒绝 `Image / Video / AudioPlayer / Tabs / Modal / Slider / DateTimeInput`
+- 拒绝 local `functionCall` / `openUrl`
+- 拒绝 `sendDataModel=true`
+- 限制：1 个 surface、≤60 组件、payload ≤32,000 字符、字符串 ≤2,000 字符
+- 最后用 `a2ui_core` 做完整协议校验（组件引用、绑定、schema）
+
+### 渲染与交互
+
+`lib/page/agent/a2ui_tool_card.dart`：
+
+- 工具消息卡片内渲染 `A2uiSurface`
+- action 通过 `AgentChatListView._a2uiToolCard` 回传
+- 回传文本示例：
+  ```text
+  我已点击 A2UI 界面中的“安装”按钮（action=install_app，context={"package":"com.termux"}）。请根据这个操作继续。
+  ```
+- 工具运行中/生成中禁用交互
+- 会话恢复时从 `toolArgs.payload` 重新渲染，无需新增数据库列
+
+### 工具类型
+
+- `AgentToolType.a2ui`：图标 `layout_grid`，标签「生成界面」
+- 系统提示词工具目录 + `loadProtocol('renderA2ui')` 提供完整契约
+
+### 使用方式
+
+1. 在 AI 设置中配置支持 function calling 的模型
+2. 对助手说：
+   - 「用卡片展示 Termux 的信息，带安装和查看详情按钮」
+   - 「用表单帮我筛选开源的工具类应用」
+   - 「把已安装应用的前 5 个渲染成列表」
+3. 模型应调用 `renderA2ui`；首次可能先调用
+   `loadProtocol(target="renderA2ui")`
+4. 点击卡片按钮后，action 会作为用户消息回传，模型继续下一轮
+
+### 当前限制
+
+- 必须使用支持工具调用的模型；本地小模型默认关闭 function calling
+- 模型遵循 A2UI JSON 的程度需要按 provider 实测
+- 工具 description 只给摘要，完整契约按需 `loadProtocol`
+- 阶段 A 不做流式 surface、不做聊天内联混排；这些留给阶段 B
+
+### 测试
+
+```text
+test/a2ui_render_validation_test.dart   8 项
+test/a2ui_tool_card_test.dart           3 项
+test/agent_a2ui_tool_test.dart          3 项
+test/a2ui_lab_page_test.dart            4 项
+```
+
+覆盖：合法/非法 payload、组件白名单、action 回传、禁用态、工具注册。

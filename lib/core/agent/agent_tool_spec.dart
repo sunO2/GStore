@@ -1218,6 +1218,68 @@ const List<AgentToolSpec> kBuiltinToolSpecs = [
 6. 不要用普通文字代替确认/选择交互。''',
   ),
   AgentToolSpec(
+    name: 'renderA2ui',
+    group: AgentToolGroup.interact,
+    label: '生成界面',
+    brief: '用 A2UI 渲染卡片/表单/列表；payload 为 A2UI v1.0 JSON。首次使用先 loadProtocol。',
+    params: [
+      AgentToolParam(
+          name: 'payload',
+          description: 'A2UI v1.0 消息数组（JSON 字符串）',
+          required: true),
+      AgentToolParam(name: 'title', description: '可选标题，用于时间轴展示'),
+    ],
+    protocol: r'''
+1. 仅在用户明确要"卡片/表单/列表/可视化结果"时调用；普通问答不要生成 UI。
+2. 首次使用先调用 loadProtocol('renderA2ui') 读取本契约；不要凭记忆写 A2UI。
+3. payload 是 JSON 数组字符串；每条消息形如：
+   {"version":"1.0","createSurface":{...}}。
+   只允许 createSurface / updateComponents / updateDataModel / deleteSurface。
+4. createSurface.catalogId 固定为：
+   https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json
+   只允许组件：Column / Row / Card / Text / Button / Divider / TextField /
+   CheckBox / ChoicePicker / List。
+5. components 是扁平邻接表，必须有一个 id="root" 的根组件；
+   容器用 children:[id...]，Card/Button 用 child:id。
+6. 数据绑定用 {"@path":"/x"}；List 模板：
+   "children":{"path":"/apps","componentId":"rowTemplate"}
+   模板内相对路径不带前导 /（如 "name" 解析为 /apps/N/name）。
+7. Button.action 只允许：
+   {"event":{"name":"动作名","context":{...}}}
+   context 值可以是字面量或 {"@path":...}；不要用 functionCall/openUrl。
+8. 禁止：Image / Video / AudioPlayer / Tabs / Modal / Slider / DateTimeInput；
+   sendDataModel=true；local functionCall。
+9. 限制：1 个 surface，最多 60 个组件，任意字符串 <= 2000 字。
+10. 工具成功后只回复"已渲染"，不要重复输出 UI JSON；等待用户 action。
+
+示例（应用卡片）：
+[
+  {
+    "version": "1.0",
+    "createSurface": {
+      "surfaceId": "app-card",
+      "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+      "dataModel": {"app": {"name": "Termux", "pkg": "com.termux"}},
+      "components": [
+        {"id": "root", "component": "Card", "child": "content"},
+        {"id": "content", "component": "Column", "children": ["title", "actions"]},
+        {"id": "title", "component": "Text", "text": {"@path": "/app/name"}},
+        {"id": "actions", "component": "Row", "children": ["install", "detail"]},
+        {"id": "install", "component": "Button", "child": "installLabel",
+         "variant": "primary",
+         "action": {"event": {"name": "install_app",
+           "context": {"package": {"@path": "/app/pkg"}}}}},
+        {"id": "installLabel", "component": "Text", "text": "安装"},
+        {"id": "detail", "component": "Button", "child": "detailLabel",
+         "action": {"event": {"name": "open_app_detail",
+           "context": {"package": {"@path": "/app/pkg"}}}}},
+        {"id": "detailLabel", "component": "Text", "text": "查看详情"}
+      ]
+    }
+  }
+]''',
+  ),
+  AgentToolSpec(
     name: 'runJsChannel',
     group: AgentToolGroup.interact,
     label: '脚本渠道执行',

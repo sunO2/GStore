@@ -22,6 +22,7 @@ import 'package:gstore/core/agent/agent_suggestions.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 
+import 'a2ui_tool_card.dart';
 import 'inline_card_registry.dart';
 import 'step_text.dart';
 import 'user_bubble.dart';
@@ -193,6 +194,12 @@ class AgentChatListViewState extends State<AgentChatListView> {
       );
     }
     if (item.turnMsgs == null && first.isToolResult) {
+      final a2ui = _a2uiToolCard(
+        first,
+        enabled: !widget.isGenerating,
+        onSendText: widget.onSendExample,
+      );
+      if (a2ui != null) return a2ui;
       // 仅当 Agent 显式调用 showConfigControl/showConfigSwitch 时渲染配置控件卡片。
       final spec = controlForInlineCard(first);
       if (spec != null) {
@@ -200,7 +207,12 @@ class AgentChatListViewState extends State<AgentChatListView> {
       }
       return _ToolBubble(msg: first);
     }
-    return _TurnTimeline(turnMsgs: msgs, userText: item.userText);
+    return _TurnTimeline(
+      turnMsgs: msgs,
+      userText: item.userText,
+      onSendText: widget.onSendExample,
+      isGenerating: widget.isGenerating,
+    );
   }
 
   Widget _buildSingleControlCard(
@@ -460,13 +472,57 @@ class _WelcomeView extends StatelessWidget {
 }
 
 /// 回合时间轴（竖向时间线）：同回合 agent 文本与工具调用按序串联
+/// 显式 `renderA2ui` 工具结果渲染为 A2UI 卡片；payload 存在 toolArgs 中。
+Widget? _a2uiToolCard(
+  AgentMessage msg, {
+  required bool enabled,
+  required ValueChanged<String>? onSendText,
+}) {
+  if (msg.toolName != AgentService.renderA2uiToolName ||
+      msg.toolStatus != AgentToolStatus.done) {
+    return null;
+  }
+  final payload = msg.toolArgs?['payload'];
+  final raw = payload is String
+      ? payload
+      : (payload == null ? '' : jsonEncode(payload));
+  if (raw.trim().isEmpty) return null;
+  return A2uiToolCard(
+    key: ValueKey('a2ui-${msg.id}'),
+    payload: raw,
+    title: msg.toolArgs?['title']?.toString(),
+    enabled: enabled,
+    onAction: (action) {
+      final label = action.userMessage?.trim();
+      final contextJson =
+          action.context.isEmpty ? '' : ' context=${jsonEncode(action.context)}';
+      final text = (label == null || label.isEmpty)
+          ? '我已点击 A2UI 界面中的“${action.name}”按钮'
+              '（action=${action.name}$contextJson）。请根据这个操作继续。'
+          : '$label（action=${action.name}$contextJson）。请根据这个操作继续。';
+      onSendText?.call(text);
+    },
+  );
+}
+
 class _TurnTimeline extends StatelessWidget {
   final List<AgentMessage> turnMsgs;
 
   /// 该回合对应的用户文本（用于控件兜底入口识别）。
   final String? userText;
 
-  const _TurnTimeline({required this.turnMsgs, this.userText});
+  /// A2UI action 回传（与聊天页发送文本复用同一入口）。
+  final ValueChanged<String>? onSendText;
+
+  /// 当前是否正在生成（生成中禁用 A2UI 操作）。
+  final bool isGenerating;
+
+  const _TurnTimeline({
+    required this.turnMsgs,
+    this.userText,
+    this.onSendText,
+    this.isGenerating = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -733,6 +789,12 @@ class _TurnTimeline extends StatelessWidget {
   /// 工具节点：显式 `showConfigControl`/`showConfigSwitch` 消息渲染为配置控件卡片，
   /// 其余保持原工具胶囊。
   Widget _buildToolOrControl(BuildContext context, AgentMessage msg) {
+    final a2ui = _a2uiToolCard(
+      msg,
+      enabled: !isGenerating,
+      onSendText: onSendText,
+    );
+    if (a2ui != null) return a2ui;
     final spec = controlForInlineCard(msg);
     if (spec == null) return _buildToolChip(context, msg);
     return AgentControlCard(
@@ -978,6 +1040,8 @@ Color _timelineToolColor(AgentToolType? type) {
       return Colors.blueGrey;
     case AgentToolType.requestDebug:
       return Colors.amber;
+    case AgentToolType.a2ui:
+      return Colors.deepPurple;
     case null:
     case AgentToolType.confirm:
       return Colors.indigo;
@@ -1026,6 +1090,8 @@ IconData _timelineToolIcon(AgentToolType? type) {
       return TablerIcons.api;
     case AgentToolType.requestDebug:
       return TablerIcons.bookmark;
+    case AgentToolType.a2ui:
+      return TablerIcons.layout_grid;
     case null:
     case AgentToolType.confirm:
       return TablerIcons.help_circle;
@@ -1074,6 +1140,8 @@ String _timelineToolLabel(AgentToolType? type) {
       return 'HTTP 接口';
     case AgentToolType.requestDebug:
       return '请求调试';
+    case AgentToolType.a2ui:
+      return '生成界面';
     case null:
     case AgentToolType.confirm:
       return '确认操作';

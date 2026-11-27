@@ -1,7 +1,7 @@
 {
  "meta": {
-  "captured_at": "2026-11-27T11:24:30.142190+00:00",
-  "commit": "22bf751e976d541bc551d72996eeb07582a6afc4",
+  "captured_at": "2026-11-27T11:57:29.337533+00:00",
+  "commit": "2138fe07916466fdf5bf08bb1ae8c1476dbe41ce",
   "dart_analyze_exit": 2,
   "clippy_exit": {
    "gstore_contract": 0,
@@ -2144,6 +2144,12 @@
   },
   {
    "file": "lib/page/agent/a2ui_lab_page.dart",
+   "code": "deprecated_member_use",
+   "message": "'package:flutter/material.dart' is deprecated and shouldn't be used. Use package:material_ui/material_ui.dart instead. This feature was deprecated after v3.47.0-0.0.pre.",
+   "severity": "INFO"
+  },
+  {
+   "file": "lib/page/agent/a2ui_tool_card.dart",
    "code": "deprecated_member_use",
    "message": "'package:flutter/material.dart' is deprecated and shouldn't be used. Use package:material_ui/material_ui.dart instead. This feature was deprecated after v3.47.0-0.0.pre.",
    "severity": "INFO"

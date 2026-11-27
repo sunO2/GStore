@@ -10,6 +10,7 @@ import 'package:genkit_openai/genkit_openai.dart';
 import 'package:schemantic/schemantic.dart' show SchemanticType;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:gstore/core/agent/a2ui_render_validation.dart';
 import 'package:gstore/core/agent/agent_inline_cards.dart';
 import 'package:gstore/core/agent/agent_memory_store.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
@@ -85,6 +86,7 @@ enum AgentToolType {
   webView,
   httpRequest,
   requestDebug,
+  a2ui,
 }
 
 /// 工具执行状态
@@ -296,6 +298,7 @@ class AgentService {
   static const String appSnapshotToolName = 'appSnapshot';
   static const String snapshotCompareToolName = 'snapshotCompare';
   static const String apkBrowserToolName = 'apkBrowser';
+  static const String renderA2uiToolName = 'renderA2ui';
   static const String showConfigSwitchToolName = 'showConfigSwitch';
   static const String showConfigControlToolName = 'showConfigControl';
   static const String fileListToolName = 'fileList';
@@ -1230,6 +1233,8 @@ class AgentService {
           params['method']?.toString() ?? '',
           params['params'],
         );
+      case renderA2uiToolName:
+        return _renderA2ui(params);
       case loadProtocolToolName:
         return Future.value(_loadProtocol(params['target']?.toString() ?? ''));
       case useSkillToolName:
@@ -1256,6 +1261,21 @@ class AgentService {
         }
         return Future.value('未知工具: $toolName');
     }
+  }
+
+  /// 校验 A2UI payload；通过后返回给模型的简短结果。
+  ///
+  /// 原始 payload 保留在 toolArgs 中，供 [A2uiToolCard] 渲染与持久化恢复。
+  Future<String> _renderA2ui(Map<String, dynamic> params) async {
+    final raw = params['payload'];
+    final payload = raw is String
+        ? raw
+        : (raw == null ? '' : jsonEncode(raw));
+    params['payload'] = payload;
+    final result = A2uiRenderValidation.validate(payload);
+    return 'UI 已渲染：surfaceId=${result.surfaceId}，'
+        '${result.componentCount} 个组件。等待用户操作；'
+        '不要重复输出 UI JSON。';
   }
 
   /// 确认工具执行（用户确认/选项选择/多选勾选）
@@ -2534,6 +2554,9 @@ class AgentService {
         return val(['question']);
       case loadProtocolToolName:
         return '读取协议: ${val(['target'])}';
+      case renderA2uiToolName:
+        final title = val(['title']);
+        return title.isEmpty ? '生成界面' : '生成界面：$title';
     }
     final action = val(['action']);
     if (action.isNotEmpty) return '${spec.label}: $action';
@@ -3731,6 +3754,8 @@ class AgentService {
         return AgentToolType.httpRequest;
       case requestDebugToolName:
         return AgentToolType.requestDebug;
+      case renderA2uiToolName:
+        return AgentToolType.a2ui;
       default:
         return name.startsWith('mcp__')
             ? AgentToolType.mcp
