@@ -1,7 +1,7 @@
 {
  "meta": {
-  "captured_at": "2026-11-27T10:33:59.574438+00:00",
-  "commit": "933836d2f99c37f9593c06b93c12741141c7bd48",
+  "captured_at": "2026-11-27T11:20:34.737283+00:00",
+  "commit": "765cafc1240852797d142e1a046ca81d074ed09f",
   "dart_analyze_exit": 2,
   "clippy_exit": {
    "gstore_contract": 0,
@@ -19,6 +19,24 @@
  },
  "dart": [
   {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/agent/agent_service.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/aggregate/AppAggregatorManager.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
    "file": "lib/core/channel/impl/FdroidChannel.dart",
    "code": "invalid_use_of_visible_for_testing_member",
    "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
@@ -40,6 +58,54 @@
    "file": "lib/core/fdroid/FdroidRepoManager.dart",
    "code": "invalid_use_of_visible_for_testing_member",
    "message": "The member 'identityMatches' can only be used within 'package:gstore/core/rust/FdroidRustRepoManager.dart' or a test.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleDownloader.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleLoader.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleLoader.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleLoader.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleManifestClient.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleManifestClient.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/rust/ModuleManifestClient.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
+   "severity": "WARNING"
+  },
+  {
+   "file": "lib/core/service/install_manager.dart",
+   "code": "unawaited_return_in_try_block",
+   "message": "Returning a 'Future' without 'await' inside a try block.",
    "severity": "WARNING"
   },
   {
@@ -2047,36 +2113,6 @@
    "severity": "INFO"
   },
   {
-   "file": "lib/http/github/github_client.dart",
-   "code": "non_constant_identifier_names",
-   "message": "The variable name 'default_branch' isn't a lowerCamelCase identifier.",
-   "severity": "INFO"
-  },
-  {
-   "file": "lib/http/github/github_client.dart",
-   "code": "non_constant_identifier_names",
-   "message": "The variable name 'stargazers_count' isn't a lowerCamelCase identifier.",
-   "severity": "INFO"
-  },
-  {
-   "file": "lib/http/github/github_client.dart",
-   "code": "non_constant_identifier_names",
-   "message": "The variable name 'created_at' isn't a lowerCamelCase identifier.",
-   "severity": "INFO"
-  },
-  {
-   "file": "lib/http/github/github_client.dart",
-   "code": "non_constant_identifier_names",
-   "message": "The variable name 'full_name' isn't a lowerCamelCase identifier.",
-   "severity": "INFO"
-  },
-  {
-   "file": "lib/http/github/github_client.dart",
-   "code": "non_constant_identifier_names",
-   "message": "The variable name 'html_url' isn't a lowerCamelCase identifier.",
-   "severity": "INFO"
-  },
-  {
    "file": "lib/http/github/user_info/user_info.dart",
    "code": "hash_and_equals",
    "message": "Missing a corresponding override of '=='.",
@@ -3894,5 +3930,12 @@
     }
    ]
   }
+ },
+ "apk_budget": {
+  "arm64_release_bytes": 92274688,
+  "measured_reference_bytes": 81821125,
+  "measured_at": "2026-10-21",
+  "source": "flutter build apk --release --target-platform android-arm64 (full module build, GStore main worktree)",
+  "note": "88 MiB budget (~12.8% headroom over the 81,821,125-byte reference). Raise only with a recorded release reason; apk-budget.sh fails on regression."
  }
 }

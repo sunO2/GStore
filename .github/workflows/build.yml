@@ -402,15 +402,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 官方 create-release@v1 已弃用，改用内置 gh CLI（幂等：tag 已存在时回退 edit）
-          gh release create "${{ steps.release_meta.outputs.tag }}" \
-            --title "${{ steps.release_meta.outputs.tag }}" \
-            --notes-file notes.txt \
+          # 官方 create-release@v1 已弃用，改用内置 gh CLI（幂等：tag 已存在时回退 edit）。
+          # 同版本重建时保留已有 release notes，避免每次 main push 都把人工整理
+          # 的说明覆盖成完整 git log。
+          TAG="${{ steps.release_meta.outputs.tag }}"
+          PREV="${{ steps.prev_release.outputs.prev_tag }}"
+          NOTES_ARGS=(--notes-file notes.txt)
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" && -n "$PREV" && "$PREV" == "$TAG" ]]; then
+            NOTES_ARGS=()
+            echo "Same-version rebuild ($TAG): keep existing release notes"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            "${NOTES_ARGS[@]}" \
             --target "${GITHUB_SHA}" \
             --draft=false \
             --prerelease="${{ steps.release_meta.outputs.prerelease }}" \
-          || gh release edit "${{ steps.release_meta.outputs.tag }}" \
-            --notes-file notes.txt \
+          || gh release edit "$TAG" \
+            "${NOTES_ARGS[@]}" \
             --prerelease="${{ steps.release_meta.outputs.prerelease }}"
       # 同一 Release 上传顺序固定：本次新版 .so（版本化名，--clobber）→ modules.json（提交标记）
       # → APK/AAB 与 it-tools → 最后按留存策略清理旧模块资产。
