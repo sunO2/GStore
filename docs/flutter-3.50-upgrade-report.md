@@ -478,6 +478,9 @@ sha256: a3bc7a83f4457226d65481503ab1f087ade3c71e2f00832742f043b57c0d7d0b
 - Pixel 4 安装 1.0.38 启动正常
 - 备份「导出到本地」走完 SAF：文件成功写入
   `/sdcard/Download/gstore_backup_*.tar.gz`，应用正常返回
+- 渠道包导入走完 SAF 选择：`probechannel.zip` 读取成功，弹层正确显示
+  包文件 / 渠道标识 / 名称 / 描述 / `entry.js` 大小，证明
+  `FilePicker.pickFile` + `readAsBytes()` 正常工作
 - `dynamic_color` 1.9.0 正常渲染（深色/浅色主题切换已验证）
 
 ### 后续
