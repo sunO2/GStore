@@ -1019,3 +1019,24 @@ test/agent_chat_list_view_test.dart     3 项（A2UI 布局）
 - 单测 + widget：7 项归一化/渲染用例（含 id 冲突、结构字段不被误改）。
 - 真机用「编译后就是 `$name` 字面量」的 Express 复现，修复后正确显示
   产品名/代码/累计/日涨跌/净值。
+
+### AI 对话链接打开空白页（2026-11-28）
+
+现象：点击 AI 回复里的链接，进入一个空白页面。
+
+原因：`lib/page/web/view.dart` 的 `WebPage` 是个空壳 Scaffold（webview 代码
+被注释掉了），Markdown 的 `_openLink` 却一直在往 `AppRoute.webView` 跳转。
+
+修复：
+
+- 用 `InAppWebView` 实现真正的内置浏览器：标题/域名、加载进度、前进/后退/
+  刷新、复制链接、系统返回直接退出（网页历史的返回用底部按钮，避免被
+  about:blank/重定向的历史条目困住）。
+- 新增 `normalizeWebViewUrl`：裸域名补 `https://`、协议相对地址补协议、
+  `mailto:`/`tel:`/`intent:`/`data:` 等不进内置浏览器。
+- 进入页面即显示加载态：WebView 首次创建（系统 WebView 冷启动）可能十几秒，
+  之前这段是完全空白。
+- 路由改为把 `extra` 的 `url`/`title` 传给页面。
+
+顺带修复：本地模型提示裁剪在 system 超过上限时会把最后一条用户消息也丢掉
+（模型只看到 system）。改为从新到旧保留连续历史，最后一条始终保留。

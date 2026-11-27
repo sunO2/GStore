@@ -100,7 +100,14 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: AppRoute.webView,
-      builder: (context, state) => const WebPage(),
+      builder: (context, state) {
+        final extra = state.extra;
+        final args = extra is Map ? extra : const <String, Object?>{};
+        return WebPage(
+          url: args['url']?.toString(),
+          title: args['title']?.toString(),
+        );
+      },
     ),
     GoRoute(
       path: AppRoute.auth,

@@ -4,6 +4,7 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/webview/webview_url_normalizer.dart';
 import 'package:markdown/markdown.dart' as md;
 
 /// 检测 markdown 文本中是否存在**未闭合的围栏代码块**。
@@ -276,13 +277,13 @@ class AgentMarkdownMessage extends StatelessWidget {
 
   /// 打开链接（用内置浏览器）
   void _openLink(BuildContext context, String url) {
-    // 相对链接补全
-    if (url.startsWith('#')) return;
-    if (url.startsWith('mailto:')) return;
-
+    // 锚点直接忽略；裸域名补 https://；mailto/tel 等不进内置浏览器。
+    final normalized = normalizeWebViewUrl(url);
+    if (normalized == null) return;
+    final host = Uri.tryParse(normalized)?.host ?? '';
     context.push(AppRoute.webView, extra: {
-      'url': url,
-      'title': '链接',
+      'url': normalized,
+      'title': host.isEmpty ? '链接' : host,
     });
   }
 }
