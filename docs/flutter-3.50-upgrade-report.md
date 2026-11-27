@@ -135,9 +135,10 @@ Flutter 3.50.1 升级**已完成到可构建、可安装、可启动**：
 ## 当前分支状态
 
 - `GStore-update` 分支 `chore/flutter-3.50-upgrade`
-- 已提交：
-  - `4044bae5` Android 工具链迁移与插件替换
-  - `df9da46c` / `3e26ff6e` 构建结果与 Pixel 4 回归报告
+- 已提交（rebase 后）：
+  - `073150bb` Android 工具链迁移与插件替换
+  - `e7a439f2` / `4a460c5e` / `db77673c` / `7616d3a3` 构建、回归与 rebase 报告
+- 已推送到 GitHub：`chore/flutter-3.50-upgrade`
 - 未推送（`origin` 指向本地主仓库，避免污染主仓库分支）
 - Android 工具链、插件替换、vendor 补丁、文档均已就绪
 - release APK 已构建并安装验证
