@@ -869,3 +869,64 @@ test/a2ui_lab_page_test.dart            4 项
 - 新增两条 widget 测试：
   - 卡片底部必须小于等于后续步骤顶部
   - `List` 模板在时间轴中不触发 intrinsic 尺寸异常
+
+---
+
+## 阶段 B：对话内联 A2UI（2026-11-27）
+
+目标：模型不再调用 `renderA2ui` 工具，而是直接在回复正文里用 Express 输出
+`<a2ui>…</a2ui>`，客户端边流式解析边渲染卡片，action 仍回传为下一轮用户消息。
+
+### 开关与成本
+
+- `A2uiInlineService.shouldEnable(text)` 只在用户文本出现界面意图
+  （卡片/表单/列表/界面/可视化/渲染/筛选/`card`/`form`/`list`/`ui`…）时启用。
+- 启用时才把官方 Express 契约拼进系统提示词（约 18.7k 字符 ≈ 4.7k tokens），
+  普通聊天不付出这份成本；实测一回合 `promptChars` 从 ~13k 升到 ~21k。
+- 启用时把 `renderA2ui` 工具从本轮工具集里移除，避免两套 UI 路径并存；
+  未命中意图时阶段 A 工具保持可用。
+
+### 流式解析
+
+- 每回合创建一个 `A2uiRequestProcessor` + `RendererState`，同一回合的多个
+  模型步共享 surface 状态。
+- `_generateStep` 用 `openContinuingStream(state: …)` 读 `chunk.text`：
+  - `TextPart` → 普通正文（`_applyStreamText`）
+  - `A2uiPart` → 追加到「A2UI 宿主消息」的 `a2uiMessages`
+  - `ErrorPart` → 记录日志，不阻断后续正文
+- A2UI 宿主消息与流式文本消息分开：工具调用/文本定稿不会把卡片提前清空。
+
+### 持久化
+
+- 复用 `agent_message.tool_result` 列保存 `@a2ui:v1:<json>`，避免 Rust schema 迁移。
+- 流式增量会按分片产生大量消息（每个分片一条）。定稿时用累计原文
+  `parseResponse` 重新解析，压缩成 `createSurface` + 少量 `updateComponents`
+  再落库，避免会话体积膨胀。
+- 重启后从 `toolResult` 还原，卡片可继续交互（已真机验证）。
+
+### 布局
+
+- 内联卡片也走 `Stack + Positioned` 时间轴分支（`hasInlineA2ui`），
+  不进入 `IntrinsicHeight`，避免 `List`/`TextField` 高度算错。
+
+### 验证
+
+用本地 OpenAI 兼容 mock（`adb reverse` 到 PC）真机跑通：
+
+1. 注入提示词 → 模型输出 `<a2ui>` 表单
+2. 卡片流式出现标题、两个输入框、复选框、按钮
+3. 点「开始筛选」→ action `filter` 与新用户消息回传，模型继续下一轮
+4. 强杀重启 → 两张卡片从持久化恢复，按钮仍可点击
+
+```text
+test/a2ui_inline_test.dart              8 项
+test/agent_chat_list_view_test.dart     3 项（A2UI 布局）
+```
+
+### 已知限制
+
+- 模型若不按 Express 语法输出会得到 `VALIDATION_FAILED`，只显示已解析的部分；
+  客户端记录日志但不打断正文。
+- 一个回合内重复创建同 id surface 会让定稿压缩失败，此时保留增量消息
+  （仍可渲染，但会话体积偏大）。
+- 意图判断是关键词规则，偏保守；后续可交给工具选择/轻量分类器。

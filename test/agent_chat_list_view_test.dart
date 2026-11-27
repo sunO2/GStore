@@ -1,8 +1,11 @@
 import 'dart:io';
 
+import 'package:a2ui_agent/a2ui_agent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/agent/a2ui_inline.dart';
 import 'package:gstore/core/agent/agent_service.dart';
+import 'package:gstore/page/agent/a2ui_inline_card.dart';
 import 'package:gstore/page/agent/a2ui_tool_card.dart';
 import 'package:gstore/page/agent/chat_list_view.dart';
 
@@ -418,6 +421,44 @@ void main() {
           reason: 'A2UI 卡片不能压住后续步骤');
     });
 
+    testWidgets('内联 A2UI 卡片撑开高度，后续步骤不重叠', (tester) async {
+      final controller = ScrollController();
+      final messages = ValueNotifier<List<AgentMessage>>([
+        _userMsg(id: 'u1', text: '用表单帮我筛选应用'),
+        _agentMsg(
+          id: 'a1',
+          text: '',
+          turnId: 'turn-inline',
+          seq: 2,
+          a2uiMessages: _inlineMessages(),
+        ),
+        _agentMsg(id: 'a2', text: '已生成表单', turnId: 'turn-inline', seq: 4),
+      ]);
+      addTearDown(controller.dispose);
+      addTearDown(messages.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AgentChatListView(
+            messages: messages,
+            scrollController: controller,
+            isGenerating: false,
+            hasMoreHistory: false,
+            onSendExample: (_) {},
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(A2uiInlineCard), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      final cardBottom =
+          tester.getBottomLeft(find.byType(A2uiInlineCard)).dy;
+      final textTop = tester.getTopLeft(find.text('已生成表单')).dy;
+      expect(textTop, greaterThanOrEqualTo(cardBottom),
+          reason: '内联 A2UI 卡片不能压住后续步骤');
+    });
+
     testWidgets('列表模板在时间轴里不会触发 intrinsic 尺寸异常', (tester) async {
       final payload = File('assets/a2ui/results_list.json').readAsStringSync();
       final controller = ScrollController();
@@ -460,9 +501,39 @@ AgentMessage _agentMsg(
         {required String id,
         required String text,
         String? turnId,
-        int seq = 2}) =>
+        int seq = 2,
+        List<Map<String, Object?>>? a2uiMessages}) =>
     AgentMessage(
-        id: id, isUser: false, text: text, seq: seq, turnId: turnId);
+      id: id,
+      isUser: false,
+      text: text,
+      seq: seq,
+      turnId: turnId,
+      a2uiMessages: a2uiMessages,
+      a2uiRevision: a2uiMessages?.length ?? 0,
+    );
+
+/// 用阶段 B 的解析器把 Express 响应转成内联消息。
+List<Map<String, Object?>> _inlineMessages() {
+  const raw = '''
+<a2ui>
+surface("main")
+root = Card(column)
+column = Column([title, btn])
+title = Text("筛选应用")
+btn = Button(btnLabel, action=Event("filter"))
+btnLabel = Text("开始筛选")
+</a2ui>''';
+  final processor = A2uiInlineService.instance.createProcessor();
+  final out = <Map<String, Object?>>[];
+  for (final part in processor.parseResponse(raw)) {
+    if (part is! A2uiPart) continue;
+    for (final message in part.a2ui) {
+      out.add(message.toJson().map((k, v) => MapEntry(k.toString(), v)));
+    }
+  }
+  return out;
+}
 AgentMessage _toolMsg({
   required String id,
   required Map<String, dynamic> toolArgs,

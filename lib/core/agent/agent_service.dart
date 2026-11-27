@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:a2ui_agent/a2ui_agent.dart' as a2ui_agent;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show Color;
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
@@ -10,6 +11,7 @@ import 'package:genkit_openai/genkit_openai.dart';
 import 'package:schemantic/schemantic.dart' show SchemanticType;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:gstore/core/agent/a2ui_inline.dart';
 import 'package:gstore/core/agent/a2ui_render_validation.dart';
 import 'package:gstore/core/agent/agent_inline_cards.dart';
 import 'package:gstore/core/agent/agent_memory_store.dart';
@@ -220,6 +222,12 @@ class AgentMessage {
   /// 已勾选项集合（多选模式 UI 回传选中结果后置空）。
   List<String>? confirmSelected;
 
+  /// 阶段 B：内联 A2UI 原始消息（按到达顺序累积）。
+  List<Map<String, Object?>>? a2uiMessages;
+
+  /// 内联 A2UI 修订号（用于聊天列表缓存失效）。
+  int a2uiRevision;
+
   AgentMessage({
     String? id,
     required this.isUser,
@@ -239,6 +247,8 @@ class AgentMessage {
     int? seq,
     this.turnId,
     this.confirmOptions,
+    this.a2uiMessages,
+    this.a2uiRevision = 0,
   })  : id = id ?? _generateId(),
         time = time ?? DateTime.now(),
         seq = seq ?? _seqCounter++;
@@ -1414,6 +1424,19 @@ class AgentService {
   /// 工具调用时将其"定稿"为独立 agent 消息，实现文本被工具调用分割
   AgentMessage? _activeStreamMsg;
 
+  /// 阶段 B：本回合 A2UI processor/state；跨模型步共享 surface 状态。
+  a2ui_agent.A2uiRequestProcessor? _a2uiTurnProcessor;
+  a2ui_agent.RendererState? _a2uiTurnState;
+
+  /// 本轮 A2UI surface 的宿主消息（可能不是最新的流式消息）。
+  AgentMessage? _a2uiTurnMessage;
+
+  /// 本轮注入的 A2UI 提示词（用于系统消息重建）。
+  String? _lastA2uiPrompt;
+
+  /// 本轮 A2UI 原始响应（用于定稿时重新解析出紧凑消息）。
+  String _a2uiRawBuffer = '';
+
   /// 当前正在执行的下载任务状态（停止时取消）
   DownloadTask? _currentDownloadStatus;
 
@@ -1676,27 +1699,35 @@ class AgentService {
       AgentPrompt.build(PlatformArch.platformDescription);
 
   /// 本回合系统提示词（含工具子集与长期记忆）
-  String get _systemPromptForTurn => AgentPrompt.build(
-        PlatformArch.platformDescription,
-        toolNames: _lastTurnToolNames.isEmpty ? null : _lastTurnToolNames,
-        memories: _turnMemoryText ??
-            _memoryStore?.renderForPrompt(query: _lastTurnQuery),
-        extraToolLines: _lastExtraToolLines,
-      );
+  String get _systemPromptForTurn {
+    final base = AgentPrompt.build(
+      PlatformArch.platformDescription,
+      toolNames: _lastTurnToolNames.isEmpty ? null : _lastTurnToolNames,
+      memories: _turnMemoryText ??
+          _memoryStore?.renderForPrompt(query: _lastTurnQuery),
+      extraToolLines: _lastExtraToolLines,
+    );
+    final a2ui = _lastA2uiPrompt;
+    return a2ui == null ? base : '$base\n\n$a2ui';
+  }
 
   /// 构造本回合系统提示词（只列本轮可用工具，避免模型调用未下发工具）
   void _applyTurnSystemPrompt(
     List<String> toolNames, {
     String? extraToolLines,
+    String? a2uiPrompt,
   }) {
     _lastExtraToolLines = extraToolLines;
-    final prompt = AgentPrompt.build(
+    _lastA2uiPrompt = a2uiPrompt;
+    final basePrompt = AgentPrompt.build(
       PlatformArch.platformDescription,
       toolNames: toolNames,
       memories: _turnMemoryText ??
           _memoryStore?.renderForPrompt(query: _lastTurnQuery),
       extraToolLines: extraToolLines,
     );
+    final prompt =
+        a2uiPrompt == null ? basePrompt : '$basePrompt\n\n$a2uiPrompt';
     final system = Message(
       role: Role.system,
       content: [TextPart(text: prompt)],
@@ -2004,6 +2035,7 @@ class AgentService {
         }
         return message;
       } else {
+        final a2ui = A2uiInlineCodec.decode(m.toolResult);
         final message = AgentMessage(
           isUser: m.isUser,
           text: m.text,
@@ -2012,6 +2044,8 @@ class AgentService {
           time: DateTime.fromMillisecondsSinceEpoch(m.time),
           seq: m.seq,
           turnId: m.turnId,
+          a2uiMessages: a2ui,
+          a2uiRevision: a2ui?.length ?? 0,
         );
         message.reasoningDone = true;
         return message;
@@ -2289,6 +2323,10 @@ class AgentService {
       seq: msg.seq,
       turnId: msg.turnId,
       reasoning: msg.reasoning.isEmpty ? null : msg.reasoning,
+      // 阶段 B：复用 tool_result 列保存内联 A2UI 原始消息（避免 Rust 迁移）
+      toolResult: msg.a2uiMessages == null || msg.a2uiMessages!.isEmpty
+          ? null
+          : A2uiInlineCodec.encode(msg.a2uiMessages!),
     ));
     session.updatedAt = DateTime.now().millisecondsSinceEpoch;
     // 异步持久化
@@ -3038,7 +3076,9 @@ class AgentService {
 
       final msg = _activeStreamMsg;
       if (msg != null) {
-        if (msg.text.trim().isEmpty && msg.reasoning.isEmpty) {
+        if (msg.text.trim().isEmpty &&
+            msg.reasoning.isEmpty &&
+            (msg.a2uiMessages?.isEmpty ?? true)) {
           _removeMessage(msg);
         } else {
           msg.text = msg.text.trim();
@@ -3047,6 +3087,7 @@ class AgentService {
           _persistStreamMessage(msg);
         }
       }
+      _persistA2uiTurnMessage();
     } catch (error) {
       appLog.error('AgentService: 确认后继续失败 - $error');
       _addAssistantMessage('抱歉，确认后请求失败：${_friendlyError(error)}',
@@ -3058,6 +3099,7 @@ class AgentService {
         _logAi('⏱ 确认后续回合结束', data: paused.trace.toJson());
         _persistTurnTrace(paused.trace);
         _activeStreamMsg = null;
+        _resetA2uiTurnState();
         _busy = false;
         busy.value = false;
         _currentTurnId = null;
@@ -3560,6 +3602,8 @@ class AgentService {
         _persistTurnTrace(traceRef);
       }
       _activeStreamMsg = null;
+      _persistA2uiTurnMessage();
+      _resetA2uiTurnState();
       _busy = false;
       busy.value = false;
       _currentTurnId = null;
@@ -6024,6 +6068,10 @@ class AgentService {
       returnToolRequests: true,
     );
 
+    final a2uiStream = _a2uiTurnProcessor?.openContinuingStream(
+      state: _a2uiTurnState,
+    );
+
     await for (final chunk in stream) {
       if (_cancelRequested) break;
       final reasoning = _extractReasoning(chunk);
@@ -6036,17 +6084,8 @@ class AgentService {
 
       // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
       // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
-      if (_activeStreamMsg == null) {
-        _activeStreamMsg = AgentMessage(
-          isUser: false,
-          text: '',
-          turnId: _currentTurnId,
-        );
-        _streamRaw = '';
-        _addMessage(_activeStreamMsg!);
-      }
-      final active = _activeStreamMsg!;
       if (reasoning.isNotEmpty) {
+        final active = _ensureActiveStreamMessage();
         if (active.reasoning.isEmpty) {
           _logAi('◆ 思考分片开始(结构化)',
               data: {'head': _briefLog(reasoning, max: 120)});
@@ -6054,19 +6093,132 @@ class AgentService {
         active.reasoning += reasoning;
       }
       if (text.isNotEmpty) {
-        final hadReasoning = active.reasoning.isNotEmpty;
-        _applyStreamText(active, text);
-        if (!hadReasoning && active.reasoning.isNotEmpty) {
-          _logAi('◆ 思考分片开始(内联 think)', data: {
-            'head': _briefLog(active.reasoning, max: 120),
-          });
+        if (a2uiStream != null) {
+          _a2uiRawBuffer += text;
+          _consumeA2uiParts(a2uiStream.feed(text));
+        } else {
+          final active = _ensureActiveStreamMessage();
+          final hadReasoning = active.reasoning.isNotEmpty;
+          _applyStreamText(active, text);
+          if (!hadReasoning && active.reasoning.isNotEmpty) {
+            _logAi('◆ 思考分片开始(内联 think)', data: {
+              'head': _briefLog(active.reasoning, max: 120),
+            });
+          }
         }
       }
       _notifyMessages();
     }
 
+    if (a2uiStream != null) {
+      try {
+        _consumeA2uiParts(a2uiStream.close());
+      } catch (error) {
+        appLog.warning('AgentService: 关闭 A2UI 流失败 - $error');
+      }
+    }
+
     if (_cancelRequested) return null;
     return stream.onResult;
+  }
+
+  /// 懒创建当前流式文本消息（工具调用后重新创建，保证时间轴顺序）。
+  AgentMessage _ensureActiveStreamMessage() {
+    final existing = _activeStreamMsg;
+    if (existing != null) return existing;
+    final msg = AgentMessage(
+      isUser: false,
+      text: '',
+      turnId: _currentTurnId,
+    );
+    _activeStreamMsg = msg;
+    _streamRaw = '';
+    _addMessage(msg);
+    return msg;
+  }
+
+  /// A2UI surface 的宿主消息：与流式文本消息分开，避免工具调用/文本定稿
+  /// 把已完成 surface 的消息提前持久化或清空。
+  AgentMessage _ensureA2uiTurnMessage() {
+    final existing = _a2uiTurnMessage;
+    if (existing != null) return existing;
+    final msg = AgentMessage(
+      isUser: false,
+      text: '',
+      turnId: _currentTurnId,
+    );
+    _a2uiTurnMessage = msg;
+    _addMessage(msg);
+    return msg;
+  }
+
+  void _consumeA2uiParts(Iterable<a2ui_agent.StreamPart> parts) {
+    for (final part in parts) {
+      switch (part) {
+        case a2ui_agent.TextPart(:final text):
+          if (text.isEmpty) break;
+          _applyStreamText(_ensureActiveStreamMessage(), text);
+        case a2ui_agent.A2uiPart(:final a2ui):
+          final owner = _ensureA2uiTurnMessage();
+          final messages = owner.a2uiMessages ??= <Map<String, Object?>>[];
+          for (final message in a2ui) {
+            messages.add(
+              message.toJson().map(
+                    (key, value) => MapEntry(key.toString(), value),
+                  ),
+            );
+          }
+          owner.a2uiRevision++;
+          _notifyMessages();
+        case a2ui_agent.ErrorPart(:final error):
+          appLog.warning(
+            'AgentService: A2UI 块被拒绝 - ${error.code}: ${error.message}',
+          );
+      }
+    }
+  }
+
+  /// 持久化本轮 A2UI 宿主消息（每个回合最多一次）。
+  void _persistA2uiTurnMessage() {
+    final msg = _a2uiTurnMessage;
+    _a2uiTurnMessage = null;
+    if (msg == null || (msg.a2uiMessages?.isEmpty ?? true)) return;
+    _compactA2uiMessages(msg);
+    _persistMessage(msg);
+  }
+
+  /// 流式解析会产生大量增量消息（每个分片一条）。定稿时用累计原文重新解析，
+  /// 只保留 `createSurface` + 少量 `updateComponents`，避免持久化膨胀。
+  void _compactA2uiMessages(AgentMessage msg) {
+    final processor = _a2uiTurnProcessor;
+    final raw = _a2uiRawBuffer;
+    if (processor == null || raw.trim().isEmpty) return;
+    try {
+      final compact = <Map<String, Object?>>[];
+      for (final part in processor.parseResponse(raw)) {
+        if (part is! a2ui_agent.A2uiPart) continue;
+        for (final message in part.a2ui) {
+          compact.add(
+            message.toJson().map((key, value) => MapEntry(key.toString(), value)),
+          );
+        }
+      }
+      if (compact.isEmpty || compact.length >= msg.a2uiMessages!.length) return;
+      msg.a2uiMessages = compact;
+      msg.a2uiRevision++;
+      _notifyMessages();
+    } catch (error) {
+      appLog.warning('AgentService: A2UI 定稿解析失败 - $error');
+    }
+  }
+
+  /// 回合结束清理 A2UI 解析状态。
+  void _resetA2uiTurnState() {
+    _a2uiTurnProcessor = null;
+    _a2uiTurnState = null;
+    _a2uiTurnMessage = null;
+    _lastA2uiPrompt = null;
+    _a2uiRawBuffer = '';
   }
 
   List<ToolRequestPart> _toolRequestsOf(GenerateResult<dynamic> result) {
@@ -6248,16 +6400,31 @@ class AgentService {
       final extraToolLines = extraModules.isEmpty
           ? null
           : '▸ 扩展工具\n${extraModules.map((t) => '  • ${t.toolName} — ${t.toolDescription}').join('\n')}';
+      final a2uiIntent = A2uiInlineService.instance.shouldEnable(userText);
       final selectedNames = <String>[
-        if (toolsEnabled) ...selection.names,
+        if (toolsEnabled)
+          for (final name in selection.names)
+            if (!a2uiIntent || name != renderA2uiToolName) name,
       ];
       final turnToolNames = <String>[
         ...selectedNames,
         for (final tool in extraModules)
-          if (!selectedNames.contains(tool.toolName)) tool.toolName,
+          if (!selectedNames.contains(tool.toolName) &&
+              !(a2uiIntent && tool.toolName == renderA2uiToolName))
+            tool.toolName,
       ];
       _lastTurnToolNames = turnToolNames;
-      _applyTurnSystemPrompt(selectedNames, extraToolLines: extraToolLines);
+      _a2uiTurnProcessor =
+          a2uiIntent ? A2uiInlineService.instance.createProcessor() : null;
+      _a2uiTurnState = _a2uiTurnProcessor?.createState();
+      _a2uiTurnMessage = null;
+      _a2uiRawBuffer = '';
+      _applyTurnSystemPrompt(
+        selectedNames,
+        extraToolLines: extraToolLines,
+        a2uiPrompt:
+            a2uiIntent ? A2uiInlineService.instance.promptSection() : null,
+      );
       _logAi('◆ 工具选择', data: {
         'selected': turnToolNames.length,
         'total': AgentToolCatalog.enabled.length + extraModules.length,
@@ -6335,6 +6502,7 @@ class AgentService {
           _notifyMessages();
           _persistStreamMessage(msg);
         }
+        _persistA2uiTurnMessage();
         _activeStreamMsg = null;
         return;
       }
@@ -6360,8 +6528,10 @@ class AgentService {
       // 最终文本兜底
       final msg = _activeStreamMsg;
       if (msg != null) {
-        if (msg.text.trim().isEmpty && msg.reasoning.isEmpty) {
-          // 既无正文也无思考的残留空消息：移除，不展示
+        if (msg.text.trim().isEmpty &&
+            msg.reasoning.isEmpty &&
+            (msg.a2uiMessages?.isEmpty ?? true)) {
+          // 既无正文、思考也无 A2UI 的残留空消息：移除，不展示
           _removeMessage(msg);
         } else {
           msg.text = msg.text.trim();
@@ -6369,6 +6539,7 @@ class AgentService {
           _notifyMessages();
           // 持久化助手消息
           _persistStreamMessage(msg);
+          _persistA2uiTurnMessage();
         }
       }
       _logAi('■ 响应', data: {
@@ -6397,6 +6568,7 @@ class AgentService {
           _notifyMessages();
         }
       }
+      _persistA2uiTurnMessage();
       _activeStreamMsg = null;
       // 错误提示独立展示（独立 turnId，不与失败的流式消息同回合；纯文本非工具）。
       // 用户可见文案保持简短，详细异常（含 GenkitException 上下文）已入 appLog。
@@ -6411,6 +6583,7 @@ class AgentService {
           _persistTurnTrace(traceRef);
         }
         _activeStreamMsg = null;
+        _resetA2uiTurnState();
         _busy = false;
         busy.value = false;
         final needsReconfigure = _pendingModelReconfigure;

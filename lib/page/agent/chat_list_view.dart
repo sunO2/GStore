@@ -13,6 +13,7 @@
 ///   markdown 不再重复解析，未读历史零重建。
 library;
 
+import 'package:a2ui_core/a2ui_core.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
@@ -22,6 +23,7 @@ import 'package:gstore/core/agent/agent_suggestions.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 
+import 'a2ui_inline_card.dart';
 import 'a2ui_tool_card.dart';
 import 'inline_card_registry.dart';
 import 'step_text.dart';
@@ -346,7 +348,8 @@ class AgentChatListViewState extends State<AgentChatListView> {
         ..write('|rd=${m.reasoningDone ? 1 : 0}')
         ..write('|ts=${m.toolStatus?.name ?? ''}')
         ..write('|tt=${m.toolType?.name ?? ''}')
-        ..write('|td=${m.toolDetail?.length ?? 0}');
+        ..write('|td=${m.toolDetail?.length ?? 0}')
+        ..write('|a2ui=${m.a2uiRevision}:${m.a2uiMessages?.length ?? 0}');
       final dl = m.downloadStatus;
       if (dl != null) {
         buf
@@ -471,7 +474,17 @@ class _WelcomeView extends StatelessWidget {
   }
 }
 
-/// 回合时间轴（竖向时间线）：同回合 agent 文本与工具调用按序串联
+/// A2UI action → 回传给 Agent 的用户消息。
+String _a2uiActionMessage(A2uiRendererAction action) {
+  final label = action.userMessage?.trim();
+  final contextJson =
+      action.context.isEmpty ? '' : ' context=${jsonEncode(action.context)}';
+  return (label == null || label.isEmpty)
+      ? '我已点击 A2UI 界面中的“${action.name}”按钮'
+          '（action=${action.name}$contextJson）。请根据这个操作继续。'
+      : '$label（action=${action.name}$contextJson）。请根据这个操作继续。';
+}
+
 /// 显式 `renderA2ui` 工具结果渲染为 A2UI 卡片；payload 存在 toolArgs 中。
 Widget? _a2uiToolCard(
   AgentMessage msg, {
@@ -492,19 +505,11 @@ Widget? _a2uiToolCard(
     payload: raw,
     title: msg.toolArgs?['title']?.toString(),
     enabled: enabled,
-    onAction: (action) {
-      final label = action.userMessage?.trim();
-      final contextJson =
-          action.context.isEmpty ? '' : ' context=${jsonEncode(action.context)}';
-      final text = (label == null || label.isEmpty)
-          ? '我已点击 A2UI 界面中的“${action.name}”按钮'
-              '（action=${action.name}$contextJson）。请根据这个操作继续。'
-          : '$label（action=${action.name}$contextJson）。请根据这个操作继续。';
-      onSendText?.call(text);
-    },
+    onAction: (action) => onSendText?.call(_a2uiActionMessage(action)),
   );
 }
 
+/// 回合时间轴（竖向时间线）：同回合 agent 文本与工具调用按序串联
 class _TurnTimeline extends StatelessWidget {
   final List<AgentMessage> turnMsgs;
 
@@ -622,7 +627,9 @@ class _TurnTimeline extends StatelessWidget {
     // A2UI surface 内含 TextField/List 等不支持 intrinsic 尺寸的组件，
     // 放进 IntrinsicHeight 会导致高度算小、后续步骤压到卡片上。
     // 这里用 Stack + Positioned 画时间轴竖线，高度由内容自然撑开。
-    if (isTool && msg.toolName == AgentService.renderA2uiToolName) {
+    final hasInlineA2ui = !isTool && (msg.a2uiMessages?.isNotEmpty ?? false);
+    if (hasInlineA2ui ||
+        (isTool && msg.toolName == AgentService.renderA2uiToolName)) {
       return Stack(
         children: [
           if (!isLast)
@@ -681,12 +688,28 @@ class _TurnTimeline extends StatelessWidget {
     final showReasoning =
         ModuleManager.instance.get<AgentService>()?.model?.showReasoning ??
             true;
-    return AgentStepTextBlock(
+    final textBlock = AgentStepTextBlock(
       // 建议行已经渲染成下面的可点击按钮，正文里不再重复
       text: AgentSuggestions.stripStructuredLine(msg.text),
       reasoning: msg.reasoning,
       reasoningDone: msg.reasoningDone,
       showReasoning: showReasoning,
+    );
+    final a2ui = msg.a2uiMessages;
+    if (a2ui == null || a2ui.isEmpty) return textBlock;
+    final card = A2uiInlineCard(
+      key: ValueKey('a2ui-inline-${msg.id}'),
+      messages: a2ui,
+      revision: msg.a2uiRevision,
+      enabled: !isGenerating,
+      onAction: onSendText == null
+          ? null
+          : (action) => onSendText!(_a2uiActionMessage(action)),
+    );
+    if (msg.text.trim().isEmpty && msg.reasoning.isEmpty) return card;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [textBlock, card],
     );
   }
 
