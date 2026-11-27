@@ -630,3 +630,38 @@ third_party/ 目录已无 vendor 包
 
 三个需要补丁的插件全部改为 GitHub commit 依赖：
 `installed_apps`、`rhttp`、`flutter_inappwebview_android`。
+
+---
+
+## 16. FRB 绑定与 .so 同步问题（2026-11-27）
+
+升级 FRB 2.12 后，为了通过 CI 的 FRB regeneration gate，使用
+`rust/gstore_host/frb_config.yaml`（`crate::bridge`）重新生成了绑定。
+但当时 Android `jniLibs` 里的 `libgstore_host.so` 还是上一次生成结果编译的，
+导致真机启动时报：
+
+```text
+Content hash on Dart side (...) is different from Rust side (...),
+indicating out-of-sync code.
+flutter_rust_bridge has not been initialized.
+```
+
+表现为 Dart 拿不到 Rust 配置/核心数据，`ConfigApi.init` 失败、核心自举降级。
+
+修复：
+
+1. `cargo build --release` 重建 Linux host
+2. `./build_android_rust.sh` 重建 4 个 ABI 的 host + 内置模块
+3. 重新构建 APK、安装
+
+验证：
+
+```text
+core-bootstrap: list-installed elapsedMs=216
+ConfigInitializer: Rust 配置客户端初始化完成 (共 54 项配置)
+[CoreBootstrap] 切流正常
+```
+
+**规则：每次重新生成 FRB 绑定后，必须同步重建 `android/app/src/main/jniLibs`
+下的 `libgstore_host.so`（以及受影响的模块），否则 Dart 与 Rust 的 content hash
+不一致，运行时会拒绝初始化。**
