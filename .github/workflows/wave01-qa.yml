@@ -292,11 +292,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/flutter_rust_bridge_codegen
-          key: ${{ runner.os }}-frb-codegen-2.11.1
+          key: ${{ runner.os }}-frb-codegen-2.12.0
 
-      - name: Install flutter_rust_bridge_codegen 2.11.1
+      - name: Install flutter_rust_bridge_codegen 2.12.0
         if: steps.frb-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked flutter_rust_bridge_codegen --version 2.11.1
+        run: cargo install --locked flutter_rust_bridge_codegen --version 2.12.0
 
       - name: Cache cargo-expand binary
         id: cargo-expand-cache
