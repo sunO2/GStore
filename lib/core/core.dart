@@ -8,6 +8,9 @@ import 'package:gstore/core/config/config_registry.dart';
 // 设计系统
 export 'package:gstore/core/design/design_tokens.dart';
 
+// 通用扫码（可嵌入组件 + 全屏页面壳）
+export 'package:gstore/core/qr_scan/qr_scan.dart';
+
 // 新的统一数据模型
 export 'package:gstore/core/model/IDetailInfo.dart';
 export 'package:gstore/core/model/BackupData.dart';

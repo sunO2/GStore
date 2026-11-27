@@ -90,8 +90,7 @@ class ZoomBucketStats {
   int get validGeomFrames => detected - degenerate;
 
   /// 均值只统计有效几何帧：退化帧的 ratio 记 0 会把均值稀释掉，看不出真实尺寸
-  double get meanRatio =>
-      validGeomFrames <= 0 ? 0 : ratioSum / validGeomFrames;
+  double get meanRatio => validGeomFrames <= 0 ? 0 : ratioSum / validGeomFrames;
 
   double get meanSharpness => frames == 0 ? 0 : sharpnessSum / frames;
 
@@ -426,8 +425,9 @@ class QrZoomController {
   }
 
   void _updateEma(double ratio) {
-    _emaRatio =
-        _emaSamples == 0 ? ratio : _emaRatio * (1 - emaAlpha) + ratio * emaAlpha;
+    _emaRatio = _emaSamples == 0
+        ? ratio
+        : _emaRatio * (1 - emaAlpha) + ratio * emaAlpha;
     _emaSamples++;
   }
 
@@ -455,9 +455,8 @@ class QrZoomController {
   void _verifyIfPending(ZoomObservation o) {
     if (_verifyDir == 0) return;
     final expected = _verifyRatioBefore;
-    final moved = _verifyDir > 0
-        ? o.ratio > expected * 1.1
-        : o.ratio < expected * 0.9;
+    final moved =
+        _verifyDir > 0 ? o.ratio > expected * 1.1 : o.ratio < expected * 0.9;
     _verifyFailures = moved ? 0 : _verifyFailures + 1;
     if (_verifyFailures >= 2) zoomIneffective = true;
     _verifyDir = 0;

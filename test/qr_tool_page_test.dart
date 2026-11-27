@@ -225,8 +225,8 @@ void main() {
       final bytes = await files.single.readAsBytes();
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      final data = await frame.image
-          .toByteData(format: ui.ImageByteFormat.rawRgba);
+      final data =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
       frame.image.dispose();
       codec.dispose();
       expect(data, isNotNull, reason: '保存的 PNG 应可解码');
@@ -270,8 +270,10 @@ void main() {
     await pumpPage(tester);
 
     // 分段胶囊出现，默认生成模式（短标签移动端：生成|识别）
-    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '生成'), findsOneWidget);
-    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '识别'), findsOneWidget);
+    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '生成'),
+        findsOneWidget);
+    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '识别'),
+        findsOneWidget);
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
 
     // 注入相机不可用（测试环境平台通道未注册，真实 availableCameras 会挂起；
@@ -323,7 +325,8 @@ void main() {
   test('rotateLumaToPreview：顺时针 90° 单次迁移正确', () {
     // 2×2：a=1 b=2 / c=3 d=4 → 顺时针 90° → c=3 a=1 / d=4 b=2 → [3,1,4,2]
     final src = Uint8List.fromList([1, 2, 3, 4]);
-    final (out, w, h) = QrToolPage.rotateLumaToPreview(src, 2, 2, quarterTurns: 1);
+    final (out, w, h) =
+        QrToolPage.rotateLumaToPreview(src, 2, 2, quarterTurns: 1);
     expect(w, 2);
     expect(h, 2);
     expect(out, Uint8List.fromList([3, 1, 4, 2]));
@@ -493,6 +496,16 @@ void main() {
     await tester.pump();
     expect(find.text('模块加载失败'), findsOneWidget);
     expect(find.text('相机不可用'), findsOneWidget, reason: '模块失败不得影响相机预览占位');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('生成模式长按输入框显示系统选择菜单', (tester) async {
+    await pumpPage(tester);
+    await tester.enterText(find.byType(TextField), 'hello world');
+    await tester.pump();
+    await tester.longPress(find.byType(TextField));
+    await tester.pumpAndSettle();
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
