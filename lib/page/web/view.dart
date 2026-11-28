@@ -330,6 +330,9 @@ img, video, picture, canvas, svg, iframe {
     for (final entry in WebBrowserStore.instance.history) {
       final host = entry.host.toLowerCase();
       if (host.isEmpty) continue;
+      // WebView 的错误页也会被记成一次访问（标题是「网页无法打开」），
+      // 这类条目放进常用网站只会得到一个打不开的入口。
+      if (_isErrorPageTitle(entry.title)) continue;
       counts[host] = (counts[host] ?? 0) + 1;
       latest.putIfAbsent(host, () => entry);
     }
@@ -352,6 +355,14 @@ img, video, picture, canvas, svg, iframe {
       ],
       'theme': {'dark': _isDark, 'css': _homeThemeCss()},
     };
+  }
+
+  bool _isErrorPageTitle(String title) {
+    final text = title.trim();
+    if (text.isEmpty) return true;
+    return text.contains('网页无法打开') ||
+        text.contains('Web page not available') ||
+        text.contains('Webpage not available');
   }
 
   void _registerHomeBridge(InAppWebViewController controller) {
