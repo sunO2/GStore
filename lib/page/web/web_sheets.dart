@@ -10,6 +10,7 @@ import 'package:gstore/core/webview/web_suggestions.dart';
 enum WebMoreAction {
   bookmarks,
   history,
+  downloads,
   findInPage,
   nightMode,
   desktopMode,
@@ -36,6 +37,11 @@ Future<WebMoreAction?> showWebMoreSheet(
       action: WebMoreAction.history,
       icon: TablerIcons.history,
       label: '历史',
+    ),
+    const _ToolTileData(
+      action: WebMoreAction.downloads,
+      icon: TablerIcons.download,
+      label: '下载',
     ),
     _ToolTileData(
       action: WebMoreAction.findInPage,
@@ -131,22 +137,30 @@ class _ToolGrid extends StatelessWidget {
       color: scheme.outlineVariant.withValues(alpha: 0.45),
       width: 1,
     );
-    final rows = <TableRow>[];
-    for (var i = 0; i < tiles.length; i += _columns) {
-      rows.add(TableRow(
+    final rows = <Widget>[];
+    for (var start = 0; start < tiles.length; start += _columns) {
+      final end = (start + _columns).clamp(0, tiles.length);
+      final rowTiles = tiles.sublist(start, end);
+      final hasNextRow = end < tiles.length;
+      rows.add(Row(
         children: [
-          for (var j = 0; j < _columns; j++)
-            if (i + j < tiles.length)
-              _ToolCell(data: tiles[i + j], onTap: onTap)
-            else
-              const SizedBox.shrink(),
+          for (var i = 0; i < rowTiles.length; i++)
+            Expanded(
+              child: Container(
+                // 只在实际存在的单元格之间画分割线，最后一行残缺时不会留下悬空线。
+                decoration: BoxDecoration(
+                  border: Border(
+                    right: i < rowTiles.length - 1 ? line : BorderSide.none,
+                    bottom: hasNextRow ? line : BorderSide.none,
+                  ),
+                ),
+                child: _ToolCell(data: rowTiles[i], onTap: onTap),
+              ),
+            ),
         ],
       ));
     }
-    return Table(
-      border: TableBorder(horizontalInside: line, verticalInside: line),
-      children: rows,
-    );
+    return Column(children: rows);
   }
 }
 
@@ -523,5 +537,100 @@ class _WebEntryRow extends StatelessWidget {
             '${time.hour.toString().padLeft(2, '0')}:'
             '${time.minute.toString().padLeft(2, '0')}';
     return '${entry.host} · $stamp';
+  }
+}
+
+/// 网站要求 HTTP 身份验证（Basic/Digest）时的账号密码输入框。
+Future<({String username, String password})?> showWebHttpAuthSheet(
+  BuildContext context, {
+  required String host,
+  String? realm,
+}) {
+  return AppSheet.showCustom<({String username, String password})>(
+    context: context,
+    builder: (_) => _HttpAuthSheet(host: host, realm: realm),
+  );
+}
+
+class _HttpAuthSheet extends StatefulWidget {
+  const _HttpAuthSheet({required this.host, this.realm});
+
+  final String host;
+  final String? realm;
+
+  @override
+  State<_HttpAuthSheet> createState() => _HttpAuthSheetState();
+}
+
+class _HttpAuthSheetState extends State<_HttpAuthSheet> {
+  final TextEditingController _username = TextEditingController();
+  final TextEditingController _password = TextEditingController();
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _username.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final username = _username.text.trim();
+    if (username.isEmpty) return;
+    Navigator.of(context).pop((
+      username: username,
+      password: _password.text,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final realm = widget.realm?.trim() ?? '';
+    return AppSheetScaffold(
+      title: '需要登录',
+      subtitle: realm.isEmpty ? widget.host : '${widget.host} · $realm',
+      icon: const Icon(TablerIcons.lock),
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('登录')),
+      ],
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _username,
+            autofocus: true,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: '用户名',
+              prefixIcon: Icon(TablerIcons.user, size: 18),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          TextField(
+            controller: _password,
+            obscureText: _obscure,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: '密码',
+              prefixIcon: const Icon(TablerIcons.key, size: 18),
+              suffixIcon: IconButton(
+                tooltip: _obscure ? '显示密码' : '隐藏密码',
+                icon: Icon(
+                  _obscure ? TablerIcons.eye : TablerIcons.eye_off,
+                  size: 18,
+                ),
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

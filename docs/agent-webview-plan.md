@@ -171,3 +171,29 @@ test/web_view_settings_test.dart       7 项（默认值/模板/JSON/持久化�
 test/web_view_settings_page_test.dart  4 项（分区/夜间模式/引擎/字号）
 test/web_view_page_test.dart          17 项（宫格含「设置」、禁用态等）
 ```
+
+### 下载 / Web 认证 / 源码视图（2026-11-28）
+
+- **下载**：监听 `onDownloadStartRequest`，用 `resolveWebDownloadFileName`
+  解析文件名（suggestedFilename → Content-Disposition → URL → MIME 补后缀），
+  交给 `IDownloadService.download(..., installAfterDownload: false)`；
+  成功后提示「已加入下载」，点「查看」进入下载管理器；工具宫格新增「下载」入口。
+- **Web 认证**：`onReceivedHttpAuthRequest` 弹出统一账号密码弹层，返回
+  `HttpAuthResponse(PROCEED)`；并发 challenge 共用同一个弹层。客户端证书请求
+  （`onReceivedClientCertRequest`）自动取消并提示不支持。
+- **源码视图**：改用 `AppCodeView`（re_editor 封装，只读 + 行号 + XML 高亮 +
+  双指缩放），替换原来的纯文本 SelectableText。
+
+**顺带修复 rhttp 多引擎崩溃**：下载会启动 `flutter_foreground_task` 前台服务，
+它在同一进程里创建第二个 Flutter 引擎并重新注册插件；`librhttp` 的
+`init_android` 再次调用 `ndk_context::initialize_android_context` 触发
+`assertion failed: previous.is_none()` → SIGABRT（首次下载必崩）。
+已在 fork `sunO2/rhttp` 增加引擎引用计数（首个引擎初始化、最后一个释放），
+pubspec 指向 `eecda0eb860f6c6af75fb4912138f2bbb4f38678`。
+
+测试：
+
+```text
+test/web_download_test.dart   6 项（文件名解析/Content-Disposition/MIME 补齐）
+test/web_view_page_test.dart 12 项（宫格含「下载」、源码用 AppCodeView、认证弹层）
+```

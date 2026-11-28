@@ -212,12 +212,16 @@ class AppDialogs {
     String message, {
     String? title,
     Duration duration = const Duration(seconds: 3),
+    String? actionLabel,
+    VoidCallback? onAction,
   }) {
     _showSnackbar(
       title: title ?? '成功',
       message: message,
       type: _SnackbarType.success,
       duration: duration,
+      actionLabel: actionLabel,
+      onAction: onAction,
     );
   }
 
@@ -283,6 +287,8 @@ class AppDialogs {
     required String message,
     required _SnackbarType type,
     required Duration duration,
+    String? actionLabel,
+    VoidCallback? onAction,
   }) {
     final IconData? icon;
     final Color indicatorColor;
@@ -349,6 +355,13 @@ class AppDialogs {
             shape: RoundedRectangleBorder(borderRadius: AppRadius.allMD),
             margin: AppSpacing.allLG,
             duration: duration,
+            action: actionLabel == null || onAction == null
+                ? null
+                : SnackBarAction(
+                    label: actionLabel,
+                    textColor: _colorScheme.primary,
+                    onPressed: onAction,
+                  ),
           ),
         );
       return;

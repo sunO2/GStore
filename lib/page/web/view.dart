@@ -4,7 +4,9 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
+import 'package:gstore/core/webview/web_download.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
@@ -80,6 +82,9 @@ img, video, picture, canvas, svg, iframe {
 
   WebViewSettings _settings = WebViewSettings.defaults;
   bool _settingsReady = false;
+
+  /// 正在等待用户输入的 HTTP 认证；并发 challenge 共用一个弹层。
+  Future<HttpAuthResponse>? _pendingHttpAuth;
 
   bool _findVisible = false;
   bool _findHasQuery = false;
@@ -183,6 +188,75 @@ img, video, picture, canvas, svg, iframe {
     if (url.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: url));
     if (mounted) AppDialogs.showSuccess('已复制链接');
+  }
+
+  Future<void> _handleDownload(DownloadStartRequest request) async {
+    final url = request.url.toString();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      AppDialogs.showError('不支持下载该链接');
+      return;
+    }
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (service == null) {
+      AppDialogs.showError('下载模块未启用');
+      return;
+    }
+    final name = resolveWebDownloadFileName(
+      suggestedFilename: request.suggestedFilename,
+      contentDisposition: request.contentDisposition,
+      mimeType: request.mimeType,
+      url: Uri.tryParse(url) ?? Uri(),
+    );
+    try {
+      await service.download(
+        'web:${request.url.host.isEmpty ? 'download' : request.url.host}',
+        name,
+        '',
+        url,
+        name,
+        downloadSize: request.contentLength > 0 ? request.contentLength : null,
+        installAfterDownload: false,
+      );
+      if (!mounted) return;
+      AppDialogs.showSuccess(
+        '已加入下载：$name',
+        actionLabel: '查看',
+        onAction: () {
+          if (mounted) context.push(AppRoute.downloadCenter);
+        },
+      );
+    } catch (error) {
+      if (mounted) AppDialogs.showError('下载失败：$error');
+    }
+  }
+
+  Future<HttpAuthResponse> _handleHttpAuth(
+    URLAuthenticationChallenge challenge,
+  ) {
+    final pending = _pendingHttpAuth;
+    if (pending != null) return pending;
+    final future = _promptHttpAuth(challenge);
+    _pendingHttpAuth = future;
+    future.whenComplete(() => _pendingHttpAuth = null);
+    return future;
+  }
+
+  Future<HttpAuthResponse> _promptHttpAuth(
+    URLAuthenticationChallenge challenge,
+  ) async {
+    final space = challenge.protectionSpace;
+    final credentials = await showWebHttpAuthSheet(
+      context,
+      host: space.host,
+      realm: space.realm,
+    );
+    if (credentials == null) return HttpAuthResponse();
+    return HttpAuthResponse(
+      action: HttpAuthResponseAction.PROCEED,
+      username: credentials.username,
+      password: credentials.password,
+      permanentPersistence: true,
+    );
   }
 
   Future<void> _loadUrl(String url) async {
@@ -414,6 +488,8 @@ img, video, picture, canvas, svg, iframe {
         await _openEntries(bookmarks: true);
       case WebMoreAction.history:
         await _openEntries(bookmarks: false);
+      case WebMoreAction.downloads:
+        await context.push(AppRoute.downloadCenter);
       case WebMoreAction.findInPage:
         await _openFind();
       case WebMoreAction.nightMode:
@@ -612,6 +688,20 @@ img, video, picture, canvas, svg, iframe {
                     }
                     // mailto:/tel:/intent: 等交给系统会跳出 App，这里直接忽略。
                     return NavigationActionPolicy.CANCEL;
+                  },
+                  onDownloadStartRequest: (controller, request) {
+                    _handleDownload(request);
+                  },
+                  onReceivedHttpAuthRequest: (controller, challenge) =>
+                      _handleHttpAuth(challenge),
+                  onReceivedClientCertRequest: (controller, challenge) async {
+                    if (mounted) {
+                      AppDialogs.showWarning('该网站要求客户端证书，暂不支持');
+                    }
+                    return ClientCertResponse(
+                      action: ClientCertResponseAction.CANCEL,
+                      certificatePath: '',
+                    );
                   },
                   onReceivedError: (controller, request, error) {
                     // 只处理主文档失败；子资源失败不影响整页。

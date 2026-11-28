@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/design/app_code_view.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 import 'package:gstore/page/web/view.dart';
 import 'package:gstore/page/web/web_sheets.dart';
+import 'package:gstore/page/web/web_tools_sheets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -108,6 +110,7 @@ void main() {
       for (final label in [
         '书签',
         '历史',
+        '下载',
         '页内查找',
         '夜间模式',
         '电脑模式',
@@ -150,6 +153,67 @@ void main() {
       await tester.tap(find.text('页内查找'), warnIfMissed: false);
       await tester.pumpAndSettle();
       expect(action, isNull);
+    });
+  });
+
+  group('页面源码 / HTTP 认证', () {
+    testWidgets('源码使用 AppCodeView 只读视图', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) => Scaffold(
+              body: TextButton(
+                onPressed: () => showWebSourceSheet(
+                  ctx,
+                  html: '<html><body><h1>hi</h1></body></html>',
+                  url: 'https://example.com',
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AppCodeView), findsOneWidget);
+      expect(find.text('页面源码'), findsOneWidget);
+    });
+
+    testWidgets('HTTP 认证弹层返回账号密码', (tester) async {
+      ({String username, String password})? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) => Scaffold(
+              body: TextButton(
+                onPressed: () async {
+                  result = await showWebHttpAuthSheet(
+                    ctx,
+                    host: 'example.com',
+                    realm: 'Restricted',
+                  );
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('需要登录'), findsOneWidget);
+      expect(find.text('example.com · Restricted'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField).at(0), 'alice');
+      await tester.enterText(find.byType(TextField).at(1), 'secret');
+      await tester.tap(find.text('登录'));
+      await tester.pumpAndSettle();
+
+      expect(result?.username, 'alice');
+      expect(result?.password, 'secret');
     });
   });
 

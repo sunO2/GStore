@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/editor/app_code_language.dart';
 
 /// 字体大小调节（Android `textZoom`）。拖动即生效，关闭弹层保留最后值。
 Future<void> showWebFontSizeSheet(
@@ -98,6 +99,7 @@ Future<void> showWebSourceSheet(
     title: '页面源码',
     subtitle: url,
     icon: const Icon(TablerIcons.code),
+    scrollable: false,
     contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
     actions: [
       TextButton.icon(
@@ -109,18 +111,17 @@ Future<void> showWebSourceSheet(
         label: const Text('复制'),
       ),
     ],
-    content: Container(
-      constraints: const BoxConstraints(maxHeight: 360),
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: AppRadius.allMD,
-      ),
-      child: SingleChildScrollView(
-        child: SelectableText(
-          trimmed,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-        ),
+    // 用统一的 re_editor 只读视图：行号、语法高亮、双指缩放。
+    content: SizedBox(
+      height: 420,
+      child: AppCodeView(
+        text: trimmed,
+        language: AppCodeLanguage.xml,
+        readOnly: true,
+        showLineNumbers: true,
+        wordWrap: true,
+        dark: Theme.of(context).brightness == Brightness.dark,
+        padding: const EdgeInsets.all(AppSpacing.xs),
       ),
     ),
   );

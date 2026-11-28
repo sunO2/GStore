@@ -1453,8 +1453,8 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: b4f6c36edb862d8ea1aecfa8a0c171b8fbcf5cf0
-      resolved-ref: b4f6c36edb862d8ea1aecfa8a0c171b8fbcf5cf0
+      ref: eecda0eb860f6c6af75fb4912138f2bbb4f38678
+      resolved-ref: eecda0eb860f6c6af75fb4912138f2bbb4f38678
       url: "https://github.com/sunO2/rhttp.git"
     source: git
     version: "0.18.0"

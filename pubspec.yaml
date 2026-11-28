@@ -62,7 +62,7 @@ dependencies:
   rhttp:
     git:
       url: https://github.com/sunO2/rhttp.git
-      ref: b4f6c36edb862d8ea1aecfa8a0c171b8fbcf5cf0
+      ref: eecda0eb860f6c6af75fb4912138f2bbb4f38678
   dynamic_color: ^1.9.0
   floor: ^1.4.2
   shared_preferences: ^2.5.6
