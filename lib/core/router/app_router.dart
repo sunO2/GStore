@@ -118,12 +118,21 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: AppRoute.webView,
-      builder: (context, state) {
+      // 浏览页里有原生 WebView（platform view），整页滑入/滑出会把
+      // platform view 每帧搬运一次，退出时明显掉帧。浏览器本身也是「瞬间
+      // 切页」的观感，这里直接不做转场。
+      pageBuilder: (context, state) {
         final extra = state.extra;
         final args = extra is Map ? extra : const <String, Object?>{};
-        return WebPage(
-          url: args['url']?.toString(),
-          title: args['title']?.toString(),
+        return CustomTransitionPage<void>(
+          key: state.pageKey,
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          transitionsBuilder: (_, __, ___, child) => child,
+          child: WebPage(
+            url: args['url']?.toString(),
+            title: args['title']?.toString(),
+          ),
         );
       },
     ),

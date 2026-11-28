@@ -15,6 +15,7 @@ import 'package:gstore/core/webview/web_userscript_store.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
+import 'browser_tabs_sheet.dart';
 import 'web_address_bar.dart';
 import 'web_sheets.dart';
 import 'web_tools_sheets.dart';
@@ -23,7 +24,10 @@ import 'web_userscript_sheets.dart';
 /// 内置浏览器（AI 回复里的链接、外部跳转都走这里）。
 ///
 /// 地址/搜索（必应建议）、历史、书签、页内查找、夜间模式、电脑模式、
-/// 字体大小、查看源码、页面信息、资源嗅探、清除数据。
+/// 字体大小、查看源码、页面信息、资源嗅探、用户脚本、多标签页。
+///
+/// 本类是**标签页外壳**：每个标签页是一个独立的 [BrowserTabPage]，
+/// 放进 IndexedStack 保活；切换/关闭/新建由这里统一管理。
 class WebPage extends StatefulWidget {
   const WebPage({super.key, this.url, this.title});
 
@@ -37,7 +41,316 @@ class WebPage extends StatefulWidget {
   State<WebPage> createState() => _WebPageState();
 }
 
+/// 一个标签页在外壳里的句柄。
+class _BrowserTabHandle {
+  _BrowserTabHandle({
+    required this.id,
+    this.url,
+    this.title,
+    required this.lastUsed,
+  });
+
+  final int id;
+  final GlobalKey<BrowserTabPageState> key =
+      GlobalKey<BrowserTabPageState>();
+
+  /// 标签页当前地址；为空表示主页（恢复时重新加载主页而不是 gstore.home）。
+  String? url;
+  String? title;
+
+  /// 切换出去时抓的截图，标签页列表用它当缩略图。
+  Uint8List? thumbnail;
+
+  /// 超出保活上限后释放 WebView，切回时按 [url] 重新加载。
+  bool suspended = false;
+
+  int lastUsed;
+}
+
 class _WebPageState extends State<WebPage> {
+  /// 同时保活的 WebView 上限；超出的按 LRU 释放（保留标签页与缩略图）。
+  static const int _maxLiveTabs = 5;
+
+  final List<_BrowserTabHandle> _tabs = <_BrowserTabHandle>[];
+  final ValueNotifier<List<BrowserTabCardData>> _tabCards =
+      ValueNotifier<List<BrowserTabCardData>>(const []);
+  int _active = 0;
+  int _nextId = 1;
+  int _clock = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs.add(_createTab(url: widget.url, title: widget.title));
+    _syncCards();
+  }
+
+  @override
+  void dispose() {
+    _tabCards.dispose();
+    super.dispose();
+  }
+
+  _BrowserTabHandle _createTab({String? url, String? title}) {
+    return _BrowserTabHandle(
+      id: _nextId++,
+      url: url,
+      title: title,
+      lastUsed: ++_clock,
+    );
+  }
+
+  void _syncCards() {
+    _tabCards.value = [
+      for (var index = 0; index < _tabs.length; index++)
+        BrowserTabCardData(
+          index: index,
+          title: _tabs[index].title ?? '',
+          url: _tabs[index].url ?? '',
+          thumbnail: _tabs[index].thumbnail,
+          active: index == _active,
+          suspended: _tabs[index].suspended,
+        ),
+    ];
+  }
+
+  void _refreshTabMeta(_BrowserTabHandle tab) {
+    final state = tab.key.currentState;
+    if (state == null) return;
+    tab.url = state.isShowingHome ? null : state.currentUrl;
+    tab.title = state.currentTitle;
+  }
+
+  Future<void> _newTab() async {
+    if (!mounted) return;
+    setState(() {
+      final handle = _createTab();
+      _tabs.insert(_active + 1, handle);
+      _active = _tabs.indexOf(handle);
+    });
+    _syncCards();
+    await _enforceLimit();
+  }
+
+  Future<void> _activate(int index) async {
+    if (index == _active || index < 0 || index >= _tabs.length) return;
+    final outgoing = _tabs[_active];
+    _refreshTabMeta(outgoing);
+    outgoing.thumbnail ??=
+        await outgoing.key.currentState?.captureThumbnail();
+    if (!mounted) return;
+    setState(() {
+      final target = _tabs[index];
+      target.suspended = false;
+      target.lastUsed = ++_clock;
+      _active = index;
+    });
+    _syncCards();
+    await _enforceLimit();
+  }
+
+  Future<void> _closeTab(int index) async {
+    if (index < 0 || index >= _tabs.length) return;
+    if (_tabs.length == 1) {
+      if (!mounted) return;
+      // 关掉标签页后就没有浏览器页面了：退到首页（同时把标签页面板一起关掉）。
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      return;
+    }
+    setState(() {
+      _tabs.removeAt(index);
+      if (_active >= _tabs.length) {
+        _active = _tabs.length - 1;
+      } else if (index < _active) {
+        _active -= 1;
+      }
+      _tabs[_active].suspended = false;
+    });
+    _syncCards();
+    await _enforceLimit();
+  }
+
+  /// 超过保活上限时，把最久未使用的非活动标签页挂起。
+  Future<void> _enforceLimit() async {
+    final live = _tabs.where((tab) => !tab.suspended).toList();
+    if (live.length <= _maxLiveTabs) return;
+    final activeId = _tabs[_active].id;
+    final candidates = live.where((tab) => tab.id != activeId).toList()
+      ..sort((a, b) => a.lastUsed.compareTo(b.lastUsed));
+    if (candidates.isEmpty) return;
+    final victim = candidates.first;
+    _refreshTabMeta(victim);
+    victim.thumbnail = await victim.key.currentState?.captureThumbnail();
+    if (!mounted) return;
+    setState(() => victim.suspended = true);
+    _syncCards();
+  }
+
+  Future<void> _openTabs() async {
+    final current = _tabs[_active];
+    _refreshTabMeta(current);
+    current.thumbnail ??= await current.key.currentState?.captureThumbnail();
+    _syncCards();
+    if (!mounted) return;
+    await showBrowserTabsSheet(
+      context,
+      cards: _tabCards,
+      onSelect: (index) => unawaited(_activate(index)),
+      onClose: (index) => unawaited(_closeTab(index)),
+      onNewTab: () => unawaited(_newTab()),
+    );
+    if (mounted) _syncCards();
+  }
+
+  Widget _buildTab(_BrowserTabHandle tab) {
+    if (tab.suspended) {
+      return _SuspendedTab(
+        title: tab.title,
+        url: tab.url,
+        thumbnail: tab.thumbnail,
+        onRestore: () => unawaited(_activate(_tabs.indexOf(tab))),
+        onClose: () => unawaited(_closeTab(_tabs.indexOf(tab))),
+      );
+    }
+    return BrowserTabPage(
+      key: tab.key,
+      initialUrl: tab.url,
+      title: tab.title,
+      tabCount: _tabs.length,
+      onOpenTabs: () => unawaited(_openTabs()),
+      onNewTab: () => unawaited(_newTab()),
+      onTabMeta: (url, title) {
+        tab.url = isWebHomeUrl(url) ? null : url;
+        tab.title = title;
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IndexedStack(
+      // 每页都是 Scaffold，必须拿到紧约束，否则会被压成内容高度。
+      sizing: StackFit.expand,
+      index: _active.clamp(0, _tabs.length - 1),
+      children: [for (final tab in _tabs) _buildTab(tab)],
+    );
+  }
+}
+
+/// 被释放的标签页占位（正常情况下不会被选中，选中前会先恢复）。
+class _SuspendedTab extends StatelessWidget {
+  const _SuspendedTab({
+    required this.title,
+    required this.url,
+    required this.thumbnail,
+    required this.onRestore,
+    required this.onClose,
+  });
+
+  final String? title;
+  final String? url;
+  final Uint8List? thumbnail;
+  final VoidCallback onRestore;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final host = Uri.tryParse(url ?? '')?.host ?? '';
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          (title == null || title!.trim().isEmpty) ? '标签页' : title!,
+        ),
+        actions: [
+          IconButton(
+            tooltip: '关闭标签页',
+            icon: const Icon(TablerIcons.x),
+            onPressed: onClose,
+          ),
+        ],
+      ),
+      body: Center(
+        child: InkWell(
+          onTap: onRestore,
+          borderRadius: AppRadius.allSM,
+          child: Padding(
+            padding: AppSpacing.allLG,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (thumbnail != null)
+                  ClipRRect(
+                    borderRadius: AppRadius.allSM,
+                    child: Image.memory(
+                      thumbnail!,
+                      width: 180,
+                      fit: BoxFit.cover,
+                    ),
+                  )
+                else
+                  Icon(
+                    TablerIcons.photo,
+                    size: 48,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                const SizedBox(height: AppSpacing.md),
+                Text(
+                  host.isEmpty ? '已释放的标签页' : host,
+                  style: textTheme.titleSmall,
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  '点按重新加载',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 单个标签页的浏览内容（不含标签管理）。
+///
+/// 每个标签页拥有独立的 WebView、地址条、页内查找和用户脚本注入状态；
+/// 由 [WebPage] 放进 IndexedStack 保活。
+class BrowserTabPage extends StatefulWidget {
+  const BrowserTabPage({
+    super.key,
+    this.initialUrl,
+    this.title,
+    required this.tabCount,
+    required this.onOpenTabs,
+    required this.onNewTab,
+    required this.onTabMeta,
+  });
+
+  /// 要打开的地址；可以是裸域名，内部会补 `https://`。为空时从主页开始。
+  final String? initialUrl;
+
+  /// 标题栏文案；为空时用网页标题或域名。
+  final String? title;
+
+  /// 当前标签页总数（底部标签按钮上的数字）。
+  final int tabCount;
+
+  final VoidCallback onOpenTabs;
+  final VoidCallback onNewTab;
+
+  /// URL/标题变化时回传给 shell，供标签页列表展示。
+  final void Function(String url, String title) onTabMeta;
+
+  @override
+  State<BrowserTabPage> createState() => BrowserTabPageState();
+}
+
+class BrowserTabPageState extends State<BrowserTabPage> {
   static const String _desktopUserAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -77,7 +390,7 @@ img, video, picture, canvas, svg, iframe {
   InAppWebViewController? _controller;
 
   /// 入口原始地址。
-  late final String _rawUrl = (widget.url ?? '').trim();
+  late final String _rawUrl = (widget.initialUrl ?? '').trim();
 
   /// 从外部/地址栏打开的 `.user.js`：不加载源码，直接走安装确认。
   late final bool _startsWithUserScript = looksLikeUserScriptUrl(_rawUrl);
@@ -85,7 +398,7 @@ img, video, picture, canvas, svg, iframe {
   /// 没有传 url（点「主页」/ 新标签页）时从内置主页开始。
   late final bool _startsAtHome = _rawUrl.isEmpty || _startsWithUserScript;
   late final String? _initialUrl =
-      _startsAtHome ? null : normalizeWebViewUrl(widget.url);
+      _startsAtHome ? null : normalizeWebViewUrl(widget.initialUrl);
 
   WebHomeConfig _homeConfig = WebHomeConfig.defaults;
   bool _homeReady = false;
@@ -200,6 +513,33 @@ img, video, picture, canvas, svg, iframe {
     _findController.dispose();
     _findFocus.dispose();
     super.dispose();
+  }
+
+  /// 当前地址（shell 用来做标签页卡片）。
+  String get currentUrl => _currentUrl;
+
+  /// 当前标题（shell 用来做标签页卡片）。
+  String get currentTitle => _displayTitle;
+
+  bool get isShowingHome => _atHome;
+
+  /// 切换标签前抓一张缩略图；隐藏的 WebView 抓不到图，所以只在可见时调用。
+  Future<Uint8List?> captureThumbnail() async {
+    final controller = _controller;
+    if (controller == null) return null;
+    try {
+      return await controller.takeScreenshot();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _notifyMeta() {
+    try {
+      widget.onTabMeta(_currentUrl, _displayTitle);
+    } catch (_) {
+      // shell 已经销毁时忽略。
+    }
   }
 
   Brightness? _lastBrightness;
@@ -670,6 +1010,7 @@ img, video, picture, canvas, svg, iframe {
     _atHome = home;
     _isBookmarked = home ? false : WebBrowserStore.instance.isBookmarked(next);
     _pageScripts = WebUserScriptStore.instance.scriptsForUrl(next);
+    _notifyMeta();
   }
 
   void _recordVisit() {
@@ -1077,7 +1418,7 @@ img, video, picture, canvas, svg, iframe {
                 ),
                 const SizedBox(height: AppSpacing.xs),
                 SelectableText(
-                  widget.url ?? '',
+                  widget.initialUrl ?? '',
                   style: textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -1255,6 +1596,7 @@ img, video, picture, canvas, svg, iframe {
                             final text = title?.trim() ?? '';
                             if (!mounted || text.isEmpty) return;
                             setState(() => _pageTitle = text);
+                            _notifyMeta();
                             _recordVisit();
                           },
                           onUpdateVisitedHistory: (controller, url, isReload) {
@@ -1390,14 +1732,14 @@ img, video, picture, canvas, svg, iframe {
                     ? () => _controller?.stopLoading()
                     : () => _atHome ? _openHome() : _controller?.reload(),
               ),
-              const SizedBox(width: AppSpacing.sm),
               Expanded(
-                child: Text(
-                  _atHome ? '主页' : _host,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
+                child: Align(
+                  // heightFactor: 1 防止 Align 撑满工具栏高度（会把整条底栏
+                  // 撑到全屏，按钮跑到屏幕中间）。
+                  heightFactor: 1,
+                  child: _TabsButton(
+                    count: widget.tabCount,
+                    onPressed: widget.onOpenTabs,
                   ),
                 ),
               ),
@@ -1456,6 +1798,49 @@ img, video, picture, canvas, svg, iframe {
               onPressed: _closeFind,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+/// 底部工具栏中间的标签页按钮（方框数字，和 Chrome 一致）。
+class _TabsButton extends StatelessWidget {
+  const _TabsButton({required this.count, required this.onPressed});
+
+  final int count;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Tooltip(
+      message: '标签页',
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: AppRadius.allSM,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Center(
+            child: Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                border: Border.all(color: scheme.outline, width: 1.4),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: Text(
+                '$count',
+                style: textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );

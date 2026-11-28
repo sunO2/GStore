@@ -395,3 +395,20 @@ assetlinks（app 模式）或 Google 的 privileged browser 白名单。
   删除。收藏入口移到「更多」宫格（第 11 格）。
 - 冷启动深链修复：GoRouter 把 http(s) 开头的初始路由重定向回首页，避免
   「用 GStore 打开链接」时先出现 Page Not Found。
+
+### 多标签页（2026-11-29）
+
+- `WebPage` 变成标签页外壳：每个标签页是独立的 `BrowserTabPage`（自己的
+  WebView / 地址条 / 页内查找 / 用户脚本注入状态），统一放进
+  `IndexedStack(sizing: StackFit.expand)` 保活。
+- 底部工具栏中间的方框数字按钮（Chrome 同款）打开 `showBrowserTabsSheet`：
+  2 列卡片 + 缩略图 + 新建；关闭最后一个标签页会退出浏览器回到首页。
+- 缩略图在切换前用 `takeScreenshot` 抓（隐藏的 WebView 抓不到图）。切换
+  不重建 WebView，滚动位置与表单状态保留。
+- 内存：同时保活上限 5 个，超出按 LRU 挂起（保留标签页与缩略图），切回时按
+  上次 URL 重新加载；主页标签页挂起后恢复成主页而不是 `gstore.home`。
+- 浏览页路由改成零时长转场：整页滑动会让 platform view 每帧搬运，退出时掉帧；
+  浏览器本身也是瞬时切页的观感。
+- 踩坑：底栏中间原来用 `Expanded(Center(...))`，`Center` 会吃满可用高度，
+  把整条 bottomNavigationBar 撑到全屏（按钮跑到屏幕中间）。改成
+  `Align(heightFactor: 1)` 后高度回到 48。
