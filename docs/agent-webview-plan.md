@@ -252,3 +252,18 @@ WebView 的 WebAuthn 有两条路，均由 Google 侧把关：
 提交发布签名证书指纹）。自有域名则可切到 `app` 模式并部署 assetlinks.json。
 
 发布证书 SHA-256（当前测试包）：`00F56FCF376C4C212B5CA537C94BDB960123808566EF847CE0015ABC15F40AA4`
+
+### Passkey 闪退排查（2026-11-28）
+
+- Dropbox 里唯一一条 `com.suno2.gstore` 的 tombstone 是 **09:13** 的
+  `assertion failed: previous.is_none()`（下载启动前台服务导致 rhttp 二次
+  初始化），该问题已在 `rhttp eecda0e` 修复；之后的构建没有新的 tombstone。
+- 复测（重启设备后）：`webauthn.io` → Register / Authenticate，应用进程
+  保持存活，只有 GMS 拒绝：
+  `Rejecting browser request ... certificate (...) is not recognised`，
+  WebView 收到 `FIDO2_PRIVILEGED_API is not available`，页面显示失败提示。
+- 设备重启前曾出现多次 `system_server_wtf`（GMS fonts/chimera provider 超时
+  20s+，caller 为本应用），说明当时 GMS 处于异常状态，passkey 依赖 GMS，
+  这种情况下会表现为卡死/被系统回收。重启后恢复正常。
+- 加固：插件里 `setWebAuthenticationSupport` 的调用已包 try/catch，
+  provider 抛异常不会升级为应用崩溃。
