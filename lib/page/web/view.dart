@@ -636,102 +636,113 @@ img, video, picture, canvas, svg, iframe {
         fit: StackFit.expand,
         children: [
           Positioned.fill(
-            child: Column(
-              children: [
-                if (_loading)
-                  LinearProgressIndicator(
-                    value: _progress > 0 && _progress < 1 ? _progress : null,
-                    minHeight: 2,
+            child: AnimatedPadding(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutCubic,
+              // 输入条出现时页面轻微上推，和 Chrome 的观感一致。
+              padding: EdgeInsets.only(bottom: _addressVisible ? 10 : 0),
+              child: Column(
+                children: [
+                  if (_loading)
+                    LinearProgressIndicator(
+                      value: _progress > 0 && _progress < 1 ? _progress : null,
+                      minHeight: 2,
+                    ),
+                  if (_findVisible) _buildFindBar(scheme, textTheme),
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        InAppWebView(
+                          initialUrlRequest:
+                              URLRequest(url: WebUri(initialUrl)),
+                          initialSettings: _webViewSettings(),
+                          onWebViewCreated: (controller) {
+                            _controller = controller;
+                          },
+                          onLoadStart: (controller, url) {
+                            if (!mounted) return;
+                            setState(() {
+                              _loading = true;
+                              _progress = 0;
+                              _syncUrl(url?.toString());
+                            });
+                          },
+                          onProgressChanged: (controller, progress) {
+                            if (!mounted) return;
+                            setState(() => _progress = progress / 100);
+                          },
+                          onLoadStop: (controller, url) {
+                            if (!mounted) return;
+                            setState(() {
+                              _loading = false;
+                              _progress = 1;
+                              _syncUrl(url?.toString());
+                            });
+                            _recordVisit();
+                            _syncNavigationState(controller);
+                            // 注入样式只对当前文档生效，换页后需要重新注入。
+                            if (_settings.nightMode) _applyNightMode();
+                          },
+                          onTitleChanged: (controller, title) {
+                            final text = title?.trim() ?? '';
+                            if (!mounted || text.isEmpty) return;
+                            setState(() => _pageTitle = text);
+                            _recordVisit();
+                          },
+                          onUpdateVisitedHistory: (controller, url, isReload) {
+                            if (!mounted) return;
+                            setState(() => _syncUrl(url?.toString()));
+                            _syncNavigationState(controller);
+                          },
+                          shouldOverrideUrlLoading: (controller, action) async {
+                            final raw = action.request.url;
+                            if (raw == null) {
+                              return NavigationActionPolicy.ALLOW;
+                            }
+                            final uri = Uri.tryParse(raw.toString());
+                            if (uri == null) {
+                              return NavigationActionPolicy.CANCEL;
+                            }
+                            final scheme = uri.scheme.toLowerCase();
+                            if (scheme == 'about' ||
+                                scheme == 'http' ||
+                                scheme == 'https') {
+                              return NavigationActionPolicy.ALLOW;
+                            }
+                            // mailto:/tel:/intent: 等交给系统会跳出 App，这里直接忽略。
+                            return NavigationActionPolicy.CANCEL;
+                          },
+                          onDownloadStartRequest: (controller, request) {
+                            _handleDownload(request);
+                          },
+                          onReceivedHttpAuthRequest: (controller, challenge) =>
+                              _handleHttpAuth(challenge),
+                          onReceivedClientCertRequest:
+                              (controller, challenge) async {
+                            if (mounted) {
+                              AppDialogs.showWarning('该网站要求客户端证书，暂不支持');
+                            }
+                            return ClientCertResponse(
+                              action: ClientCertResponseAction.CANCEL,
+                              certificatePath: '',
+                            );
+                          },
+                          onReceivedError: (controller, request, error) {
+                            // 只处理主文档失败；子资源失败不影响整页。
+                            if (request.isForMainFrame != true) return;
+                            if (!mounted) return;
+                            setState(() => _loading = false);
+                          },
+                        ),
+                        // WebView 首次初始化可能要十几秒（系统 WebView 冷启动），
+                        // 这期间不要留白，给一个明确的加载态。
+                        if (_loading && (_progress <= 0 || _progress >= 1))
+                          const Center(child: AppLoading()),
+                      ],
+                    ),
                   ),
-                if (_findVisible) _buildFindBar(scheme, textTheme),
-                Expanded(
-                  child: Stack(
-                    children: [
-                      InAppWebView(
-                        initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
-                        initialSettings: _webViewSettings(),
-                        onWebViewCreated: (controller) {
-                          _controller = controller;
-                        },
-                        onLoadStart: (controller, url) {
-                          if (!mounted) return;
-                          setState(() {
-                            _loading = true;
-                            _progress = 0;
-                            _syncUrl(url?.toString());
-                          });
-                        },
-                        onProgressChanged: (controller, progress) {
-                          if (!mounted) return;
-                          setState(() => _progress = progress / 100);
-                        },
-                        onLoadStop: (controller, url) {
-                          if (!mounted) return;
-                          setState(() {
-                            _loading = false;
-                            _progress = 1;
-                            _syncUrl(url?.toString());
-                          });
-                          _recordVisit();
-                          _syncNavigationState(controller);
-                          // 注入样式只对当前文档生效，换页后需要重新注入。
-                          if (_settings.nightMode) _applyNightMode();
-                        },
-                        onTitleChanged: (controller, title) {
-                          final text = title?.trim() ?? '';
-                          if (!mounted || text.isEmpty) return;
-                          setState(() => _pageTitle = text);
-                          _recordVisit();
-                        },
-                        onUpdateVisitedHistory: (controller, url, isReload) {
-                          if (!mounted) return;
-                          setState(() => _syncUrl(url?.toString()));
-                          _syncNavigationState(controller);
-                        },
-                        shouldOverrideUrlLoading: (controller, action) async {
-                          final raw = action.request.url;
-                          if (raw == null) return NavigationActionPolicy.ALLOW;
-                          final uri = Uri.tryParse(raw.toString());
-                          if (uri == null) return NavigationActionPolicy.CANCEL;
-                          final scheme = uri.scheme.toLowerCase();
-                          if (scheme == 'about' ||
-                              scheme == 'http' ||
-                              scheme == 'https') {
-                            return NavigationActionPolicy.ALLOW;
-                          }
-                          // mailto:/tel:/intent: 等交给系统会跳出 App，这里直接忽略。
-                          return NavigationActionPolicy.CANCEL;
-                        },
-                        onDownloadStartRequest: (controller, request) {
-                          _handleDownload(request);
-                        },
-                        onReceivedHttpAuthRequest: (controller, challenge) =>
-                            _handleHttpAuth(challenge),
-                        onReceivedClientCertRequest:
-                            (controller, challenge) async {
-                          if (mounted) {
-                            AppDialogs.showWarning('该网站要求客户端证书，暂不支持');
-                          }
-                          return ClientCertResponse(
-                            action: ClientCertResponseAction.CANCEL,
-                            certificatePath: '',
-                          );
-                        },
-                        onReceivedError: (controller, request, error) {
-                          // 只处理主文档失败；子资源失败不影响整页。
-                          if (request.isForMainFrame != true) return;
-                          if (!mounted) return;
-                          setState(() => _loading = false);
-                        },
-                      ),
-                      // WebView 首次初始化可能要十几秒（系统 WebView 冷启动），
-                      // 这期间不要留白，给一个明确的加载态。
-                      if (_loading && (_progress <= 0 || _progress >= 1))
-                        const Center(child: AppLoading()),
-                    ],
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           if (_addressVisible) ...[
@@ -748,9 +759,18 @@ img, video, picture, canvas, svg, iframe {
               left: 0,
               right: 0,
               bottom: 0,
-              child: WebAddressBar(
-                initialText: _currentUrl,
-                onSubmit: _submitAddress,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: 1),
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOutCubic,
+                builder: (context, value, child) => Transform.translate(
+                  offset: Offset(0, (1 - value) * 28),
+                  child: Opacity(opacity: value, child: child),
+                ),
+                child: WebAddressBar(
+                  initialText: _currentUrl,
+                  onSubmit: _submitAddress,
+                ),
               ),
             ),
           ],

@@ -280,3 +280,11 @@ WebView 的 WebAuthn 有两条路，均由 Google 侧把关：
 
 测试：`test/web_address_bar_test.dart`（建议位于输入框上方、点建议提交、
 箭头提交、网址不请求建议）。
+
+### 地址栏 Chrome 化细节（2026-11-28）
+
+- 输入框右侧增加 **清除 X**（有内容时显示，清空后隐藏并保持焦点）
+- **底部安全区**：键盘弹出时不叠加导航栏 inset，键盘收起时补 `viewPadding.bottom`，
+  避免多出一截空白
+- **打开动画**：输入条从下方 28px 滑入 + 淡入（200ms easeOutCubic），
+  页面同时上推 10px（`AnimatedPadding`）

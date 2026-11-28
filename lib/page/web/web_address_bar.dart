@@ -42,6 +42,7 @@ class _WebAddressBarState extends State<WebAddressBar> {
   Timer? _timer;
   List<String> _suggestions = const [];
   int _requestId = 0;
+  late bool _showClear = widget.initialText.isNotEmpty;
 
   @override
   void initState() {
@@ -63,6 +64,10 @@ class _WebAddressBarState extends State<WebAddressBar> {
 
   void _onChanged() {
     _timer?.cancel();
+    final showClear = _controller.text.isNotEmpty;
+    if (showClear != _showClear) {
+      setState(() => _showClear = showClear);
+    }
     final text = _controller.text.trim();
     if (text.isEmpty || text.contains(' ') || _looksLikeUrl(text)) {
       if (_suggestions.isNotEmpty) setState(() => _suggestions = const []);
@@ -150,7 +155,11 @@ class _WebAddressBarState extends State<WebAddressBar> {
               AppSpacing.md,
               AppSpacing.xs,
               AppSpacing.xs,
-              AppSpacing.xs + MediaQuery.of(context).viewPadding.bottom,
+              // 键盘弹出时不再叠加导航栏安全区，否则会多出一截空白。
+              AppSpacing.xs +
+                  (MediaQuery.of(context).viewInsets.bottom > 0
+                      ? 0
+                      : MediaQuery.of(context).viewPadding.bottom),
             ),
             child: Row(
               children: [
@@ -180,6 +189,16 @@ class _WebAddressBarState extends State<WebAddressBar> {
                     ),
                   ),
                 ),
+                if (_showClear)
+                  IconButton(
+                    tooltip: '清除',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(TablerIcons.x, size: 18),
+                    onPressed: () {
+                      _controller.clear();
+                      _focus.requestFocus();
+                    },
+                  ),
                 IconButton(
                   tooltip: '打开',
                   icon: const Icon(TablerIcons.arrow_right),

@@ -65,6 +65,23 @@ void main() {
     expect(submitted, 'https://termux.dev');
   });
 
+  testWidgets('有内容时显示清除按钮，点击清空输入', (tester) async {
+    await tester.pumpWidget(_host(WebAddressBar(
+      initialText: 'https://termux.dev',
+      onSubmit: (_) {},
+      suggestionLoader: (_) async => const [],
+    )));
+    await tester.pump();
+
+    expect(find.byTooltip('清除'), findsOneWidget);
+    await tester.tap(find.byTooltip('清除'));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller?.text, isEmpty);
+    expect(find.byTooltip('清除'), findsNothing);
+  });
+
   testWidgets('网址输入不请求搜索建议', (tester) async {
     var called = false;
     await tester.pumpWidget(_host(WebAddressBar(
