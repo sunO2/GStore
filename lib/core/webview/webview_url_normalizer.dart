@@ -53,9 +53,9 @@ String? _httpOrNull(String candidate) {
 /// 默认搜索引擎（Bing；国内可直连，页面轻）。
 const String kWebSearchTemplate = 'https://www.bing.com/search?q=';
 
-/// 把关键词拼成搜索地址。
-String webSearchUrl(String query) =>
-    '$kWebSearchTemplate${Uri.encodeComponent(query.trim())}';
+/// 把关键词拼成搜索地址；[template] 需包含 `%s`。
+String webSearchUrl(String query, {String template = kWebSearchTemplate}) =>
+    template.replaceFirst('%s', Uri.encodeComponent(query.trim()));
 
 /// 地址栏输入：网址直接打开，其它内容交给搜索引擎。
 ///
@@ -64,7 +64,10 @@ String webSearchUrl(String query) =>
 /// - 主机名含点且顶级段以字母开头（`termux.dev` / `www.foo.com:8080`）；
 /// - IPv4 地址。
 /// 其余输入（`termux`、`怎么安装 termux`）走搜索。
-String? resolveWebInput(String raw) {
+String? resolveWebInput(
+  String raw, {
+  String searchTemplate = kWebSearchTemplate,
+}) {
   final text = raw.trim();
   if (text.isEmpty) return null;
 
@@ -83,7 +86,7 @@ String? resolveWebInput(String raw) {
       return normalizeWebViewUrl(text);
     }
   }
-  return webSearchUrl(text);
+  return webSearchUrl(text, template: searchTemplate);
 }
 
 final RegExp _ipv4 = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$');

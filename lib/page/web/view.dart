@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
+import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
 import 'web_sheets.dart';
@@ -76,9 +78,8 @@ img, video, picture, canvas, svg, iframe {
   bool _canGoForward = false;
   bool _isBookmarked = false;
 
-  bool _nightMode = false;
-  bool _desktopMode = false;
-  int _textZoom = 100;
+  WebViewSettings _settings = WebViewSettings.defaults;
+  bool _settingsReady = false;
 
   bool _findVisible = false;
   bool _findHasQuery = false;
@@ -96,6 +97,13 @@ img, video, picture, canvas, svg, iframe {
         _isBookmarked = WebBrowserStore.instance.isBookmarked(_currentUrl);
       });
     });
+    WebViewSettingsStore.instance.load().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _settings = WebViewSettingsStore.instance.settings;
+        _settingsReady = true;
+      });
+    });
   }
 
   @override
@@ -105,9 +113,9 @@ img, video, picture, canvas, svg, iframe {
     super.dispose();
   }
 
-  InAppWebViewSettings _settings({int? textZoom, String? userAgent}) =>
+  InAppWebViewSettings _webViewSettings({int? textZoom, String? userAgent}) =>
       InAppWebViewSettings(
-        javaScriptEnabled: true,
+        javaScriptEnabled: _settings.javaScriptEnabled,
         supportMultipleWindows: false,
         javaScriptCanOpenWindowsAutomatically: false,
         mediaPlaybackRequiresUserGesture: true,
@@ -115,11 +123,14 @@ img, video, picture, canvas, svg, iframe {
         allowContentAccess: false,
         domStorageEnabled: true,
         databaseEnabled: true,
-        thirdPartyCookiesEnabled: true,
+        thirdPartyCookiesEnabled: _settings.thirdPartyCookies,
+        cacheEnabled: _settings.cacheEnabled,
+        blockNetworkImage: !_settings.loadImages,
         safeBrowsingEnabled: true,
         mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
-        textZoom: textZoom ?? _textZoom,
-        userAgent: userAgent,
+        textZoom: textZoom ?? _settings.textZoom,
+        userAgent:
+            userAgent ?? (_settings.desktopMode ? _desktopUserAgent : null),
       );
 
   String get _displayTitle {
@@ -193,7 +204,10 @@ img, video, picture, canvas, svg, iframe {
       searchMode: searchMode,
     );
     if (input == null) return;
-    final resolved = resolveWebInput(input);
+    final resolved = resolveWebInput(
+      input,
+      searchTemplate: _settings.searchTemplate,
+    );
     if (resolved == null) {
       if (mounted) AppDialogs.showError('这个地址不能打开');
       return;
@@ -220,16 +234,20 @@ img, video, picture, canvas, svg, iframe {
   // ==================== 工具菜单动作 ====================
 
   Future<void> _toggleNightMode() async {
-    setState(() => _nightMode = !_nightMode);
+    final next = _settings.copyWith(nightMode: !_settings.nightMode);
+    setState(() => _settings = next);
+    await WebViewSettingsStore.instance.save(next);
     await _applyNightMode();
-    if (mounted) AppDialogs.showSuccess(_nightMode ? '已开启夜间模式' : '已关闭夜间模式');
+    if (mounted) {
+      AppDialogs.showSuccess(next.nightMode ? '已开启夜间模式' : '已关闭夜间模式');
+    }
   }
 
   Future<void> _applyNightMode() async {
     final controller = _controller;
     if (controller == null) return;
     final css = jsonEncode(_nightCss);
-    final enabled = _nightMode ? 'true' : 'false';
+    final enabled = _settings.nightMode ? 'true' : 'false';
     await controller.evaluateJavascript(
       source: '''
 (function () {
@@ -249,19 +267,21 @@ img, video, picture, canvas, svg, iframe {
   Future<void> _toggleDesktopMode() async {
     final controller = _controller;
     if (controller == null) return;
-    setState(() => _desktopMode = !_desktopMode);
-    await controller.setSettings(
-      settings: _settings(userAgent: _desktopMode ? _desktopUserAgent : null),
-    );
+    final next = _settings.copyWith(desktopMode: !_settings.desktopMode);
+    setState(() => _settings = next);
+    await WebViewSettingsStore.instance.save(next);
+    await controller.setSettings(settings: _webViewSettings());
     await controller.reload();
     if (mounted) {
-      AppDialogs.showSuccess(_desktopMode ? '已切换到电脑模式' : '已切回手机模式');
+      AppDialogs.showSuccess(next.desktopMode ? '已切换到电脑模式' : '已切回手机模式');
     }
   }
 
   Future<void> _changeFontSize(int value) async {
-    setState(() => _textZoom = value);
-    await _controller?.setSettings(settings: _settings(textZoom: value));
+    final next = _settings.copyWith(textZoom: value);
+    setState(() => _settings = next);
+    await WebViewSettingsStore.instance.save(next);
+    await _controller?.setSettings(settings: _webViewSettings());
   }
 
   Future<void> _openFind() async {
@@ -349,21 +369,24 @@ img, video, picture, canvas, svg, iframe {
     );
   }
 
-  Future<void> _clearData() async {
-    final ok = await AppDialogs.showConfirmSheet(
-      title: '清除浏览数据',
-      message: '将清除所有网站的 Cookie、本地存储与缓存。'
-          '所有站点（包括 AI 网页工具）都会退出登录，且不可恢复。',
-      confirmText: '清除',
-      isDangerous: true,
-    );
-    if (ok != true) return;
-    await CookieManager.instance().deleteAllCookies();
-    await WebStorageManager.instance().deleteAllData();
-    await InAppWebViewController.clearAllCache();
+  Future<void> _openSettings() async {
+    final before = _settings;
+    await context.push(AppRoute.webViewSettings);
     if (!mounted) return;
-    AppDialogs.showSuccess('浏览数据已清除');
-    await _controller?.reload();
+    await WebViewSettingsStore.instance.load(force: true);
+    final next = WebViewSettingsStore.instance.settings;
+    setState(() => _settings = next);
+    final controller = _controller;
+    if (controller == null) return;
+    await controller.setSettings(settings: _webViewSettings());
+    await _applyNightMode();
+    if (before.desktopMode != next.desktopMode ||
+        before.javaScriptEnabled != next.javaScriptEnabled ||
+        before.cacheEnabled != next.cacheEnabled ||
+        before.thirdPartyCookies != next.thirdPartyCookies ||
+        before.loadImages != next.loadImages) {
+      await controller.reload();
+    }
   }
 
   String _decodeJsString(dynamic raw) {
@@ -383,7 +406,7 @@ img, video, picture, canvas, svg, iframe {
     final action = await showWebMoreSheet(
       context,
       hasUrl: _currentUrl.isNotEmpty,
-      nightMode: _nightMode,
+      nightMode: _settings.nightMode,
     );
     if (action == null || !mounted) return;
     switch (action) {
@@ -400,7 +423,7 @@ img, video, picture, canvas, svg, iframe {
       case WebMoreAction.fontSize:
         await showWebFontSizeSheet(
           context,
-          current: _textZoom,
+          current: _settings.textZoom,
           onChanged: _changeFontSize,
         );
       case WebMoreAction.viewSource:
@@ -409,8 +432,8 @@ img, video, picture, canvas, svg, iframe {
         await _showPageInfo();
       case WebMoreAction.resources:
         await _showResources();
-      case WebMoreAction.clearData:
-        await _clearData();
+      case WebMoreAction.settings:
+        await _openSettings();
     }
   }
 
@@ -452,6 +475,13 @@ img, video, picture, canvas, svg, iframe {
             ),
           ),
         ),
+      );
+    }
+
+    if (!_settingsReady) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.title ?? '浏览器')),
+        body: const Center(child: AppLoading()),
       );
     }
 
@@ -530,7 +560,7 @@ img, video, picture, canvas, svg, iframe {
               children: [
                 InAppWebView(
                   initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
-                  initialSettings: _settings(),
+                  initialSettings: _webViewSettings(),
                   onWebViewCreated: (controller) {
                     _controller = controller;
                   },
@@ -556,7 +586,7 @@ img, video, picture, canvas, svg, iframe {
                     _recordVisit();
                     _syncNavigationState(controller);
                     // 注入样式只对当前文档生效，换页后需要重新注入。
-                    if (_nightMode) _applyNightMode();
+                    if (_settings.nightMode) _applyNightMode();
                   },
                   onTitleChanged: (controller, title) {
                     final text = title?.trim() ?? '';

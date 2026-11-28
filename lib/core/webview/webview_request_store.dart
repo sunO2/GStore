@@ -145,10 +145,12 @@ class WebViewRequestStore {
       ..writeln('[WebView 请求] 共 ${_records.length} 条，显示最近 ${matches.length} 条');
     for (final record in matches) {
       final status = record.status == null ? '—' : '${record.status}';
-      final duration = record.durationMs == null ? '' : ' ${record.durationMs}ms';
+      final duration =
+          record.durationMs == null ? '' : ' ${record.durationMs}ms';
       final main = record.mainFrame ? ' main' : '';
       final source = record.source.name;
-      buf.writeln('#${record.id} [$source] ${record.method} ${_clip(record.url, 300)} '
+      buf.writeln(
+          '#${record.id} [$source] ${record.method} ${_clip(record.url, 300)} '
           '$status$duration$main');
       if (record.error != null && record.error!.isNotEmpty) {
         buf.writeln('  错误: ${_clip(record.error!, 300)}');
@@ -165,7 +167,8 @@ class WebViewRequestStore {
       }
     }
     if (_records.length > matches.length) {
-      buf.writeln('…（还有 ${_records.length - matches.length} 条，可用 filter/method/limit 收窄）');
+      buf.writeln(
+          '…（还有 ${_records.length - matches.length} 条，可用 filter/method/limit 收窄）');
     }
     return buf.toString().trimRight();
   }
@@ -174,8 +177,7 @@ class WebViewRequestStore {
   /// appear with `status: 0` and no content text.
   String toHar({int limit = 200}) {
     final entries = _records.reversed.take(limit).map((record) {
-      final responseContentType =
-          record.responseHeaders.entries
+      final responseContentType = record.responseHeaders.entries
               .where((entry) => entry.key.toLowerCase() == 'content-type')
               .map((entry) => entry.value)
               .firstOrNull ??

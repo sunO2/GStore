@@ -209,32 +209,35 @@ Future<void> showWebResourcesSheet(
                   ),
             ),
           )
-        : Column(
-            children: [
-              for (final url in urls)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(TablerIcons.photo, size: 18),
-                  title: Text(
-                    url,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  trailing: IconButton(
-                    tooltip: '复制地址',
-                    icon: const Icon(TablerIcons.copy, size: 18),
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: url));
-                      AppDialogs.showSuccess('已复制资源地址');
+        : Material(
+            type: MaterialType.transparency,
+            child: Column(
+              children: [
+                for (final url in urls)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.photo, size: 18),
+                    title: Text(
+                      url,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    trailing: IconButton(
+                      tooltip: '复制地址',
+                      icon: const Icon(TablerIcons.copy, size: 18),
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: url));
+                        AppDialogs.showSuccess('已复制资源地址');
+                      },
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onOpen(url);
                     },
                   ),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    onOpen(url);
-                  },
-                ),
-            ],
+              ],
+            ),
           ),
   );
 }

@@ -99,6 +99,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const UpdateManager(),
     ),
     GoRoute(
+      path: AppRoute.webViewSettings,
+      builder: (context, state) => const WebViewSettingsPage(),
+    ),
+    GoRoute(
       path: AppRoute.webView,
       builder: (context, state) {
         final extra = state.extra;

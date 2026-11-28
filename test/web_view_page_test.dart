@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
+import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 import 'package:gstore/page/web/view.dart';
 import 'package:gstore/page/web/web_sheets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    await WebViewSettingsStore.instance.debugReset();
+  });
+
   group('normalizeWebViewUrl', () {
     test('保留完整的 http/https 地址', () {
       expect(normalizeWebViewUrl('https://github.com/termux'),
@@ -107,7 +115,7 @@ void main() {
         '查看源码',
         '页面信息',
         '资源嗅探',
-        '清除数据',
+        '设置',
       ]) {
         expect(find.text(label), findsOneWidget, reason: label);
       }

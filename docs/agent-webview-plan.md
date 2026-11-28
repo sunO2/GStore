@@ -139,3 +139,35 @@ test/web_browser_store_test.dart  6 项（去重置顶、上限、收藏、清�
   源码取当前 DOM `outerHTML`（导航中会提示稍后再试）。
 - 清除数据同时清 Cookie / WebStorage / 缓存，会连同 AI 网页工具的登录态，
   因此走危险操作确认弹层。
+
+### 浏览器设置页（2026-11-28）
+
+「更多」里的「清除数据」改为「设置」，进入独立的浏览器设置页
+（`/GStore/webViewSettings`），作为后续 WebView 能力的配置入口。
+
+设置项（`WebViewSettings`，SharedPreferences `web_view_settings_v1`）：
+
+| 分区 | 配置 |
+|---|---|
+| 搜索 | 默认搜索引擎：必应 / 百度 / Google / DuckDuckGo / 自定义（模板需含 `%s`） |
+| 显示 | 夜间模式、电脑模式、字体大小（70–200%） |
+| 内容 | 加载图片（无图模式）、JavaScript |
+| 隐私与数据 | 缓存、第三方 Cookie、清除浏览数据（Cookie/WebStorage/缓存） |
+| 其他 | 恢复默认设置 |
+
+生效方式：
+
+- 新页面：直接用在 `initialSettings`（JS/图片/缓存/Cookie/UA/textZoom）。
+- 当前页面：设置页返回后 `setSettings` + 重新注入夜间模式；UA/JS/缓存/Cookie/
+  图片开关变化时自动重载。
+- 地址栏搜索用配置的模板（`resolveWebInput(..., searchTemplate:)`），
+  必应建议保持不变。
+- 搜索/显示等快捷开关（夜间、电脑、字体）在「更多」里操作时也会写回设置。
+
+测试：
+
+```text
+test/web_view_settings_test.dart       7 项（默认值/模板/JSON/持久化）
+test/web_view_settings_page_test.dart  4 项（分区/夜间模式/引擎/字号）
+test/web_view_page_test.dart          17 项（宫格含「设置」、禁用态等）
+```

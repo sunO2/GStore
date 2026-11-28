@@ -6,6 +6,7 @@ class AppRoute {
   static String downloadCenter = "/GStore/downloadCenter";
   static String updateCenter = "/GStore/updateCenter";
   static String webView = "/GStore/webView";
+  static String webViewSettings = "/GStore/webViewSettings";
   static String auth = "/GStore/auth";
   static String fdroidRepo = "/GStore/fdroidRepo";
   static String logViewer = "/GStore/logViewer";

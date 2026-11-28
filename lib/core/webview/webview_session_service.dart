@@ -318,7 +318,8 @@ class WebViewSessionService {
     AjaxRequest request,
   ) async {
     if (request.readyState != AjaxRequestReadyState.DONE) return null;
-    final url = request.responseURL?.toString() ?? request.url?.toString() ?? '';
+    final url =
+        request.responseURL?.toString() ?? request.url?.toString() ?? '';
     if (url.isEmpty) return null;
     _store.complete(
       source: WebViewRequestSource.xhr,
@@ -434,7 +435,8 @@ class WebViewSessionService {
       title = data['title']?.toString() ?? _displayTitle();
       url = data['url']?.toString() ?? _url ?? '';
     }
-    final clipped = text.length > maxChars ? '${text.substring(0, maxChars)}…<截断>' : text;
+    final clipped =
+        text.length > maxChars ? '${text.substring(0, maxChars)}…<截断>' : text;
     _touch();
     return '[WebView 内容｜$format]\nURL：$url\n标题：$title\n\n$clipped';
   }
@@ -572,7 +574,8 @@ class WebViewSessionService {
     return buf.toString().trimRight();
   }
 
-  Future<({String text, bool truncated})> _readText({required int maxChars}) async {
+  Future<({String text, bool truncated})> _readText(
+      {required int maxChars}) async {
     try {
       final data = await _evalMap(
         webViewContentTextScript(readable: false),
@@ -613,7 +616,8 @@ class WebViewSessionService {
     }
   }
 
-  Future<String> _currentUrl() async => (await _pageInfo())['url']?.toString() ?? _url ?? '';
+  Future<String> _currentUrl() async =>
+      (await _pageInfo())['url']?.toString() ?? _url ?? '';
 
   Future<String> _currentTitle() async =>
       (await _pageInfo())['title']?.toString() ?? _displayTitle();

@@ -23,9 +23,8 @@ Future<List<String>> fetchBingSuggestions(
       'type': 'cb',
       'q': text,
     });
-    final response = await client
-        .get(uri, headers: const {'Accept': 'application/json'})
-        .timeout(timeout);
+    final response = await client.get(uri,
+        headers: const {'Accept': 'application/json'}).timeout(timeout);
     if (response.statusCode != 200) return const [];
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     if (decoded is! Map) return const [];

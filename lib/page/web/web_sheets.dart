@@ -17,7 +17,7 @@ enum WebMoreAction {
   viewSource,
   pageInfo,
   resources,
-  clearData,
+  settings,
 }
 
 /// 底部工具宫格：标准 5 列网格，只有内部分割线，无单元格底色/边框。
@@ -81,10 +81,9 @@ Future<WebMoreAction?> showWebMoreSheet(
       enabled: hasUrl,
     ),
     const _ToolTileData(
-      action: WebMoreAction.clearData,
-      icon: TablerIcons.trash,
-      label: '清除数据',
-      danger: true,
+      action: WebMoreAction.settings,
+      icon: TablerIcons.settings,
+      label: '设置',
     ),
   ];
 
@@ -108,7 +107,6 @@ class _ToolTileData {
     required this.label,
     this.enabled = true,
     this.active = false,
-    this.danger = false,
   });
 
   final WebMoreAction action;
@@ -116,7 +114,6 @@ class _ToolTileData {
   final String label;
   final bool enabled;
   final bool active;
-  final bool danger;
 }
 
 class _ToolGrid extends StatelessWidget {
@@ -165,11 +162,9 @@ class _ToolCell extends StatelessWidget {
     final textTheme = Theme.of(context).textTheme;
     final color = !data.enabled
         ? scheme.onSurfaceVariant.withValues(alpha: 0.4)
-        : data.danger
-            ? scheme.error
-            : data.active
-                ? scheme.primary
-                : scheme.onSurfaceVariant;
+        : data.active
+            ? scheme.primary
+            : scheme.onSurfaceVariant;
     return InkWell(
       onTap: data.enabled ? () => onTap(data.action) : null,
       child: SizedBox(
