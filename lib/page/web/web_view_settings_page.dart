@@ -1,9 +1,13 @@
 // 全仓库仍使用 flutter/material.dart；迁移 material_ui 单独排期。
 // ignore: deprecated_member_use
+import 'package:file_picker/file_picker.dart';
+// 全仓库仍使用 flutter/material.dart；迁移 material_ui 单独排期。
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/webview/web_home.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 
 /// 内置浏览器设置页。
@@ -20,6 +24,7 @@ class WebViewSettingsPage extends StatefulWidget {
 
 class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
   WebViewSettings _settings = WebViewSettings.defaults;
+  WebHomeConfig _homeConfig = WebHomeConfig.defaults;
   bool _ready = false;
 
   @override
@@ -31,6 +36,10 @@ class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
         _settings = WebViewSettingsStore.instance.settings;
         _ready = true;
       });
+    });
+    WebHomeStore.instance.load().then((_) {
+      if (!mounted) return;
+      setState(() => _homeConfig = WebHomeStore.instance.config);
     });
   }
 
@@ -84,6 +93,89 @@ class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
       customSearchTemplate: template,
       searchEngine: WebSearchEngine.custom,
     ));
+  }
+
+  Future<void> _pickHomeMode() async {
+    final picked = await AppSheet.show<WebHomeMode>(
+      context: context,
+      title: '主页来源',
+      icon: const Icon(TablerIcons.home),
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+      content: Material(
+        type: MaterialType.transparency,
+        child: Column(
+          children: [
+            for (final mode in WebHomeMode.values)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(kWebHomeModeLabels[mode] ?? mode.name),
+                subtitle: Text(_homeModeHint(mode)),
+                trailing: mode == _homeConfig.mode
+                    ? Icon(
+                        TablerIcons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () => Navigator.of(context).pop(mode),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    switch (picked) {
+      case WebHomeMode.builtin:
+        await _saveHome(const WebHomeConfig());
+      case WebHomeMode.online:
+        final url = await AppSheet.showCustom<String>(
+          context: context,
+          builder: (_) => _HomeUrlSheet(
+            initial: _homeConfig.mode == WebHomeMode.online
+                ? _homeConfig.location
+                : '',
+          ),
+        );
+        if (url == null) return;
+        await _saveHome(
+          WebHomeConfig(mode: WebHomeMode.online, location: url),
+        );
+      case WebHomeMode.local:
+        await _pickHomeFile();
+    }
+  }
+
+  String _homeModeHint(WebHomeMode mode) {
+    switch (mode) {
+      case WebHomeMode.builtin:
+        return '内置本地 HTML，跟随 App 主题';
+      case WebHomeMode.online:
+        return '填写一个网址，使用在线主页或主题';
+      case WebHomeMode.local:
+        return '选择本机 HTML 文件，可自带样式和脚本';
+    }
+  }
+
+  Future<void> _pickHomeFile() async {
+    final files = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['html', 'htm'],
+    );
+    if (files.isEmpty) return;
+    final path = files.first.path;
+    if (path == null) return;
+    try {
+      final saved = await importLocalHomeHtml(path);
+      await _saveHome(WebHomeConfig(mode: WebHomeMode.local, location: saved));
+    } catch (error) {
+      AppDialogs.showError('导入主页失败：$error');
+    }
+  }
+
+  Future<void> _saveHome(WebHomeConfig config) async {
+    await WebHomeStore.instance.save(config);
+    if (!mounted) return;
+    setState(() => _homeConfig = config);
+    AppDialogs.showSuccess('主页已更新');
   }
 
   Future<void> _clearData() async {
@@ -159,6 +251,35 @@ class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
                             const Icon(TablerIcons.chevron_right, size: 18),
                         onTap: _editCustomTemplate,
                       ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.md),
+                _SectionCard(
+                  icon: TablerIcons.home,
+                  title: '主页',
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('主页来源'),
+                      subtitle: Text(
+                        _homeConfig.mode == WebHomeMode.builtin ||
+                                !_homeConfig.isUsable
+                            ? '内置主页'
+                            : '${kWebHomeModeLabels[_homeConfig.mode] ?? ''}'
+                                ' · ${_homeConfig.trimmedLocation}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(TablerIcons.chevron_right, size: 18),
+                      onTap: _pickHomeMode,
+                    ),
+                    Text(
+                      '主页是一个独立的 HTML 文件，可以换成在线主题或本机页面。'
+                      '页面通过 gstoreHome 通道拿到常用网站、书签和主题色。',
+                      style: textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: AppSpacing.md),
@@ -324,6 +445,73 @@ class _SectionCard extends StatelessWidget {
             ...children,
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 在线主页地址输入（必须是 http/https）。
+class _HomeUrlSheet extends StatefulWidget {
+  const _HomeUrlSheet({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_HomeUrlSheet> createState() => _HomeUrlSheetState();
+}
+
+class _HomeUrlSheetState extends State<_HomeUrlSheet> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initial);
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    final uri = Uri.tryParse(text);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https')) {
+      setState(() => _error = '请输入完整的 http(s) 地址');
+      return;
+    }
+    Navigator.of(context).pop(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: '在线主页',
+      subtitle: '示例：https://example.com/home.html',
+      icon: const Icon(TablerIcons.world),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('保存')),
+      ],
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            keyboardType: TextInputType.url,
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            decoration: InputDecoration(
+              hintText: 'https://example.com/home.html',
+              errorText: _error,
+            ),
+          ),
+        ],
       ),
     );
   }

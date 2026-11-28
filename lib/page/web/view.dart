@@ -7,6 +7,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
 import 'package:gstore/core/webview/web_download.dart';
+import 'package:gstore/core/webview/web_home.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
@@ -69,7 +70,14 @@ img, video, picture, canvas, svg, iframe {
 ''';
 
   InAppWebViewController? _controller;
-  late final String? _initialUrl = normalizeWebViewUrl(widget.url);
+
+  /// 没有传 url（点「主页」/ 新标签页）时从内置主页开始。
+  late final bool _startsAtHome = (widget.url ?? '').trim().isEmpty;
+  late final String? _initialUrl =
+      _startsAtHome ? null : normalizeWebViewUrl(widget.url);
+
+  WebHomeConfig _homeConfig = WebHomeConfig.defaults;
+  bool _homeReady = false;
 
   String _currentUrl = '';
   String _pageTitle = '';
@@ -77,6 +85,9 @@ img, video, picture, canvas, svg, iframe {
   // WebView 首次创建（系统 WebView 冷启动）期间不会有任何回调，
   // 先按加载中处理，避免用户看到空白页。
   bool _loading = true;
+
+  /// 当前显示的是不是主页（内置 / 在线主题 / 本地 HTML）。
+  bool _atHome = false;
   bool _canGoBack = false;
   bool _canGoForward = false;
   bool _isBookmarked = false;
@@ -94,10 +105,14 @@ img, video, picture, canvas, svg, iframe {
   final TextEditingController _findController = TextEditingController();
   final FocusNode _findFocus = FocusNode();
 
+  /// 内置主页模板（`assets/web/home.html`）。
+  String _homeTemplate = '';
+
   @override
   void initState() {
     super.initState();
-    _currentUrl = _initialUrl ?? '';
+    _atHome = _startsAtHome;
+    _currentUrl = _initialUrl ?? (_startsAtHome ? kWebHomeOrigin : '');
     _isBookmarked = WebBrowserStore.instance.isBookmarked(_currentUrl);
     WebBrowserStore.instance.load().then((_) {
       if (!mounted) return;
@@ -112,6 +127,40 @@ img, video, picture, canvas, svg, iframe {
         _settingsReady = true;
       });
     });
+    _prepareHome();
+  }
+
+  /// 启动主页：配置 + 内置模板都准备好之后再创建 WebView，避免先闪一下
+  /// 默认主页再跳到用户配置的在线主题。
+  Future<void> _prepareHome() async {
+    if (!_startsAtHome) {
+      _homeReady = true;
+      unawaited(
+        WebHomeStore.instance.load().then((_) {
+          if (mounted) {
+            setState(() => _homeConfig = WebHomeStore.instance.config);
+          }
+        }),
+      );
+      return;
+    }
+    await WebHomeStore.instance.load();
+    final config = WebHomeStore.instance.config;
+    if (_startsAtHome &&
+        config.entryUrl == null) {
+      try {
+        _homeTemplate = await primeWebHomeTemplate();
+      } catch (error) {
+        debugPrint('WebPage: 读取内置主页失败 - $error');
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _homeConfig = config;
+      _homeReady = true;
+      _atHome = _startsAtHome;
+      _currentUrl = _initialUrl ?? (_atHome ? _homeAddress : '');
+    });
   }
 
   @override
@@ -121,13 +170,26 @@ img, video, picture, canvas, svg, iframe {
     super.dispose();
   }
 
+  Brightness? _lastBrightness;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final brightness = Theme.of(context).brightness;
+    final changed = _lastBrightness != null && _lastBrightness != brightness;
+    _lastBrightness = brightness;
+    if (changed && _atHome && _controller != null) {
+      _applyHomeTheme();
+    }
+  }
+
   InAppWebViewSettings _webViewSettings({int? textZoom, String? userAgent}) =>
       InAppWebViewSettings(
         javaScriptEnabled: _settings.javaScriptEnabled,
         supportMultipleWindows: false,
         javaScriptCanOpenWindowsAutomatically: false,
         mediaPlaybackRequiresUserGesture: true,
-        allowFileAccess: false,
+        allowFileAccess: _homeConfig.mode == WebHomeMode.local,
         allowContentAccess: false,
         domStorageEnabled: true,
         databaseEnabled: true,
@@ -142,6 +204,7 @@ img, video, picture, canvas, svg, iframe {
       );
 
   String get _displayTitle {
+    if (_atHome) return '新标签页';
     final explicit = widget.title?.trim();
     if (_pageTitle.trim().isNotEmpty) return _pageTitle.trim();
     if (explicit != null && explicit.isNotEmpty) return explicit;
@@ -150,9 +213,178 @@ img, video, picture, canvas, svg, iframe {
   }
 
   String get _host {
+    if (_atHome) return '';
     final uri = Uri.tryParse(_currentUrl);
     if (uri == null || uri.host.isEmpty) return _currentUrl;
     return uri.host;
+  }
+
+  // ==================== 主页 ====================
+
+  /// 当前主页地址：内置主页是伪 origin，在线主题/本地 HTML 是真实地址。
+  String get _homeAddress {
+    return _homeConfig.entryUrl ?? kWebHomeOrigin;
+  }
+
+  bool get _isDark => Theme.of(context).brightness == Brightness.dark;
+
+  /// 把 App 主题映射成主页的 CSS 变量，保证主页和 App 观感一致。
+  Map<String, String> _homeThemeCss() {
+    final scheme = Theme.of(context).colorScheme;
+    String css(Color color) =>
+        '#${(color.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
+    return {
+      '--bg': css(scheme.surface),
+      '--surface': css(scheme.surfaceContainer),
+      '--surface-2': css(scheme.surfaceContainerHigh),
+      '--fg': css(scheme.onSurface),
+      '--muted': css(scheme.onSurfaceVariant),
+      '--primary': css(scheme.primary),
+      '--outline': css(scheme.outlineVariant),
+    };
+  }
+
+  bool _isHomeAddress(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final entry = _homeConfig.entryUrl;
+    if (entry == null) return isWebHomeUrl(url);
+    return url == entry || url.startsWith('$entry?') || url.startsWith('$entry#');
+  }
+
+  /// 构建内置主页文档（主题变量直接写进首帧，避免闪白）。
+  String _buildHomeDocument() {
+    if (_homeTemplate.isEmpty) return '';
+    return buildWebHomeHtml(css: _homeThemeCss(), dark: _isDark);
+  }
+
+  InAppWebViewInitialData? _initialHomeData() {
+    if (!_atHome) return null;
+    if (_homeConfig.entryUrl != null) return null;
+    final html = _buildHomeDocument();
+    if (html.isEmpty) return null;
+    return InAppWebViewInitialData(
+      data: html,
+      baseUrl: WebUri(kWebHomeOrigin),
+      historyUrl: WebUri(kWebHomeOrigin),
+    );
+  }
+
+  /// 回到主页（更多菜单 / 刷新主页时调用）。
+  Future<void> _openHome() async {
+    await WebHomeStore.instance.load(force: true);
+    if (!mounted) return;
+    final config = WebHomeStore.instance.config;
+    final controller = _controller;
+    setState(() {
+      _homeConfig = config;
+      _atHome = true;
+      _currentUrl = config.entryUrl ?? kWebHomeOrigin;
+      _loading = true;
+      _progress = 0;
+      _isBookmarked = false;
+    });
+    if (controller == null) return;
+    if (config.entryUrl == null) {
+      if (_homeTemplate.isEmpty) {
+        try {
+          _homeTemplate = await primeWebHomeTemplate();
+        } catch (error) {
+          debugPrint('WebPage: 读取内置主页失败 - $error');
+        }
+      }
+      await controller.loadData(
+        data: _buildHomeDocument(),
+        baseUrl: WebUri(kWebHomeOrigin),
+        historyUrl: WebUri(kWebHomeOrigin),
+        mimeType: 'text/html',
+        encoding: 'utf-8',
+      );
+      return;
+    }
+    if (config.mode == WebHomeMode.local) {
+      // 本地 HTML 需要相对资源（css/js/图片），只在用户显式选择本地模式时
+      // 打开 file:// 访问；远程页面仍然会被 shouldOverrideUrlLoading 拦住。
+      await controller.setSettings(settings: _webViewSettings());
+    }
+    await controller.loadUrl(urlRequest: URLRequest(url: WebUri(config.entryUrl!)));
+  }
+
+  /// 主题变化时把新的变量推给已打开的主页。
+  Future<void> _applyHomeTheme() async {
+    final controller = _controller;
+    if (controller == null) return;
+    final payload = jsonEncode({
+      'dark': _isDark,
+      'css': _homeThemeCss(),
+    });
+    await controller.evaluateJavascript(
+      source: 'window.__gstoreHome && window.__gstoreHome.setTheme($payload);',
+    );
+  }
+
+  /// 主页拉取的数据：常用网站（按 host 聚合历史）+ 书签 + 主题 + 引擎名。
+  Map<String, Object?> _homeData() {
+    if (!mounted) return const {};
+    final counts = <String, int>{};
+    final latest = <String, WebPageEntry>{};
+    for (final entry in WebBrowserStore.instance.history) {
+      final host = entry.host.toLowerCase();
+      if (host.isEmpty) continue;
+      counts[host] = (counts[host] ?? 0) + 1;
+      latest.putIfAbsent(host, () => entry);
+    }
+    final hosts = counts.keys.toList()
+      ..sort((a, b) => counts[b]!.compareTo(counts[a]!));
+    Map<String, Object?> item(WebPageEntry entry) => {
+          'url': entry.url,
+          'title': entry.title,
+          'host': entry.host,
+        };
+    return {
+      'engine': kSearchEngineLabels[_settings.searchEngine] ?? '必应',
+      'placeholder': '搜索或输入网址',
+      'shortcuts': [
+        for (final host in hosts.take(8)) item(latest[host]!),
+      ],
+      'bookmarks': [
+        for (final entry in WebBrowserStore.instance.bookmarks.take(8))
+          item(entry),
+      ],
+      'theme': {'dark': _isDark, 'css': _homeThemeCss()},
+    };
+  }
+
+  void _registerHomeBridge(InAppWebViewController controller) {
+    controller.addJavaScriptHandler(
+      handlerName: 'gstoreHome',
+      callback: (args) {
+        final raw = args.isNotEmpty ? args.first : null;
+        if (raw is! Map) return null;
+        switch (raw['action']?.toString() ?? '') {
+          case 'data':
+            return _homeData();
+          case 'address':
+            if (mounted) _openAddressBar();
+            return null;
+          case 'open':
+            final url = raw['url']?.toString();
+            if (mounted && url != null && url.isNotEmpty) {
+              _submitAddress(url);
+            }
+            return null;
+          case 'bookmarks':
+            if (mounted) _openEntries(bookmarks: true);
+            return null;
+          case 'history':
+            if (mounted) _openEntries(bookmarks: false);
+            return null;
+          case 'settings':
+            if (mounted) _openSettings();
+            return null;
+        }
+        return null;
+      },
+    );
   }
 
   Future<void> _syncNavigationState(InAppWebViewController controller) async {
@@ -167,12 +399,16 @@ img, video, picture, canvas, svg, iframe {
 
   void _syncUrl(String? url) {
     final next = url?.toString();
-    if (next == null || next == _currentUrl) return;
+    if (next == null) return;
+    final home = _isHomeAddress(next);
+    if (!home && next == _currentUrl) return;
     _currentUrl = next;
-    _isBookmarked = WebBrowserStore.instance.isBookmarked(next);
+    _atHome = home;
+    _isBookmarked = home ? false : WebBrowserStore.instance.isBookmarked(next);
   }
 
   void _recordVisit() {
+    if (_atHome) return;
     final url = _currentUrl;
     if (url.isEmpty) return;
     // http→https 之类的重定向中间页会带 "Redirecting…" 标题，
@@ -187,6 +423,7 @@ img, video, picture, canvas, svg, iframe {
   }
 
   Future<void> _copyUrl() async {
+    if (_atHome) return;
     final url = _currentUrl.isNotEmpty ? _currentUrl : (_initialUrl ?? '');
     if (url.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: url));
@@ -267,6 +504,7 @@ img, video, picture, canvas, svg, iframe {
     if (controller == null) return;
     setState(() {
       _currentUrl = url;
+      _atHome = false;
       _loading = true;
       _progress = 0;
       _isBookmarked = WebBrowserStore.instance.isBookmarked(url);
@@ -306,7 +544,7 @@ img, video, picture, canvas, svg, iframe {
 
   Future<void> _toggleBookmark() async {
     final url = _currentUrl;
-    if (url.isEmpty) return;
+    if (url.isEmpty || _atHome) return;
     final saved =
         await WebBrowserStore.instance.toggleBookmark(url, _pageTitle);
     if (!mounted) return;
@@ -328,7 +566,8 @@ img, video, picture, canvas, svg, iframe {
 
   Future<void> _applyNightMode() async {
     final controller = _controller;
-    if (controller == null) return;
+    // 主页是 App 自己的界面，跟随主题，不做反色。
+    if (controller == null || _atHome) return;
     final css = jsonEncode(_nightCss);
     final enabled = _settings.nightMode ? 'true' : 'false';
     await controller.evaluateJavascript(
@@ -454,11 +693,23 @@ img, video, picture, canvas, svg, iframe {
 
   Future<void> _openSettings() async {
     final before = _settings;
+    final beforeHome = _homeConfig;
     await context.push(AppRoute.webViewSettings);
     if (!mounted) return;
     await WebViewSettingsStore.instance.load(force: true);
+    await WebHomeStore.instance.load(force: true);
     final next = WebViewSettingsStore.instance.settings;
-    setState(() => _settings = next);
+    final home = WebHomeStore.instance.config;
+    final homeChanged =
+        beforeHome.mode != home.mode || beforeHome.location != home.location;
+    setState(() {
+      _settings = next;
+      _homeConfig = home;
+    });
+    if (homeChanged && _atHome) {
+      await _openHome();
+      return;
+    }
     final controller = _controller;
     if (controller == null) return;
     await controller.setSettings(settings: _webViewSettings());
@@ -488,7 +739,7 @@ img, video, picture, canvas, svg, iframe {
   Future<void> _handleMore() async {
     final action = await showWebMoreSheet(
       context,
-      hasUrl: _currentUrl.isNotEmpty,
+      hasUrl: !_atHome && _currentUrl.isNotEmpty,
       nightMode: _settings.nightMode,
     );
     if (action == null || !mounted) return;
@@ -528,7 +779,8 @@ img, video, picture, canvas, svg, iframe {
     final textTheme = Theme.of(context).textTheme;
     final initialUrl = _initialUrl;
 
-    if (initialUrl == null) {
+    // 只有「传了 url 但解析不出来」才显示错误页；没传 url 是新标签页。
+    if (!_startsAtHome && initialUrl == null) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.title ?? '浏览器')),
         body: Center(
@@ -563,10 +815,28 @@ img, video, picture, canvas, svg, iframe {
       );
     }
 
-    if (!_settingsReady) {
+    if (!_settingsReady || !_homeReady) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.title ?? '浏览器')),
         body: const Center(child: AppLoading()),
+      );
+    }
+
+    // 内置主页模板读不到（极少数资源损坏场景）：给一个明确的错误页，
+    // 而不是创建一只什么都不显示的 WebView。
+    if (_startsAtHome && _homeConfig.entryUrl == null && _homeTemplate.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('浏览器')),
+        body: Center(
+          child: Padding(
+            padding: AppSpacing.allXL,
+            child: Text(
+              '主页加载失败，请到浏览器设置里切换主页来源',
+              style: Theme.of(context).textTheme.titleSmall,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
       );
     }
 
@@ -618,17 +888,22 @@ img, video, picture, canvas, svg, iframe {
         ),
         actions: [
           IconButton(
+            tooltip: '主页',
+            icon: const Icon(TablerIcons.home),
+            onPressed: _openHome,
+          ),
+          IconButton(
             tooltip: _isBookmarked ? '取消收藏' : '收藏',
             icon: Icon(
               _isBookmarked ? TablerIcons.star_filled : TablerIcons.star,
               color: _isBookmarked ? scheme.primary : null,
             ),
-            onPressed: _currentUrl.isEmpty ? null : _toggleBookmark,
+            onPressed: _atHome || _currentUrl.isEmpty ? null : _toggleBookmark,
           ),
           IconButton(
             tooltip: '复制链接',
             icon: const Icon(TablerIcons.link),
-            onPressed: _copyUrl,
+            onPressed: _atHome ? null : _copyUrl,
           ),
         ],
       ),
@@ -653,11 +928,18 @@ img, video, picture, canvas, svg, iframe {
                     child: Stack(
                       children: [
                         InAppWebView(
-                          initialUrlRequest:
-                              URLRequest(url: WebUri(initialUrl)),
+                          key: const ValueKey('gstore-webview'),
+                          initialUrlRequest: _startsAtHome
+                              ? (_homeConfig.entryUrl != null
+                                  ? URLRequest(
+                                      url: WebUri(_homeConfig.entryUrl!))
+                                  : null)
+                              : URLRequest(url: WebUri(initialUrl!)),
+                          initialData: _initialHomeData(),
                           initialSettings: _webViewSettings(),
                           onWebViewCreated: (controller) {
                             _controller = controller;
+                            _registerHomeBridge(controller);
                           },
                           onLoadStart: (controller, url) {
                             if (!mounted) return;
@@ -680,8 +962,12 @@ img, video, picture, canvas, svg, iframe {
                             });
                             _recordVisit();
                             _syncNavigationState(controller);
-                            // 注入样式只对当前文档生效，换页后需要重新注入。
-                            if (_settings.nightMode) _applyNightMode();
+                            if (_atHome) {
+                              _applyHomeTheme();
+                            } else if (_settings.nightMode) {
+                              // 注入样式只对当前文档生效，换页后需要重新注入。
+                              _applyNightMode();
+                            }
                           },
                           onTitleChanged: (controller, title) {
                             final text = title?.trim() ?? '';
@@ -707,6 +993,13 @@ img, video, picture, canvas, svg, iframe {
                             if (scheme == 'about' ||
                                 scheme == 'http' ||
                                 scheme == 'https') {
+                              return NavigationActionPolicy.ALLOW;
+                            }
+                            // 本地 HTML 主页自己的相跳（同目录文件）放行；其他
+                            // file:// 一律拦掉，避免页面借机打开本地文件。
+                            if (scheme == 'file' &&
+                                _homeConfig.mode == WebHomeMode.local &&
+                                _isHomeAddress(raw.toString())) {
                               return NavigationActionPolicy.ALLOW;
                             }
                             // mailto:/tel:/intent: 等交给系统会跳出 App，这里直接忽略。
@@ -768,7 +1061,7 @@ img, video, picture, canvas, svg, iframe {
                   child: Opacity(opacity: value, child: child),
                 ),
                 child: WebAddressBar(
-                  initialText: _currentUrl,
+                  initialText: _atHome ? '' : _currentUrl,
                   onSubmit: _submitAddress,
                 ),
               ),
@@ -801,12 +1094,12 @@ img, video, picture, canvas, svg, iframe {
                 icon: Icon(_loading ? TablerIcons.x : TablerIcons.refresh),
                 onPressed: _loading
                     ? () => _controller?.stopLoading()
-                    : () => _controller?.reload(),
+                    : () => _atHome ? _openHome() : _controller?.reload(),
               ),
               const SizedBox(width: AppSpacing.sm),
               Expanded(
                 child: Text(
-                  _host,
+                  _atHome ? '主页' : _host,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: textTheme.labelSmall?.copyWith(

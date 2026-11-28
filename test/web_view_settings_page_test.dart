@@ -24,6 +24,7 @@ void main() {
     }
     expect(find.text('默认搜索引擎'), findsOneWidget);
     expect(find.text('夜间模式'), findsOneWidget);
+    expect(find.text('主页来源'), findsOneWidget);
 
     // 下面的分区在首屏之外，滚到底再断言。
     await tester.drag(find.byType(ListView), const Offset(0, -900));
@@ -72,6 +73,9 @@ void main() {
 
     final slider = find.byType(Slider);
     expect(slider, findsOneWidget);
+    // 新增「主页」分区把滑杆推到首屏之外，先滚到可见再拖。
+    await tester.ensureVisible(slider);
+    await tester.pumpAndSettle();
     await tester.drag(slider, const Offset(120, 0));
     await tester.pumpAndSettle();
 

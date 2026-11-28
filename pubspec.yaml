@@ -152,6 +152,7 @@ flutter:
      - assets/app/
      - assets/a2ui/
      - assets/auth/
+     - assets/web/
      - assets/skills/app-recommendation/SKILL.md
      - assets/skills/download-install-flow/SKILL.md
      - assets/skills/app-update-check/SKILL.md

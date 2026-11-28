@@ -349,3 +349,25 @@ MainActivity 增加两组 intent-filter：
 `CREDENTIAL_MANAGER_SET_ORIGIN`（签名级权限，system_server 校验），
 因此不会让 WebView 的第三方站点 passkey 变得可用；那条路仍取决于
 assetlinks（app 模式）或 Google 的 privileged browser 白名单。
+
+### 可定制主页（本地 HTML / 在线主题，2026-11-28）
+
+主页是一个**独立的 HTML 文件**，不是 Flutter 页面；这样用户可以换成在线主题
+或自己写的本地页面，而不需要改 App。
+
+- `assets/web/home.html`：自包含（内联 CSS/JS，CSP 只允许 https 图片与内联
+  样式/脚本）。首帧主题由 Dart 把 `ColorScheme` 映射成 CSS 变量后替换
+  `<!--__GS_THEME__-->` 注入；运行时切主题调用
+  `window.__gstoreHome.setTheme({dark, css})`。
+- 加载方式：内置主页用 `loadData` + `baseUrl = https://gstore.home`，
+  不打开 `file://` 权限；`historyUrl` 让「后退」能从站点回到主页。
+- 数据通道 `gstoreHome`：`data` / `address` / `open` / `bookmarks` /
+  `history` / `settings`。`data` 返回常用网站（按 host 聚合历史、按访问次数
+  排序）、书签、搜索引擎名和主题变量。
+- 来源模型：`WebHomeConfig{mode: builtin | online | local}` + `WebHomeStore`。
+  在线主题填写 URL；本地 HTML 用 `file_picker` 选择后复制到
+  `ApplicationSupport/web_home/home.html`（provider 返回的缓存路径会被清理）。
+- 只有 `local` 模式才打开 `allowFileAccess`，且 `shouldOverrideUrlLoading`
+  只放行主页自身路径的 `file://`；远程页面无法借机读取本地文件。
+- 没有传 `url` 打开 `/GStore/webView` 就是新标签页；AppBar 增加「主页」按钮。
+  主页上收藏 / 复制链接 / 页内工具自动禁用，夜间反色不作用于主页。

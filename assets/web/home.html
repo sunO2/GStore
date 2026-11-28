@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>新标签页</title>
+  <style>
+    :root {
+      --bg: #FAF9FD;
+      --surface: #F1EFF7;
+      --surface-2: #E7E5EF;
+      --fg: #1B1B1F;
+      --muted: #75747A;
+      --primary: #4A5C92;
+      --outline: #DEDCE4;
+      --radius: 18px;
+    }
+    html[data-theme="dark"] {
+      --bg: #121316;
+      --surface: #1D1E22;
+      --surface-2: #26272C;
+      --fg: #E6E5EA;
+      --muted: #9B9AA0;
+      --primary: #AEC6FF;
+      --outline: #33343A;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Noto Sans SC", "PingFang SC", sans-serif;
+      padding: 18px 18px 28px;
+      overflow-x: hidden;
+    }
+    button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+
+    /* ---------- 地址/搜索条 ---------- */
+    .omni {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      height: 52px;
+      padding: 0 14px;
+      border-radius: 26px;
+      background: var(--surface);
+      border: 1px solid var(--outline);
+      text-align: left;
+      transition: background .15s ease;
+    }
+    .omni:active { background: var(--surface-2); }
+    .omni svg { flex: none; opacity: .65; }
+    .omni-text {
+      flex: 1;
+      min-width: 0;
+      font-size: 15px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .engine {
+      flex: none;
+      font-size: 11px;
+      line-height: 20px;
+      padding: 0 9px;
+      border-radius: 10px;
+      color: var(--primary);
+      background: var(--surface-2);
+    }
+
+    /* ---------- 分区 ---------- */
+    .section { margin-top: 26px; }
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 2px 12px;
+    }
+    .head h2 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      color: var(--muted);
+    }
+    .head .more { font-size: 12px; color: var(--primary); padding: 4px 6px; }
+
+    /* ---------- 常用网站 ---------- */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .tile {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      padding: 12px 4px 10px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      min-width: 0;
+    }
+    .tile:active { background: var(--surface-2); }
+    .icon {
+      position: relative;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      overflow: hidden;
+    }
+    .icon img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: var(--surface);
+    }
+    .label {
+      max-width: 100%;
+      font-size: 11.5px;
+      line-height: 15px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ---------- 书签 ---------- */
+    .row {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding: 2px 2px 8px;
+      scrollbar-width: none;
+    }
+    .row::-webkit-scrollbar { display: none; }
+    .card {
+      flex: none;
+      width: 148px;
+      padding: 12px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      text-align: left;
+    }
+    .card:active { background: var(--surface-2); }
+    .card .card-title {
+      font-size: 13px;
+      line-height: 17px;
+      height: 34px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .card .card-host {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tip {
+      margin: 14px 2px 0;
+      font-size: 12px;
+      line-height: 18px;
+      color: var(--muted);
+    }
+    [hidden] { display: none !important; }
+  </style>
+  <!--__GS_THEME__-->
+</head>
+<body>
+  <button class="omni" id="omni" aria-label="搜索或输入网址">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="11" cy="11" r="7"></circle>
+      <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+    </svg>
+    <span class="omni-text" id="omniText">搜索或输入网址</span>
+    <span class="engine" id="engine">必应</span>
+  </button>
+
+  <section class="section" id="shortcutSection">
+    <div class="head">
+      <h2>常用网站</h2>
+      <button class="more" data-act="history">历史</button>
+    </div>
+    <div class="grid" id="shortcuts"></div>
+  </section>
+
+  <section class="section" id="bookmarkSection" hidden>
+    <div class="head">
+      <h2>书签</h2>
+      <button class="more" data-act="bookmarks">全部</button>
+    </div>
+    <div class="row" id="bookmarks"></div>
+  </section>
+
+  <p class="tip" id="tip" hidden>
+    访问几个网站后，这里会出现你的常用入口。地址栏输入网址或搜索即可开始。
+  </p>
+
+  <script>
+    (function () {
+      var bridge = window.flutter_inappwebview;
+
+      function call(payload) {
+        try {
+          return bridge.callHandler('gstoreHome', payload) || Promise.resolve(null);
+        } catch (e) {
+          return Promise.resolve(null);
+        }
+      }
+
+      function cssColor(seed) {
+        var h = 0;
+        for (var i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+        return 'hsl(' + h + ', 42%, 52%)';
+      }
+
+      function letter(host) {
+        var name = host.replace(/^www\./, '');
+        return (name.charAt(0) || '?').toUpperCase();
+      }
+
+      function makeTile(item) {
+        var btn = document.createElement('button');
+        btn.className = 'tile';
+        btn.setAttribute('aria-label', item.title || item.host);
+        var icon = document.createElement('span');
+        icon.className = 'icon';
+        icon.style.background = cssColor(item.host);
+        icon.textContent = letter(item.host);
+        if (item.host) {
+          var img = document.createElement('img');
+          img.loading = 'lazy';
+          img.alt = '';
+          img.src = 'https://' + item.host + '/favicon.ico';
+          img.addEventListener('error', function () { img.remove(); });
+          icon.appendChild(img);
+        }
+        var label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = item.title || item.host;
+        btn.appendChild(icon);
+        btn.appendChild(label);
+        btn.addEventListener('click', function () {
+          call({ action: 'open', url: item.url });
+        });
+        return btn;
+      }
+
+      function makeCard(item) {
+        var btn = document.createElement('button');
+        btn.className = 'card';
+        var title = document.createElement('div');
+        title.className = 'card-title';
+        title.textContent = item.title || item.host;
+        var host = document.createElement('div');
+        host.className = 'card-host';
+        host.textContent = item.host;
+        btn.appendChild(title);
+        btn.appendChild(host);
+        btn.addEventListener('click', function () {
+          call({ action: 'open', url: item.url });
+        });
+        return btn;
+      }
+
+      function setTheme(theme) {
+        if (!theme) return;
+        var root = document.documentElement;
+        if (theme.dark) root.setAttribute('data-theme', 'dark');
+        else root.setAttribute('data-theme', 'light');
+        var vars = theme.css || {};
+        Object.keys(vars).forEach(function (key) {
+          root.style.setProperty(key, vars[key]);
+        });
+      }
+
+      function render(data) {
+        if (!data) return;
+        setTheme(data.theme);
+        if (data.engine) document.getElementById('engine').textContent = data.engine;
+        if (data.placeholder) {
+          document.getElementById('omniText').textContent = data.placeholder;
+        }
+
+        var shortcuts = data.shortcuts || [];
+        var grid = document.getElementById('shortcuts');
+        grid.textContent = '';
+        shortcuts.forEach(function (item) { grid.appendChild(makeTile(item)); });
+
+        var bookmarks = data.bookmarks || [];
+        var row = document.getElementById('bookmarks');
+        row.textContent = '';
+        document.getElementById('bookmarkSection').hidden = bookmarks.length === 0;
+        bookmarks.forEach(function (item) { row.appendChild(makeCard(item)); });
+
+        document.getElementById('tip').hidden = shortcuts.length > 0;
+        document.getElementById('shortcutSection').hidden = shortcuts.length === 0
+          && bookmarks.length === 0;
+      }
+
+      window.__gstoreHome = { render: render, setTheme: setTheme };
+
+      document.getElementById('omni').addEventListener('click', function () {
+        call({ action: 'address' });
+      });
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-act]'),
+        function (btn) {
+          btn.addEventListener('click', function () {
+            call({ action: btn.getAttribute('data-act') });
+          });
+        }
+      );
+
+      call({ action: 'data' }).then(render);
+    })();
+  </script>
+</body>
+</html>
