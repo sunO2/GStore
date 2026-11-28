@@ -7,11 +7,12 @@ import 'package:gstore/core/webview/web_browser_store.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
 import 'web_sheets.dart';
+import 'web_tools_sheets.dart';
 
 /// 内置浏览器（AI 回复里的链接、外部跳转都走这里）。
 ///
-/// 浏览器级能力：地址/搜索输入（Bing）、历史记录、书签、前进/后退/刷新、
-/// 复制链接；底部「更多」宫格菜单汇总全部功能。
+/// 地址/搜索（必应建议）、历史、书签、页内查找、夜间模式、电脑模式、
+/// 字体大小、查看源码、页面信息、资源嗅探、清除数据。
 class WebPage extends StatefulWidget {
   const WebPage({super.key, this.url, this.title});
 
@@ -26,6 +27,42 @@ class WebPage extends StatefulWidget {
 }
 
 class _WebPageState extends State<WebPage> {
+  static const String _desktopUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+  static const String _nightCss = '''
+html { filter: invert(1) hue-rotate(180deg) !important; background: #111 !important; }
+img, video, picture, canvas, svg, iframe {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+''';
+
+  static const String _resourceScript = r'''
+(function () {
+  var out = [];
+  var seen = {};
+  function add(u) {
+    if (!u) return;
+    if (!/^https?:/i.test(u)) return;
+    if (seen[u]) return;
+    seen[u] = 1;
+    out.push(u);
+  }
+  document.querySelectorAll('img[src]').forEach(function (e) {
+    add(e.currentSrc || e.src);
+  });
+  document.querySelectorAll('video[src], audio[src], source[src]').forEach(function (e) {
+    add(e.src);
+  });
+  document.querySelectorAll('a[href]').forEach(function (e) {
+    var u = e.href;
+    if (/\.(apk|zip|pdf|mp4|webm|mp3|m4a|png|jpe?g|gif|webp|svg)(\?|$)/i.test(u)) add(u);
+  });
+  return JSON.stringify(out.slice(0, 100));
+})();
+''';
+
   InAppWebViewController? _controller;
   late final String? _initialUrl = normalizeWebViewUrl(widget.url);
 
@@ -39,6 +76,15 @@ class _WebPageState extends State<WebPage> {
   bool _canGoForward = false;
   bool _isBookmarked = false;
 
+  bool _nightMode = false;
+  bool _desktopMode = false;
+  int _textZoom = 100;
+
+  bool _findVisible = false;
+  bool _findHasQuery = false;
+  final TextEditingController _findController = TextEditingController();
+  final FocusNode _findFocus = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -51,6 +97,30 @@ class _WebPageState extends State<WebPage> {
       });
     });
   }
+
+  @override
+  void dispose() {
+    _findController.dispose();
+    _findFocus.dispose();
+    super.dispose();
+  }
+
+  InAppWebViewSettings _settings({int? textZoom, String? userAgent}) =>
+      InAppWebViewSettings(
+        javaScriptEnabled: true,
+        supportMultipleWindows: false,
+        javaScriptCanOpenWindowsAutomatically: false,
+        mediaPlaybackRequiresUserGesture: true,
+        allowFileAccess: false,
+        allowContentAccess: false,
+        domStorageEnabled: true,
+        databaseEnabled: true,
+        thirdPartyCookiesEnabled: true,
+        safeBrowsingEnabled: true,
+        mixedContentMode: MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
+        textZoom: textZoom ?? _textZoom,
+        userAgent: userAgent,
+      );
 
   String get _displayTitle {
     final explicit = widget.title?.trim();
@@ -147,46 +217,200 @@ class _WebPageState extends State<WebPage> {
     AppDialogs.showSuccess(saved ? '已收藏' : '已取消收藏');
   }
 
-  Future<void> _clearHistory() async {
+  // ==================== 工具菜单动作 ====================
+
+  Future<void> _toggleNightMode() async {
+    setState(() => _nightMode = !_nightMode);
+    await _applyNightMode();
+    if (mounted) AppDialogs.showSuccess(_nightMode ? '已开启夜间模式' : '已关闭夜间模式');
+  }
+
+  Future<void> _applyNightMode() async {
+    final controller = _controller;
+    if (controller == null) return;
+    final css = jsonEncode(_nightCss);
+    final enabled = _nightMode ? 'true' : 'false';
+    await controller.evaluateJavascript(
+      source: '''
+(function () {
+  var id = '__gs_night_mode';
+  var old = document.getElementById(id);
+  if (old) old.remove();
+  if (!$enabled) return;
+  var style = document.createElement('style');
+  style.id = id;
+  style.textContent = $css;
+  (document.head || document.documentElement).appendChild(style);
+})();
+''',
+    );
+  }
+
+  Future<void> _toggleDesktopMode() async {
+    final controller = _controller;
+    if (controller == null) return;
+    setState(() => _desktopMode = !_desktopMode);
+    await controller.setSettings(
+      settings: _settings(userAgent: _desktopMode ? _desktopUserAgent : null),
+    );
+    await controller.reload();
+    if (mounted) {
+      AppDialogs.showSuccess(_desktopMode ? '已切换到电脑模式' : '已切回手机模式');
+    }
+  }
+
+  Future<void> _changeFontSize(int value) async {
+    setState(() => _textZoom = value);
+    await _controller?.setSettings(settings: _settings(textZoom: value));
+  }
+
+  Future<void> _openFind() async {
+    setState(() => _findVisible = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _findFocus.requestFocus();
+    });
+  }
+
+  Future<void> _closeFind() async {
+    // ignore: deprecated_member_use
+    await _controller?.clearMatches();
+    if (!mounted) return;
+    setState(() {
+      _findVisible = false;
+      _findHasQuery = false;
+      _findController.clear();
+    });
+  }
+
+  Future<void> _find({required bool forward}) async {
+    final text = _findController.text.trim();
+    final controller = _controller;
+    if (text.isEmpty || controller == null) return;
+    if (_findHasQuery) {
+      // findNext/findAllAsync 在 6.x 标记为 deprecated，但替代的
+      // FindInteractionController 还没有挂到 InAppWebViewController。
+      // ignore: deprecated_member_use
+      await controller.findNext(forward: forward);
+    } else {
+      // ignore: deprecated_member_use
+      await controller.findAllAsync(find: text);
+      _findHasQuery = true;
+    }
+  }
+
+  Future<void> _showSource() async {
+    final raw = await _controller?.evaluateJavascript(
+      source: 'document.documentElement.outerHTML',
+    );
+    final html = _decodeJsString(raw);
+    if (!mounted) return;
+    // 页面正在导航/重载时 DOM 可能还是空的，直接提示稍后再试。
+    if (html.trim().isEmpty ||
+        html.contains('<body></body>') ||
+        html.length < 120) {
+      AppDialogs.showError('页面还没加载完成，请稍后再试');
+      return;
+    }
+    await showWebSourceSheet(context, html: html, url: _currentUrl);
+  }
+
+  Future<void> _showPageInfo() async {
+    SslCertificate? certificate;
+    try {
+      certificate = await _controller?.getCertificate();
+    } catch (_) {
+      certificate = null;
+    }
+    if (!mounted) return;
+    await showWebInfoSheet(
+      context,
+      title: _pageTitle,
+      url: _currentUrl,
+      certificate: certificate,
+    );
+  }
+
+  Future<void> _showResources() async {
+    final raw = await _controller?.evaluateJavascript(source: _resourceScript);
+    var urls = <String>[];
+    try {
+      final decoded = jsonDecode(_decodeJsString(raw));
+      if (decoded is List) {
+        urls = [for (final item in decoded) item.toString()];
+      }
+    } catch (_) {
+      urls = <String>[];
+    }
+    if (!mounted) return;
+    await showWebResourcesSheet(
+      context,
+      urls: urls,
+      onOpen: _loadUrl,
+    );
+  }
+
+  Future<void> _clearData() async {
     final ok = await AppDialogs.showConfirmSheet(
-      title: '清空历史记录',
-      message: '确定清空全部浏览历史吗？书签不受影响。',
-      confirmText: '清空',
+      title: '清除浏览数据',
+      message: '将清除所有网站的 Cookie、本地存储与缓存。'
+          '所有站点（包括 AI 网页工具）都会退出登录，且不可恢复。',
+      confirmText: '清除',
       isDangerous: true,
     );
     if (ok != true) return;
-    await WebBrowserStore.instance.clearHistory();
-    if (mounted) AppDialogs.showSuccess('历史记录已清空');
+    await CookieManager.instance().deleteAllCookies();
+    await WebStorageManager.instance().deleteAllData();
+    await InAppWebViewController.clearAllCache();
+    if (!mounted) return;
+    AppDialogs.showSuccess('浏览数据已清除');
+    await _controller?.reload();
+  }
+
+  String _decodeJsString(dynamic raw) {
+    final text = raw?.toString() ?? '';
+    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is String) return decoded;
+      } catch (_) {
+        // 保留原始值
+      }
+    }
+    return text;
   }
 
   Future<void> _handleMore() async {
     final action = await showWebMoreSheet(
       context,
-      bookmarked: _isBookmarked,
       hasUrl: _currentUrl.isNotEmpty,
+      nightMode: _nightMode,
     );
     if (action == null || !mounted) return;
     switch (action) {
-      case WebMoreAction.openUrl:
-        await _openInput();
-      case WebMoreAction.search:
-        await _openInput(searchMode: true);
-      case WebMoreAction.history:
-        await _openEntries(bookmarks: false);
       case WebMoreAction.bookmarks:
         await _openEntries(bookmarks: true);
-      case WebMoreAction.toggleBookmark:
-        await _toggleBookmark();
-      case WebMoreAction.refresh:
-        if (_loading) {
-          await _controller?.stopLoading();
-        } else {
-          await _controller?.reload();
-        }
-      case WebMoreAction.copyLink:
-        await _copyUrl();
-      case WebMoreAction.clearHistory:
-        await _clearHistory();
+      case WebMoreAction.history:
+        await _openEntries(bookmarks: false);
+      case WebMoreAction.findInPage:
+        await _openFind();
+      case WebMoreAction.nightMode:
+        await _toggleNightMode();
+      case WebMoreAction.desktopMode:
+        await _toggleDesktopMode();
+      case WebMoreAction.fontSize:
+        await showWebFontSizeSheet(
+          context,
+          current: _textZoom,
+          onChanged: _changeFontSize,
+        );
+      case WebMoreAction.viewSource:
+        await _showSource();
+      case WebMoreAction.pageInfo:
+        await _showPageInfo();
+      case WebMoreAction.resources:
+        await _showResources();
+      case WebMoreAction.clearData:
+        await _clearData();
     }
   }
 
@@ -300,25 +524,13 @@ class _WebPageState extends State<WebPage> {
               value: _progress > 0 && _progress < 1 ? _progress : null,
               minHeight: 2,
             ),
+          if (_findVisible) _buildFindBar(scheme, textTheme),
           Expanded(
             child: Stack(
               children: [
                 InAppWebView(
                   initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
-                  initialSettings: InAppWebViewSettings(
-                    javaScriptEnabled: true,
-                    supportMultipleWindows: false,
-                    javaScriptCanOpenWindowsAutomatically: false,
-                    mediaPlaybackRequiresUserGesture: true,
-                    allowFileAccess: false,
-                    allowContentAccess: false,
-                    domStorageEnabled: true,
-                    databaseEnabled: true,
-                    thirdPartyCookiesEnabled: true,
-                    safeBrowsingEnabled: true,
-                    mixedContentMode:
-                        MixedContentMode.MIXED_CONTENT_NEVER_ALLOW,
-                  ),
+                  initialSettings: _settings(),
                   onWebViewCreated: (controller) {
                     _controller = controller;
                   },
@@ -343,6 +555,8 @@ class _WebPageState extends State<WebPage> {
                     });
                     _recordVisit();
                     _syncNavigationState(controller);
+                    // 注入样式只对当前文档生效，换页后需要重新注入。
+                    if (_nightMode) _applyNightMode();
                   },
                   onTitleChanged: (controller, title) {
                     final text = title?.trim() ?? '';
@@ -424,12 +638,60 @@ class _WebPageState extends State<WebPage> {
                 ),
               ),
               IconButton(
-                tooltip: '更多',
-                icon: const Icon(TablerIcons.dots),
+                tooltip: '浏览器工具',
+                icon: const Icon(TablerIcons.tool),
                 onPressed: _handleMore,
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFindBar(ColorScheme scheme, TextTheme textTheme) {
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: 2,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _findController,
+                focusNode: _findFocus,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                onChanged: (_) => _findHasQuery = false,
+                onSubmitted: (_) => _find(forward: true),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: '页内查找',
+                  border: InputBorder.none,
+                  prefixIcon: Icon(TablerIcons.search, size: 18),
+                ),
+                style: textTheme.bodyMedium,
+              ),
+            ),
+            IconButton(
+              tooltip: '上一个',
+              icon: const Icon(TablerIcons.chevron_up),
+              onPressed: () => _find(forward: false),
+            ),
+            IconButton(
+              tooltip: '下一个',
+              icon: const Icon(TablerIcons.chevron_down),
+              onPressed: () => _find(forward: true),
+            ),
+            IconButton(
+              tooltip: '关闭',
+              icon: const Icon(TablerIcons.x),
+              onPressed: _closeFind,
+            ),
+          ],
         ),
       ),
     );

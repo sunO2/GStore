@@ -83,8 +83,8 @@ void main() {
                   onPressed: () async {
                     action = await showWebMoreSheet(
                       ctx,
-                      bookmarked: false,
                       hasUrl: true,
+                      nightMode: false,
                     );
                   },
                   child: const Text('open'),
@@ -98,34 +98,39 @@ void main() {
       await tester.pumpAndSettle();
 
       for (final label in [
-        '输入网址',
-        '搜索网页',
-        '历史记录',
         '书签',
-        '收藏页面',
-        '刷新',
-        '复制链接',
-        '清空历史',
+        '历史',
+        '页内查找',
+        '夜间模式',
+        '电脑模式',
+        '字体大小',
+        '查看源码',
+        '页面信息',
+        '资源嗅探',
+        '清除数据',
       ]) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
 
-      await tester.tap(find.text('搜索网页'));
+      await tester.tap(find.text('页内查找'));
       await tester.pumpAndSettle();
-      expect(action, WebMoreAction.search);
+      expect(action, WebMoreAction.findInPage);
     });
 
-    testWidgets('已收藏时显示取消收藏', (tester) async {
+    testWidgets('没有页面时禁用依赖页面的工具', (tester) async {
+      WebMoreAction? action;
       await tester.pumpWidget(
         MaterialApp(
           home: Builder(
             builder: (ctx) => Scaffold(
               body: TextButton(
-                onPressed: () => showWebMoreSheet(
-                  ctx,
-                  bookmarked: true,
-                  hasUrl: true,
-                ),
+                onPressed: () async {
+                  action = await showWebMoreSheet(
+                    ctx,
+                    hasUrl: false,
+                    nightMode: false,
+                  );
+                },
                 child: const Text('open'),
               ),
             ),
@@ -134,8 +139,9 @@ void main() {
       );
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
-      expect(find.text('取消收藏'), findsOneWidget);
-      expect(find.text('收藏页面'), findsNothing);
+      await tester.tap(find.text('页内查找'), warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(action, isNull);
     });
   });
 

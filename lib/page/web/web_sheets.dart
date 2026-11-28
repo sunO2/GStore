@@ -4,101 +4,110 @@ import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
+import 'package:gstore/core/webview/web_suggestions.dart';
 
-/// 内置浏览器「更多」菜单里的功能。
+/// 内置浏览器「工具」菜单里的功能。
 enum WebMoreAction {
-  openUrl,
-  search,
-  history,
   bookmarks,
-  toggleBookmark,
-  refresh,
-  copyLink,
-  clearHistory,
+  history,
+  findInPage,
+  nightMode,
+  desktopMode,
+  fontSize,
+  viewSource,
+  pageInfo,
+  resources,
+  clearData,
 }
 
-/// 底部「更多」宫格菜单。
+/// 底部工具宫格：标准 5 列网格，只有内部分割线，无单元格底色/边框。
 Future<WebMoreAction?> showWebMoreSheet(
   BuildContext context, {
-  required bool bookmarked,
   required bool hasUrl,
+  required bool nightMode,
 }) {
-  final tiles = <_MoreTileData>[
-    const _MoreTileData(
-      action: WebMoreAction.openUrl,
-      icon: TablerIcons.world,
-      label: '输入网址',
-    ),
-    const _MoreTileData(
-      action: WebMoreAction.search,
-      icon: TablerIcons.search,
-      label: '搜索网页',
-    ),
-    const _MoreTileData(
-      action: WebMoreAction.history,
-      icon: TablerIcons.history,
-      label: '历史记录',
-    ),
-    const _MoreTileData(
+  final tiles = <_ToolTileData>[
+    const _ToolTileData(
       action: WebMoreAction.bookmarks,
       icon: TablerIcons.bookmarks,
       label: '书签',
     ),
-    _MoreTileData(
-      action: WebMoreAction.toggleBookmark,
-      icon: bookmarked ? TablerIcons.star_filled : TablerIcons.star,
-      label: bookmarked ? '取消收藏' : '收藏页面',
+    const _ToolTileData(
+      action: WebMoreAction.history,
+      icon: TablerIcons.history,
+      label: '历史',
+    ),
+    _ToolTileData(
+      action: WebMoreAction.findInPage,
+      icon: TablerIcons.zoom_in,
+      label: '页内查找',
       enabled: hasUrl,
     ),
-    _MoreTileData(
-      action: WebMoreAction.refresh,
-      icon: TablerIcons.refresh,
-      label: '刷新',
+    _ToolTileData(
+      action: WebMoreAction.nightMode,
+      icon: TablerIcons.moon,
+      label: '夜间模式',
+      enabled: hasUrl,
+      active: nightMode,
+    ),
+    _ToolTileData(
+      action: WebMoreAction.desktopMode,
+      icon: TablerIcons.device_desktop,
+      label: '电脑模式',
       enabled: hasUrl,
     ),
-    _MoreTileData(
-      action: WebMoreAction.copyLink,
-      icon: TablerIcons.link,
-      label: '复制链接',
+    _ToolTileData(
+      action: WebMoreAction.fontSize,
+      icon: TablerIcons.typography,
+      label: '字体大小',
       enabled: hasUrl,
     ),
-    const _MoreTileData(
-      action: WebMoreAction.clearHistory,
+    _ToolTileData(
+      action: WebMoreAction.viewSource,
+      icon: TablerIcons.code,
+      label: '查看源码',
+      enabled: hasUrl,
+    ),
+    _ToolTileData(
+      action: WebMoreAction.pageInfo,
+      icon: TablerIcons.info_circle,
+      label: '页面信息',
+      enabled: hasUrl,
+    ),
+    _ToolTileData(
+      action: WebMoreAction.resources,
+      icon: TablerIcons.photo_search,
+      label: '资源嗅探',
+      enabled: hasUrl,
+    ),
+    const _ToolTileData(
+      action: WebMoreAction.clearData,
       icon: TablerIcons.trash,
-      label: '清空历史',
+      label: '清除数据',
       danger: true,
     ),
   ];
 
   return AppSheet.show<WebMoreAction>(
     context: context,
-    title: '浏览器功能',
-    icon: const Icon(TablerIcons.layout_grid),
+    title: '浏览器工具',
+    icon: const Icon(TablerIcons.tool),
     scrollable: false,
-    content: GridView.count(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisCount: 4,
-      crossAxisSpacing: AppSpacing.sm,
-      mainAxisSpacing: AppSpacing.sm,
-      childAspectRatio: 0.82,
-      children: [
-        for (final tile in tiles)
-          _MoreTile(
-            data: tile,
-            onTap: () => Navigator.of(context).pop(tile.action),
-          ),
-      ],
+    contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+    content: _ToolGrid(
+      tiles: tiles,
+      onTap: (action) => Navigator.of(context).pop(action),
     ),
   );
 }
 
-class _MoreTileData {
-  const _MoreTileData({
+class _ToolTileData {
+  const _ToolTileData({
     required this.action,
     required this.icon,
     required this.label,
     this.enabled = true,
+    this.active = false,
     this.danger = false,
   });
 
@@ -106,50 +115,77 @@ class _MoreTileData {
   final IconData icon;
   final String label;
   final bool enabled;
+  final bool active;
   final bool danger;
 }
 
-class _MoreTile extends StatelessWidget {
-  const _MoreTile({required this.data, required this.onTap});
+class _ToolGrid extends StatelessWidget {
+  const _ToolGrid({required this.tiles, required this.onTap});
 
-  final _MoreTileData data;
-  final VoidCallback onTap;
+  static const int _columns = 5;
+
+  final List<_ToolTileData> tiles;
+  final ValueChanged<WebMoreAction> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final line = BorderSide(
+      color: scheme.outlineVariant.withValues(alpha: 0.45),
+      width: 1,
+    );
+    final rows = <TableRow>[];
+    for (var i = 0; i < tiles.length; i += _columns) {
+      rows.add(TableRow(
+        children: [
+          for (var j = 0; j < _columns; j++)
+            if (i + j < tiles.length)
+              _ToolCell(data: tiles[i + j], onTap: onTap)
+            else
+              const SizedBox.shrink(),
+        ],
+      ));
+    }
+    return Table(
+      border: TableBorder(horizontalInside: line, verticalInside: line),
+      children: rows,
+    );
+  }
+}
+
+class _ToolCell extends StatelessWidget {
+  const _ToolCell({required this.data, required this.onTap});
+
+  final _ToolTileData data;
+  final ValueChanged<WebMoreAction> onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final color = data.danger ? scheme.error : scheme.onSurface;
+    final color = !data.enabled
+        ? scheme.onSurfaceVariant.withValues(alpha: 0.4)
+        : data.danger
+            ? scheme.error
+            : data.active
+                ? scheme.primary
+                : scheme.onSurfaceVariant;
     return InkWell(
-      onTap: data.enabled ? onTap : null,
-      borderRadius: AppRadius.allMD,
-      child: Opacity(
-        opacity: data.enabled ? 1 : 0.4,
-        child: Container(
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
-            borderRadius: AppRadius.allMD,
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: 0.5),
+      onTap: data.enabled ? () => onTap(data.action) : null,
+      child: SizedBox(
+        height: 86,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(data.icon, size: 22, color: color),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              data.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.labelSmall?.copyWith(color: color),
             ),
-          ),
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.xs,
-            vertical: AppSpacing.sm,
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(data.icon, size: 22, color: color),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                data.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: textTheme.labelSmall?.copyWith(color: color),
-              ),
-            ],
-          ),
+          ],
         ),
       ),
     );
@@ -165,8 +201,9 @@ Future<String?> showWebInputSheet(
   return AppSheet.show<String>(
     context: context,
     title: searchMode ? '搜索网页' : '输入网址',
-    subtitle: '网址直接打开；其它内容用 Bing 搜索',
+    subtitle: '网址直接打开；其它内容用必应搜索',
     icon: Icon(searchMode ? TablerIcons.search : TablerIcons.world),
+    contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
     content: _WebInputField(initial: initial, searchMode: searchMode),
   );
 }
@@ -182,38 +219,115 @@ class _WebInputField extends StatefulWidget {
 }
 
 class _WebInputFieldState extends State<_WebInputField> {
+  static const Duration _debounce = Duration(milliseconds: 260);
+
   late final TextEditingController _controller =
       TextEditingController(text: widget.initial ?? '');
+  Timer? _timer;
+  List<String> _suggestions = const [];
+  int _requestId = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onChanged);
+  }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _timer?.cancel();
+    _controller
+      ..removeListener(_onChanged)
+      ..dispose();
     super.dispose();
   }
 
-  void _submit() {
+  void _onChanged() {
+    _timer?.cancel();
     final text = _controller.text.trim();
+    if (text.isEmpty || text.contains(' ') || _looksLikeUrl(text)) {
+      if (_suggestions.isNotEmpty) setState(() => _suggestions = const []);
+      return;
+    }
+    _timer = Timer(_debounce, () => _fetch(text));
+  }
+
+  Future<void> _fetch(String text) async {
+    final id = ++_requestId;
+    final items = await fetchBingSuggestions(text);
+    if (!mounted || id != _requestId) return;
+    setState(() => _suggestions = items);
+  }
+
+  bool _looksLikeUrl(String text) => text.contains('.') && !text.contains(' ');
+
+  void _submit([String? value]) {
+    final text = (value ?? _controller.text).trim();
     if (text.isEmpty) return;
     Navigator.of(context).pop(text);
   }
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: _controller,
-      autofocus: true,
-      textInputAction: TextInputAction.go,
-      keyboardType: TextInputType.url,
-      onSubmitted: (_) => _submit(),
-      decoration: InputDecoration(
-        hintText: widget.searchMode ? '搜索关键词' : 'example.com 或搜索关键词',
-        prefixIcon: const Icon(TablerIcons.search),
-        suffixIcon: IconButton(
-          tooltip: '打开',
-          icon: const Icon(TablerIcons.arrow_right),
-          onPressed: _submit,
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: _controller,
+          autofocus: true,
+          textInputAction: TextInputAction.go,
+          keyboardType: TextInputType.url,
+          onSubmitted: (_) => _submit(),
+          decoration: InputDecoration(
+            hintText: widget.searchMode ? '搜索关键词' : 'example.com 或搜索关键词',
+            prefixIcon: const Icon(TablerIcons.search),
+            suffixIcon: IconButton(
+              tooltip: '打开',
+              icon: const Icon(TablerIcons.arrow_right),
+              onPressed: _submit,
+            ),
+          ),
         ),
-      ),
+        if (_suggestions.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.xs),
+          for (final item in _suggestions)
+            InkWell(
+              onTap: () => _submit(item),
+              borderRadius: AppRadius.allSM,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.sm,
+                  vertical: AppSpacing.sm,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      TablerIcons.search,
+                      size: 16,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        item,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodyMedium,
+                      ),
+                    ),
+                    Icon(
+                      TablerIcons.arrow_up_left,
+                      size: 14,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ],
     );
   }
 }
@@ -228,6 +342,7 @@ Future<WebPageEntry?> showWebEntriesSheet(
     title: bookmarks ? '书签' : '历史记录',
     icon: Icon(bookmarks ? TablerIcons.bookmarks : TablerIcons.history),
     scrollable: false,
+    contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
     content: _WebEntryList(bookmarks: bookmarks),
   );
 }
