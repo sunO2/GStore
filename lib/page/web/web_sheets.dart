@@ -91,19 +91,31 @@ Future<WebMoreAction?> showWebMoreSheet(
   return AppSheet.showCustom<WebMoreAction>(
     context: context,
     builder: (sheetContext) => AppSheetScaffold(
-      title: '浏览器工具',
-      icon: const Icon(TablerIcons.dots),
+      // 无标题、无左右内边距：整块就是功能宫格。
       scrollable: false,
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-      // 设置不在宫格里占位：固定在标题栏右侧，避免最后一行只剩一个按钮。
-      headerTrailing: IconButton(
-        tooltip: '浏览器设置',
-        icon: const Icon(TablerIcons.settings),
-        onPressed: () => Navigator.of(sheetContext).pop(WebMoreAction.settings),
-      ),
-      content: _ToolPager(
-        tiles: tiles,
-        onTap: (action) => Navigator.of(sheetContext).pop(action),
+      contentPadding: EdgeInsets.zero,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 没有标题栏；右上角保留设置入口，不占用宫格。
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(right: AppSpacing.xs),
+              child: IconButton(
+                tooltip: '浏览器设置',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(TablerIcons.settings, size: 20),
+                onPressed: () =>
+                    Navigator.of(sheetContext).pop(WebMoreAction.settings),
+              ),
+            ),
+          ),
+          _ToolPager(
+            tiles: tiles,
+            onTap: (action) => Navigator.of(sheetContext).pop(action),
+          ),
+        ],
       ),
     ),
   );
@@ -156,10 +168,6 @@ class _ToolPagerState extends State<_ToolPager> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final line = BorderSide(
-      color: scheme.outlineVariant.withValues(alpha: 0.45),
-      width: 1,
-    );
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -190,27 +198,9 @@ class _ToolPagerState extends State<_ToolPager> {
                                     .clamp(0, pageTiles.length);
                             i++)
                           Expanded(
-                            child: DecoratedBox(
-                              // 只在实际存在的单元格之间画分割线。
-                              // DecoratedBox 不会把边框算进布局尺寸。
-                              decoration: BoxDecoration(
-                                border: Border(
-                                  right: i <
-                                          (rowStart + _ToolPager.columns)
-                                                  .clamp(0, pageTiles.length) -
-                                              1
-                                      ? line
-                                      : BorderSide.none,
-                                  bottom: rowStart + _ToolPager.columns <
-                                          pageTiles.length
-                                      ? line
-                                      : BorderSide.none,
-                                ),
-                              ),
-                              child: _ToolCell(
-                                data: pageTiles[i],
-                                onTap: widget.onTap,
-                              ),
+                            child: _ToolCell(
+                              data: pageTiles[i],
+                              onTap: widget.onTap,
                             ),
                           ),
                       ],

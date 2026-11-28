@@ -31,6 +31,11 @@
         android:icon="@mipmap/ic_launcher_foreground"
         android:largeHeap="true"
         android:manageSpaceActivity=".ManageSpaceActivity">
+        <!-- WebView WebAuthn: browser = any website (needs Google Password
+             Manager allow-listing), app = only sites with assetlinks. -->
+        <meta-data
+            android:name="com.suno2.gstore.webauthn_mode"
+            android:value="browser" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

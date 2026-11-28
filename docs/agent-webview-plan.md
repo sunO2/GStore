@@ -221,3 +221,34 @@ GMS accounts provider 不可用而未完成注册（环境限制，不是集成�
   10 个工具正好一页，以后新增工具会自动分页
 - 设置不再作为宫格按钮占位，固定在弹层标题栏右侧（齿轮），
   避免最后一行只剩一个按钮
+
+### WebAuthn 模式与 Google 白名单（2026-11-28）
+
+WebView 的 WebAuthn 有两条路，均由 Google 侧把关：
+
+| 模式 | 行为 | 前置条件 |
+|---|---|---|
+| `browser`（默认） | 可为任意网站做 WebAuthn | Google Password Manager 需把**签名证书**加入浏览器白名单 |
+| `app` | 只为「与本应用关联」的网站做 WebAuthn | 网站 `/.well-known/assetlinks.json` 需包含 GStore 包名 + 证书指纹 |
+| `none` | 关闭 | — |
+
+模式通过 `AndroidManifest.xml` 的 meta-data 配置（无需改插件）：
+
+```xml
+<meta-data android:name="com.suno2.gstore.webauthn_mode" android:value="browser" />
+```
+
+实测（Pixel 4 / Android 13 / GMS 26.25）：
+
+- `app` 模式：webauthn.io 创建通行密钥 → 系统弹层报
+  `Failed to get asset links from the relying party, error code 404`
+- `browser` 模式：GMS 日志
+  `[FidoBrowserApiChimeraService] Rejecting browser request ... certificate (...) is not recognised`
+  → `FIDO2_PRIVILEGED_API is not available`
+
+也就是说：WebView → Credential Manager 的链路已打通（能拉起系统通行密钥界面），
+但「任意网站」的通行密钥需要向 Google 申请 privileged browser 白名单
+（[申请表单](https://docs.google.com/forms/d/e/1FAIpQLScRuk9tTg0QPfSWl9SbpbIorX8xx2FCXlmoUYftCX2MxG4qyg/viewform)，
+提交发布签名证书指纹）。自有域名则可切到 `app` 模式并部署 assetlinks.json。
+
+发布证书 SHA-256（当前测试包）：`00F56FCF376C4C212B5CA537C94BDB960123808566EF847CE0015ABC15F40AA4`
