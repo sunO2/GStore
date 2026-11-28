@@ -107,6 +107,7 @@ void main() {
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
 
+      // 第 1 页：5 列 × 2 行。
       for (final label in [
         '书签',
         '历史',
@@ -118,14 +119,44 @@ void main() {
         '查看源码',
         '页面信息',
         '资源嗅探',
-        '设置',
       ]) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
+      // 设置固定在标题栏，不占用宫格。
+      expect(find.text('设置'), findsNothing);
+      expect(find.byTooltip('浏览器设置'), findsOneWidget);
 
       await tester.tap(find.text('页内查找'));
       await tester.pumpAndSettle();
       expect(action, WebMoreAction.findInPage);
+    });
+
+    testWidgets('标题栏设置按钮返回设置动作', (tester) async {
+      WebMoreAction? action;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) => Scaffold(
+              body: TextButton(
+                onPressed: () async {
+                  action = await showWebMoreSheet(
+                    ctx,
+                    hasUrl: true,
+                    nightMode: false,
+                  );
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('浏览器设置'));
+      await tester.pumpAndSettle();
+      expect(action, WebMoreAction.settings);
     });
 
     testWidgets('没有页面时禁用依赖页面的工具', (tester) async {

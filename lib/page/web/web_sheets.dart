@@ -86,22 +86,25 @@ Future<WebMoreAction?> showWebMoreSheet(
       label: '资源嗅探',
       enabled: hasUrl,
     ),
-    const _ToolTileData(
-      action: WebMoreAction.settings,
-      icon: TablerIcons.settings,
-      label: '设置',
-    ),
   ];
 
-  return AppSheet.show<WebMoreAction>(
+  return AppSheet.showCustom<WebMoreAction>(
     context: context,
-    title: '浏览器工具',
-    icon: const Icon(TablerIcons.tool),
-    scrollable: false,
-    contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-    content: _ToolGrid(
-      tiles: tiles,
-      onTap: (action) => Navigator.of(context).pop(action),
+    builder: (sheetContext) => AppSheetScaffold(
+      title: '浏览器工具',
+      icon: const Icon(TablerIcons.dots),
+      scrollable: false,
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+      // 设置不在宫格里占位：固定在标题栏右侧，避免最后一行只剩一个按钮。
+      headerTrailing: IconButton(
+        tooltip: '浏览器设置',
+        icon: const Icon(TablerIcons.settings),
+        onPressed: () => Navigator.of(sheetContext).pop(WebMoreAction.settings),
+      ),
+      content: _ToolPager(
+        tiles: tiles,
+        onTap: (action) => Navigator.of(sheetContext).pop(action),
+      ),
     ),
   );
 }
@@ -122,13 +125,33 @@ class _ToolTileData {
   final bool active;
 }
 
-class _ToolGrid extends StatelessWidget {
-  const _ToolGrid({required this.tiles, required this.onTap});
+class _ToolPager extends StatefulWidget {
+  const _ToolPager({required this.tiles, required this.onTap});
 
-  static const int _columns = 5;
+  static const int columns = 5;
+  static const int rowsPerPage = 2;
+  static const int pageSize = columns * rowsPerPage;
 
   final List<_ToolTileData> tiles;
   final ValueChanged<WebMoreAction> onTap;
+
+  @override
+  State<_ToolPager> createState() => _ToolPagerState();
+}
+
+class _ToolPagerState extends State<_ToolPager> {
+  final PageController _controller = PageController();
+  int _page = 0;
+
+  int get _pageCount =>
+      ((widget.tiles.length + _ToolPager.pageSize - 1) ~/ _ToolPager.pageSize)
+          .clamp(1, 99);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,35 +160,94 @@ class _ToolGrid extends StatelessWidget {
       color: scheme.outlineVariant.withValues(alpha: 0.45),
       width: 1,
     );
-    final rows = <Widget>[];
-    for (var start = 0; start < tiles.length; start += _columns) {
-      final end = (start + _columns).clamp(0, tiles.length);
-      final rowTiles = tiles.sublist(start, end);
-      final hasNextRow = end < tiles.length;
-      rows.add(Row(
-        children: [
-          for (var i = 0; i < rowTiles.length; i++)
-            Expanded(
-              child: Container(
-                // 只在实际存在的单元格之间画分割线，最后一行残缺时不会留下悬空线。
-                decoration: BoxDecoration(
-                  border: Border(
-                    right: i < rowTiles.length - 1 ? line : BorderSide.none,
-                    bottom: hasNextRow ? line : BorderSide.none,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: _ToolCell.height * _ToolPager.rowsPerPage,
+          child: PageView.builder(
+            controller: _controller,
+            physics: _pageCount > 1
+                ? const BouncingScrollPhysics()
+                : const NeverScrollableScrollPhysics(),
+            itemCount: _pageCount,
+            onPageChanged: (page) => setState(() => _page = page),
+            itemBuilder: (context, page) {
+              final start = page * _ToolPager.pageSize;
+              final end =
+                  (start + _ToolPager.pageSize).clamp(0, widget.tiles.length);
+              final pageTiles = widget.tiles.sublist(start, end);
+              return Column(
+                children: [
+                  for (var rowStart = 0;
+                      rowStart < pageTiles.length;
+                      rowStart += _ToolPager.columns)
+                    Row(
+                      children: [
+                        for (var i = rowStart;
+                            i <
+                                (rowStart + _ToolPager.columns)
+                                    .clamp(0, pageTiles.length);
+                            i++)
+                          Expanded(
+                            child: DecoratedBox(
+                              // 只在实际存在的单元格之间画分割线。
+                              // DecoratedBox 不会把边框算进布局尺寸。
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  right: i <
+                                          (rowStart + _ToolPager.columns)
+                                                  .clamp(0, pageTiles.length) -
+                                              1
+                                      ? line
+                                      : BorderSide.none,
+                                  bottom: rowStart + _ToolPager.columns <
+                                          pageTiles.length
+                                      ? line
+                                      : BorderSide.none,
+                                ),
+                              ),
+                              child: _ToolCell(
+                                data: pageTiles[i],
+                                onTap: widget.onTap,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+        if (_pageCount > 1) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (var i = 0; i < _pageCount; i++)
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  width: i == _page ? 16 : 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: i == _page ? scheme.primary : scheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(3),
                   ),
                 ),
-                child: _ToolCell(data: rowTiles[i], onTap: onTap),
-              ),
-            ),
+            ],
+          ),
         ],
-      ));
-    }
-    return Column(children: rows);
+      ],
+    );
   }
 }
 
 class _ToolCell extends StatelessWidget {
   const _ToolCell({required this.data, required this.onTap});
+
+  static const double height = 86;
 
   final _ToolTileData data;
   final ValueChanged<WebMoreAction> onTap;
@@ -182,7 +264,7 @@ class _ToolCell extends StatelessWidget {
     return InkWell(
       onTap: data.enabled ? () => onTap(data.action) : null,
       child: SizedBox(
-        height: 86,
+        height: height,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [

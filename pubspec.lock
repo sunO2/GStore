@@ -583,8 +583,8 @@ packages:
     dependency: "direct overridden"
     description:
       path: "."
-      ref: f3842bbe5e794fab7373966eae4db96acea378cb
-      resolved-ref: f3842bbe5e794fab7373966eae4db96acea378cb
+      ref: "56e2dbe9bcd732204b552835a9f86b1c51a02e11"
+      resolved-ref: "56e2dbe9bcd732204b552835a9f86b1c51a02e11"
       url: "https://github.com/sunO2/flutter_inappwebview_android.git"
     source: git
     version: "1.1.3"

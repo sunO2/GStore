@@ -758,8 +758,8 @@ img, video, picture, canvas, svg, iframe {
                 ),
               ),
               IconButton(
-                tooltip: '浏览器工具',
-                icon: const Icon(TablerIcons.tool),
+                tooltip: '更多',
+                icon: const Icon(TablerIcons.dots),
                 onPressed: _handleMore,
               ),
             ],

@@ -197,3 +197,27 @@ pubspec 指向 `eecda0eb860f6c6af75fb4912138f2bbb4f38678`。
 test/web_download_test.dart   6 项（文件名解析/Content-Disposition/MIME 补齐）
 test/web_view_page_test.dart 12 项（宫格含「下载」、源码用 AppCodeView、认证弹层）
 ```
+
+### WebAuthn（Passkey）与应用内浏览器工具栏（2026-11-28）
+
+**WebAuthn / Passkey**
+
+`navigator.credentials.create/get` 之前直接失败：`flutter_inappwebview` 没有暴露
+AndroidX 的 WebAuthn 开关。已在 fork `sunO2/flutter_inappwebview_android` 中：
+
+- `androidx.webkit` 1.12.0 → **1.14.0**（`setWebAuthenticationSupport` 从 1.14 才有）
+- `InAppWebView.prepare()/setSettings()` 中，支持时调用
+  `WebSettingsCompat.setWebAuthenticationSupport(settings, WEB_AUTHENTICATION_SUPPORT_FOR_APP)`
+
+真机（webauthn.io → Register）验证：日志出现
+`Fido2FullScreenActivity` / `[NativeAppRegisterOperation]`，说明 WebView 已把
+WebAuthn 交给系统 Credential Manager；本次测试因设备未登录 Google 账号、
+GMS accounts provider 不可用而未完成注册（环境限制，不是集成问题）。
+
+**工具栏调整**
+
+- 底部按钮：小扳手 → **三个点**（`TablerIcons.dots`，"更多"）
+- 「更多」宫格改为 **5 列 × 2 行一页，可左右翻页**（PageView + 页码点）；
+  10 个工具正好一页，以后新增工具会自动分页
+- 设置不再作为宫格按钮占位，固定在弹层标题栏右侧（齿轮），
+  避免最后一行只剩一个按钮
