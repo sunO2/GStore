@@ -288,3 +288,35 @@ WebView 的 WebAuthn 有两条路，均由 Google 侧把关：
   避免多出一截空白
 - **打开动画**：输入条从下方 28px 滑入 + 淡入（200ms easeOutCubic），
   页面同时上推 10px（`AnimatedPadding`）
+
+### Passkey 闪退根因与修复（2026-11-28）
+
+日志（Pixel 4 / WebView beta）：
+
+```
+FATAL EXCEPTION: main
+java.lang.SecurityException: uid 10483 does not have
+    android.permission.CREDENTIAL_MANAGER_SET_ORIGIN
+  at android.credentials.CredentialManager.createCredential
+  at WV.x1.t(...)   // WebView WebAuthn
+```
+
+`WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER` 让 WebView 以「浏览器」身份调用
+`CredentialManager.createCredential(origin=...)`，该 API 需要签名级权限
+`android.permission.CREDENTIAL_MANAGER_SET_ORIGIN`。普通应用没有这个权限，
+框架直接抛 `SecurityException`，异常从 Chromium 的 JNI 回调冒到主线程 →
+应用闪退（之前 GMS 拒绝时没崩，是因为那条路径先返回了错误，没有走到这里）。
+
+修复（双层）：
+
+1. 插件在解析模式时检查该权限，未授予则自动从 `browser` 降级为 `app`，
+   不会再抛 SecurityException；
+2. 应用 manifest 默认值改为 `app`：
+
+```xml
+<meta-data android:name="com.suno2.gstore.webauthn_mode" android:value="app" />
+```
+
+`app` 模式只对在 `assetlinks.json` 中登记了本应用的站点生效（不会崩溃，
+未登记时弹「Failed to get asset links」）。`browser` 模式保留给将来获得
+特权权限/Google 白名单的构建。

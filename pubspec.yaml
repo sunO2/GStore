@@ -200,4 +200,4 @@ dependency_overrides:
   flutter_inappwebview_android:
     git:
       url: https://github.com/sunO2/flutter_inappwebview_android.git
-      ref: 4f17c460868f099f149ce045e62fd73b86e71cb6
+      ref: 60f1d95f254985ac7269c75bb4b8b1c96d6908c9
