@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -8,12 +10,15 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/webview/web_browser_store.dart';
 import 'package:gstore/core/webview/web_download.dart';
 import 'package:gstore/core/webview/web_home.dart';
+import 'package:gstore/core/webview/web_userscript.dart';
+import 'package:gstore/core/webview/web_userscript_store.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 import 'package:gstore/core/webview/webview_url_normalizer.dart';
 
 import 'web_address_bar.dart';
 import 'web_sheets.dart';
 import 'web_tools_sheets.dart';
+import 'web_userscript_sheets.dart';
 
 /// 内置浏览器（AI 回复里的链接、外部跳转都走这里）。
 ///
@@ -71,8 +76,14 @@ img, video, picture, canvas, svg, iframe {
 
   InAppWebViewController? _controller;
 
+  /// 入口原始地址。
+  late final String _rawUrl = (widget.url ?? '').trim();
+
+  /// 从外部/地址栏打开的 `.user.js`：不加载源码，直接走安装确认。
+  late final bool _startsWithUserScript = looksLikeUserScriptUrl(_rawUrl);
+
   /// 没有传 url（点「主页」/ 新标签页）时从内置主页开始。
-  late final bool _startsAtHome = (widget.url ?? '').trim().isEmpty;
+  late final bool _startsAtHome = _rawUrl.isEmpty || _startsWithUserScript;
   late final String? _initialUrl =
       _startsAtHome ? null : normalizeWebViewUrl(widget.url);
 
@@ -88,6 +99,13 @@ img, video, picture, canvas, svg, iframe {
 
   /// 当前显示的是不是主页（内置 / 在线主题 / 本地 HTML）。
   bool _atHome = false;
+
+  /// 命中当前页面的用户脚本（用于导航头角标与「本页脚本」面板）。
+  List<WebUserScript> _pageScripts = const [];
+  bool _scriptsReady = false;
+
+  /// 每个脚本一枚 token，只出现在注入脚本的闭包里；桥调用据此反查脚本。
+  final Map<String, String> _userScriptTokens = <String, String>{};
   bool _canGoBack = false;
   bool _canGoForward = false;
   bool _isBookmarked = false;
@@ -125,6 +143,20 @@ img, video, picture, canvas, svg, iframe {
       setState(() {
         _settings = WebViewSettingsStore.instance.settings;
         _settingsReady = true;
+      });
+    });
+    if (_startsWithUserScript) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_installUserScript(_rawUrl));
+      });
+    }
+    WebUserScriptStore.instance.load().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _scriptsReady = true;
+        _pageScripts = WebUserScriptStore.instance.scriptsForUrl(
+          _currentUrl.isEmpty ? null : _currentUrl,
+        );
       });
     });
     _prepareHome();
@@ -365,6 +397,227 @@ img, video, picture, canvas, svg, iframe {
         text.contains('Webpage not available');
   }
 
+
+  // ==================== 用户脚本 ====================
+
+  String _tokenForScript(String scriptId) =>
+      _userScriptTokens.putIfAbsent(scriptId, newUserScriptToken);
+
+  String? _scriptIdForToken(String token) {
+    if (token.isEmpty) return null;
+    for (final entry in _userScriptTokens.entries) {
+      if (entry.value == token) return entry.key;
+    }
+    return null;
+  }
+
+  List<UserScript> _buildUserScripts() {
+    final result = <UserScript>[];
+    for (final script in WebUserScriptStore.instance.enabledScripts) {
+      final source = buildUserScriptBootstrap(
+        script,
+        token: _tokenForScript(script.id),
+      );
+      if (source.isEmpty) continue;
+      result.add(
+        UserScript(
+          source: source,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          allowedOriginRules: script.originRules,
+        ),
+      );
+    }
+    return result;
+  }
+
+  /// 重建注入列表：GM_setValue 的值是内联进脚本的，页面加载后刷新一次，
+  /// 下一次导航就能读到最新值。
+  Future<void> _refreshUserScripts() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.removeAllUserScripts();
+      for (final script in _buildUserScripts()) {
+        await controller.addUserScript(userScript: script);
+      }
+    } catch (error) {
+      debugPrint('WebPage: 刷新用户脚本失败 - $error');
+    }
+  }
+
+  void _registerUserScriptBridge(InAppWebViewController controller) {
+    controller.addJavaScriptHandler(
+      handlerName: 'gstoreUserscript',
+      callback: (args) async {
+        final raw = args.isNotEmpty ? args.first : null;
+        if (raw is! Map) return null;
+        final payload = raw.map((key, value) => MapEntry(key.toString(), value));
+        final scriptId = _scriptIdForToken(payload['token']?.toString() ?? '');
+        if (scriptId == null) return null;
+        switch (payload['op']?.toString() ?? '') {
+          case 'value.set':
+            await WebUserScriptStore.instance.setValue(
+              scriptId,
+              payload['key']?.toString() ?? '',
+              payload['value'],
+            );
+            return true;
+          case 'value.delete':
+            await WebUserScriptStore.instance.deleteValue(
+              scriptId,
+              payload['key']?.toString() ?? '',
+            );
+            return true;
+          case 'log':
+            final parts = payload['args'];
+            debugPrint(
+              '[userscript] ${parts is List ? parts.join(' ') : '$parts'}',
+            );
+            return null;
+          case 'notify':
+            if (mounted) {
+              final title = payload['title']?.toString() ?? '';
+              final text = payload['text']?.toString() ?? '';
+              AppDialogs.showSuccess(text.isEmpty ? title : '$title：$text');
+            }
+            return null;
+          case 'open':
+            final url = payload['url']?.toString() ?? '';
+            if (mounted && url.isNotEmpty) await _submitAddress(url);
+            return null;
+          case 'clipboard':
+            await Clipboard.setData(
+              ClipboardData(text: payload['text']?.toString() ?? ''),
+            );
+            return null;
+          case 'xhr':
+            return _userscriptXhr(payload);
+        }
+        return null;
+      },
+    );
+  }
+
+  Future<Map<String, Object?>> _userscriptXhr(
+    Map<String, Object?> payload,
+  ) async {
+    final url = payload['url']?.toString() ?? '';
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      throw StateError('只有 http(s) 地址可以请求');
+    }
+    final headers = <String, String>{};
+    final rawHeaders = payload['headers'];
+    if (rawHeaders is Map) {
+      rawHeaders.forEach((key, value) {
+        if (key != null && value != null) {
+          headers[key.toString()] = value.toString();
+        }
+      });
+    }
+    // 带上 WebView 里该站点的 Cookie，脚本才能访问登录后的接口。
+    try {
+      final cookies =
+          await CookieManager.instance().getCookies(url: WebUri(url));
+      final hasCookie =
+          headers.keys.any((key) => key.toLowerCase() == 'cookie');
+      if (cookies.isNotEmpty && !hasCookie) {
+        headers['Cookie'] =
+            cookies.map((cookie) => '${cookie.name}=${cookie.value}').join('; ');
+      }
+    } catch (_) {
+      // 读不到 Cookie 就退化成匿名请求。
+    }
+    final timeoutMs = (payload['timeout'] as num?)?.toInt() ?? 30000;
+    final response = await WebUserScriptFetcher.request(
+      method: payload['method']?.toString() ?? 'GET',
+      url: url,
+      headers: headers,
+      data: payload['data']?.toString(),
+      timeout: Duration(milliseconds: timeoutMs.clamp(1000, 120000)),
+    );
+    return {
+      'status': response.status,
+      'statusText': response.statusText,
+      'responseText': response.body,
+      'responseHeaders': response.headers,
+      'finalUrl': response.url,
+    };
+  }
+
+  Future<void> _installUserScript(String url) async {
+    AppDialogs.showLoading(message: '正在获取脚本…');
+    WebUserScriptParseResult parsed;
+    try {
+      parsed = await WebUserScriptFetcher.fetch(url);
+    } catch (error) {
+      AppDialogs.dismissLoading();
+      if (mounted) AppDialogs.showError('获取脚本失败：$error');
+      return;
+    }
+    AppDialogs.dismissLoading();
+    if (!mounted) return;
+    final script = parsed.script;
+    if (script == null) {
+      AppDialogs.showError(parsed.error ?? '不是用户脚本');
+      return;
+    }
+    final update = WebUserScriptStore.instance.scripts
+        .any((item) => item.key == script.key);
+    final ok = await showUserScriptInstallSheet(
+      context,
+      script,
+      update: update,
+    );
+    if (ok != true || !mounted) return;
+    final result = await WebUserScriptStore.instance.upsert(script);
+    if (!mounted) return;
+    setState(() {
+      _pageScripts = WebUserScriptStore.instance.scriptsForUrl(_currentUrl);
+    });
+    await _refreshUserScripts();
+    if (!mounted) return;
+    AppDialogs.showSuccess(
+      result.updated
+          ? '已更新：${result.script.name}'
+          : '已安装：${result.script.name}',
+      actionLabel: '刷新页面',
+      onAction: () => _controller?.reload(),
+    );
+  }
+
+  Future<void> _showPageScripts() async {
+    await showPageUserScriptsSheet(
+      context,
+      url: _currentUrl,
+      onChanged: () async {
+        await _refreshUserScripts();
+        if (!mounted) return;
+        setState(() {
+          _pageScripts = WebUserScriptStore.instance.scriptsForUrl(_currentUrl);
+        });
+      },
+      onManage: () => unawaited(_manageUserScripts()),
+    );
+  }
+
+  Future<void> _manageUserScripts() async {
+    await context.push(AppRoute.webViewUserscripts);
+    if (!mounted) return;
+    await WebUserScriptStore.instance.load(force: true);
+    await _refreshUserScripts();
+    if (!mounted) return;
+    setState(() {
+      _pageScripts = WebUserScriptStore.instance.scriptsForUrl(_currentUrl);
+    });
+  }
+
+  bool _looksLikeUserScriptRequest(DownloadStartRequest request) {
+    if (looksLikeUserScriptUrl(request.url.toString())) return true;
+    final name = request.suggestedFilename?.toLowerCase() ?? '';
+    return name.endsWith('.user.js');
+  }
+
   void _registerHomeBridge(InAppWebViewController controller) {
     controller.addJavaScriptHandler(
       handlerName: 'gstoreHome',
@@ -416,6 +669,7 @@ img, video, picture, canvas, svg, iframe {
     _currentUrl = next;
     _atHome = home;
     _isBookmarked = home ? false : WebBrowserStore.instance.isBookmarked(next);
+    _pageScripts = WebUserScriptStore.instance.scriptsForUrl(next);
   }
 
   void _recordVisit() {
@@ -511,6 +765,11 @@ img, video, picture, canvas, svg, iframe {
   }
 
   Future<void> _loadUrl(String url) async {
+    // 地址栏粘贴 / 书签 / 历史里也可能是安装链接，统一走安装确认。
+    if (looksLikeUserScriptUrl(url)) {
+      await _installUserScript(url);
+      return;
+    }
     final controller = _controller;
     if (controller == null) return;
     setState(() {
@@ -752,6 +1011,7 @@ img, video, picture, canvas, svg, iframe {
       context,
       hasUrl: !_atHome && _currentUrl.isNotEmpty,
       nightMode: _settings.nightMode,
+      bookmarked: _isBookmarked,
     );
     if (action == null || !mounted) return;
     switch (action) {
@@ -779,6 +1039,8 @@ img, video, picture, canvas, svg, iframe {
         await _showPageInfo();
       case WebMoreAction.resources:
         await _showResources();
+      case WebMoreAction.bookmarkPage:
+        await _toggleBookmark();
       case WebMoreAction.settings:
         await _openSettings();
     }
@@ -789,6 +1051,8 @@ img, video, picture, canvas, svg, iframe {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final initialUrl = _initialUrl;
+    final enabledScripts =
+        _pageScripts.where((script) => script.enabled).length;
 
     // 只有「传了 url 但解析不出来」才显示错误页；没传 url 是新标签页。
     if (!_startsAtHome && initialUrl == null) {
@@ -826,7 +1090,7 @@ img, video, picture, canvas, svg, iframe {
       );
     }
 
-    if (!_settingsReady || !_homeReady) {
+    if (!_settingsReady || !_homeReady || !_scriptsReady) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.title ?? '浏览器')),
         body: const Center(child: AppLoading()),
@@ -904,12 +1168,13 @@ img, video, picture, canvas, svg, iframe {
             onPressed: _openHome,
           ),
           IconButton(
-            tooltip: _isBookmarked ? '取消收藏' : '收藏',
-            icon: Icon(
-              _isBookmarked ? TablerIcons.star_filled : TablerIcons.star,
-              color: _isBookmarked ? scheme.primary : null,
+            tooltip: '本页脚本',
+            icon: Badge.count(
+              count: enabledScripts,
+              isLabelVisible: enabledScripts > 0,
+              child: const Icon(TablerIcons.code),
             ),
-            onPressed: _atHome || _currentUrl.isEmpty ? null : _toggleBookmark,
+            onPressed: _showPageScripts,
           ),
           IconButton(
             tooltip: '复制链接',
@@ -948,9 +1213,12 @@ img, video, picture, canvas, svg, iframe {
                               : URLRequest(url: WebUri(initialUrl!)),
                           initialData: _initialHomeData(),
                           initialSettings: _webViewSettings(),
+                          initialUserScripts:
+                              UnmodifiableListView(_buildUserScripts()),
                           onWebViewCreated: (controller) {
                             _controller = controller;
                             _registerHomeBridge(controller);
+                            _registerUserScriptBridge(controller);
                           },
                           onLoadStart: (controller, url) {
                             if (!mounted) return;
@@ -973,6 +1241,9 @@ img, video, picture, canvas, svg, iframe {
                             });
                             _recordVisit();
                             _syncNavigationState(controller);
+                            // GM 存储值是内联进脚本的：页面加载完后重建一次，
+                            // 下次导航就是最新值。
+                            unawaited(_refreshUserScripts());
                             if (_atHome) {
                               _applyHomeTheme();
                             } else if (_settings.nightMode) {
@@ -1001,6 +1272,12 @@ img, video, picture, canvas, svg, iframe {
                               return NavigationActionPolicy.CANCEL;
                             }
                             final scheme = uri.scheme.toLowerCase();
+                            // Greasy Fork 之类的「安装」按钮就是一个 .user.js
+                            // 导航；拦下来走安装确认，而不是把源码当网页打开。
+                            if (looksLikeUserScriptUrl(raw.toString())) {
+                              unawaited(_installUserScript(raw.toString()));
+                              return NavigationActionPolicy.CANCEL;
+                            }
                             if (scheme == 'about' ||
                                 scheme == 'http' ||
                                 scheme == 'https') {
@@ -1017,6 +1294,12 @@ img, video, picture, canvas, svg, iframe {
                             return NavigationActionPolicy.CANCEL;
                           },
                           onDownloadStartRequest: (controller, request) {
+                            if (_looksLikeUserScriptRequest(request)) {
+                              unawaited(
+                                _installUserScript(request.url.toString()),
+                              );
+                              return;
+                            }
                             _handleDownload(request);
                           },
                           onReceivedHttpAuthRequest: (controller, challenge) =>

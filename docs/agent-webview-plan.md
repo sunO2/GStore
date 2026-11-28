@@ -371,3 +371,27 @@ assetlinks（app 模式）或 Google 的 privileged browser 白名单。
   只放行主页自身路径的 `file://`；远程页面无法借机读取本地文件。
 - 没有传 `url` 打开 `/GStore/webView` 就是新标签页；AppBar 增加「主页」按钮。
   主页上收藏 / 复制链接 / 页内工具自动禁用，夜间反色不作用于主页。
+
+### 用户脚本 / Tampermonkey 兼容子集（2026-11-28）
+
+- 模型 `WebUserScript` + `WebUserScriptStore`（`web_userscripts_v1`）。
+- 解析 `// ==UserScript==` 元数据：`@name/@namespace/@version/@description/
+  @author/@icon`、`@match/@include/@exclude`、`@run-at`、`@grant`、`@require`。
+- `@match` 编译成正则（Dart 判断「本页用了哪些脚本」与注入脚本共用同一份
+  source）；`@include` 支持 `/regex/` 与 glob；`@exclude` 命中直接不注入。
+- 安装：`.user.js` 的**导航 / 下载 / 地址栏 / 外部链接**都会被拦下，抓取后弹确认
+  （名称、版本、匹配站点、GM 权限）。同 `namespace + name` 视为更新，保留启用
+  状态与 GM 存储值。`@require` 在安装时抓取并拼进 prelude。
+- 注入：`UserScript(AT_DOCUMENT_START, allowedOriginRules = 由 @match 推导)`。
+  每个脚本一枚随机 token，只出现在闭包里；桥 `gstoreUserscript` 用 token
+  反查脚本，页面 JS 拿不到 token，也就无法借 `GM_xmlhttpRequest` 带 Cookie 发请求。
+- GM 支持：`GM_addStyle / GM_getValue / GM_setValue / GM_deleteValue /
+  GM_listValues / GM_log / GM_notification / GM_openInTab / GM_setClipboard /
+  GM_xmlhttpRequest / GM_info / unsafeWindow`；`GM_registerMenuCommand` 暂为空实现。
+  `GM_xmlhttpRequest` 会带上 WebView 里该站点的 Cookie。
+- 不支持：Chrome 扩展（.crx / `chrome.*`）、`@resource`、自动更新。
+- UI：导航头收藏按钮换成「本页脚本」（角标 = 本页启用的脚本数），面板里可直接
+  启停；管理页 `/GStore/webViewUserscripts` 支持从链接安装、启停、详情、查看代码、
+  删除。收藏入口移到「更多」宫格（第 11 格）。
+- 冷启动深链修复：GoRouter 把 http(s) 开头的初始路由重定向回首页，避免
+  「用 GStore 打开链接」时先出现 Page Not Found。

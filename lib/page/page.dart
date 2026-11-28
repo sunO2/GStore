@@ -5,6 +5,7 @@ export 'package:gstore/page/download/view.dart';
 export 'package:gstore/page/update/view.dart';
 export 'package:gstore/page/web/view.dart';
 export 'package:gstore/page/web/web_view_settings_page.dart';
+export 'package:gstore/page/web/web_userscripts_page.dart';
 export 'package:gstore/page/auth/view.dart';
 export 'package:gstore/page/fdroid_repo/view.dart';
 export 'package:gstore/page/log_viewer/view.dart';

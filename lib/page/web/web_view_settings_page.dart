@@ -1,6 +1,7 @@
 // 全仓库仍使用 flutter/material.dart；迁移 material_ui 单独排期。
 // ignore: deprecated_member_use
 import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
 // 全仓库仍使用 flutter/material.dart；迁移 material_ui 单独排期。
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/webview/web_home.dart';
+import 'package:gstore/core/webview/web_userscript_store.dart';
 import 'package:gstore/core/webview/web_view_settings.dart';
 
 /// 内置浏览器设置页。
@@ -25,6 +27,7 @@ class WebViewSettingsPage extends StatefulWidget {
 class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
   WebViewSettings _settings = WebViewSettings.defaults;
   WebHomeConfig _homeConfig = WebHomeConfig.defaults;
+  int _scriptCount = 0;
   bool _ready = false;
 
   @override
@@ -40,6 +43,10 @@ class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
     WebHomeStore.instance.load().then((_) {
       if (!mounted) return;
       setState(() => _homeConfig = WebHomeStore.instance.config);
+    });
+    WebUserScriptStore.instance.load().then((_) {
+      if (!mounted) return;
+      setState(() => _scriptCount = WebUserScriptStore.instance.scripts.length);
     });
   }
 
@@ -319,6 +326,31 @@ class _WebViewSettingsPageState extends State<WebViewSettingsPage> {
                         '${_settings.textZoom}%',
                         style: textTheme.labelLarge,
                       ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.md),
+                _SectionCard(
+                  icon: TablerIcons.code,
+                  title: '扩展',
+                  children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('用户脚本'),
+                      subtitle: Text(
+                        _scriptCount == 0 ? '未安装' : '已安装 $_scriptCount 个',
+                      ),
+                      trailing: const Icon(TablerIcons.chevron_right, size: 18),
+                      onTap: () async {
+                        await context.push(AppRoute.webViewUserscripts);
+                        if (!mounted) return;
+                        await WebUserScriptStore.instance.load(force: true);
+                        if (!mounted) return;
+                        setState(() {
+                          _scriptCount =
+                              WebUserScriptStore.instance.scripts.length;
+                        });
+                      },
                     ),
                   ],
                 ),

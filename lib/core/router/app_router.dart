@@ -73,6 +73,16 @@ final GoRouter appRouter = GoRouter(
   navigatorKey: appNavigatorKey,
   initialLocation: AppRoute.home,
   observers: [HomeFocusResetObserver()],
+  // 冷启动时 Android 会把「用 GStore 打开链接」的 VIEW intent 当成 Flutter
+  // 深链初始路由；http(s) 不是应用内路由，先落回首页，再由
+  // BrowserIntents 把内置浏览器压上去，避免出现 Page Not Found。
+  redirect: (context, state) {
+    final location = state.uri.toString();
+    if (location.startsWith('http://') || location.startsWith('https://')) {
+      return AppRoute.home;
+    }
+    return null;
+  },
   routes: [
     GoRoute(
       path: AppRoute.home,
@@ -101,6 +111,10 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoute.webViewSettings,
       builder: (context, state) => const WebViewSettingsPage(),
+    ),
+    GoRoute(
+      path: AppRoute.webViewUserscripts,
+      builder: (context, state) => const WebUserScriptsPage(),
     ),
     GoRoute(
       path: AppRoute.webView,

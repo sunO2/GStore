@@ -17,6 +17,7 @@ enum WebMoreAction {
   viewSource,
   pageInfo,
   resources,
+  bookmarkPage,
   settings,
 }
 
@@ -25,6 +26,7 @@ Future<WebMoreAction?> showWebMoreSheet(
   BuildContext context, {
   required bool hasUrl,
   required bool nightMode,
+  bool bookmarked = false,
 }) {
   final tiles = <_ToolTileData>[
     const _ToolTileData(
@@ -84,6 +86,14 @@ Future<WebMoreAction?> showWebMoreSheet(
       icon: TablerIcons.photo_search,
       label: '资源嗅探',
       enabled: hasUrl,
+    ),
+    // 导航头的位置让给了「本页脚本」，收藏入口挪到这里。
+    _ToolTileData(
+      action: WebMoreAction.bookmarkPage,
+      icon: bookmarked ? TablerIcons.star_filled : TablerIcons.star,
+      label: bookmarked ? '取消收藏' : '收藏本页',
+      enabled: hasUrl,
+      active: bookmarked,
     ),
   ];
 
