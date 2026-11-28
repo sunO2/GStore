@@ -320,3 +320,32 @@ java.lang.SecurityException: uid 10483 does not have
 `app` 模式只对在 `assetlinks.json` 中登记了本应用的站点生效（不会崩溃，
 未登记时弹「Failed to get asset links」）。`browser` 模式保留给将来获得
 特权权限/Google 白名单的构建。
+
+### 注册为浏览器候选 / 接收外部链接（2026-11-28）
+
+MainActivity 增加两组 intent-filter：
+
+```xml
+<!-- 链接点击 → 可选择用 GStore 打开 -->
+<action android:name="android.intent.action.VIEW" />
+<category android:name="android.intent.category.DEFAULT" />
+<category android:name="android.intent.category.BROWSABLE" />
+<data android:scheme="http" />
+<data android:scheme="https" />
+
+<!-- 分享文本 → 自动提取里面的链接打开；没有链接则提示 -->
+<action android:name="android.intent.action.SEND" />
+<data android:mimeType="text/plain" />
+```
+
+- Kotlin 通过 `gstore/browser_intent` EventChannel 把 URL 推给 Dart；
+  Dart 侧 `BrowserIntents.start()`（runApp 之后）监听并用 `appRouter.push`
+  打开内置浏览器；首帧前到达的 URL 走 post-frame 回调。
+- 冷启动只消费一次 intent（`savedInstanceState == null`），避免旋转重复打开；
+  热启动走 `onNewIntent`。
+
+**与 Bitwarden/Passkey 的关系**：注册为浏览器（intent-filter）只影响
+「用谁打开链接」和分享入口，**不会**授予
+`CREDENTIAL_MANAGER_SET_ORIGIN`（签名级权限，system_server 校验），
+因此不会让 WebView 的第三方站点 passkey 变得可用；那条路仍取决于
+assetlinks（app 模式）或 Google 的 privileged browser 白名单。

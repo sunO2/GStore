@@ -25,6 +25,7 @@ import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/perf/battery_history_gate.dart';
+import 'package:gstore/core/browser/browser_intents.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/service/proxy_connect_controller.dart';
 import 'package:gstore/core/service/proxy_connect_intent_bridge.dart';
@@ -334,6 +335,9 @@ main() async {
   // 树结构不变，整体移入 [_AppRoot] 只是为了让 runApp 更早被调用。
   runApp(const ProviderScope(child: _AppRoot()));
   bootMark('run-app-called');
+
+  // 「用 GStore 打开链接 / 分享链接到 GStore」：监听 Android 侧推来的 URL。
+  BrowserIntents.start();
   WidgetsBinding.instance.addPostFrameCallback((_) => bootMark('first-frame'));
 
   // 首帧后的启动装配：不阻塞首帧，完成后经 [StartupGate] 放行首屏列表加载。

@@ -57,6 +57,20 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- 作为浏览器候选：其他应用点击 http(s) 链接时可选择用 GStore 打开 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+            </intent-filter>
+            <!-- 分享任意文本时出现：自动提取其中的 http(s) 链接并用内置浏览器打开 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
             <!-- 代理 QS 磁贴「长按」入口：系统据此 action 解析到本 Activity 打开
                  磁贴偏好（本 App 无独立设置页，改为打开应用内代理页）。
                  切勿在此 Activity 上声明 BIND_QUICK_SETTINGS_TILE 权限——

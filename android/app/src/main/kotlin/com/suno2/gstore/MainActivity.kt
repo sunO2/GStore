@@ -15,6 +15,7 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -44,6 +45,9 @@ class MainActivity : FlutterActivity() {
 
         /// 安装终端事件通道（EventChannel）：InstallerBridge 的唯一结果出口。
         private const val INSTALL_EVENTS_CHANNEL = "gstore/install_events"
+
+        /// 外部链接打开通道（EventChannel）：其他应用/分享把 http(s) 链接交给本应用。
+        private const val BROWSER_INTENT_CHANNEL = "gstore/browser_intent"
 
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
@@ -83,6 +87,10 @@ class MainActivity : FlutterActivity() {
     /// 非 null 时拒绝并发的 prepare，避免覆盖挂起 Result 造成 Dart 侧永久挂起。
     private var pendingPrepareResult: MethodChannel.Result? = null
 
+    /// 外部链接打开的 EventChannel sink；Dart 侧未监听时先缓存一条待处理 URL。
+    private var browserIntentSink: EventChannel.EventSink? = null
+    private var pendingBrowserUrl: String? = null
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -121,6 +129,43 @@ class MainActivity : FlutterActivity() {
             pendingProxyOpen = true
             Log.i(TAG, "onCreate: 收到 QS 磁贴长按打开代理页请求")
         }
+        // 冷启动携带的外部链接：只在首次创建时消费，避免旋转/重建重复打开。
+        if (savedInstanceState == null) {
+            handleBrowserIntent(intent)
+        }
+    }
+
+    /// 处理「用 GStore 打开链接 / 分享链接到 GStore」。
+    private fun handleBrowserIntent(intent: Intent?) {
+        when (intent?.action) {
+            Intent.ACTION_VIEW -> queueBrowserUrl(intent.dataString)
+            Intent.ACTION_SEND -> {
+                val url = extractFirstUrl(intent.getStringExtra(Intent.EXTRA_TEXT))
+                if (url == null) {
+                    // 分享的是纯文本：保持应用现状，不强行关闭。
+                    Toast.makeText(this, "没有可打开的链接", Toast.LENGTH_SHORT).show()
+                } else {
+                    queueBrowserUrl(url)
+                }
+            }
+        }
+    }
+
+    private fun queueBrowserUrl(raw: String?) {
+        val url = raw?.trim().orEmpty()
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+        val sink = browserIntentSink
+        if (sink != null) {
+            sink.success(url)
+        } else {
+            pendingBrowserUrl = url
+        }
+    }
+
+    private fun extractFirstUrl(text: String?): String? {
+        if (text.isNullOrBlank()) return null
+        val match = Regex("https?://[^\\s]+").find(text) ?: return null
+        return match.value.trimEnd('.', ',', ';', ')', ']', '，', '。', '；')
     }
 
     override fun onResume() {
@@ -153,6 +198,7 @@ class MainActivity : FlutterActivity() {
             pendingProxyOpen = true
             Log.i(TAG, "onNewIntent: 收到 QS 磁贴长按打开代理页请求")
         }
+        handleBrowserIntent(intent)
     }
 
     /// 绑定 `gstore/install_events`：listen 时接上 sink，cancel 时清空（热重启安全）。
@@ -192,6 +238,20 @@ class MainActivity : FlutterActivity() {
             applicationContext,
         )
         registerInstallEvents(flutterEngine)
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, BROWSER_INTENT_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    browserIntentSink = events
+                    pendingBrowserUrl?.let {
+                        events.success(it)
+                        pendingBrowserUrl = null
+                    }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    browserIntentSink = null
+                }
+            })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "openUninstall" -> {
